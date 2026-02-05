@@ -147,11 +147,14 @@ export async function getUserTransactions(
 
 /**
  * Get trading volume data from solver
+/**
+ * Get solver volume data (filled intents) with filtering and pagination
+ * Requires inputToken and outputToken. Don't mix block range with time range filters.
  */
-export async function getVolume(options?: {
+export async function getVolume(options: {
+  inputToken: string;
+  outputToken: string;
   chainId?: number;
-  inputToken?: string;
-  outputToken?: string;
   solver?: string;
   fromBlock?: number;
   toBlock?: number;
@@ -163,24 +166,24 @@ export async function getVolume(options?: {
   cursor?: string;
 }): Promise<VolumeData> {
   // Build cache key from significant params
-  const cacheKey = `volume-${options?.chainId || "all"}-${options?.limit || 50}-${options?.cursor || "start"}`;
+  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
   const cached = getCached<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
     const params = new URLSearchParams();
-    if (options?.chainId) params.append("chainId", options.chainId.toString());
-    if (options?.inputToken) params.append("inputToken", options.inputToken);
-    if (options?.outputToken) params.append("outputToken", options.outputToken);
-    if (options?.solver) params.append("solver", options.solver);
-    if (options?.fromBlock) params.append("fromBlock", options.fromBlock.toString());
-    if (options?.toBlock) params.append("toBlock", options.toBlock.toString());
-    if (options?.since) params.append("since", options.since);
-    if (options?.until) params.append("until", options.until);
-    if (options?.sort) params.append("sort", options.sort);
-    if (options?.limit) params.append("limit", options.limit.toString());
-    if (options?.includeData !== undefined) params.append("includeData", options.includeData.toString());
-    if (options?.cursor) params.append("cursor", options.cursor);
+    params.append("inputToken", options.inputToken);
+    params.append("outputToken", options.outputToken);
+    params.append("includeData", (options.includeData ?? false).toString());
+    if (options.chainId) params.append("chainId", options.chainId.toString());
+    if (options.solver) params.append("solver", options.solver);
+    if (options.fromBlock) params.append("fromBlock", options.fromBlock.toString());
+    if (options.toBlock) params.append("toBlock", options.toBlock.toString());
+    if (options.since) params.append("since", options.since);
+    if (options.until) params.append("until", options.until);
+    if (options.sort) params.append("sort", options.sort);
+    if (options.limit) params.append("limit", options.limit.toString());
+    if (options.cursor) params.append("cursor", options.cursor);
 
     const queryString = params.toString();
     const url = `/solver/volume${queryString ? `?${queryString}` : ""}`;

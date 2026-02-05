@@ -207,24 +207,24 @@ export function registerSodaxApiTools(server: McpServer): void {
   // Tool 5: Get Volume (Filled Intents)
   server.tool(
     "sodax_get_volume",
-    "Get solver volume data showing filled intents with filtering and pagination. Filters by chain, tokens, solver address, block range, or time range. NOTE: Currently requires a cursor parameter to work (backend limitation).",
+    "Get solver volume data showing filled intents with filtering and pagination. Requires inputToken and outputToken. Optional filters: chain, solver, block range OR time range (don't mix both).",
     {
+      inputToken: z.string()
+        .describe("REQUIRED: Input token address"),
+      outputToken: z.string()
+        .describe("REQUIRED: Output token address"),
       chainId: z.number().optional()
         .describe("Filter by chain ID (e.g., 146 for Sonic)"),
-      inputToken: z.string().optional()
-        .describe("Filter by input token address"),
-      outputToken: z.string().optional()
-        .describe("Filter by output token address"),
       solver: z.string().optional()
         .describe("Filter by solver address (0x0...0 for default solver)"),
       fromBlock: z.number().optional()
-        .describe("Start block number for range filter"),
+        .describe("Start block number (don't mix with since/until)"),
       toBlock: z.number().optional()
-        .describe("End block number for range filter"),
+        .describe("End block number (don't mix with since/until)"),
       since: z.string().optional()
-        .describe("Start time in ISO format (e.g., 2025-04-11T00:00:00.000Z)"),
+        .describe("Start time ISO format (don't mix with fromBlock/toBlock)"),
       until: z.string().optional()
-        .describe("End time in ISO format (e.g., 2025-04-12T00:00:00.000Z)"),
+        .describe("End time ISO format (don't mix with fromBlock/toBlock)"),
       sort: z.enum(["asc", "desc"]).optional().default("desc")
         .describe("Sort order by block number"),
       limit: z.number().min(1).max(100).optional().default(50)
@@ -236,7 +236,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
-    async ({ chainId, inputToken, outputToken, solver, fromBlock, toBlock, since, until, sort, limit, includeData, cursor, format }) => {
+    async ({ inputToken, outputToken, chainId, solver, fromBlock, toBlock, since, until, sort, limit, includeData, cursor, format }) => {
       try {
         const volume = await getVolume({ 
           chainId, inputToken, outputToken, solver, 

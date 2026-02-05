@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Primary Meta Tags -->
+  <title>SODAX Builders MCP Server | Live API Data & SDK Docs for Developers</title>
+  <meta name="title" content="SODAX Builders MCP Server | Live API Data & SDK Docs for Developers">
+  <meta name="description" content="Connect your AI coding assistant to SODAX live API data and SDK documentation. API tools for chains, tokens, transactions, volume, plus auto-updating docs from GitBook.">
+  <meta name="keywords" content="MCP server, Model Context Protocol, SODAX, API, developer tools, DeFi integration, cross-chain, blockchain, SDK, documentation">
+  <meta name="author" content="ICON Foundation">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://builders.sodax.com/">
+  
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://builders.sodax.com/">
+  <meta property="og:title" content="SODAX Builders MCP Server | Live API Data for Developers">
+  <meta property="og:description" content="Connect your AI coding assistant to SODAX live API data. 11 MCP tools for developers and integration partners.">
+  <meta property="og:image" content="https://builders.sodax.com/images/link-preview.png">
+  <meta property="og:site_name" content="SODAX">
+  
+  <!-- Twitter -->
+  <meta property="twitter:card" content="summary_large_image">
+  <meta property="twitter:url" content="https://builders.sodax.com/">
+  <meta property="twitter:title" content="SODAX Builders MCP Server | Live API Data for Developers">
+  <meta property="twitter:description" content="Connect your AI coding assistant to SODAX live API data. 11 MCP tools for developers and integration partners.">
+  <meta property="twitter:image" content="https://builders.sodax.com/images/link-preview.png">
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/favicon.ico">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Shrikhand&display=swap" rel="stylesheet">
+  
+  <!-- Icons -->
+  <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
+  
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "SODAX Builders MCP Server",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Cross-platform",
+    "description": "Model Context Protocol server providing AI coding assistants with access to live SODAX API data for developers and integration partners.",
+    "url": "https://builders.sodax.com/",
+    "author": {
+      "@type": "Organization",
+      "name": "ICON Foundation",
+      "url": "https://icon.foundation"
+    },
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "Supported Chains",
+      "Swap Tokens",
+      "Transaction Lookup",
+      "Trading Volume",
+      "Orderbook Data",
+      "Money Market Assets",
+      "Token Supply Info",
+      "SDK Documentation (live from GitBook)"
+    ]
+  }
+  </script>
+  <style>
+    :root {
+      /* SODAX Design System Colors */
+      --cherry-soda: #a55c55;
+      --cherry-bright: #cc9e9a;
+      --cherry-brighter: #e3bebb;
+      --cherry-dark: #9c4846;
+      --cherry-grey: #d7cdcb;
+      --cream: #eaded4;
+      --cream-white: #ede6e6;
+      --almost-white: #f8f3f3;
+      --espresso: #483534;
+      --clay: #8e7e7d;
+      --clay-dark: #6b5c5b;
+      --clay-light: #b9acab;
+      --yellow-dark: #ecc100;
+      --yellow-accent: #ffd92f;
+      --white: #ffffff;
+      
+      /* Typography */
+      --font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-display: 'Shrikhand', cursive;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-primary);
+      background: var(--cream-white);
+      color: var(--espresso);
+      line-height: 1.4;
+      min-height: 100vh;
+    }
+
+    /* Hero Section */
+    .hero {
+      background: var(--cherry-soda);
+      padding: 5rem 2rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -25%;
+      width: 150%;
+      height: 200%;
+      background: radial-gradient(ellipse at center, rgba(255,255,255,0.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-content {
+      max-width: 560px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero-eyebrow {
+      font-size: 1.125rem;
+      color: var(--cherry-brighter);
+      margin-bottom: 1rem;
+      line-height: 1.2;
+    }
+
+    .hero h1 {
+      font-size: 2.625rem;
+      font-weight: 900;
+      color: var(--white);
+      line-height: 1.1;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero h1 .accent {
+      color: var(--yellow-accent);
+    }
+
+    .hero-subtitle {
+      font-size: 1.125rem;
+      color: var(--white);
+      line-height: 1.2;
+      margin-bottom: 2rem;
+    }
+
+    .hero-badges {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.75rem 1.5rem;
+      border-radius: 240px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .btn-primary {
+      background: var(--cherry-bright);
+      color: var(--white);
+    }
+
+    .btn-secondary {
+      background: var(--yellow-dark);
+      color: var(--cherry-dark);
+      font-family: var(--font-display);
+      font-style: italic;
+    }
+
+    .btn-arrow::after {
+      content: '→';
+      margin-left: 0.25rem;
+    }
+
+    /* Hero URL Box */
+    .hero-url-box {
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-top: 2rem;
+      margin-bottom: 1.5rem;
+      text-align: left;
+      max-width: 420px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .hero-url-label {
+      font-size: 0.6875rem;
+      color: var(--cherry-brighter);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .hero-url-code {
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.8125rem;
+      color: var(--white);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      display: block;
+      word-break: break-all;
+      user-select: all;
+      flex: 1;
+    }
+
+    .hero-url-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .copy-btn {
+      background: rgba(0, 0, 0, 0.3);
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem;
+      cursor: pointer;
+      color: var(--white);
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s, transform 0.1s;
+      flex-shrink: 0;
+    }
+
+    .copy-btn:hover {
+      background: rgba(0, 0, 0, 0.4);
+      transform: scale(1.05);
+    }
+
+    .copy-btn:active {
+      transform: scale(0.95);
+    }
+
+    .copy-btn svg {
+      display: block;
+    }
+
+    .copy-btn .hidden {
+      display: none;
+    }
+
+    /* Section Titles */
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .section-title .icon {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.75rem;
+      color: var(--cherry-soda);
+    }
+
+    .section-title .icon i {
+      display: block;
+    }
+
+    .section-title h2 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--espresso);
+      line-height: 1.1;
+    }
+
+    .section-subtitle {
+      text-align: center;
+      color: var(--espresso);
+      font-size: 1rem;
+      line-height: 1.4;
+      margin-bottom: 1.5rem;
+    }
+
+    /* Use Cases Section */
+    .use-cases {
+      padding: 5rem 2rem;
+      background: var(--cream-white);
+    }
+
+    .use-cases-container {
+      max-width: 944px;
+      margin: 0 auto;
+    }
+
+    .cases-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+
+    .case-card {
+      background: var(--white);
+      border-radius: 24px;
+      padding: 3rem 1.5rem 1.5rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .case-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(72, 53, 52, 0.1);
+    }
+
+    .case-card-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .case-card-title .icon {
+      font-size: 1.25rem;
+      color: var(--cherry-bright);
+    }
+
+    .case-card-title .icon i {
+      display: block;
+    }
+
+    .case-card-title h3 {
+      font-size: 1.125rem;
+      font-weight: 700;
+      color: var(--espresso);
+      line-height: 1.2;
+    }
+
+    .case-card p {
+      color: var(--clay-dark);
+      font-size: 0.875rem;
+      line-height: 1.4;
+      font-style: italic;
+      margin-bottom: 1rem;
+    }
+
+    .badge-row {
+      display: flex;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.5rem;
+      border-radius: 256px;
+      font-size: 0.6875rem;
+      color: var(--clay);
+      background: linear-gradient(to right, var(--cream-white), var(--cream-white));
+      line-height: 1.3;
+    }
+
+    /* Tools Section */
+    .tools {
+      padding: 5rem 2rem;
+      background: var(--almost-white);
+    }
+
+    .tools-container {
+      max-width: 944px;
+      margin: 0 auto;
+    }
+
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    @media (max-width: 940px) {
+      .tools-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .tool-module {
+      background: var(--cream-white);
+      border-radius: 24px;
+      padding: 3rem 1.5rem 1.5rem;
+    }
+
+    .tool-module h3 {
+      font-size: 1.125rem;
+      font-weight: 700;
+      color: var(--espresso);
+      line-height: 1.2;
+      margin-bottom: 1rem;
+    }
+
+    .tool-module p {
+      color: var(--clay-dark);
+      font-size: 0.875rem;
+      line-height: 1.4;
+      margin-bottom: 1rem;
+    }
+
+    .tool-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .tool-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem 0;
+    }
+
+    .tool-item code {
+      background: var(--espresso);
+      color: var(--yellow-accent);
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.6875rem;
+      font-family: 'Monaco', 'Menlo', monospace;
+      white-space: nowrap;
+    }
+
+    .tool-item span {
+      font-size: 0.75rem;
+      color: var(--clay);
+    }
+
+    /* SDK Architecture */
+    .sdk-section {
+      background: var(--white);
+      border-radius: 24px;
+      padding: 3.5rem 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .sdk-columns {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      .sdk-columns {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .sdk-column {
+      text-align: center;
+      padding: 0 2rem;
+    }
+
+    .sdk-number {
+      width: 64px;
+      height: 64px;
+      background: var(--cherry-grey);
+      border-radius: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 0.5rem;
+      font-size: 1.125rem;
+      font-weight: 700;
+      color: var(--espresso);
+    }
+
+    .sdk-column h4 {
+      font-size: 1.125rem;
+      font-weight: 700;
+      color: var(--espresso);
+      margin-bottom: 0.5rem;
+    }
+
+    .sdk-column p {
+      font-size: 0.75rem;
+      color: black;
+      line-height: 1.4;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Connection Section */
+    .connection {
+      padding: 5rem 2rem;
+      background: var(--cream-white);
+      text-align: center;
+    }
+
+    .connection-content {
+      max-width: 560px;
+      margin: 0 auto;
+    }
+
+    .connection h2 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--espresso);
+      line-height: 1.1;
+      margin-bottom: 1.5rem;
+    }
+
+    .connection h2 .accent {
+      color: var(--yellow-dark);
+    }
+
+    .connection-subtitle {
+      font-size: 1.125rem;
+      color: var(--espresso);
+      line-height: 1.2;
+      margin-bottom: 2rem;
+    }
+
+    .code-block {
+      background: var(--espresso);
+      border-radius: 24px;
+      padding: 1.5rem;
+      max-width: 500px;
+      margin: 2rem auto;
+      overflow-x: auto;
+      text-align: left;
+    }
+
+    .code-block pre {
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.8125rem;
+      color: var(--cream);
+      line-height: 1.5;
+    }
+
+    .code-block .key {
+      color: var(--yellow-accent);
+    }
+
+    .code-block .string {
+      color: #98C379;
+    }
+
+    .contact-info {
+      font-size: 0.875rem;
+      color: var(--espresso);
+      margin-top: 1.5rem;
+    }
+
+    .contact-info a {
+      color: var(--clay);
+    }
+
+    /* Agent Banner */
+    .agents-section {
+      background: var(--cream-white);
+      padding: 2rem 0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .agents-section::before,
+    .agents-section::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 200px;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .agents-section::before {
+      left: 0;
+      background: linear-gradient(to right, var(--cream-white) 0%, transparent 100%);
+    }
+
+    .agents-section::after {
+      right: 0;
+      background: linear-gradient(to left, var(--cream-white) 0%, transparent 100%);
+    }
+
+    .agents-label {
+      text-align: center;
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--clay-dark);
+      margin-bottom: 1.5rem;
+      position: relative;
+      z-index: 3;
+    }
+
+    .agents-track {
+      display: flex;
+      width: max-content;
+      animation: scroll 40s linear infinite;
+    }
+
+    @keyframes scroll {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-25%); }
+    }
+
+    .agents-track:hover {
+      animation-play-state: paused;
+    }
+
+    .agent-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      margin: 0 1.5rem;
+      opacity: 0.25;
+      transition: opacity 0.2s, transform 0.2s;
+      text-decoration: none;
+    }
+
+    .agent-icon:hover {
+      opacity: 1;
+      transform: scale(1.1);
+    }
+
+    .agent-icon img,
+    .agent-icon svg {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .agent-icon.scale-up img {
+      width: 160%;
+      height: 160%;
+    }
+
+    .agent-icon.scale-down img {
+      width: 75%;
+      height: 75%;
+    }
+
+    /* Footer */
+    footer {
+      background: var(--almost-white);
+      padding: 5rem 2rem;
+    }
+
+    .footer-container {
+      max-width: 944px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 3rem;
+    }
+
+    .footer-brand {
+      max-width: 260px;
+    }
+
+    .footer-logo {
+      font-family: var(--font-primary);
+      font-size: 1.5rem;
+      font-weight: 900;
+      color: var(--espresso);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .footer-logo img {
+      width: 24px;
+      height: 24px;
+    }
+
+    .footer-copyright {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--cherry-bright);
+      line-height: 1.4;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-column h4 {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 1rem;
+      color: var(--cherry-bright);
+      margin-bottom: 0.5rem;
+      line-height: 1.1;
+    }
+
+    .footer-column ul {
+      list-style: none;
+    }
+
+    .footer-column li {
+      margin-bottom: 0.25rem;
+    }
+
+    .footer-column a {
+      font-size: 0.75rem;
+      color: var(--espresso);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      transition: color 0.2s;
+    }
+
+    .footer-column a:hover {
+      color: var(--cherry-bright);
+    }
+
+    .footer-column a .external::after {
+      content: '↗';
+      font-size: 0.625rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .hero h1 {
+        font-size: 1.75rem;
+      }
+
+      .hero-subtitle {
+        font-size: 1rem;
+      }
+
+      .hero {
+        padding: 3rem 1rem;
+      }
+
+      .section-title h2 {
+        font-size: 1.5rem;
+      }
+
+      .cases-grid,
+      .tools-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .tools-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-container {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Hero Section -->
+  <header class="hero" role="banner">
+    <div class="hero-content">
+      <p class="hero-eyebrow">SODAX Builders MCP Server</p>
+      <h1>Build with <span class="accent">live API data.</span></h1>
+      <p class="hero-subtitle">Paste this MCP URL into your AI coding assistant and get instant access to SODAX API data plus SDK documentation that auto-updates from GitBook.</p>
+      
+      <div class="hero-url-box">
+        <div class="hero-url-label">
+          <i class="ph-duotone ph-link"></i>
+          MCP Server URL
+        </div>
+        <div class="hero-url-wrapper">
+          <code class="hero-url-code" id="mcp-url">https://builders.sodax.com/mcp</code>
+          <button class="copy-btn" id="copy-btn" aria-label="Copy URL to clipboard" title="Copy to clipboard">
+            <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            <svg id="check-icon" class="hidden" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        </div>
+      </div>
+      
+      <nav class="hero-badges" aria-label="Quick actions">
+        <a href="#tools" class="btn btn-primary btn-arrow">Explore Tools</a>
+        <a href="#connect" class="btn btn-secondary">Get Started</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+  <!-- Use Cases Section -->
+  <section class="use-cases" aria-labelledby="use-cases-heading">
+    <div class="use-cases-container">
+      <div class="section-title">
+        <span class="icon" aria-hidden="true"><i class="ph-duotone ph-chats-circle"></i></span>
+        <h2 id="use-cases-heading">What can you ask?</h2>
+      </div>
+      <p class="section-subtitle">Common prompts for AI agents connected to this MCP server.</p>
+      
+      <div class="cases-grid">
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-share-network"></i></span>
+            <h3>Supported Chains</h3>
+          </div>
+          <p>"What chains does SODAX support?"</p>
+          <div class="badge-row">
+            <span class="badge">Chains</span>
+            <span class="badge">Networks</span>
+          </div>
+        </div>
+        
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-chart-line-up"></i></span>
+            <h3>Trading Volume</h3>
+          </div>
+          <p>"Show me today's trading volume"</p>
+          <div class="badge-row">
+            <span class="badge">Volume</span>
+            <span class="badge">Analytics</span>
+          </div>
+        </div>
+        
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-coins"></i></span>
+            <h3>Swap Tokens</h3>
+          </div>
+          <p>"Get available swap tokens on Base"</p>
+          <div class="badge-row">
+            <span class="badge">Tokens</span>
+            <span class="badge">Swaps</span>
+          </div>
+        </div>
+        
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-magnifying-glass"></i></span>
+            <h3>Transaction Lookup</h3>
+          </div>
+          <p>"Look up this transaction hash"</p>
+          <div class="badge-row">
+            <span class="badge">Transactions</span>
+            <span class="badge">Status</span>
+          </div>
+        </div>
+        
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-bank"></i></span>
+            <h3>Money Market</h3>
+          </div>
+          <p>"What assets can I lend on SODAX?"</p>
+          <div class="badge-row">
+            <span class="badge">Lending</span>
+            <span class="badge">DeFi</span>
+          </div>
+        </div>
+        
+        <div class="case-card">
+          <div class="case-card-title">
+            <span class="icon" aria-hidden="true"><i class="ph-duotone ph-handshake"></i></span>
+            <h3>Integration Partners</h3>
+          </div>
+          <p>"Who are SODAX's integration partners?"</p>
+          <div class="badge-row">
+            <span class="badge">Partners</span>
+            <span class="badge">Ecosystem</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tools Section -->
+  <section class="tools" id="tools" aria-labelledby="tools-heading">
+    <div class="tools-container">
+      <div class="section-title">
+        <span class="icon" aria-hidden="true"><i class="ph-duotone ph-toolbox"></i></span>
+        <h2 id="tools-heading">Available Tools</h2>
+      </div>
+      <p class="section-subtitle">API tools + SDK documentation, all in one connection.</p>
+      
+      <div class="tools-grid">
+        <div class="tool-module">
+          <h3>Core API Data</h3>
+          <p>Access live data from the SODAX API including chains, tokens, transactions, and volume.</p>
+          <div class="tool-list">
+            <div class="tool-item">
+              <code>sodax_get_supported_chains</code>
+              <span>List supported networks</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_swap_tokens</code>
+              <span>Get available tokens</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_transaction</code>
+              <span>Look up by tx hash</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_user_transactions</code>
+              <span>User tx history</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_volume</code>
+              <span>Trading volume data</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_orderbook</code>
+              <span>Current limit orders</span>
+            </div>
+          </div>
+          <div class="badge-row" style="margin-top: 1rem;">
+            <span class="badge">6 tools</span>
+          </div>
+        </div>
+        
+        <div class="tool-module">
+          <h3>DeFi & Token Data</h3>
+          <p>Money market positions, lending assets, partner integrations, and SODA token supply.</p>
+          <div class="tool-list">
+            <div class="tool-item">
+              <code>sodax_get_money_market_assets</code>
+              <span>Lending/borrowing assets</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_user_position</code>
+              <span>User's MM position</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_partners</code>
+              <span>Integration partners</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_get_token_supply</code>
+              <span>SODA token supply</span>
+            </div>
+            <div class="tool-item">
+              <code>sodax_refresh_cache</code>
+              <span>Clear cached data</span>
+            </div>
+          </div>
+          <div class="badge-row" style="margin-top: 1rem;">
+            <span class="badge">5 tools</span>
+          </div>
+        </div>
+        
+        <div class="tool-module">
+          <h3>SDK Documentation</h3>
+          <p>Auto-proxied from docs.sodax.com GitBook MCP. Updates automatically when docs change.</p>
+          <div class="tool-list">
+            <div class="tool-item">
+              <code>docs_*</code>
+              <span>All GitBook tools auto-imported</span>
+            </div>
+            <div class="tool-item">
+              <code>docs_list_tools</code>
+              <span>List available doc tools</span>
+            </div>
+            <div class="tool-item">
+              <code>docs_health</code>
+              <span>Check docs connection</span>
+            </div>
+            <div class="tool-item">
+              <code>docs_refresh</code>
+              <span>Refresh tools list</span>
+            </div>
+          </div>
+          <div class="badge-row" style="margin-top: 1rem;">
+            <span class="badge">Dynamic</span>
+            <span class="badge">Auto-sync</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SDK Architecture -->
+      <div class="sdk-section">
+        <div class="section-title" style="margin-bottom: 2rem;">
+          <span class="icon" aria-hidden="true"><i class="ph-duotone ph-database"></i></span>
+          <h2 id="data-sources-heading">Data Sources</h2>
+        </div>
+        <div class="sdk-columns" style="grid-template-columns: repeat(4, 1fr);">
+          <div class="sdk-column">
+            <div class="sdk-number">1</div>
+            <h4>SODAX API</h4>
+            <p>Live data from api.sodax.com</p>
+            <span class="badge">Live</span>
+          </div>
+          <div class="sdk-column">
+            <div class="sdk-number">2</div>
+            <h4>Aggregator</h4>
+            <p>Token data from aggregator</p>
+            <span class="badge">Live</span>
+          </div>
+          <div class="sdk-column">
+            <div class="sdk-number">3</div>
+            <h4>GitBook</h4>
+            <p>SDK docs from docs.sodax.com</p>
+            <span class="badge">Auto-sync</span>
+          </div>
+          <div class="sdk-column">
+            <div class="sdk-number">4</div>
+            <h4>Smart Cache</h4>
+            <p>2-min API, 10-min docs</p>
+            <span class="badge">Optimized</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Agent Banner -->
+  <section class="agents-section" aria-label="Compatible AI agents">
+    <p class="agents-label">Works with these agents & more</p>
+    <div class="agents-track">
+      <!-- Set 1 -->
+      <a href="https://claude.ai" target="_blank" rel="noopener" class="agent-icon scale-up" title="Claude"><img src="/images/agents/claude-code.svg" alt="Claude"></a>
+      <a href="https://chatgpt.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="ChatGPT"><img src="/images/agents/codex.svg" alt="ChatGPT"></a>
+      <a href="https://cursor.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cursor"><img src="/images/agents/cursor.svg" alt="Cursor"></a>
+      <a href="https://code.visualstudio.com" target="_blank" rel="noopener" class="agent-icon scale-down" title="VS Code"><img src="/images/agents/vscode.svg" alt="VS Code"></a>
+      <a href="https://codeium.com/windsurf" target="_blank" rel="noopener" class="agent-icon scale-up" title="Windsurf"><img src="/images/agents/windsurf.svg" alt="Windsurf"></a>
+      <a href="https://cline.bot" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cline"><img src="/images/agents/cline.svg" alt="Cline"></a>
+      <a href="https://gemini.google.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Gemini"><img src="/images/agents/gemini.svg" alt="Gemini"></a>
+      <a href="https://block.github.io/goose" target="_blank" rel="noopener" class="agent-icon scale-up" title="Goose"><img src="/images/agents/goose.svg" alt="Goose"></a>
+      <a href="https://roocode.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Roo Code"><img src="/images/agents/roocode.svg" alt="Roo Code"></a>
+      <!-- Set 2 -->
+      <a href="https://claude.ai" target="_blank" rel="noopener" class="agent-icon scale-up" title="Claude"><img src="/images/agents/claude-code.svg" alt="Claude"></a>
+      <a href="https://chatgpt.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="ChatGPT"><img src="/images/agents/codex.svg" alt="ChatGPT"></a>
+      <a href="https://cursor.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cursor"><img src="/images/agents/cursor.svg" alt="Cursor"></a>
+      <a href="https://code.visualstudio.com" target="_blank" rel="noopener" class="agent-icon scale-down" title="VS Code"><img src="/images/agents/vscode.svg" alt="VS Code"></a>
+      <a href="https://codeium.com/windsurf" target="_blank" rel="noopener" class="agent-icon scale-up" title="Windsurf"><img src="/images/agents/windsurf.svg" alt="Windsurf"></a>
+      <a href="https://cline.bot" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cline"><img src="/images/agents/cline.svg" alt="Cline"></a>
+      <a href="https://gemini.google.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Gemini"><img src="/images/agents/gemini.svg" alt="Gemini"></a>
+      <a href="https://block.github.io/goose" target="_blank" rel="noopener" class="agent-icon scale-up" title="Goose"><img src="/images/agents/goose.svg" alt="Goose"></a>
+      <a href="https://roocode.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Roo Code"><img src="/images/agents/roocode.svg" alt="Roo Code"></a>
+      <!-- Set 3 -->
+      <a href="https://claude.ai" target="_blank" rel="noopener" class="agent-icon scale-up" title="Claude"><img src="/images/agents/claude-code.svg" alt="Claude"></a>
+      <a href="https://chatgpt.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="ChatGPT"><img src="/images/agents/codex.svg" alt="ChatGPT"></a>
+      <a href="https://cursor.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cursor"><img src="/images/agents/cursor.svg" alt="Cursor"></a>
+      <a href="https://code.visualstudio.com" target="_blank" rel="noopener" class="agent-icon scale-down" title="VS Code"><img src="/images/agents/vscode.svg" alt="VS Code"></a>
+      <a href="https://codeium.com/windsurf" target="_blank" rel="noopener" class="agent-icon scale-up" title="Windsurf"><img src="/images/agents/windsurf.svg" alt="Windsurf"></a>
+      <a href="https://cline.bot" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cline"><img src="/images/agents/cline.svg" alt="Cline"></a>
+      <a href="https://gemini.google.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Gemini"><img src="/images/agents/gemini.svg" alt="Gemini"></a>
+      <a href="https://block.github.io/goose" target="_blank" rel="noopener" class="agent-icon scale-up" title="Goose"><img src="/images/agents/goose.svg" alt="Goose"></a>
+      <a href="https://roocode.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Roo Code"><img src="/images/agents/roocode.svg" alt="Roo Code"></a>
+      <!-- Set 4 -->
+      <a href="https://claude.ai" target="_blank" rel="noopener" class="agent-icon scale-up" title="Claude"><img src="/images/agents/claude-code.svg" alt="Claude"></a>
+      <a href="https://chatgpt.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="ChatGPT"><img src="/images/agents/codex.svg" alt="ChatGPT"></a>
+      <a href="https://cursor.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cursor"><img src="/images/agents/cursor.svg" alt="Cursor"></a>
+      <a href="https://code.visualstudio.com" target="_blank" rel="noopener" class="agent-icon scale-down" title="VS Code"><img src="/images/agents/vscode.svg" alt="VS Code"></a>
+      <a href="https://codeium.com/windsurf" target="_blank" rel="noopener" class="agent-icon scale-up" title="Windsurf"><img src="/images/agents/windsurf.svg" alt="Windsurf"></a>
+      <a href="https://cline.bot" target="_blank" rel="noopener" class="agent-icon scale-up" title="Cline"><img src="/images/agents/cline.svg" alt="Cline"></a>
+      <a href="https://gemini.google.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Gemini"><img src="/images/agents/gemini.svg" alt="Gemini"></a>
+      <a href="https://block.github.io/goose" target="_blank" rel="noopener" class="agent-icon scale-up" title="Goose"><img src="/images/agents/goose.svg" alt="Goose"></a>
+      <a href="https://roocode.com" target="_blank" rel="noopener" class="agent-icon scale-up" title="Roo Code"><img src="/images/agents/roocode.svg" alt="Roo Code"></a>
+    </div>
+  </section>
+
+  <!-- Connection Section -->
+  <section class="connection" id="connect" aria-labelledby="connect-heading">
+    <div class="connection-content">
+      <h2 id="connect-heading">Get started. <span class="accent">One connection.</span></h2>
+      <p class="connection-subtitle">Connect your AI coding assistant to live SODAX API data and SDK documentation with one simple configuration.</p>
+      
+      <div class="code-block">
+        <pre>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"sodax-builders"</span>: {
+      <span class="key">"url"</span>: <span class="string">"https://builders.sodax.com/mcp"</span>
+    }
+  }
+}</pre>
+      </div>
+      
+      <p class="contact-info">
+        SDK docs from <a href="https://docs.sodax.com">docs.sodax.com</a> are included automatically via GitBook proxy
+      </p>
+    </div>
+  </section>
+  </main>
+
+  <!-- Footer -->
+  <footer role="contentinfo">
+    <div class="footer-container">
+      <div class="footer-brand">
+        <div class="footer-logo"><img src="/images/symbol.png" alt="SODAX" width="24" height="24"> SODAX</div>
+        <p class="footer-copyright">© 2025 ICON Foundation.<br>All rights reserved.</p>
+      </div>
+      
+      <div class="footer-links">
+        <div class="footer-column">
+          <h4>resources</h4>
+          <ul>
+            <li><a href="/api">API Info</a></li>
+            <li><a href="/health">Health Check</a></li>
+            <li><a href="https://docs.sodax.com" class="external">Documentation ↗</a></li>
+          </ul>
+        </div>
+        
+        <div class="footer-column">
+          <h4>socials</h4>
+          <ul>
+            <li><a href="https://discord.gg/sodax" class="external">Discord ↗</a></li>
+            <li><a href="https://twitter.com/sodax" class="external">X (Twitter) ↗</a></li>
+            <li><a href="https://github.com/icon-project" class="external">GitHub ↗</a></li>
+          </ul>
+        </div>
+        
+        <div class="footer-column">
+          <h4>using soda</h4>
+          <ul>
+            <li><a href="https://hanawallet.io" class="external">Hana Wallet ↗</a></li>
+            <li><a href="https://balanced.network" class="external">Balanced DeFi ↗</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Copy to clipboard functionality
+    document.getElementById('copy-btn').addEventListener('click', async function() {
+      const url = document.getElementById('mcp-url').textContent;
+      const copyIcon = document.getElementById('copy-icon');
+      const checkIcon = document.getElementById('check-icon');
+      
+      try {
+        await navigator.clipboard.writeText(url);
+        
+        // Show check icon, hide copy icon
+        copyIcon.classList.add('hidden');
+        checkIcon.classList.remove('hidden');
+        checkIcon.style.color = '#ffd92f'; // yellow accent
+        
+        // Revert back after 2 seconds
+        setTimeout(() => {
+          checkIcon.classList.add('hidden');
+          copyIcon.classList.remove('hidden');
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy:', err);
+      }
+    });
+  </script>
+</body>
+</html>

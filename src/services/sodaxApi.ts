@@ -6,7 +6,7 @@
  */
 
 import axios, { AxiosInstance } from "axios";
-import { SODAX_API_BASE_URL, SODAX_AGGREGATOR_URL, CACHE_DURATION_MS } from "../constants.js";
+import { SODAX_API_BASE_URL, CACHE_DURATION_MS } from "../constants.js";
 import type {
   Chain,
   SwapToken,
@@ -51,16 +51,6 @@ const apiClient: AxiosInstance = axios.create({
   }
 });
 
-// Create axios instance for SODAX Aggregator API
-const aggregatorClient: AxiosInstance = axios.create({
-  baseURL: SODAX_AGGREGATOR_URL,
-  timeout: 30000,
-  headers: {
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-  }
-});
-
 /**
  * Get all supported blockchain networks
  */
@@ -70,8 +60,9 @@ export async function getSupportedChains(): Promise<Chain[]> {
   if (cached) return cached;
 
   try {
-    const response = await apiClient.get("/chains");
-    const chains = response.data?.data || response.data || [];
+    const response = await apiClient.get("/config/spoke/chains");
+    // API returns array directly
+    const chains = Array.isArray(response.data) ? response.data : (response.data?.data || []);
     setCache(cacheKey, chains);
     return chains;
   } catch (error) {
@@ -89,9 +80,24 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/tokens?chainId=${chainId}` : "/tokens";
-    const response = await aggregatorClient.get(endpoint);
-    const tokens = response.data?.data || response.data || [];
+    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : "/config/swap/tokens";
+    const response = await apiClient.get(endpoint);
+    // API returns object keyed by chain ID, flatten if getting all
+    const data = response.data;
+    let tokens: SwapToken[] = [];
+    if (chainId && Array.isArray(data)) {
+      tokens = data;
+    } else if (typeof data === "object" && !Array.isArray(data)) {
+      // Flatten all chain tokens into single array
+      for (const chain of Object.keys(data)) {
+        const chainTokens = data[chain];
+        if (Array.isArray(chainTokens)) {
+          tokens.push(...chainTokens.map(t => ({ ...t, chainId: chain })));
+        }
+      }
+    } else {
+      tokens = data?.data || [];
+    }
     setCache(cacheKey, tokens);
     return tokens;
   } catch (error) {
@@ -101,11 +107,11 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
 }
 
 /**
- * Look up a transaction by hash
+ * Look up a transaction/intent by hash
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
   try {
-    const response = await apiClient.get(`/transactions/${txHash}`);
+    const response = await apiClient.get(`/intent/tx/${txHash}`);
     return response.data?.data || response.data || null;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -117,7 +123,7 @@ export async function getTransaction(txHash: string): Promise<Transaction | null
 }
 
 /**
- * Get user's transaction history
+ * Get user's intent/transaction history
  */
 export async function getUserTransactions(
   userAddress: string,
@@ -125,13 +131,14 @@ export async function getUserTransactions(
 ): Promise<Transaction[]> {
   try {
     const params = new URLSearchParams();
-    params.append("address", userAddress);
-    if (options?.chainId) params.append("chainId", options.chainId);
     if (options?.limit) params.append("limit", options.limit.toString());
     if (options?.offset) params.append("offset", options.offset.toString());
 
-    const response = await apiClient.get(`/transactions?${params.toString()}`);
-    return response.data?.data || response.data || [];
+    const queryString = params.toString();
+    const url = `/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`;
+    const response = await apiClient.get(url);
+    // API returns { items, total, offset, limit }
+    return response.data?.items || response.data?.data || [];
   } catch (error) {
     console.error("Error fetching user transactions:", error);
     throw new Error("Failed to fetch user transactions from SODAX API");
@@ -139,22 +146,24 @@ export async function getUserTransactions(
 }
 
 /**
- * Get trading volume data
+ * Get trading volume data from solver
  */
 export async function getVolume(options?: {
-  chainId?: string;
-  period?: "24h" | "7d" | "30d" | "all";
+  limit?: number;
+  offset?: number;
 }): Promise<VolumeData> {
-  const cacheKey = `volume-${options?.chainId || "all"}-${options?.period || "24h"}`;
+  const cacheKey = `volume-${options?.limit || 20}`;
   const cached = getCached<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
     const params = new URLSearchParams();
-    if (options?.chainId) params.append("chainId", options.chainId);
-    if (options?.period) params.append("period", options.period);
+    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.offset) params.append("offset", options.offset.toString());
 
-    const response = await apiClient.get(`/volume?${params.toString()}`);
+    const queryString = params.toString();
+    const url = `/solver/volume${queryString ? `?${queryString}` : ""}`;
+    const response = await apiClient.get(url);
     const volumeData = response.data?.data || response.data;
     setCache(cacheKey, volumeData);
     return volumeData;
@@ -165,22 +174,19 @@ export async function getVolume(options?: {
 }
 
 /**
- * Get current orderbook entries
+ * Get current orderbook entries from solver
  */
 export async function getOrderbook(options?: {
-  chainId?: string;
-  tokenIn?: string;
-  tokenOut?: string;
   limit?: number;
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
-    if (options?.chainId) params.append("chainId", options.chainId);
-    if (options?.tokenIn) params.append("tokenIn", options.tokenIn);
-    if (options?.tokenOut) params.append("tokenOut", options.tokenOut);
     if (options?.limit) params.append("limit", options.limit.toString());
 
-    const response = await apiClient.get(`/orderbook?${params.toString()}`);
+    const queryString = params.toString();
+    const url = `/solver/orderbook${queryString ? `?${queryString}` : ""}`;
+    const response = await apiClient.get(url);
+    // API returns { total, data }
     return response.data?.data || response.data || [];
   } catch (error) {
     console.error("Error fetching orderbook:", error);
@@ -197,9 +203,10 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/money-market/assets?chainId=${chainId}` : "/money-market/assets";
-    const response = await apiClient.get(endpoint);
-    const assets = response.data?.data || response.data || [];
+    // Always use the /all endpoint, API doesn't support chainId filter
+    const response = await apiClient.get("/moneymarket/asset/all");
+    // API returns array directly
+    const assets = Array.isArray(response.data) ? response.data : (response.data?.data || []);
     setCache(cacheKey, assets);
     return assets;
   } catch (error) {
@@ -216,11 +223,7 @@ export async function getUserPosition(
   chainId?: string
 ): Promise<UserPosition | null> {
   try {
-    const params = new URLSearchParams();
-    params.append("address", userAddress);
-    if (chainId) params.append("chainId", chainId);
-
-    const response = await apiClient.get(`/money-market/position?${params.toString()}`);
+    const response = await apiClient.get(`/moneymarket/position/${userAddress}`);
     return response.data?.data || response.data || null;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -259,7 +262,8 @@ export async function getTokenSupply(): Promise<TokenSupply> {
   if (cached) return cached;
 
   try {
-    const response = await apiClient.get("/token/supply");
+    const response = await apiClient.get("/sodax/supply");
+    // API returns data directly
     const supply = response.data?.data || response.data;
     setCache(cacheKey, supply);
     return supply;

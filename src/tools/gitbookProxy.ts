@@ -67,19 +67,30 @@ function convertToZodSchema(inputSchema: GitBookTool["inputSchema"]): z.ZodTypeA
   return z.object(shape);
 }
 
+// Track if meta-tools have been registered (only once per server instance)
+let metaToolsRegistered = false;
+
 /**
  * Register GitBook MCP tools as proxied tools in our server
  */
 export async function registerGitBookProxyTools(server: McpServer): Promise<number> {
   let registeredCount = 0;
   
+  // Register meta tools only once (they work even if GitBook is down)
+  if (!metaToolsRegistered) {
+    registerGitBookMetaTools(server);
+    metaToolsRegistered = true;
+  }
+  
   try {
     const tools = await fetchGitBookTools();
     
     if (tools.length === 0) {
-      console.error("No tools found from GitBook MCP, skipping proxy registration");
+      console.error("No tools found from GitBook MCP - meta-tools registered, proxy tools skipped");
       return 0;
     }
+    
+    console.error(`Registering ${tools.length} GitBook tools as docs_* proxies...`);
     
     for (const tool of tools) {
       try {
@@ -95,6 +106,18 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
             : {},
           async (args) => {
             const result = await callGitBookTool(tool.name, args as Record<string, unknown>);
+            
+            // Add helpful context if the call failed
+            if (result.isError) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `⚠️ docs_${tool.name} failed: ${result.content[0]?.text || "Unknown error"}\n\nTry docs_refresh to reconnect, or visit https://docs.sodax.com directly.`
+                }],
+                isError: true
+              };
+            }
+            
             return {
               content: result.content.map(c => ({
                 type: c.type as "text",
@@ -116,9 +139,6 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
     console.error("Failed to register GitBook proxy tools:", error);
   }
   
-  // Always register meta tools for managing the GitBook connection
-  registerGitBookMetaTools(server);
-  
   return registeredCount;
 }
 
@@ -129,16 +149,26 @@ function registerGitBookMetaTools(server: McpServer): void {
   // Tool to check GitBook MCP health
   server.tool(
     "docs_health",
-    "Check the health and availability of the SDK documentation MCP server",
+    "Check SDK documentation availability. Call this first if docs tools seem unavailable.",
     {},
     async () => {
       const health = await checkGitBookHealth();
+      const tools = await fetchGitBookTools();
+      
+      if (health.healthy && tools.length > 0) {
+        const toolNames = tools.slice(0, 5).map(t => `docs_${t.name}`).join(", ");
+        return {
+          content: [{
+            type: "text",
+            text: `✅ SDK Docs available. ${health.toolCount} tools ready.\n\nExample tools: ${toolNames}${tools.length > 5 ? "..." : ""}\n\nUse docs_list_tools for the full list, or call any docs_* tool directly.`
+          }]
+        };
+      }
+      
       return {
         content: [{
           type: "text",
-          text: health.healthy
-            ? `✅ SDK Docs MCP is healthy. ${health.toolCount} documentation tools available.`
-            : `❌ SDK Docs MCP is not reachable. Documentation tools may be unavailable.`
+          text: `⚠️ SDK Docs temporarily unavailable.\n\n**What you can do:**\n1. Try \`docs_refresh\` to reconnect\n2. Visit https://docs.sodax.com directly\n3. Use SODAX API tools (sodax_*) which work independently`
         }]
       };
     }
@@ -147,25 +177,35 @@ function registerGitBookMetaTools(server: McpServer): void {
   // Tool to refresh GitBook tools
   server.tool(
     "docs_refresh",
-    "Refresh the list of available SDK documentation tools from GitBook",
+    "Reconnect to SDK documentation and refresh available tools. Use if docs seem stale or unavailable.",
     {},
     async () => {
       clearGitBookCache();
       const tools = await fetchGitBookTools();
+      
+      if (tools.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: `⚠️ Could not connect to docs.sodax.com\n\nThe GitBook MCP may be temporarily unavailable. Try again later or visit https://docs.sodax.com directly.`
+          }]
+        };
+      }
+      
+      const toolList = tools.map(t => `- \`docs_${t.name}\`: ${t.description}`).join("\n");
       return {
         content: [{
           type: "text",
-          text: `Refreshed GitBook tools. ${tools.length} documentation tools available:\n\n` +
-            tools.map(t => `- **docs_${t.name}**: ${t.description}`).join("\n")
+          text: `✅ Refreshed. ${tools.length} SDK documentation tools available:\n\n${toolList}`
         }]
       };
     }
   );
   
-  // Tool to list available docs tools
+  // Tool to list available docs tools with full details
   server.tool(
     "docs_list_tools",
-    "List all available SDK documentation tools from the GitBook MCP",
+    "List all SDK documentation tools with parameters. Essential for discovering what's available.",
     {},
     async () => {
       const tools = await fetchGitBookTools();
@@ -173,22 +213,26 @@ function registerGitBookMetaTools(server: McpServer): void {
         return {
           content: [{
             type: "text",
-            text: "No SDK documentation tools available. The GitBook MCP may be unreachable."
+            text: `⚠️ No SDK documentation tools available.\n\n**Troubleshooting:**\n1. Run \`docs_refresh\` to reconnect\n2. Check \`docs_health\` for status\n3. The GitBook MCP at docs.sodax.com may be temporarily down\n\n**Alternative:** SODAX API tools (sodax_*) work independently.`
           }]
         };
       }
       
       const toolList = tools.map(t => {
         const params = t.inputSchema.properties 
-          ? Object.keys(t.inputSchema.properties).join(", ") 
-          : "none";
-        return `### docs_${t.name}\n${t.description}\n**Parameters:** ${params}`;
-      }).join("\n\n");
+          ? Object.entries(t.inputSchema.properties).map(([k, v]) => {
+              const prop = v as { type?: string; description?: string };
+              const required = t.inputSchema.required?.includes(k) ? " (required)" : "";
+              return `  - \`${k}\`: ${prop.type || "any"}${required}${prop.description ? ` — ${prop.description}` : ""}`;
+            }).join("\n")
+          : "  (no parameters)";
+        return `### \`docs_${t.name}\`\n${t.description}\n\n**Parameters:**\n${params}`;
+      }).join("\n\n---\n\n");
       
       return {
         content: [{
           type: "text",
-          text: `# SDK Documentation Tools\n\n${tools.length} tools available from docs.sodax.com:\n\n${toolList}`
+          text: `# SDK Documentation Tools\n\n${tools.length} tools from docs.sodax.com:\n\n---\n\n${toolList}`
         }]
       };
     }

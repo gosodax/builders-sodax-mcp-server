@@ -173,12 +173,10 @@ export function registerSodaxApiTools(server: McpServer): void {
   // Tool 4: Get User Transactions
   server.tool(
     "sodax_get_user_transactions",
-    "Get transaction history for a specific wallet address",
+    "Get intent/transaction history for a specific wallet address",
     {
       userAddress: z.string()
-        .describe("The wallet address to look up (e.g., '0x...' or 'hx...')"),
-      chainId: z.string().optional()
-        .describe("Filter by chain ID"),
+        .describe("The wallet address to look up (e.g., '0x...')"),
       limit: z.number().min(1).max(100).optional().default(20)
         .describe("Maximum number of transactions to return (1-100)"),
       offset: z.number().min(0).optional().default(0)
@@ -186,9 +184,9 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
-    async ({ userAddress, chainId, limit, offset, format }) => {
+    async ({ userAddress, limit, offset, format }) => {
       try {
-        const transactions = await getUserTransactions(userAddress, { chainId, limit, offset });
+        const transactions = await getUserTransactions(userAddress, { limit, offset });
         const header = `## Transactions for ${userAddress.slice(0, 10)}...${userAddress.slice(-8)}\n\n`;
         const summary = `${transactions.length} transactions found\n\n`;
         return {
@@ -209,21 +207,19 @@ export function registerSodaxApiTools(server: McpServer): void {
   // Tool 5: Get Volume
   server.tool(
     "sodax_get_volume",
-    "Get trading volume data for SODAX, optionally filtered by chain and time period",
+    "Get solver volume data showing filled intents (paginated)",
     {
-      chainId: z.string().optional()
-        .describe("Filter by chain ID for chain-specific volume"),
-      period: z.enum(["24h", "7d", "30d", "all"]).optional().default("24h")
-        .describe("Time period for volume data"),
+      limit: z.number().min(1).max(100).optional().default(20)
+        .describe("Maximum number of volume entries to return (1-100)"),
+      offset: z.number().min(0).optional().default(0)
+        .describe("Number of entries to skip for pagination"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
-    async ({ chainId, period, format }) => {
+    async ({ limit, offset, format }) => {
       try {
-        const volume = await getVolume({ chainId, period });
-        const header = chainId 
-          ? `## Trading Volume on ${chainId} (${period})\n\n`
-          : `## SODAX Trading Volume (${period})\n\n`;
+        const volume = await getVolume({ limit, offset });
+        const header = `## SODAX Solver Volume\n\n`;
         return {
           content: [{
             type: "text",
@@ -242,22 +238,16 @@ export function registerSodaxApiTools(server: McpServer): void {
   // Tool 6: Get Orderbook
   server.tool(
     "sodax_get_orderbook",
-    "Get current orderbook entries showing pending limit orders",
+    "Get current orderbook entries showing pending/open intents",
     {
-      chainId: z.string().optional()
-        .describe("Filter by chain ID"),
-      tokenIn: z.string().optional()
-        .describe("Filter by input token address"),
-      tokenOut: z.string().optional()
-        .describe("Filter by output token address"),
       limit: z.number().min(1).max(100).optional().default(20)
-        .describe("Maximum number of orders to return"),
+        .describe("Maximum number of orders to return (1-100)"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
-    async ({ chainId, tokenIn, tokenOut, limit, format }) => {
+    async ({ limit, format }) => {
       try {
-        const orderbook = await getOrderbook({ chainId, tokenIn, tokenOut, limit });
+        const orderbook = await getOrderbook({ limit });
         return {
           content: [{
             type: "text",

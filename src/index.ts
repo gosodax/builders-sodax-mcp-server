@@ -31,28 +31,59 @@ const server = new McpServer({
 // Register SODAX API tools
 registerSodaxApiTools(server);
 
-// Register GitBook SDK docs proxy tools (async, done at startup)
+// GitBook proxy state
 let gitbookToolsRegistered = false;
-async function initGitBookProxy(): Promise<void> {
+let gitbookInitAttempts = 0;
+const MAX_GITBOOK_RETRIES = 3;
+const GITBOOK_RETRY_DELAY = 5000; // 5 seconds
+
+/**
+ * Initialize GitBook proxy with retry logic
+ */
+async function initGitBookProxy(retryCount = 0): Promise<boolean> {
+  gitbookInitAttempts++;
+  console.error(`GitBook proxy init attempt ${retryCount + 1}/${MAX_GITBOOK_RETRIES}...`);
+  
   try {
     const count = await registerGitBookProxyTools(server);
     gitbookToolsRegistered = count > 0;
-    console.error(`GitBook proxy initialized: ${count} SDK docs tools available`);
+    
+    if (count > 0) {
+      console.error(`✅ GitBook proxy initialized: ${count} SDK docs tools available`);
+      return true;
+    } else {
+      console.error(`⚠️ GitBook returned 0 tools`);
+    }
   } catch (error) {
-    console.error("GitBook proxy initialization failed:", error);
+    console.error(`❌ GitBook proxy attempt ${retryCount + 1} failed:`, error instanceof Error ? error.message : error);
   }
+  
+  // Retry if we haven't exceeded max attempts
+  if (retryCount < MAX_GITBOOK_RETRIES - 1) {
+    console.error(`Retrying in ${GITBOOK_RETRY_DELAY / 1000}s...`);
+    await new Promise(resolve => setTimeout(resolve, GITBOOK_RETRY_DELAY));
+    return initGitBookProxy(retryCount + 1);
+  }
+  
+  console.error(`⚠️ GitBook proxy unavailable after ${MAX_GITBOOK_RETRIES} attempts. Meta-tools still available.`);
+  return false;
 }
 
-// Start GitBook proxy initialization
-initGitBookProxy();
-
 async function runStdio(): Promise<void> {
+  // Wait for GitBook proxy before accepting connections
+  console.error("Initializing GitBook SDK docs proxy...");
+  await initGitBookProxy();
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("SODAX Builders MCP server running via stdio");
 }
 
 async function runHTTP(): Promise<void> {
+  // Initialize GitBook proxy before starting HTTP server
+  console.error("Initializing GitBook SDK docs proxy...");
+  const gitbookReady = await initGitBookProxy();
+  
   const app = express();
   
   // Security middleware
@@ -151,7 +182,11 @@ async function runHTTP(): Promise<void> {
       sdkDocsProxy: {
         source: "https://docs.sodax.com/~gitbook/mcp",
         description: "SDK documentation tools are proxied from GitBook and update automatically",
-        status: gitbookToolsRegistered ? "connected" : "initializing"
+        status: gitbookToolsRegistered ? "connected" : "unavailable",
+        initAttempts: gitbookInitAttempts,
+        hint: gitbookToolsRegistered 
+          ? "docs_* tools are ready to use" 
+          : "Use docs_list_tools or docs_refresh to check availability"
       }
     });
   });

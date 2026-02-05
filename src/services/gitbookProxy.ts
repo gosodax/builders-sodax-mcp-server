@@ -42,8 +42,33 @@ const mcpClient: AxiosInstance = axios.create({
   timeout: 30000,
   headers: {
     "Content-Type": "application/json",
-    "Accept": "application/json"
-  }
+    "Accept": "application/json, text/event-stream"
+  },
+  // GitBook returns SSE format, so we need raw text
+  responseType: "text",
+  transformResponse: [(data: string) => {
+    // GitBook MCP returns SSE format: "event: message\ndata: {...}\n\n"
+    // Extract the JSON from the data: line
+    if (typeof data === "string" && data.includes("data:")) {
+      const lines = data.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          const jsonStr = line.slice(5).trim();
+          try {
+            return JSON.parse(jsonStr);
+          } catch {
+            // If parsing fails, return raw data
+          }
+        }
+      }
+    }
+    // Try parsing as regular JSON
+    try {
+      return JSON.parse(data);
+    } catch {
+      return data;
+    }
+  }]
 });
 
 /**
@@ -108,10 +133,15 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
     cachedTools = result.tools || [];
     toolsCacheTime = Date.now();
     
-    console.error(`Fetched ${cachedTools.length} tools from GitBook MCP`);
+    if (cachedTools.length > 0) {
+      console.error(`✅ Fetched ${cachedTools.length} tools from GitBook MCP`);
+    } else {
+      console.error(`⚠️ GitBook MCP returned empty tools list`);
+    }
     return cachedTools;
   } catch (error) {
-    console.error("Failed to fetch GitBook tools:", error instanceof Error ? error.message : "unknown");
+    const errorMsg = error instanceof Error ? error.message : "unknown error";
+    console.error(`❌ Failed to fetch GitBook tools: ${errorMsg}`);
     // Return cached tools even if expired, or empty array
     return cachedTools || [];
   }

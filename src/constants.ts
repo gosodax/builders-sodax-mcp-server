@@ -2,11 +2,8 @@
  * Constants for the SODAX Builders MCP Server
  */
 
-// SODAX API Base URL
-export const SODAX_API_BASE_URL = "https://api.sodax.com/v1";
-
-// SODAX Aggregator API URL (for swap tokens)
-export const SODAX_AGGREGATOR_URL = "https://aggregator.sodax.com/v1";
+// SODAX API Base URL (Backend API)
+export const SODAX_API_BASE_URL = "https://api.sodax.com/v1/be";
 
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;

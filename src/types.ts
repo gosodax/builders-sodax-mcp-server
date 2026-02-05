@@ -69,18 +69,30 @@ export interface Transaction {
 /**
  * Trading volume data
  */
+/**
+ * A single filled intent entry from solver volume
+ */
+export interface FilledIntent {
+  intentHash: string;
+  solver: string;
+  inputToken: string;
+  outputToken: string;
+  amount: string;
+  chainId: number;
+  blockNumber: number;
+  txHash: string;
+  logIndex: number;
+  timestamp: string;
+  data?: string;
+}
+
+/**
+ * Paginated response for solver volume (filled intents)
+ */
 export interface VolumeData {
-  totalVolumeUsd: number;
-  swapVolumeUsd: number;
-  bridgeVolumeUsd: number;
-  tradeCount: number;
-  uniqueUsers: number;
-  period: string;
-  chainBreakdown?: {
-    chainId: string;
-    volumeUsd: number;
-    tradeCount: number;
-  }[];
+  items: FilledIntent[];
+  nextCursor?: string;
+  hasMore: boolean;
 }
 
 /**

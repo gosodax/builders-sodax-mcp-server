@@ -204,26 +204,53 @@ export function registerSodaxApiTools(server: McpServer): void {
     }
   );
 
-  // Tool 5: Get Volume
+  // Tool 5: Get Volume (Filled Intents)
   server.tool(
     "sodax_get_volume",
-    "Get solver volume data showing filled intents (paginated)",
+    "Get solver volume data showing filled intents with filtering and pagination. Filters by chain, tokens, solver address, block range, or time range. NOTE: Currently requires a cursor parameter to work (backend limitation).",
     {
-      limit: z.number().min(1).max(100).optional().default(20)
-        .describe("Maximum number of volume entries to return (1-100)"),
-      offset: z.number().min(0).optional().default(0)
-        .describe("Number of entries to skip for pagination"),
+      chainId: z.number().optional()
+        .describe("Filter by chain ID (e.g., 146 for Sonic)"),
+      inputToken: z.string().optional()
+        .describe("Filter by input token address"),
+      outputToken: z.string().optional()
+        .describe("Filter by output token address"),
+      solver: z.string().optional()
+        .describe("Filter by solver address (0x0...0 for default solver)"),
+      fromBlock: z.number().optional()
+        .describe("Start block number for range filter"),
+      toBlock: z.number().optional()
+        .describe("End block number for range filter"),
+      since: z.string().optional()
+        .describe("Start time in ISO format (e.g., 2025-04-11T00:00:00.000Z)"),
+      until: z.string().optional()
+        .describe("End time in ISO format (e.g., 2025-04-12T00:00:00.000Z)"),
+      sort: z.enum(["asc", "desc"]).optional().default("desc")
+        .describe("Sort order by block number"),
+      limit: z.number().min(1).max(100).optional().default(50)
+        .describe("Maximum number of filled intents to return (1-100)"),
+      includeData: z.boolean().optional().default(false)
+        .describe("Include raw intent data in response"),
+      cursor: z.string().optional()
+        .describe("Pagination cursor from previous response's nextCursor"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
-    async ({ limit, offset, format }) => {
+    async ({ chainId, inputToken, outputToken, solver, fromBlock, toBlock, since, until, sort, limit, includeData, cursor, format }) => {
       try {
-        const volume = await getVolume({ limit, offset });
-        const header = `## SODAX Solver Volume\n\n`;
+        const volume = await getVolume({ 
+          chainId, inputToken, outputToken, solver, 
+          fromBlock, toBlock, since, until, 
+          sort, limit, includeData, cursor 
+        });
+        const header = `## SODAX Filled Intents\n\n`;
+        const pagination = volume.hasMore && volume.nextCursor 
+          ? `\n\n*Has more results. Use cursor: \`${volume.nextCursor.substring(0, 30)}...\`*`
+          : "\n\n*No more results.*";
         return {
           content: [{
             type: "text",
-            text: header + formatResponse(volume, format)
+            text: header + formatResponse(volume.items, format) + pagination
           }]
         };
       } catch (error) {

@@ -149,22 +149,43 @@ export async function getUserTransactions(
  * Get trading volume data from solver
  */
 export async function getVolume(options?: {
+  chainId?: number;
+  inputToken?: string;
+  outputToken?: string;
+  solver?: string;
+  fromBlock?: number;
+  toBlock?: number;
+  since?: string;
+  until?: string;
+  sort?: "asc" | "desc";
   limit?: number;
-  offset?: number;
+  includeData?: boolean;
+  cursor?: string;
 }): Promise<VolumeData> {
-  const cacheKey = `volume-${options?.limit || 20}`;
+  // Build cache key from significant params
+  const cacheKey = `volume-${options?.chainId || "all"}-${options?.limit || 50}-${options?.cursor || "start"}`;
   const cached = getCached<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
     const params = new URLSearchParams();
+    if (options?.chainId) params.append("chainId", options.chainId.toString());
+    if (options?.inputToken) params.append("inputToken", options.inputToken);
+    if (options?.outputToken) params.append("outputToken", options.outputToken);
+    if (options?.solver) params.append("solver", options.solver);
+    if (options?.fromBlock) params.append("fromBlock", options.fromBlock.toString());
+    if (options?.toBlock) params.append("toBlock", options.toBlock.toString());
+    if (options?.since) params.append("since", options.since);
+    if (options?.until) params.append("until", options.until);
+    if (options?.sort) params.append("sort", options.sort);
     if (options?.limit) params.append("limit", options.limit.toString());
-    if (options?.offset) params.append("offset", options.offset.toString());
+    if (options?.includeData !== undefined) params.append("includeData", options.includeData.toString());
+    if (options?.cursor) params.append("cursor", options.cursor);
 
     const queryString = params.toString();
     const url = `/solver/volume${queryString ? `?${queryString}` : ""}`;
     const response = await apiClient.get(url);
-    const volumeData = response.data?.data || response.data;
+    const volumeData = response.data;
     setCache(cacheKey, volumeData);
     return volumeData;
   } catch (error) {

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp -r src/public dist/",
+    "build": "pnpm exec tsc && cp -r src/public dist/",
     "clean": "rm -rf dist"
   },
   "packageManager": "pnpm@9.15.0",

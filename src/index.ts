@@ -18,18 +18,27 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
-import { checkGitBookHealth } from "./services/gitbookProxy.js";
+import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const server = new McpServer({
-  name: "builders-sodax-mcp-server",
-  version: "1.0.0"
-});
+/**
+ * Creates a fully configured McpServer instance.
+ * Used per-request in HTTP mode to avoid transport conflicts
+ * when handling parallel requests.
+ */
+async function createServer(): Promise<McpServer> {
+  const server = new McpServer({
+    name: "builders-sodax-mcp-server",
+    version: "1.0.0"
+  });
 
-// Register SODAX API tools
-registerSodaxApiTools(server);
+  registerSodaxApiTools(server);
+  await registerGitBookProxyTools(server);
+
+  return server;
+}
 
 // GitBook proxy state
 let gitbookToolsRegistered = false;
@@ -38,18 +47,19 @@ const MAX_GITBOOK_RETRIES = 3;
 const GITBOOK_RETRY_DELAY = 5000; // 5 seconds
 
 /**
- * Initialize GitBook proxy with retry logic
+ * Warm the GitBook tools cache at startup with retry logic.
+ * Tools are cached in the service layer and reused by createServer().
  */
-async function initGitBookProxy(retryCount = 0): Promise<boolean> {
+async function warmGitBookCache(retryCount = 0): Promise<boolean> {
   gitbookInitAttempts++;
   console.error(`GitBook proxy init attempt ${retryCount + 1}/${MAX_GITBOOK_RETRIES}...`);
   
   try {
-    const count = await registerGitBookProxyTools(server);
-    gitbookToolsRegistered = count > 0;
+    const tools = await fetchGitBookTools();
+    gitbookToolsRegistered = tools.length > 0;
     
-    if (count > 0) {
-      console.error(`✅ GitBook proxy initialized: ${count} SDK docs tools available`);
+    if (tools.length > 0) {
+      console.error(`✅ GitBook proxy initialized: ${tools.length} SDK docs tools available`);
       return true;
     } else {
       console.error(`⚠️ GitBook returned 0 tools`);
@@ -62,7 +72,7 @@ async function initGitBookProxy(retryCount = 0): Promise<boolean> {
   if (retryCount < MAX_GITBOOK_RETRIES - 1) {
     console.error(`Retrying in ${GITBOOK_RETRY_DELAY / 1000}s...`);
     await new Promise(resolve => setTimeout(resolve, GITBOOK_RETRY_DELAY));
-    return initGitBookProxy(retryCount + 1);
+    return warmGitBookCache(retryCount + 1);
   }
   
   console.error(`⚠️ GitBook proxy unavailable after ${MAX_GITBOOK_RETRIES} attempts. Meta-tools still available.`);
@@ -70,19 +80,20 @@ async function initGitBookProxy(retryCount = 0): Promise<boolean> {
 }
 
 async function runStdio(): Promise<void> {
-  // Wait for GitBook proxy before accepting connections
+  // Warm GitBook cache before creating server
   console.error("Initializing GitBook SDK docs proxy...");
-  await initGitBookProxy();
+  await warmGitBookCache();
   
+  const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("SODAX Builders MCP server running via stdio");
 }
 
 async function runHTTP(): Promise<void> {
-  // Initialize GitBook proxy before starting HTTP server
+  // Warm GitBook cache before starting HTTP server
   console.error("Initializing GitBook SDK docs proxy...");
-  const gitbookReady = await initGitBookProxy();
+  await warmGitBookCache();
   
   const app = express();
   
@@ -136,12 +147,13 @@ async function runHTTP(): Promise<void> {
   });
 
   app.post("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+    const requestServer = await createServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
     res.on("close", () => transport.close());
-    await server.connect(transport);
+    await requestServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
   });
 

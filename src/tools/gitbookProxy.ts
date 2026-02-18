@@ -67,20 +67,15 @@ function convertToZodSchema(inputSchema: GitBookTool["inputSchema"]): z.ZodTypeA
   return z.object(shape);
 }
 
-// Track if meta-tools have been registered (only once per server instance)
-let metaToolsRegistered = false;
-
 /**
- * Register GitBook MCP tools as proxied tools in our server
+ * Register GitBook MCP tools as proxied tools in our server.
+ * Safe to call on each new McpServer instance (per-request isolation).
  */
 export async function registerGitBookProxyTools(server: McpServer): Promise<number> {
   let registeredCount = 0;
   
-  // Register meta tools only once (they work even if GitBook is down)
-  if (!metaToolsRegistered) {
-    registerGitBookMetaTools(server);
-    metaToolsRegistered = true;
-  }
+  // Register meta tools (work even if GitBook is down)
+  registerGitBookMetaTools(server);
   
   try {
     const tools = await fetchGitBookTools();

@@ -412,50 +412,117 @@
     }
 
     .tools-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
-      gap: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
       margin-bottom: 2rem;
-    }
-
-    @media (max-width: 940px) {
-      .tools-grid {
-        grid-template-columns: 1fr;
-      }
     }
 
     .tool-module {
       background: var(--cream-white);
-      border-radius: 24px;
-      padding: 3rem 1.5rem 1.5rem;
+      border-radius: 16px;
+      overflow: hidden;
     }
 
-    .tool-module h3 {
-      font-size: 1.125rem;
+    .tool-module summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 1.5rem;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .tool-module summary::-webkit-details-marker { display: none; }
+
+    .tool-module summary:hover {
+      background: rgba(0, 0, 0, 0.03);
+    }
+
+    .tool-summary-left {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .tool-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--espresso);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .tool-icon svg {
+      width: 20px;
+      height: 20px;
+      color: var(--yellow-accent);
+    }
+
+    .tool-summary-text h3 {
+      font-size: 1rem;
       font-weight: 700;
       color: var(--espresso);
       line-height: 1.2;
-      margin-bottom: 1rem;
     }
 
-    .tool-module p {
-      color: var(--clay-dark);
-      font-size: 0.875rem;
+    .tool-summary-text p {
+      font-size: 0.8125rem;
+      color: var(--clay);
       line-height: 1.4;
-      margin-bottom: 1rem;
+      margin-top: 0.125rem;
+    }
+
+    .tool-summary-right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-shrink: 0;
+    }
+
+    .tool-source-tag {
+      font-size: 0.6875rem;
+      background: var(--white);
+      padding: 0.2rem 0.5rem;
+      border-radius: 256px;
+      white-space: nowrap;
+      color: var(--clay);
+    }
+
+    .tool-chevron {
+      width: 20px;
+      height: 20px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+      color: var(--clay);
+    }
+
+    .tool-module[open] .tool-chevron {
+      transform: rotate(180deg);
+    }
+
+    .tool-detail {
+      padding: 0 1.5rem 1.5rem;
+      border-top: 1px solid rgba(0, 0, 0, 0.06);
     }
 
     .tool-list {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 0.375rem;
+      padding-top: 1rem;
     }
 
     .tool-item {
       display: flex;
       align-items: center;
       gap: 0.75rem;
-      padding: 0.5rem 0;
+      padding: 0.375rem 0;
     }
 
     .tool-item code {
@@ -784,12 +851,7 @@
         font-size: 1.5rem;
       }
 
-      .cases-grid,
-      .tools-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .tools-grid {
+      .cases-grid {
         grid-template-columns: 1fr;
       }
 
@@ -922,96 +984,83 @@
       <p class="section-subtitle">API tools + SDK documentation, all in one connection.</p>
       
       <div class="tools-grid">
-        <div class="tool-module">
-          <h3>Core API Data</h3>
-          <p>Access live data from the SODAX API including chains, tokens, transactions, and volume.</p>
-          <div class="tool-list">
-            <div class="tool-item">
-              <code>sodax_get_supported_chains</code>
-              <span>List supported networks</span>
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="database"></i></div>
+              <div class="tool-summary-text">
+                <h3>Core API Data</h3>
+                <p>Chains, tokens, transactions, and volume</p>
+              </div>
             </div>
-            <div class="tool-item">
-              <code>sodax_get_swap_tokens</code>
-              <span>Get available tokens</span>
+            <div class="tool-summary-right">
+              <span class="badge">6 tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
             </div>
-            <div class="tool-item">
-              <code>sodax_get_transaction</code>
-              <span>Look up by tx hash</span>
-            </div>
-            <div class="tool-item">
-              <code>sodax_get_user_transactions</code>
-              <span>User tx history</span>
-            </div>
-            <div class="tool-item">
-              <code>sodax_get_volume</code>
-              <span>Trading volume data</span>
-            </div>
-            <div class="tool-item">
-              <code>sodax_get_orderbook</code>
-              <span>Current limit orders</span>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_get_supported_chains</code><span>List supported networks</span></div>
+              <div class="tool-item"><code>sodax_get_swap_tokens</code><span>Get available tokens</span></div>
+              <div class="tool-item"><code>sodax_get_transaction</code><span>Look up by tx hash</span></div>
+              <div class="tool-item"><code>sodax_get_user_transactions</code><span>User tx history</span></div>
+              <div class="tool-item"><code>sodax_get_volume</code><span>Trading volume data</span></div>
+              <div class="tool-item"><code>sodax_get_orderbook</code><span>Current limit orders</span></div>
             </div>
           </div>
-          <div class="badge-row" style="margin-top: 1rem;">
-            <span class="badge">6 tools</span>
-          </div>
-        </div>
+        </details>
         
-        <div class="tool-module">
-          <h3>DeFi & Token Data</h3>
-          <p>Money market positions, lending assets, partner integrations, and SODA token supply.</p>
-          <div class="tool-list">
-            <div class="tool-item">
-              <code>sodax_get_money_market_assets</code>
-              <span>Lending/borrowing assets</span>
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="landmark"></i></div>
+              <div class="tool-summary-text">
+                <h3>DeFi & Token Data</h3>
+                <p>Money markets, partners, and SODA token supply</p>
+              </div>
             </div>
-            <div class="tool-item">
-              <code>sodax_get_user_position</code>
-              <span>User's MM position</span>
+            <div class="tool-summary-right">
+              <span class="badge">5 tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
             </div>
-            <div class="tool-item">
-              <code>sodax_get_partners</code>
-              <span>Integration partners</span>
-            </div>
-            <div class="tool-item">
-              <code>sodax_get_token_supply</code>
-              <span>SODA token supply</span>
-            </div>
-            <div class="tool-item">
-              <code>sodax_refresh_cache</code>
-              <span>Clear cached data</span>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_get_money_market_assets</code><span>Lending/borrowing assets</span></div>
+              <div class="tool-item"><code>sodax_get_user_position</code><span>User's MM position</span></div>
+              <div class="tool-item"><code>sodax_get_partners</code><span>Integration partners</span></div>
+              <div class="tool-item"><code>sodax_get_token_supply</code><span>SODA token supply</span></div>
+              <div class="tool-item"><code>sodax_refresh_cache</code><span>Clear cached data</span></div>
             </div>
           </div>
-          <div class="badge-row" style="margin-top: 1rem;">
-            <span class="badge">5 tools</span>
-          </div>
-        </div>
+        </details>
         
-        <div class="tool-module">
-          <h3>SDK Documentation</h3>
-          <p>Auto-proxied from docs.sodax.com GitBook MCP. Updates automatically when docs change.</p>
-          <div class="tool-list">
-            <div class="tool-item">
-              <code>docs_searchDocumentation</code>
-              <span>Search SDK docs, examples, guides</span>
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="book-open"></i></div>
+              <div class="tool-summary-text">
+                <h3>SDK Documentation</h3>
+                <p>Auto-synced from docs.sodax.com GitBook</p>
+              </div>
             </div>
-            <div class="tool-item">
-              <code>docs_list_tools</code>
-              <span>List available doc tools</span>
+            <div class="tool-summary-right">
+              <span class="badge">4 tools</span>
+              <span class="tool-source-tag">GitBook</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
             </div>
-            <div class="tool-item">
-              <code>docs_health</code>
-              <span>Check docs connection</span>
-            </div>
-            <div class="tool-item">
-              <code>docs_refresh</code>
-              <span>Refresh tools list</span>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>docs_searchDocumentation</code><span>Search SDK docs, examples, guides</span></div>
+              <div class="tool-item"><code>docs_list_tools</code><span>List available doc tools</span></div>
+              <div class="tool-item"><code>docs_health</code><span>Check docs connection</span></div>
+              <div class="tool-item"><code>docs_refresh</code><span>Refresh tools list</span></div>
             </div>
           </div>
-          <div class="badge-row" style="margin-top: 1rem;">
-            <span class="badge">4 tools</span>
-            <span class="badge">Auto-sync from docs.sodax.com</span>
-          </div>
-        </div>
+        </details>
       </div>
 
       <!-- SDK Architecture -->

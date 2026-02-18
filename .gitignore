@@ -3,5 +3,12 @@ dist/
 *.log
 .env
 .env.*
+!.env.example
 .DS_Store
 .agents
+.github/skills/
+.github/copilot-instructions.md
+
+# Internal dev notes (not for public repo)
+HEALTH-TOPBAR.md
+mcp-registry-listing-instructions.md

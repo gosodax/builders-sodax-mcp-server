@@ -6,6 +6,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   fetchGitBookTools,
@@ -14,6 +15,12 @@ import {
   clearGitBookCache,
   GitBookTool
 } from "../services/gitbookProxy.js";
+
+const DOCS_READ_ONLY: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: true,
+};
 
 /**
  * Convert GitBook tool input schema to Zod schema
@@ -99,6 +106,7 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
           zodSchema._def.typeName === "ZodObject" 
             ? (zodSchema as z.ZodObject<z.ZodRawShape>).shape 
             : {},
+          DOCS_READ_ONLY,
           async (args) => {
             const result = await callGitBookTool(tool.name, args as Record<string, unknown>);
             
@@ -146,6 +154,7 @@ function registerGitBookMetaTools(server: McpServer): void {
     "docs_health",
     "Check SDK documentation availability. Call this first if docs tools seem unavailable.",
     {},
+    DOCS_READ_ONLY,
     async () => {
       const health = await checkGitBookHealth();
       const tools = await fetchGitBookTools();
@@ -174,6 +183,7 @@ function registerGitBookMetaTools(server: McpServer): void {
     "docs_refresh",
     "Reconnect to SDK documentation and refresh available tools. Use if docs seem stale or unavailable.",
     {},
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
       clearGitBookCache();
       const tools = await fetchGitBookTools();
@@ -202,6 +212,7 @@ function registerGitBookMetaTools(server: McpServer): void {
     "docs_list_tools",
     "List all SDK documentation tools with parameters. Essential for discovering what's available.",
     {},
+    DOCS_READ_ONLY,
     async () => {
       const tools = await fetchGitBookTools();
       if (tools.length === 0) {

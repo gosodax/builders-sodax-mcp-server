@@ -6,6 +6,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   getSupportedChains,
@@ -78,6 +79,13 @@ function formatAsMarkdown(data: unknown): string {
 /**
  * Register all SODAX API tools with the MCP server
  */
+// Shared annotations for read-only data-fetching tools
+const READ_ONLY: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: true,
+};
+
 export function registerSodaxApiTools(server: McpServer): void {
   
   // Tool 1: Get Supported Chains
@@ -88,6 +96,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ format }) => {
       try {
         const chains = await getSupportedChains();
@@ -116,6 +125,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ chainId, format }) => {
       try {
         const tokens = await getSwapTokens(chainId);
@@ -147,6 +157,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ txHash, format }) => {
       try {
         const transaction = await getTransaction(txHash);
@@ -184,6 +195,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ userAddress, limit, offset, format }) => {
       try {
         const transactions = await getUserTransactions(userAddress, { limit, offset });
@@ -236,6 +248,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ inputToken, outputToken, chainId, solver, fromBlock, toBlock, since, until, sort, limit, includeData, cursor, format }) => {
       try {
         const volume = await getVolume({ 
@@ -272,6 +285,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ limit, format }) => {
       try {
         const orderbook = await getOrderbook({ limit });
@@ -300,6 +314,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ chainId, format }) => {
       try {
         const assets = await getMoneyMarketAssets(chainId);
@@ -333,6 +348,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ userAddress, chainId, format }) => {
       try {
         const position = await getUserPosition(userAddress, chainId);
@@ -364,6 +380,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ format }) => {
       try {
         const partners = await getPartners();
@@ -390,6 +407,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
+    READ_ONLY,
     async ({ format }) => {
       try {
         const supply = await getTokenSupply();
@@ -413,6 +431,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_refresh_cache",
     "Clear the cached API data to force fresh fetches on next requests",
     {},
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
       const statsBefore = getCacheStats();
       clearCache();

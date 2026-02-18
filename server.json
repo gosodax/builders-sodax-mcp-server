@@ -1,0 +1,74 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/registry/main/schema/server.json",
+  "name": "io.github.gosodax/builders-mcp",
+  "description": "Live SODAX API data and SDK documentation for developers and integration partners. Access chains, tokens, transactions, volume, orderbook, money market, and auto-updating SDK docs — all through one MCP connection.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/gosodax/builders-sodax-mcp-server",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "transportType": "streamable-http",
+      "url": "https://builders.sodax.com/mcp"
+    }
+  ],
+  "tools": [
+    {
+      "name": "sodax_get_supported_chains",
+      "description": "List all blockchain networks supported by SODAX for cross-chain swaps and DeFi operations"
+    },
+    {
+      "name": "sodax_get_swap_tokens",
+      "description": "Get available tokens for swapping on SODAX, optionally filtered by chain"
+    },
+    {
+      "name": "sodax_get_transaction",
+      "description": "Look up a specific transaction by its hash to see status, amounts, and details"
+    },
+    {
+      "name": "sodax_get_user_transactions",
+      "description": "Get intent/transaction history for a specific wallet address"
+    },
+    {
+      "name": "sodax_get_volume",
+      "description": "Get solver volume data (filled intents) with filtering and pagination"
+    },
+    {
+      "name": "sodax_get_orderbook",
+      "description": "Get current orderbook entries from solver"
+    },
+    {
+      "name": "sodax_get_money_market_assets",
+      "description": "List lending/borrowing assets in money market"
+    },
+    {
+      "name": "sodax_get_user_position",
+      "description": "Get user's money market position"
+    },
+    {
+      "name": "sodax_get_partners",
+      "description": "List SODAX integration partners"
+    },
+    {
+      "name": "sodax_get_token_supply",
+      "description": "Get SODA token supply info"
+    },
+    {
+      "name": "sodax_refresh_cache",
+      "description": "Clear cached data to get fresh results"
+    },
+    {
+      "name": "docs_health",
+      "description": "Check SDK documentation availability"
+    },
+    {
+      "name": "docs_refresh",
+      "description": "Reconnect to SDK documentation and refresh available tools"
+    },
+    {
+      "name": "docs_list_tools",
+      "description": "List all available SDK documentation tools"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import { dirname, join } from "path";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
+import { withAnalytics, shutdownAnalytics } from "./services/analytics.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,6 +34,10 @@ async function createServer(): Promise<McpServer> {
     name: "builders-sodax-mcp-server",
     version: "1.0.0"
   });
+
+  // Wrap server.tool() so every tool call is tracked in PostHog
+  // ⚠️  Must be called BEFORE registering any tools
+  withAnalytics(server);
 
   registerSodaxApiTools(server);
   await registerGitBookProxyTools(server);
@@ -221,4 +226,14 @@ async function main(): Promise<void> {
 main().catch((error) => {
   console.error("Server error:", error);
   process.exit(1);
+});
+
+// Flush pending PostHog events on shutdown
+process.on("SIGINT", async () => {
+  await shutdownAnalytics();
+  process.exit(0);
+});
+process.on("SIGTERM", async () => {
+  await shutdownAnalytics();
+  process.exit(0);
 });

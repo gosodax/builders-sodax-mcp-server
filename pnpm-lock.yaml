@@ -23,6 +23,9 @@ importers:
       helmet:
         specifier: ^8.1.0
         version: 8.1.0
+      posthog-node:
+        specifier: ^5.24.16
+        version: 5.24.16
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -213,6 +216,9 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
+
+  '@posthog/core@1.23.0':
+    resolution: {integrity: sha512-WXYL4+trl27iV8/Y+ESADOYDB7jBhbEj6q3AEQdn+9ygYG06Q3rZSdWk4ZVn8FdrD3mlq8fEqkUgRCekzp2W4g==}
 
   '@types/body-parser@1.19.6':
     resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
@@ -628,6 +634,10 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
+  posthog-node@5.24.16:
+    resolution: {integrity: sha512-CBQ1W6MuhXN+7o9PK20BfJQKb7oz6ZaAuglH73HDJ/5CHL14wvprzy7snhZ+tbLZ7Czxsxm80SyLQ2Mc9j8s5Q==}
+    engines: {node: ^20.20.0 || >=22.22.0}
+
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
@@ -873,6 +883,10 @@ snapshots:
       zod-to-json-schema: 3.25.1(zod@3.25.76)
     transitivePeerDependencies:
       - supports-color
+
+  '@posthog/core@1.23.0':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@types/body-parser@1.19.6':
     dependencies:
@@ -1350,6 +1364,10 @@ snapshots:
   path-to-regexp@8.3.0: {}
 
   pkce-challenge@5.0.1: {}
+
+  posthog-node@5.24.16:
+    dependencies:
+      '@posthog/core': 1.23.0
 
   proxy-addr@2.0.7:
     dependencies:

@@ -140,10 +140,19 @@ async function runHTTP(): Promise<void> {
 
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
+    const gitbookToolNames = await getGitBookToolNames();
+    const apiToolCount = 11; // sodax_* tools registered in sodaxApi.ts
+    const totalTools = apiToolCount + gitbookToolNames.length;
     res.json({ 
       status: "healthy", 
       service: "builders-sodax-mcp-server",
       version: "1.0.0",
+      uptime_seconds: Math.floor(process.uptime()),
+      tools: {
+        total: totalTools,
+        api: apiToolCount,
+        sdkDocs: gitbookToolNames.length
+      },
       sdkDocsProxy: {
         healthy: gitbookHealth.healthy,
         toolCount: gitbookHealth.toolCount

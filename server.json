@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/registry/main/schema/server.json",
   "name": "io.github.gosodax/builders-mcp",
-  "description": "Live SODAX API data and SDK documentation for developers and integration partners. Access chains, tokens, transactions, volume, orderbook, money market, and auto-updating SDK docs — all through one MCP connection.",
+  "description": "Live SODAX API data and SDK documentation for developers and integration partners. Access networks, tokens, transactions, volume, orderbook, money market, and auto-updating SDK docs — all through one MCP connection.",
   "version": "1.0.0",
   "repository": {
     "url": "https://github.com/gosodax/builders-sodax-mcp-server",

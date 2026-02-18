@@ -8,6 +8,7 @@ dist/
 .agents
 .github/skills/
 .github/copilot-instructions.md
+.mcpregistry_*
 
 # Internal dev notes (not for public repo)
 HEALTH-TOPBAR.md

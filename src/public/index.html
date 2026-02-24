@@ -272,6 +272,57 @@
       flex-wrap: wrap;
     }
 
+    .hero-directories {
+      margin-top: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .hero-directories-label {
+      font-size: 0.75rem;
+      color: var(--cherry-brighter);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 500;
+    }
+
+    .hero-directories-links {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .directory-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.375rem 0.75rem;
+      border-radius: 240px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: var(--white);
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .directory-badge:hover {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+
+    .directory-badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
     .btn {
       display: inline-flex;
       align-items: center;
@@ -1008,6 +1059,24 @@
         <a href="#tools" class="btn btn-primary btn-arrow">Explore Tools</a>
         <a href="#connect" class="btn btn-secondary">Get Started</a>
       </nav>
+
+      <div class="hero-directories">
+        <span class="hero-directories-label">Also on:</span>
+        <div class="hero-directories-links">
+          <a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp" class="directory-badge" target="_blank" rel="noopener">
+            <span class="directory-badge-dot" style="background: #4285F4;"></span>
+            Glama
+          </a>
+          <a href="https://registry.modelcontextprotocol.io/?q=sodax" class="directory-badge" target="_blank" rel="noopener">
+            <span class="directory-badge-dot" style="background: #10B981;"></span>
+            MCP Registry
+          </a>
+          <a href="https://mcp.so/server/sodax-builders-mcp/gosodax" class="directory-badge" target="_blank" rel="noopener">
+            <span class="directory-badge-dot" style="background: #8B5CF6;"></span>
+            mcp.so
+          </a>
+        </div>
+      </div>
     </div>
   </header>
 

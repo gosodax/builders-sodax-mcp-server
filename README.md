@@ -148,7 +148,7 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 
 - **SODAX** — [sodax.com](https://sodax.com)
 - **SDK Documentation** — [docs.sodax.com](https://docs.sodax.com) (proxied automatically)
-- **Marketing MCP Server** — For marketing teams: `https://brand.sodax.com/mcp`
+- **Marketing MCP Server** — For marketing teams: `https://marketing.sodax.com/mcp`
 
 ## License
 

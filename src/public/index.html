@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   
   <!-- Primary Meta Tags -->
-  <title>SODAX Builders MCP Server | Live API Data & SDK Docs for Developers</title>
-  <meta name="title" content="SODAX Builders MCP Server | Live API Data & SDK Docs for Developers">
-  <meta name="description" content="Connect your AI coding assistant to SODAX live API data and SDK documentation. API tools for chains, tokens, transactions, volume, plus auto-updating docs from GitBook.">
-  <meta name="keywords" content="MCP server, Model Context Protocol, SODAX, API, developer tools, DeFi integration, cross-chain, blockchain, SDK, documentation">
+  <title>SODAX MCP Server | Cross-Network (Cross-Chain) DeFi API Data & SDK Docs</title>
+  <meta name="title" content="SODAX MCP Server | Cross-Network (Cross-Chain) DeFi API Data & SDK Docs">
+  <meta name="description" content="SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 17+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.">
+  <meta name="keywords" content="MCP server, Model Context Protocol, SODAX, cross-chain swap, cross-network swap, multi chain swap, cross-chain SDK, cross-chain liquidity, cross-chain bridge aggregator, swap across chains, DeFi API, cross-chain developer tools, intent based swap, solver network, cross-chain execution, money market, blockchain SDK, AI coding assistant">
   <meta name="author" content="ICON Foundation">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://builders.sodax.com/">
@@ -16,16 +16,16 @@
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://builders.sodax.com/">
-  <meta property="og:title" content="SODAX Builders MCP Server | Live API Data for Developers">
-  <meta property="og:description" content="Connect your AI coding assistant to SODAX live API data. 11 MCP tools for developers and integration partners.">
+  <meta property="og:title" content="SODAX MCP Server | Cross-Network DeFi API & SDK Docs">
+  <meta property="og:description" content="SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 17+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.">
   <meta property="og:image" content="https://builders.sodax.com/images/link-preview.png">
   <meta property="og:site_name" content="SODAX">
-  
+
   <!-- Twitter -->
   <meta property="twitter:card" content="summary_large_image">
   <meta property="twitter:url" content="https://builders.sodax.com/">
-  <meta property="twitter:title" content="SODAX Builders MCP Server | Live API Data for Developers">
-  <meta property="twitter:description" content="Connect your AI coding assistant to SODAX live API data. 11 MCP tools for developers and integration partners.">
+  <meta property="twitter:title" content="SODAX MCP Server | Cross-Network DeFi API & SDK Docs">
+  <meta property="twitter:description" content="SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 17+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.">
   <meta property="twitter:image" content="https://builders.sodax.com/images/link-preview.png">
   
   <!-- Favicon -->
@@ -48,7 +48,7 @@
     "name": "SODAX Builders MCP Server",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
-    "description": "Model Context Protocol server providing AI coding assistants with access to live SODAX API data for developers and integration partners.",
+    "description": "SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 17+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs.",
     "url": "https://builders.sodax.com/",
     "author": {
       "@type": "Organization",
@@ -61,14 +61,54 @@
       "priceCurrency": "USD"
     },
     "featureList": [
-      "Supported Chains",
-      "Swap Tokens",
-      "Transaction Lookup",
-      "Trading Volume",
-      "Orderbook Data",
-      "Money Market Assets",
-      "Token Supply Info",
-      "SDK Documentation (live from GitBook)"
+      "Cross-network (cross-chain) swap token queries across 17+ networks",
+      "Solver volume and intent history lookup",
+      "Money market lending and borrowing rates",
+      "Orderbook and limit order data",
+      "Transaction lookup and wallet history",
+      "SODA token supply info",
+      "Auto-syncing SDK documentation from GitBook",
+      "Cross-chain developer tools and integration support"
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is the SODAX MCP server?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The SODAX MCP server gives AI coding assistants live access to cross-network DeFi API data across 17+ blockchain networks. Query swap tokens, money market rates, solver volume, intent history, and auto-updating SDK documentation directly from tools like Claude, Cursor, VS Code, and ChatGPT."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is a cross-chain swap and how does SODAX handle it?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A cross-chain swap lets you exchange tokens between different blockchain networks without traditional bridging. SODAX uses an intent-based execution model with a decentralized solver network to fill swaps across 17+ networks with unified cross-chain liquidity."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which blockchain networks does the SODAX cross-chain SDK support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "SODAX supports 17+ blockchain networks for cross-network swaps and DeFi operations. Use the sodax_get_supported_chains tool to get the live list of supported networks, or search the auto-syncing SDK documentation for integration guides."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I connect the SODAX MCP server to my AI coding assistant?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Add the SODAX MCP server URL (https://builders.sodax.com/mcp) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation."
+        }
+      }
     ]
   }
   </script>
@@ -118,8 +158,19 @@
       padding: 0.4rem 1rem;
       display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 1.5rem;
+      justify-content: space-between;
+    }
+
+    .status-back-link {
+      color: var(--clay-light);
+      text-decoration: none;
+      font-size: 0.75rem;
+      transition: color 0.2s;
+      white-space: nowrap;
+    }
+
+    .status-back-link:hover {
+      color: var(--cream-white);
     }
 
     .status-bar-item {
@@ -915,17 +966,20 @@
 <body>
   <!-- Status Topbar -->
   <div class="status-bar" role="status" aria-live="polite">
-    <div class="status-bar-item">
-      <span class="status-dot" id="status-dot"></span>
-      <span class="status-bar-value" id="status-text">Checking…</span>
-    </div>
-    <div class="status-bar-item">
-      <span class="status-bar-label">Uptime</span>
-      <span class="status-bar-value" id="status-uptime">—</span>
-    </div>
-    <div class="status-bar-item">
-      <span class="status-bar-label">Tools</span>
-      <span class="status-bar-value" id="status-tools">—</span>
+    <a href="https://sodax.com" class="status-back-link">← sodax.com</a>
+    <div style="display: flex; align-items: center; gap: 1.5rem;">
+      <div class="status-bar-item">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-bar-value" id="status-text">Checking…</span>
+      </div>
+      <div class="status-bar-item">
+        <span class="status-bar-label">Version</span>
+        <span class="status-bar-value" id="status-version">—</span>
+      </div>
+      <div class="status-bar-item">
+        <span class="status-bar-label">Tools</span>
+        <span class="status-bar-value" id="status-tools">—</span>
+      </div>
     </div>
   </div>
 
@@ -933,8 +987,8 @@
   <header class="hero" role="banner">
     <div class="hero-content">
       <p class="hero-eyebrow">SODAX Builders MCP Server</p>
-      <h1>Build with <span class="accent">live API data.</span></h1>
-      <p class="hero-subtitle">Paste this MCP URL into your AI coding assistant and get instant access to SODAX API data plus SDK documentation that auto-updates from GitBook.</p>
+      <h1>Cross-network DeFi data. <span class="accent">17+ networks.</span></h1>
+      <p class="hero-subtitle">Access live cross-network API data from your AI coding assistant: swap tokens across chains, query money market rates, look up solver volume, and search intent history. Includes auto-syncing SDK docs.</p>
       
       <div class="hero-url-box">
         <div class="hero-url-label">
@@ -964,78 +1018,78 @@
       <div class="section-title">
         <h2 id="use-cases-heading">What can you ask?</h2>
       </div>
-      <p class="section-subtitle">Common prompts for AI agents connected to this MCP server.</p>
+      <p class="section-subtitle">Common prompts for AI agents connected to this cross-network DeFi MCP server.</p>
       
       <div class="cases-grid">
         <div class="case-card">
           <div class="case-card-title">
             <span class="icon" aria-hidden="true"><i data-lucide="network"></i></span>
-            <h3>Supported Chains</h3>
+            <h3>Supported Networks</h3>
           </div>
-          <p>"What chains does SODAX support?"</p>
+          <p>"What networks does SODAX support for cross-chain swaps?"</p>
           <div class="badge-row">
-            <span class="badge">Chains</span>
-            <span class="badge">Networks</span>
+            <span class="badge">17+ Networks</span>
+            <span class="badge">Cross-chain</span>
           </div>
         </div>
-        
+
         <div class="case-card">
           <div class="case-card-title">
             <span class="icon" aria-hidden="true"><i data-lucide="trending-up"></i></span>
-            <h3>Trading Volume</h3>
+            <h3>Solver Volume</h3>
           </div>
-          <p>"Show me today's trading volume"</p>
+          <p>"Show me cross-network solver volume for today"</p>
           <div class="badge-row">
             <span class="badge">Volume</span>
-            <span class="badge">Analytics</span>
+            <span class="badge">Solvers</span>
           </div>
         </div>
-        
+
         <div class="case-card">
           <div class="case-card-title">
             <span class="icon" aria-hidden="true"><i data-lucide="coins"></i></span>
-            <h3>Swap Tokens</h3>
+            <h3>Cross-Network Swaps</h3>
           </div>
-          <p>"Get available swap tokens on Base"</p>
+          <p>"Get available swap tokens across chains on Base"</p>
           <div class="badge-row">
-            <span class="badge">Tokens</span>
-            <span class="badge">Swaps</span>
+            <span class="badge">Swap Tokens</span>
+            <span class="badge">Cross-chain</span>
           </div>
         </div>
-        
+
         <div class="case-card">
           <div class="case-card-title">
             <span class="icon" aria-hidden="true"><i data-lucide="search"></i></span>
-            <h3>Transaction Lookup</h3>
+            <h3>Intent History</h3>
           </div>
-          <p>"Look up this transaction hash"</p>
+          <p>"Look up this intent transaction hash"</p>
           <div class="badge-row">
+            <span class="badge">Intents</span>
             <span class="badge">Transactions</span>
-            <span class="badge">Status</span>
           </div>
         </div>
-        
+
         <div class="case-card">
           <div class="case-card-title">
             <span class="icon" aria-hidden="true"><i data-lucide="landmark"></i></span>
-            <h3>Money Market</h3>
+            <h3>Money Market Rates</h3>
           </div>
-          <p>"What assets can I lend on SODAX?"</p>
+          <p>"What are the lending rates on SODAX money market?"</p>
           <div class="badge-row">
             <span class="badge">Lending</span>
-            <span class="badge">DeFi</span>
+            <span class="badge">Borrowing</span>
           </div>
         </div>
-        
+
         <div class="case-card">
           <div class="case-card-title">
-            <span class="icon" aria-hidden="true"><i data-lucide="handshake"></i></span>
-            <h3>Integration Partners</h3>
+            <span class="icon" aria-hidden="true"><i data-lucide="book-open"></i></span>
+            <h3>Cross-Chain SDK Docs</h3>
           </div>
-          <p>"Who are SODAX's integration partners?"</p>
+          <p>"How do I integrate cross-chain swaps with the SODAX SDK?"</p>
           <div class="badge-row">
-            <span class="badge">Partners</span>
-            <span class="badge">Ecosystem</span>
+            <span class="badge">SDK</span>
+            <span class="badge">Auto-sync</span>
           </div>
         </div>
       </div>
@@ -1048,7 +1102,7 @@
       <div class="section-title">
         <h2 id="tools-heading">Available Tools</h2>
       </div>
-      <p class="section-subtitle">API tools + SDK documentation, all in one connection.</p>
+      <p class="section-subtitle">Cross-network API tools + cross-chain SDK documentation, all in one connection.</p>
       
       <div class="tools-grid">
         <details class="tool-module">
@@ -1056,8 +1110,8 @@
             <div class="tool-summary-left">
               <div class="tool-icon"><i data-lucide="database"></i></div>
               <div class="tool-summary-text">
-                <h3>Core API Data</h3>
-                <p>Chains, tokens, transactions, and volume</p>
+                <h3>Cross-Network API Data</h3>
+                <p>Networks, swap tokens, intent transactions, and solver volume</p>
               </div>
             </div>
             <div class="tool-summary-right">
@@ -1068,12 +1122,12 @@
           </summary>
           <div class="tool-detail">
             <div class="tool-list">
-              <div class="tool-item"><code>sodax_get_supported_chains</code><span>List supported networks</span></div>
-              <div class="tool-item"><code>sodax_get_swap_tokens</code><span>Get available tokens</span></div>
-              <div class="tool-item"><code>sodax_get_transaction</code><span>Look up by tx hash</span></div>
-              <div class="tool-item"><code>sodax_get_user_transactions</code><span>User tx history</span></div>
-              <div class="tool-item"><code>sodax_get_volume</code><span>Trading volume data</span></div>
-              <div class="tool-item"><code>sodax_get_orderbook</code><span>Current limit orders</span></div>
+              <div class="tool-item"><code>sodax_get_supported_chains</code><span>List 17+ supported networks</span></div>
+              <div class="tool-item"><code>sodax_get_swap_tokens</code><span>Cross-network swap tokens</span></div>
+              <div class="tool-item"><code>sodax_get_transaction</code><span>Intent transaction lookup</span></div>
+              <div class="tool-item"><code>sodax_get_user_transactions</code><span>Wallet intent history</span></div>
+              <div class="tool-item"><code>sodax_get_volume</code><span>Solver volume data</span></div>
+              <div class="tool-item"><code>sodax_get_orderbook</code><span>Cross-chain orderbook</span></div>
             </div>
           </div>
         </details>
@@ -1084,7 +1138,7 @@
               <div class="tool-icon"><i data-lucide="landmark"></i></div>
               <div class="tool-summary-text">
                 <h3>DeFi & Token Data</h3>
-                <p>Money markets, partners, and SODA token supply</p>
+                <p>Cross-chain money markets, lending rates, and SODA token supply</p>
               </div>
             </div>
             <div class="tool-summary-right">
@@ -1109,8 +1163,8 @@
             <div class="tool-summary-left">
               <div class="tool-icon"><i data-lucide="book-open"></i></div>
               <div class="tool-summary-text">
-                <h3>SDK Documentation</h3>
-                <p>Auto-synced from docs.sodax.com GitBook</p>
+                <h3>Cross-Chain SDK Documentation</h3>
+                <p>Auto-synced from docs.sodax.com — integration guides, code examples</p>
               </div>
             </div>
             <div class="tool-summary-right">
@@ -1216,7 +1270,7 @@
   <section class="connection" id="connect" aria-labelledby="connect-heading">
     <div class="connection-content">
       <h2 id="connect-heading">Get started. <span class="accent">One connection.</span></h2>
-      <p class="connection-subtitle">Connect your AI coding assistant to live SODAX API data and SDK documentation with one simple configuration.</p>
+      <p class="connection-subtitle">Connect your AI coding assistant to live cross-network DeFi data and cross-chain SDK documentation with one simple configuration.</p>
       
       <div class="code-block">
         <pre>{
@@ -1233,6 +1287,87 @@
       </p>
     </div>
   </section>
+  <!-- FAQ Section -->
+  <section class="use-cases" id="faq" aria-labelledby="faq-heading" style="padding-top: 3rem;">
+    <div class="use-cases-container">
+      <div class="section-title">
+        <h2 id="faq-heading">Frequently Asked Questions</h2>
+      </div>
+      <p class="section-subtitle">Common questions about the SODAX MCP server and cross-chain developer tools.</p>
+
+      <div style="max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 0.75rem;">
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-summary-text">
+                <h3>What is the SODAX MCP server?</h3>
+              </div>
+            </div>
+            <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tool-detail">
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">The SODAX Builders MCP server gives AI coding assistants live access to cross-network DeFi API data across 17+ blockchain networks. Query swap tokens, money market rates, solver volume, intent history, and auto-updating SDK documentation directly from tools like Claude, Cursor, VS Code, and ChatGPT.</p>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-summary-text">
+                <h3>What is a cross-chain swap and how does SODAX handle it?</h3>
+              </div>
+            </div>
+            <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tool-detail">
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">A cross-chain swap lets you exchange tokens between different blockchain networks without traditional bridging. SODAX uses an intent-based execution model with a decentralized solver network to fill swaps across 17+ networks with unified cross-chain liquidity. The MCP server lets you query available swap tokens, look up intent transactions, and check solver volume programmatically.</p>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-summary-text">
+                <h3>Which networks does the cross-chain SDK support?</h3>
+              </div>
+            </div>
+            <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tool-detail">
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">SODAX supports 17+ blockchain networks for cross-network swaps and DeFi operations. Use the <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">sodax_get_supported_chains</code> tool to get the live list, or search the auto-syncing SDK documentation for integration guides per network.</p>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-summary-text">
+                <h3>How do I connect this MCP server to my AI coding assistant?</h3>
+              </div>
+            </div>
+            <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tool-detail">
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">Add the SODAX MCP server URL (<code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/mcp</code>) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation.</p>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-summary-text">
+                <h3>What cross-chain developer tools does this MCP server provide?</h3>
+              </div>
+            </div>
+            <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tool-detail">
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">The server provides cross-network API tools for querying swap tokens, solver volume, orderbook data, money market lending and borrowing rates, intent transaction history, and SODA token supply. It also includes auto-syncing cross-chain SDK documentation with integration guides, code examples, and API reference — everything you need to build cross-network DeFi integrations.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
   </main>
 
   <!-- Footer -->
@@ -1240,7 +1375,7 @@
     <div class="footer-container">
       <div class="footer-brand">
         <div class="footer-logo"><img src="/images/symbol.png" alt="SODAX" width="24" height="24"> SODAX</div>
-        <p class="footer-copyright">© 2025 ICON Foundation.<br>All rights reserved.</p>
+        <p class="footer-copyright">© 2026 ICON Foundation.<br>All rights reserved.</p>
       </div>
       
       <div class="footer-links">
@@ -1305,17 +1440,8 @@
     (function() {
       const dot = document.getElementById('status-dot');
       const text = document.getElementById('status-text');
-      const uptime = document.getElementById('status-uptime');
+      const version = document.getElementById('status-version');
       const tools = document.getElementById('status-tools');
-
-      function formatUptime(seconds) {
-        const d = Math.floor(seconds / 86400);
-        const h = Math.floor((seconds % 86400) / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        if (d > 0) return d + 'd ' + h + 'h';
-        if (h > 0) return h + 'h ' + m + 'm';
-        return m + 'm';
-      }
 
       async function checkHealth() {
         try {
@@ -1323,12 +1449,12 @@
           const data = await res.json();
           dot.className = 'status-dot online';
           text.textContent = 'Online';
-          uptime.textContent = formatUptime(data.uptime_seconds || 0);
+          version.textContent = 'v' + (data.version || '1.0.2');
           tools.textContent = (data.tools?.total || 0) + ' available';
         } catch {
           dot.className = 'status-dot offline';
           text.textContent = 'Offline';
-          uptime.textContent = '—';
+          version.textContent = '—';
           tools.textContent = '—';
         }
       }

@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.gosodax/builders-mcp",
   "title": "SODAX Builders MCP",
-  "description": "Live SODAX API data and SDK docs — chains, tokens, swaps, volume, and more.",
-  "version": "1.0.1",
+  "description": "Live cross-network DeFi API data and auto-updating SDK docs for 17+ networks.",
+  "version": "1.0.2",
   "repository": {
     "url": "https://github.com/gosodax/builders-sodax-mcp-server",
     "source": "github"

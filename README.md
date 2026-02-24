@@ -1,5 +1,9 @@
 # SODAX Builders MCP Server
 
+<a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp/badge" />
+</a>
+
 SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 17+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
 
 **One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 17+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.

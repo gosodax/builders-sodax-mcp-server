@@ -10,6 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import express, { Request, Response } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -171,6 +172,33 @@ async function runHTTP(): Promise<void> {
     await transport.handleRequest(req, res, req.body);
   });
 
+  // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
+  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
+
+  app.get("/sse", mcpLimiter, async (_req: Request, res: Response) => {
+    const sseServer = await createServer();
+    const transport = new SSEServerTransport("/messages", res);
+    sseSessions.set(transport.sessionId, { transport, server: sseServer });
+
+    res.on("close", () => {
+      sseSessions.delete(transport.sessionId);
+      transport.close();
+    });
+
+    await sseServer.connect(transport);
+    await transport.start();
+  });
+
+  app.post("/messages", mcpLimiter, async (req: Request, res: Response) => {
+    const sessionId = req.query.sessionId as string;
+    const session = sseSessions.get(sessionId);
+    if (!session) {
+      res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
+      return;
+    }
+    await session.transport.handlePostMessage(req, res, req.body);
+  });
+
   app.get("/", (_req: Request, res: Response) => {
     try {
       const html = readFileSync(join(__dirname, "public", "index.html"), "utf-8");
@@ -188,7 +216,7 @@ async function runHTTP(): Promise<void> {
       name: "SODAX Builders MCP Server",
       version: "1.0.0",
       description: "Live API data and SDK documentation for developers and integration partners",
-      endpoints: { mcp: "/mcp", health: "/health", api: "/api" },
+      endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       tools: {
         api: [
           "sodax_get_supported_chains",

@@ -29,6 +29,20 @@ Add the MCP server URL to your AI coding assistant's configuration:
 
 Works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation.
 
+### SSE Transport (Legacy)
+
+For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE endpoint instead:
+
+```json
+{
+  "mcpServers": {
+    "sodax-builders": {
+      "url": "https://builders.sodax.com/sse"
+    }
+  }
+}
+```
+
 ## Tools
 
 ### Cross-Network API Data (6 tools)
@@ -148,6 +162,8 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 | `GET /api` | Server info and tool list |
 | `GET /health` | Health check |
 | `POST /mcp` | MCP endpoint (streamable HTTP) |
+| `GET /sse` | SSE endpoint (legacy transport) |
+| `POST /messages` | SSE message endpoint |
 
 ## Related
 

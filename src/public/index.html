@@ -1364,8 +1364,11 @@
 }</pre>
       </div>
       
-      <p class="contact-info">
+      <p class="contact-info" style="margin-bottom: 0.5rem;">
         SDK docs from <a href="https://docs.sodax.com">docs.sodax.com</a> are included automatically via GitBook proxy
+      </p>
+      <p class="contact-info" style="font-size: 0.8125rem; opacity: 0.7;">
+        Using a client that doesn't support streamable HTTP (e.g. Gemini CLI)? Use the SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">https://builders.sodax.com/sse</code>
       </p>
     </div>
   </section>
@@ -1430,7 +1433,7 @@
             <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
           </summary>
           <div class="tool-detail">
-            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">Add the SODAX MCP server URL (<code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/mcp</code>) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation.</p>
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">Add the SODAX MCP server URL (<code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/mcp</code>) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation. If your client doesn't support streamable HTTP (e.g. Gemini CLI), use the legacy SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/sse</code></p>
           </div>
         </details>
 

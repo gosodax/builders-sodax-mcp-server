@@ -20,7 +20,7 @@ import { dirname, join } from "path";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
-import { withAnalytics, shutdownAnalytics } from "./services/analytics.js";
+import { withAnalytics, shutdownAnalytics, hashClientIp } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,7 +31,7 @@ const __dirname = dirname(__filename);
  * Used per-request in HTTP mode to avoid transport conflicts
  * when handling parallel requests.
  */
-async function createServer(): Promise<McpServer> {
+async function createServer(clientId?: string): Promise<McpServer> {
   const server = new McpServer({
     name: "builders-sodax-mcp-server",
     version: "1.1.0"
@@ -39,7 +39,7 @@ async function createServer(): Promise<McpServer> {
 
   // Wrap server.tool() so every tool call is tracked in PostHog
   // ⚠️  Must be called BEFORE registering any tools
-  withAnalytics(server);
+  withAnalytics(server, clientId);
 
   registerSodaxApiTools(server);
   await registerGitBookProxyTools(server);
@@ -166,7 +166,8 @@ async function runHTTP(): Promise<void> {
   });
 
   app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    const requestServer = await createServer();
+    const clientId = hashClientIp(req.ip || "unknown");
+    const requestServer = await createServer(clientId);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
@@ -179,8 +180,9 @@ async function runHTTP(): Promise<void> {
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
   const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
 
-  app.get("/sse", mcpLimiter, async (_req: Request, res: Response) => {
-    const sseServer = await createServer();
+  app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
+    const clientId = hashClientIp(req.ip || "unknown");
+    const sseServer = await createServer(clientId);
     const transport = new SSEServerTransport("/messages", res);
     sseSessions.set(transport.sessionId, { transport, server: sseServer });
 

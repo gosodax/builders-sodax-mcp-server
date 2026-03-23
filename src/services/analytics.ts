@@ -8,6 +8,7 @@
  * When unset, all tracking is silently skipped.
  */
 
+import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -89,18 +90,34 @@ function getClient(): PostHog | null {
   return client;
 }
 
+// ── Client identification ────────────────────────────────────────────
+
+/**
+ * Hash an IP address to a privacy-safe client identifier.
+ * Uses SHA-256 with a static salt so the same IP always maps to the
+ * same distinctId, enabling unique-user counts in PostHog without
+ * storing raw IPs.
+ */
+export function hashClientIp(ip: string): string {
+  return createHash("sha256")
+    .update(`sodax-mcp:${ip}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
 // ── Core tracking function ───────────────────────────────────────────
 function trackToolCall(
   toolName: string,
   durationMs: number,
   success: boolean,
+  clientId?: string,
   error?: string
 ): void {
   const ph = getClient();
   if (!ph) return;
 
   ph.capture({
-    distinctId: DISTINCT_ID,
+    distinctId: clientId || DISTINCT_ID,
     event: "tool_called",
     properties: {
       server: SERVER_NAME,
@@ -121,8 +138,11 @@ function trackToolCall(
  * automatically wrapped with PostHog event tracking.
  *
  * Call this BEFORE registering any tools.
+ *
+ * @param clientId — optional hashed client identifier for unique-user tracking.
+ *                   Pass hashClientIp(req.ip) from the request handler.
  */
-export function withAnalytics(server: McpServer): void {
+export function withAnalytics(server: McpServer, clientId?: string): void {
   const originalTool = server.tool.bind(server);
 
   (server as any).tool = function (...allArgs: any[]) {
@@ -135,10 +155,10 @@ export function withAnalytics(server: McpServer): void {
         const start = Date.now();
         try {
           const result = await handler(...handlerArgs);
-          trackToolCall(toolName, Date.now() - start, true);
+          trackToolCall(toolName, Date.now() - start, true, clientId);
           return result;
         } catch (err) {
-          trackToolCall(toolName, Date.now() - start, false, String(err));
+          trackToolCall(toolName, Date.now() - start, false, clientId, String(err));
           throw err;
         }
       };

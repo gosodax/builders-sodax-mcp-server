@@ -21,6 +21,7 @@ import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { withAnalytics, shutdownAnalytics } from "./services/analytics.js";
+import { checkApiDrift } from "./services/apiDriftCheck.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,7 +34,7 @@ const __dirname = dirname(__filename);
 async function createServer(): Promise<McpServer> {
   const server = new McpServer({
     name: "builders-sodax-mcp-server",
-    version: "1.0.0"
+    version: "1.1.0"
   });
 
   // Wrap server.tool() so every tool call is tracked in PostHog
@@ -145,12 +146,12 @@ async function runHTTP(): Promise<void> {
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    const apiToolCount = 11; // sodax_* tools registered in sodaxApi.ts
+    const apiToolCount = 28; // sodax_* tools registered in sodaxApi.ts (27 + refresh_cache)
     const totalTools = apiToolCount + gitbookToolNames.length;
     res.json({ 
       status: "healthy", 
       service: "builders-sodax-mcp-server",
-      version: "1.0.0",
+      version: "1.1.0",
       uptime_seconds: Math.floor(process.uptime()),
       tools: {
         total: totalTools,
@@ -217,21 +218,46 @@ async function runHTTP(): Promise<void> {
     
     res.json({
       name: "SODAX Builders MCP Server",
-      version: "1.0.0",
-      description: "Live API data and SDK documentation for developers and integration partners",
+      version: "1.1.0",
+      description: "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 17+ networks",
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       tools: {
-        api: [
+        config: [
           "sodax_get_supported_chains",
           "sodax_get_swap_tokens",
+          "sodax_get_all_config",
+          "sodax_get_relay_chain_id_map",
+          "sodax_get_all_chains_configs",
+          "sodax_get_hub_assets",
+          "sodax_get_money_market_tokens",
+          "sodax_get_money_market_reserve_assets"
+        ],
+        intents: [
           "sodax_get_transaction",
+          "sodax_get_intent",
           "sodax_get_user_transactions",
           "sodax_get_volume",
           "sodax_get_orderbook",
+          "sodax_get_solver_intent"
+        ],
+        amm: [
+          "sodax_get_amm_positions",
+          "sodax_get_amm_pool_candles"
+        ],
+        moneyMarket: [
           "sodax_get_money_market_assets",
+          "sodax_get_money_market_asset",
           "sodax_get_user_position",
+          "sodax_get_asset_borrowers",
+          "sodax_get_asset_suppliers",
+          "sodax_get_all_borrowers"
+        ],
+        partnersAndToken: [
           "sodax_get_partners",
+          "sodax_get_partner_summary",
           "sodax_get_token_supply",
+          "sodax_get_total_supply",
+          "sodax_get_circulating_supply",
           "sodax_refresh_cache"
         ],
         sdkDocs: gitbookTools
@@ -251,6 +277,8 @@ async function runHTTP(): Promise<void> {
   const port = parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     console.error(`SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    // Non-blocking: compare live OpenAPI spec against registered MCP tools
+    checkApiDrift();
   });
 }
 

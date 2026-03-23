@@ -24,17 +24,42 @@ const SERVER_NAME =
 // Map every tool name to a logical group for PostHog filtering.
 // Update this when you add or remove tools.
 const TOOL_GROUPS: Record<string, string> = {
-  // SODAX API tools
+  // SODAX API tools — config
   sodax_get_supported_chains: "api",
   sodax_get_swap_tokens: "api",
+  sodax_get_all_config: "api",
+  sodax_get_relay_chain_id_map: "api",
+  sodax_get_all_chains_configs: "api",
+  sodax_get_hub_assets: "api",
+  sodax_get_money_market_tokens: "api",
+  sodax_get_money_market_reserve_assets: "api",
+
+  // SODAX API tools — intents & solver
   sodax_get_transaction: "api",
   sodax_get_user_transactions: "api",
+  sodax_get_intent: "api",
   sodax_get_volume: "api",
   sodax_get_orderbook: "api",
+  sodax_get_solver_intent: "api",
+
+  // SODAX API tools — AMM
+  sodax_get_amm_positions: "api",
+  sodax_get_amm_pool_candles: "api",
+
+  // SODAX API tools — money market
   sodax_get_money_market_assets: "api",
+  sodax_get_money_market_asset: "api",
+  sodax_get_asset_borrowers: "api",
+  sodax_get_asset_suppliers: "api",
+  sodax_get_all_borrowers: "api",
   sodax_get_user_position: "api",
+
+  // SODAX API tools — partners & token
   sodax_get_partners: "api",
+  sodax_get_partner_summary: "api",
   sodax_get_token_supply: "api",
+  sodax_get_total_supply: "api",
+  sodax_get_circulating_supply: "api",
   sodax_refresh_cache: "api",
 
   // GitBook SDK docs meta-tools

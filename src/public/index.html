@@ -70,11 +70,15 @@
     },
     "featureList": [
       "Cross-network (cross-chain) swap token queries across 17+ networks",
+      "Full protocol configuration and relay chain ID mapping",
       "Solver volume and intent history lookup",
-      "Money market lending and borrowing rates",
+      "Money market lending and borrowing rates with borrower/supplier analytics",
+      "AMM liquidity positions and OHLCV candlestick data",
       "Orderbook and limit order data",
-      "Transaction lookup and wallet history",
-      "SODA token supply info",
+      "Intent lookup by transaction hash or intent hash",
+      "Partner volume summaries and integration directory",
+      "SODA token supply info (total, circulating, detailed)",
+      "Hub (Sonic) asset mapping for spoke tokens",
       "Auto-syncing SDK documentation from GitBook",
       "Cross-chain developer tools and integration support"
     ]
@@ -1184,16 +1188,45 @@
       <div class="section-title">
         <h2 id="tools-heading">Available Tools</h2>
       </div>
-      <p class="section-subtitle">Cross-network API tools + cross-chain SDK documentation, all in one connection.</p>
+      <p class="section-subtitle">32 tools: cross-network API data, AMM analytics, money market insights, and SDK documentation — all in one connection.</p>
       
       <div class="tools-grid">
         <details class="tool-module">
           <summary>
             <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="settings"></i></div>
+              <div class="tool-summary-text">
+                <h3>Network Configuration</h3>
+                <p>Chains, swap tokens, hub assets, relay mappings, and full protocol config</p>
+              </div>
+            </div>
+            <div class="tool-summary-right">
+              <span class="badge">8 tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_get_supported_chains</code><span>List 17+ supported networks</span></div>
+              <div class="tool-item"><code>sodax_get_swap_tokens</code><span>Cross-network swap tokens by chain</span></div>
+              <div class="tool-item"><code>sodax_get_all_config</code><span>Full config (chains + tokens) in one call</span></div>
+              <div class="tool-item"><code>sodax_get_all_chains_configs</code><span>Detailed spoke chain configs</span></div>
+              <div class="tool-item"><code>sodax_get_relay_chain_id_map</code><span>Chain ID to relay ID mapping</span></div>
+              <div class="tool-item"><code>sodax_get_hub_assets</code><span>Hub (Sonic) assets for spoke tokens</span></div>
+              <div class="tool-item"><code>sodax_get_money_market_tokens</code><span>Money market supported tokens</span></div>
+              <div class="tool-item"><code>sodax_get_money_market_reserve_assets</code><span>Money market reserve assets</span></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
               <div class="tool-icon"><i data-lucide="database"></i></div>
               <div class="tool-summary-text">
-                <h3>Cross-Network API Data</h3>
-                <p>Networks, swap tokens, intent transactions, and solver volume</p>
+                <h3>Intents & Solver</h3>
+                <p>Intent transactions, solver volume, orderbook, and fill history</p>
               </div>
             </div>
             <div class="tool-summary-right">
@@ -1204,42 +1237,93 @@
           </summary>
           <div class="tool-detail">
             <div class="tool-list">
-              <div class="tool-item"><code>sodax_get_supported_chains</code><span>List 17+ supported networks</span></div>
-              <div class="tool-item"><code>sodax_get_swap_tokens</code><span>Cross-network swap tokens</span></div>
-              <div class="tool-item"><code>sodax_get_transaction</code><span>Intent transaction lookup</span></div>
+              <div class="tool-item"><code>sodax_get_transaction</code><span>Intent lookup by transaction hash</span></div>
+              <div class="tool-item"><code>sodax_get_intent</code><span>Intent lookup by intent hash</span></div>
               <div class="tool-item"><code>sodax_get_user_transactions</code><span>Wallet intent history</span></div>
-              <div class="tool-item"><code>sodax_get_volume</code><span>Solver volume data</span></div>
+              <div class="tool-item"><code>sodax_get_volume</code><span>Solver volume (filled intents)</span></div>
               <div class="tool-item"><code>sodax_get_orderbook</code><span>Cross-chain orderbook</span></div>
+              <div class="tool-item"><code>sodax_get_solver_intent</code><span>Solver-side intent details & fill history</span></div>
             </div>
           </div>
         </details>
-        
+
         <details class="tool-module">
           <summary>
             <div class="tool-summary-left">
-              <div class="tool-icon"><i data-lucide="landmark"></i></div>
+              <div class="tool-icon"><i data-lucide="bar-chart-3"></i></div>
               <div class="tool-summary-text">
-                <h3>DeFi & Token Data</h3>
-                <p>Cross-chain money markets, lending rates, and SODA token supply</p>
+                <h3>AMM & Liquidity</h3>
+                <p>LP positions and OHLCV candlestick data for AMM pools</p>
               </div>
             </div>
             <div class="tool-summary-right">
-              <span class="badge">5 tools</span>
+              <span class="badge">2 tools</span>
               <span class="tool-source-tag">SODAX API</span>
               <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
             </div>
           </summary>
           <div class="tool-detail">
             <div class="tool-list">
-              <div class="tool-item"><code>sodax_get_money_market_assets</code><span>Lending/borrowing assets</span></div>
-              <div class="tool-item"><code>sodax_get_user_position</code><span>User's MM position</span></div>
-              <div class="tool-item"><code>sodax_get_partners</code><span>Integration partners</span></div>
-              <div class="tool-item"><code>sodax_get_token_supply</code><span>SODA token supply</span></div>
+              <div class="tool-item"><code>sodax_get_amm_positions</code><span>AMM LP NFT positions by owner</span></div>
+              <div class="tool-item"><code>sodax_get_amm_pool_candles</code><span>OHLCV candle data for any pool</span></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="landmark"></i></div>
+              <div class="tool-summary-text">
+                <h3>Money Market</h3>
+                <p>Lending/borrowing assets, user positions, borrower and supplier analytics</p>
+              </div>
+            </div>
+            <div class="tool-summary-right">
+              <span class="badge">6 tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_get_money_market_assets</code><span>All lending/borrowing assets</span></div>
+              <div class="tool-item"><code>sodax_get_money_market_asset</code><span>Single asset by reserve address</span></div>
+              <div class="tool-item"><code>sodax_get_user_position</code><span>User's lending/borrowing position</span></div>
+              <div class="tool-item"><code>sodax_get_asset_borrowers</code><span>Borrowers for a specific asset</span></div>
+              <div class="tool-item"><code>sodax_get_asset_suppliers</code><span>Suppliers for a specific asset</span></div>
+              <div class="tool-item"><code>sodax_get_all_borrowers</code><span>All borrowers across assets</span></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="tool-module">
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="coins"></i></div>
+              <div class="tool-summary-text">
+                <h3>Partners & Token</h3>
+                <p>Integration partners, partner summaries, and SODA token supply data</p>
+              </div>
+            </div>
+            <div class="tool-summary-right">
+              <span class="badge">6 tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_get_partners</code><span>Integration partners list</span></div>
+              <div class="tool-item"><code>sodax_get_partner_summary</code><span>Partner volume & activity summary</span></div>
+              <div class="tool-item"><code>sodax_get_token_supply</code><span>Full SODA token supply info</span></div>
+              <div class="tool-item"><code>sodax_get_total_supply</code><span>Total supply (plain number)</span></div>
+              <div class="tool-item"><code>sodax_get_circulating_supply</code><span>Circulating supply (plain number)</span></div>
               <div class="tool-item"><code>sodax_refresh_cache</code><span>Clear cached data</span></div>
             </div>
           </div>
         </details>
-        
+
         <details class="tool-module">
           <summary>
             <div class="tool-summary-left">

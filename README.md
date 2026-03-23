@@ -45,25 +45,57 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 
 ## Tools
 
-### Cross-Network API Data (6 tools)
+### Network Configuration (8 tools)
 
 | Tool | Description |
 |------|-------------|
 | `sodax_get_supported_chains` | List all blockchain networks supported by SODAX for cross-chain swaps |
 | `sodax_get_swap_tokens` | Get available tokens for cross-network swapping, optionally filtered by chain |
-| `sodax_get_transaction` | Look up an intent transaction by hash — status, amounts, and details |
-| `sodax_get_user_transactions` | Get intent/transaction history for a specific wallet address |
-| `sodax_get_volume` | Get solver volume data (filled intents) with filtering and pagination |
-| `sodax_get_orderbook` | Get current cross-chain orderbook entries from solver |
+| `sodax_get_all_config` | Get full SODAX configuration (chains + tokens) in one call |
+| `sodax_get_all_chains_configs` | Detailed spoke chain configs with contract addresses and RPCs |
+| `sodax_get_relay_chain_id_map` | Chain ID to intent relay chain ID mapping |
+| `sodax_get_hub_assets` | Hub (Sonic) assets representing spoke tokens |
+| `sodax_get_money_market_tokens` | Money market supported tokens by chain |
+| `sodax_get_money_market_reserve_assets` | Money market reserve assets |
 
-### DeFi & Token Data (5 tools)
+### Intents & Solver (6 tools)
 
 | Tool | Description |
 |------|-------------|
-| `sodax_get_money_market_assets` | List lending/borrowing assets and rates in the money market |
+| `sodax_get_transaction` | Look up an intent transaction by hash — status, amounts, and details |
+| `sodax_get_intent` | Look up a specific intent by its intent hash |
+| `sodax_get_user_transactions` | Get intent/transaction history for a specific wallet address |
+| `sodax_get_volume` | Get solver volume data (filled intents) with filtering and pagination |
+| `sodax_get_orderbook` | Get current cross-chain orderbook entries from solver |
+| `sodax_get_solver_intent` | Get solver-side intent details and fill history |
+
+### AMM & Liquidity (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_get_amm_positions` | Get AMM liquidity provider NFT positions by owner |
+| `sodax_get_amm_pool_candles` | Get OHLCV candlestick chart data for an AMM pool |
+
+### Money Market (6 tools)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_get_money_market_assets` | List all lending/borrowing assets and rates |
+| `sodax_get_money_market_asset` | Get detailed info for a specific asset by reserve address |
 | `sodax_get_user_position` | Get a user's money market position (supply, borrow, health) |
+| `sodax_get_asset_borrowers` | Get borrowers for a specific money market asset |
+| `sodax_get_asset_suppliers` | Get suppliers (lenders) for a specific money market asset |
+| `sodax_get_all_borrowers` | Get all borrowers across all money market assets |
+
+### Partners & Token (6 tools)
+
+| Tool | Description |
+|------|-------------|
 | `sodax_get_partners` | List SODAX integration partners across networks |
-| `sodax_get_token_supply` | Get SODA token supply info (circulating, total, max) |
+| `sodax_get_partner_summary` | Get volume and activity summary for a specific partner |
+| `sodax_get_token_supply` | Get SODA token supply info (total, circulating, burned) |
+| `sodax_get_total_supply` | Get SODA total supply as a plain number |
+| `sodax_get_circulating_supply` | Get SODA circulating supply as a plain number |
 | `sodax_refresh_cache` | Clear cached data to get fresh results |
 
 ### Cross-Chain SDK Documentation (dynamic)

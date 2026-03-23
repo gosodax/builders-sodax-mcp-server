@@ -102,7 +102,10 @@ async function runHTTP(): Promise<void> {
   await warmGitBookCache();
   
   const app = express();
-  
+
+  // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
+  app.set("trust proxy", 1);
+
   // Security middleware
   app.use(helmet({
     contentSecurityPolicy: {

@@ -161,7 +161,7 @@ async function runHTTP(): Promise<void> {
     });
   });
 
-  app.post("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+  app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
     const requestServer = await createServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

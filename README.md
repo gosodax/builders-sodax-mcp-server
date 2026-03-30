@@ -43,6 +43,10 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 }
 ```
 
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/gosodax-builders-sodax-mcp-server).
+
 ## Tools
 
 ### Network Configuration (8 tools)

@@ -41,9 +41,6 @@ RUN chown -R appuser:appgroup /app
 
 # Set environment
 ENV NODE_ENV=production
-ENV PORT=3001
-
-EXPOSE 3001
 
 USER appuser
 

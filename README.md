@@ -167,6 +167,22 @@ pnpm start
 
 ## Deployment
 
+### Environments
+
+The server runs in two Coolify environments on the tech-team infrastructure (`clf.sodax.com`):
+
+| Environment | URL | Tracks branch |
+|-------------|-----|---------------|
+| Production | https://builders.sodax.com | `master` |
+| Staging | https://test-builders-mcp.coolify.iconblockchain.xyz | `development` |
+
+Promotion flow:
+
+1. Feature branches → PR into `development` → auto-deploys to **staging** on merge.
+2. `development` → PR into `master` → auto-deploys to **production** on merge.
+
+Hotfixes can branch off `master` and PR directly into `master`, then be merged back into `development`.
+
 ### Docker
 
 ```bash

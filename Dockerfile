@@ -22,8 +22,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+# Install pnpm and curl (curl is used by the Docker healthcheck)
+RUN apk add --no-cache curl && \
+    corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
@@ -41,9 +42,6 @@ RUN chown -R appuser:appgroup /app
 
 # Set environment
 ENV NODE_ENV=production
-ENV PORT=3001
-
-EXPOSE 3001
 
 USER appuser
 

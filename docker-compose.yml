@@ -1,19 +1,18 @@
-version: '3.8'
-
 services:
-  marketing-sodax-mcp-server:
+  builders-sodax-mcp-server:
     build: .
-    container_name: marketing-sodax-mcp-server
+    container_name: builders-sodax-mcp-server
+    env_file: .env
     ports:
-      - "3000:3000"
+      - "${PORT}:${PORT}"
     environment:
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=${PORT}
       - TRANSPORT=http
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 10
+      start_period: 40s

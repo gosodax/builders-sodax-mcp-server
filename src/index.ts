@@ -279,8 +279,11 @@ async function runHTTP(): Promise<void> {
   const port = parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     console.error(`SODAX Builders MCP server running on http://0.0.0.0:${port}`);
-    // Non-blocking: compare live OpenAPI spec against registered MCP tools
-    checkApiDrift();
+    // Non-blocking: compare live OpenAPI spec against registered MCP tools.
+    // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.
+    void checkApiDrift().catch(err => {
+      console.error("⚠️  API drift check threw unexpectedly:", err instanceof Error ? err.message : err);
+    });
   });
 }
 

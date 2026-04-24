@@ -127,12 +127,23 @@ export async function getTransaction(txHash: string): Promise<Transaction | null
  */
 export async function getUserTransactions(
   userAddress: string,
-  options?: { chainId?: string; limit?: number; offset?: number }
+  options?: {
+    limit?: number;
+    offset?: number;
+    startDate?: string;
+    endDate?: string;
+    fromTs?: number;
+    toTs?: number;
+  }
 ): Promise<Transaction[]> {
   try {
     const params = new URLSearchParams();
-    if (options?.limit) params.append("limit", options.limit.toString());
-    if (options?.offset) params.append("offset", options.offset.toString());
+    if (options?.limit !== undefined) params.append("limit", options.limit.toString());
+    if (options?.offset !== undefined) params.append("offset", options.offset.toString());
+    if (options?.startDate) params.append("startDate", options.startDate);
+    if (options?.endDate) params.append("endDate", options.endDate);
+    if (options?.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
+    if (options?.toTs !== undefined) params.append("toTs", options.toTs.toString());
 
     const queryString = params.toString();
     const url = `/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`;
@@ -160,6 +171,8 @@ export async function getVolume(options: {
   toBlock?: number;
   since?: string;
   until?: string;
+  fromTs?: number;
+  toTs?: number;
   sort?: "asc" | "desc";
   limit?: number;
   includeData?: boolean;
@@ -181,6 +194,8 @@ export async function getVolume(options: {
     if (options.toBlock) params.append("toBlock", options.toBlock.toString());
     if (options.since) params.append("since", options.since);
     if (options.until) params.append("until", options.until);
+    if (options.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
+    if (options.toTs !== undefined) params.append("toTs", options.toTs.toString());
     if (options.sort) params.append("sort", options.sort);
     if (options.limit) params.append("limit", options.limit.toString());
     if (options.cursor) params.append("cursor", options.cursor);
@@ -200,12 +215,14 @@ export async function getVolume(options: {
 /**
  * Get current orderbook entries from solver
  */
-export async function getOrderbook(options?: {
-  limit?: number;
+export async function getOrderbook(options: {
+  limit: number;
+  offset: number;
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
-    if (options?.limit) params.append("limit", options.limit.toString());
+    params.append("limit", options.limit.toString());
+    params.append("offset", options.offset.toString());
 
     const queryString = params.toString();
     const url = `/solver/orderbook${queryString ? `?${queryString}` : ""}`;
@@ -243,8 +260,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
  * Get user's money market position
  */
 export async function getUserPosition(
-  userAddress: string,
-  chainId?: string
+  userAddress: string
 ): Promise<UserPosition | null> {
   try {
     const response = await apiClient.get(`/moneymarket/position/${userAddress}`);
@@ -261,14 +277,18 @@ export async function getUserPosition(
 /**
  * List SODAX integration partners
  */
-export async function getPartners(): Promise<Partner[]> {
-  const cacheKey = "partners";
+export async function getPartners(chainId?: number): Promise<Partner[]> {
+  const cacheKey = `partners-${chainId ?? "all"}`;
   const cached = getCached<Partner[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const response = await apiClient.get("/partners");
-    const partners = response.data?.data || response.data || [];
+    const params = new URLSearchParams();
+    if (chainId !== undefined) params.append("chainId", chainId.toString());
+    const queryString = params.toString();
+    const url = `/partners${queryString ? `?${queryString}` : ""}`;
+    const response = await apiClient.get(url);
+    const partners = response.data?.data || response.data?.partners || response.data || [];
     setCache(cacheKey, partners);
     return partners;
   } catch (error) {

@@ -28,6 +28,13 @@ interface ToolContract {
   /** Subset of `params` the tool marks non-optional. */
   requiredParams: string[];
   /**
+   * Params the tool accepts that are NOT query/path params on THIS endpoint —
+   * used when a single tool wraps multiple endpoint variants and the extra
+   * param is a routing switch between them. Suppresses the "tool declares
+   * param X not in spec" warning for the listed names on this endpoint only.
+   */
+  allowToolExtra?: string[];
+  /**
    * Expected top-level property names in the 200 response schema.
    * Omit when the endpoint returns a primitive, a dynamic map, or when the
    * spec provides no object schema — those are reported as "uncovered".
@@ -74,6 +81,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     tool: "sodax_get_hub_assets",
     params: ["chainId"],
     requiredParams: [],
+    allowToolExtra: ["chainId"],
   },
   "GET /config/hub/:chainId/assets": {
     tool: "sodax_get_hub_assets",
@@ -84,6 +92,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     tool: "sodax_get_swap_tokens",
     params: ["chainId"],
     requiredParams: [],
+    allowToolExtra: ["chainId"],
   },
   "GET /config/swap/:chainId/tokens": {
     tool: "sodax_get_swap_tokens",
@@ -95,6 +104,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     tool: "sodax_get_money_market_tokens",
     params: ["chainId"],
     requiredParams: [],
+    allowToolExtra: ["chainId"],
   },
   "GET /config/money-market/reserve-assets": {
     tool: "sodax_get_money_market_reserve_assets",
@@ -116,7 +126,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   "GET /amm/pools/:chainId/:poolId/candles": {
     tool: "sodax_get_amm_pool_candles",
     params: ["chainId", "poolId", "interval", "from", "to"],
-    requiredParams: ["chainId", "poolId"],
+    requiredParams: ["chainId", "poolId", "interval", "from", "to"],
     responseFields: ["poolId", "chainId", "interval", "from", "to", "candles"],
   },
   "GET /intent/tx/:txHash": {
@@ -127,7 +137,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /intent/user/:userAddress": {
     tool: "sodax_get_user_transactions",
-    params: ["userAddress", "limit", "offset"],
+    params: ["userAddress", "limit", "offset", "startDate", "endDate", "fromTs", "toTs"],
     requiredParams: ["userAddress"],
     responseFields: ["items", "total", "offset", "limit"],
   },
@@ -139,13 +149,13 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /solver/orderbook": {
     tool: "sodax_get_orderbook",
-    params: ["limit"],
-    requiredParams: [],
+    params: ["limit", "offset"],
+    requiredParams: ["limit", "offset"],
     responseFields: ["total", "data"],
   },
   "GET /solver/volume": {
     tool: "sodax_get_volume",
-    params: ["inputToken", "outputToken", "chainId", "solver", "fromBlock", "toBlock", "since", "until", "sort", "limit", "includeData", "cursor"],
+    params: ["inputToken", "outputToken", "chainId", "solver", "fromBlock", "toBlock", "since", "until", "fromTs", "toTs", "sort", "limit", "includeData", "cursor"],
     requiredParams: [],
     responseFields: ["items", "nextCursor", "hasMore"],
   },
@@ -156,7 +166,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /moneymarket/position/:userAddress": {
     tool: "sodax_get_user_position",
-    params: ["userAddress", "chainId"],
+    params: ["userAddress"],
     requiredParams: ["userAddress"],
     responseFields: ["userAddress", "positions"],
   },
@@ -192,7 +202,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /partners": {
     tool: "sodax_get_partners",
-    params: [],
+    params: ["chainId"],
     requiredParams: [],
     responseFields: ["partners"],
   },
@@ -402,7 +412,9 @@ export async function checkApiDrift(): Promise<DriftReport> {
         detail: `spec has param "${name}" not in tool "${contract.tool}"`,
       });
     }
+    const allowExtra = new Set(contract.allowToolExtra ?? []);
     for (const name of paramDiff.extra) {
+      if (allowExtra.has(name)) continue;
       paramIssues.push({
         endpoint: key,
         kind: "param-extra",

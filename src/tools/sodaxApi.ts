@@ -209,13 +209,21 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Maximum number of transactions to return (1-100)"),
       offset: z.number().min(0).optional().default(0)
         .describe("Number of transactions to skip for pagination"),
+      startDate: z.string().optional()
+        .describe("Start date filter (ISO 8601, e.g. '2026-01-01'). Don't mix with fromTs/toTs."),
+      endDate: z.string().optional()
+        .describe("End date filter (ISO 8601). Don't mix with fromTs/toTs."),
+      fromTs: z.number().optional()
+        .describe("Start timestamp filter (unix seconds). Don't mix with startDate/endDate."),
+      toTs: z.number().optional()
+        .describe("End timestamp filter (unix seconds). Don't mix with startDate/endDate."),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ userAddress, limit, offset, format }) => {
+    async ({ userAddress, limit, offset, startDate, endDate, fromTs, toTs, format }) => {
       try {
-        const transactions = await getUserTransactions(userAddress, { limit, offset });
+        const transactions = await getUserTransactions(userAddress, { limit, offset, startDate, endDate, fromTs, toTs });
         const header = `## Transactions for ${userAddress.slice(0, 10)}...${userAddress.slice(-8)}\n\n`;
         const summary = `${transactions.length} transactions found\n\n`;
         return {
@@ -251,9 +259,13 @@ export function registerSodaxApiTools(server: McpServer): void {
       toBlock: z.number().optional()
         .describe("End block number (don't mix with since/until)"),
       since: z.string().optional()
-        .describe("Start time ISO format (don't mix with fromBlock/toBlock)"),
+        .describe("Start time ISO format (don't mix with fromBlock/toBlock or fromTs/toTs)"),
       until: z.string().optional()
-        .describe("End time ISO format (don't mix with fromBlock/toBlock)"),
+        .describe("End time ISO format (don't mix with fromBlock/toBlock or fromTs/toTs)"),
+      fromTs: z.number().optional()
+        .describe("Start timestamp (unix seconds). Don't mix with since/until or fromBlock/toBlock."),
+      toTs: z.number().optional()
+        .describe("End timestamp (unix seconds). Don't mix with since/until or fromBlock/toBlock."),
       sort: z.enum(["asc", "desc"]).optional().default("desc")
         .describe("Sort order by block number"),
       limit: z.number().min(1).max(100).optional().default(50)
@@ -266,12 +278,12 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ inputToken, outputToken, chainId, solver, fromBlock, toBlock, since, until, sort, limit, includeData, cursor, format }) => {
+    async ({ inputToken, outputToken, chainId, solver, fromBlock, toBlock, since, until, fromTs, toTs, sort, limit, includeData, cursor, format }) => {
       try {
-        const volume = await getVolume({ 
-          chainId, inputToken, outputToken, solver, 
-          fromBlock, toBlock, since, until, 
-          sort, limit, includeData, cursor 
+        const volume = await getVolume({
+          chainId, inputToken, outputToken, solver,
+          fromBlock, toBlock, since, until, fromTs, toTs,
+          sort, limit, includeData, cursor
         });
         const header = `## SODAX Filled Intents\n\n`;
         const pagination = volume.hasMore && volume.nextCursor 
@@ -297,15 +309,17 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_orderbook",
     "Get current orderbook entries showing pending/open intents",
     {
-      limit: z.number().min(1).max(100).optional().default(20)
-        .describe("Maximum number of orders to return (1-100)"),
+      limit: z.number().min(1).max(100)
+        .describe("REQUIRED: Maximum number of orders to return (1-100)"),
+      offset: z.number().min(0)
+        .describe("REQUIRED: Number of orders to skip for pagination"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ limit, format }) => {
+    async ({ limit, offset, format }) => {
       try {
-        const orderbook = await getOrderbook({ limit });
+        const orderbook = await getOrderbook({ limit, offset });
         return {
           content: [{
             type: "text",
@@ -360,15 +374,13 @@ export function registerSodaxApiTools(server: McpServer): void {
     {
       userAddress: z.string()
         .describe("The wallet address to look up"),
-      chainId: z.string().optional()
-        .describe("Filter by chain ID"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ userAddress, chainId, format }) => {
+    async ({ userAddress, format }) => {
       try {
-        const position = await getUserPosition(userAddress, chainId);
+        const position = await getUserPosition(userAddress);
         if (!position) {
           return {
             content: [{ type: "text", text: `No money market position found for ${userAddress}` }]
@@ -394,13 +406,15 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_partners",
     "List all SODAX integration partners including wallets, DEXs, and other protocols",
     {
+      chainId: z.number().optional()
+        .describe("Filter partners by numeric chain ID (e.g. 146 for Sonic)"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ format }) => {
+    async ({ chainId, format }) => {
       try {
-        const partners = await getPartners();
+        const partners = await getPartners(chainId);
         return {
           content: [{
             type: "text",
@@ -660,12 +674,12 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Chain ID where the pool is deployed (e.g., 'sonic')"),
       poolId: z.string()
         .describe("The pool contract address or ID"),
-      interval: z.string().optional()
-        .describe("Candle interval (e.g., '1h', '4h', '1d')"),
-      from: z.number().optional()
-        .describe("Start timestamp (unix seconds)"),
-      to: z.number().optional()
-        .describe("End timestamp (unix seconds)"),
+      interval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"])
+        .describe("REQUIRED: Candle interval"),
+      from: z.number()
+        .describe("REQUIRED: Start timestamp (unix seconds)"),
+      to: z.number()
+        .describe("REQUIRED: End timestamp (unix seconds)"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },

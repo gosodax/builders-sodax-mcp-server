@@ -138,8 +138,8 @@ export async function getUserTransactions(
 ): Promise<Transaction[]> {
   try {
     const params = new URLSearchParams();
-    if (options?.limit) params.append("limit", options.limit.toString());
-    if (options?.offset) params.append("offset", options.offset.toString());
+    if (options?.limit !== undefined) params.append("limit", options.limit.toString());
+    if (options?.offset !== undefined) params.append("offset", options.offset.toString());
     if (options?.startDate) params.append("startDate", options.startDate);
     if (options?.endDate) params.append("endDate", options.endDate);
     if (options?.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
@@ -217,12 +217,12 @@ export async function getVolume(options: {
  */
 export async function getOrderbook(options: {
   limit: number;
-  offset?: number;
+  offset: number;
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
     params.append("limit", options.limit.toString());
-    if (options.offset !== undefined) params.append("offset", options.offset.toString());
+    params.append("offset", options.offset.toString());
 
     const queryString = params.toString();
     const url = `/solver/orderbook${queryString ? `?${queryString}` : ""}`;

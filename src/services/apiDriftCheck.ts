@@ -79,7 +79,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /config/hub/assets": {
     tool: "sodax_get_hub_assets",
-    params: [],
+    params: ["chainId"],
     requiredParams: [],
     allowToolExtra: ["chainId"],
   },
@@ -90,7 +90,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /config/swap/tokens": {
     tool: "sodax_get_swap_tokens",
-    params: [],
+    params: ["chainId"],
     requiredParams: [],
     allowToolExtra: ["chainId"],
   },
@@ -102,7 +102,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /config/money-market/tokens": {
     tool: "sodax_get_money_market_tokens",
-    params: [],
+    params: ["chainId"],
     requiredParams: [],
     allowToolExtra: ["chainId"],
   },

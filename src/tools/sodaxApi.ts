@@ -406,7 +406,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_partners",
     "List all SODAX integration partners including wallets, DEXs, and other protocols",
     {
-      chainId: z.number().optional()
+      chainId: z.number().int().optional()
         .describe("Filter partners by numeric chain ID (e.g. 146 for Sonic)"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")

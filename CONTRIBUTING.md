@@ -50,7 +50,22 @@ Hotfixes follow the same path as any other change: branch off `development`, PR 
 
 ## Required secrets (admin setup)
 
-- `SYNC_TOKEN` — fine-grained PAT with **`contents: write`** AND **`pull requests: write`** on this repo. Used by the `sync-to-development` workflow to (a) fast-forward push to the protected `development` branch and (b) open a fallback sync PR via `gh pr create` if `development` has diverged from `master`. Upgrade to a GitHub App token later if desired.
+The release workflows authenticate as a **GitHub App** rather than a personal access token, so the automation does not depend on any individual user's account or PAT lifetime.
+
+- `RELEASE_BOT_APP_ID` — numeric App ID, found at the top of the App's settings page (`https://github.com/organizations/gosodax/settings/apps/<app-name>`).
+- `RELEASE_BOT_PRIVATE_KEY` — entire contents of a `.pem` file generated under "Private keys" on the App's settings page (including the `-----BEGIN/END PRIVATE KEY-----` lines).
+
+The App must be:
+- **Owned by the `gosodax` org.**
+- **Installed on this repository** (`gosodax/builders-sodax-mcp-server`).
+- Granted these repository permissions:
+  - `Contents`: Read and write
+  - `Pull requests`: Read and write
+  - `Metadata`: Read
+
+At workflow runtime, [`actions/create-github-app-token@v1`](https://github.com/actions/create-github-app-token) mints a short-lived (~1h) installation token from these two secrets. The token is used for FF pushes to `development`, opening fallback sync PRs, and as the token release-please uses to open release PRs (so downstream CI fires on those PRs once CI exists).
+
+To rotate the App's private key: regenerate it in the App's settings and update the `RELEASE_BOT_PRIVATE_KEY` repo secret. To replace the App entirely: install the new App, swap both secrets, update the bypass actor on the `development` ruleset.
 
 ## Required branch protection (admin setup)
 
@@ -62,4 +77,4 @@ Hotfixes follow the same path as any other change: branch off `development`, PR 
 - `development`:
   - Require pull request before merging.
   - Allow squash merges only.
-  - **Bypass actor for the sync workflow.** The `sync-to-development` workflow fast-forward-pushes directly to `development`, which the PR requirement above would otherwise block. In the ruleset's *Bypass list*, add the account that owns `SYNC_TOKEN` (or the GitHub App, if you switch later). Without this bypass the FF push fails and every release falls back to opening a sync PR — defeating the silent-sync design.
+  - **Bypass actor for the sync workflow.** The `sync-to-development` workflow fast-forward-pushes directly to `development`, which the PR requirement above would otherwise block. In the ruleset's *Bypass list*, add the **GitHub App** referenced by `RELEASE_BOT_APP_ID` (Bypass mode: *Always*). Without this bypass the FF push fails and every release falls back to opening a sync PR — defeating the silent-sync design.

@@ -6,8 +6,7 @@ on:
       - master
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: sync-to-development
@@ -18,6 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, 'chore: sync master to development')"
     steps:
+      - name: Mint GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
       - name: Checkout master with full history
         uses: actions/checkout@v4
         with:
@@ -26,8 +32,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
 
       - name: Fetch development
         run: git fetch origin development:development
@@ -47,23 +53,23 @@ jobs:
       - name: Fast-forward development to master
         if: steps.sync.outputs.ff == 'true'
         env:
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git checkout development
           git merge --ff-only master
-          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" development
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" development
 
       - name: Open sync PR on divergence
         if: steps.sync.outputs.ff == 'false'
         env:
-          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           BRANCH="chore/sync-master-to-development-${{ github.run_id }}"
           git checkout -b "$BRANCH" master
-          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
           gh pr create \
             --repo "${{ github.repository }}" \
             --base development \

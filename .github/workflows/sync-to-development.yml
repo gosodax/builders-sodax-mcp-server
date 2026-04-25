@@ -23,7 +23,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: master
-          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure git identity
         run: |
@@ -47,21 +46,24 @@ jobs:
 
       - name: Fast-forward development to master
         if: steps.sync.outputs.ff == 'true'
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -euo pipefail
           git checkout development
           git merge --ff-only master
-          git push origin development
+          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" development
 
       - name: Open sync PR on divergence
         if: steps.sync.outputs.ff == 'false'
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -euo pipefail
           BRANCH="chore/sync-master-to-development-${{ github.run_id }}"
           git checkout -b "$BRANCH" master
-          git push origin "$BRANCH"
+          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
           gh pr create \
             --repo "${{ github.repository }}" \
             --base development \

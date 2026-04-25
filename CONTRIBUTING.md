@@ -50,15 +50,16 @@ Hotfixes follow the same path as any other change: branch off `development`, PR 
 
 ## Required secrets (admin setup)
 
-- `SYNC_TOKEN` — fine-grained PAT with `contents: write` on this repo. Used by the `sync-to-development` workflow to push to the protected `development` branch. Upgrade to a GitHub App token later if desired.
+- `SYNC_TOKEN` — fine-grained PAT with **`contents: write`** AND **`pull requests: write`** on this repo. Used by the `sync-to-development` workflow to (a) fast-forward push to the protected `development` branch and (b) open a fallback sync PR via `gh pr create` if `development` has diverged from `master`. Upgrade to a GitHub App token later if desired.
 
 ## Required branch protection (admin setup)
 
 - `master`:
   - Require pull request before merging.
-  - Require status checks: CI (when #15 lands) + release-please.
+  - Require status checks: CI only (e.g. the `ci.yml` from #15). Do **not** require `release-please` as a status check — it runs on `push` to `master` (post-merge), so it never reports a check on `development → master` PRs and would block every promotion.
   - Allow merge commits and squash merges. Disallow rebase merges.
   - Do NOT require linear history (we need merge commits from `development`).
 - `development`:
   - Require pull request before merging.
   - Allow squash merges only.
+  - **Bypass actor for the sync workflow.** The `sync-to-development` workflow fast-forward-pushes directly to `development`, which the PR requirement above would otherwise block. In the ruleset's *Bypass list*, add the account that owns `SYNC_TOKEN` (or the GitHub App, if you switch later). Without this bypass the FF push fails and every release falls back to opening a sync PR — defeating the silent-sync design.

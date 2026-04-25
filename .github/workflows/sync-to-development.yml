@@ -1,0 +1,72 @@
+name: sync master to development
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-to-development
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'chore: sync master to development')"
+    steps:
+      - name: Checkout master with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch development
+        run: git fetch origin development:development
+
+      - name: Check if development can fast-forward to master
+        id: sync
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor development master; then
+            echo "development is ancestor of master — fast-forward possible"
+            echo "ff=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "development has diverged from master — will open sync PR"
+            echo "ff=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fast-forward development to master
+        if: steps.sync.outputs.ff == 'true'
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          git checkout development
+          git merge --ff-only master
+          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" development
+
+      - name: Open sync PR on divergence
+        if: steps.sync.outputs.ff == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/sync-master-to-development-${{ github.run_id }}"
+          git checkout -b "$BRANCH" master
+          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base development \
+            --head "$BRANCH" \
+            --title "chore: sync master to development" \
+            --body "development has diverged from master — cannot fast-forward automatically. Merging this PR brings development back in sync. Opened by \`sync-to-development\` workflow (run ${{ github.run_id }})."

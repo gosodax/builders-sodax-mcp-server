@@ -1,0 +1,78 @@
+name: sync master to development
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-to-development
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'chore: sync master to development')"
+    steps:
+      - name: Mint GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - name: Checkout master with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Configure git identity
+        run: |
+          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+
+      - name: Fetch development
+        run: git fetch origin development:development
+
+      - name: Check if development can fast-forward to master
+        id: sync
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor development master; then
+            echo "development is ancestor of master — fast-forward possible"
+            echo "ff=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "development has diverged from master — will open sync PR"
+            echo "ff=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fast-forward development to master
+        if: steps.sync.outputs.ff == 'true'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git checkout development
+          git merge --ff-only master
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" development
+
+      - name: Open sync PR on divergence
+        if: steps.sync.outputs.ff == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/sync-master-to-development-${{ github.run_id }}"
+          git checkout -b "$BRANCH" master
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base development \
+            --head "$BRANCH" \
+            --title "chore: sync master to development" \
+            --body "development has diverged from master — cannot fast-forward automatically. Merging this PR brings development back in sync. Opened by \`sync-to-development\` workflow (run ${{ github.run_id }})."

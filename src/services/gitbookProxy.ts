@@ -1,16 +1,15 @@
 /**
  * GitBook MCP Proxy Service
- * 
+ *
  * Connects to the SODAX SDK documentation MCP server (GitBook)
  * and proxies its tools through our builders server.
- * 
+ *
  * This keeps SDK docs in sync as docs.sodax.com updates.
  */
 
-import axios, { AxiosInstance } from "axios";
-
 // GitBook MCP endpoint
 const GITBOOK_MCP_URL = "https://docs.sodax.com/~gitbook/mcp";
+const GITBOOK_TIMEOUT_MS = 30_000;
 
 // Cache for tools list (refresh every 10 minutes)
 let cachedTools: GitBookTool[] | null = null;
@@ -36,57 +35,75 @@ export interface GitBookToolResult {
   isError?: boolean;
 }
 
-// Create axios instance for GitBook MCP
-const mcpClient: AxiosInstance = axios.create({
-  baseURL: GITBOOK_MCP_URL,
-  timeout: 30000,
-  headers: {
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/event-stream"
-  },
-  // GitBook returns SSE format, so we need raw text
-  responseType: "text",
-  transformResponse: [(data: string) => {
-    // GitBook MCP returns SSE format: "event: message\ndata: {...}\n\n"
-    // Extract the JSON from the data: line
-    if (typeof data === "string" && data.includes("data:")) {
-      const lines = data.split("\n");
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          const jsonStr = line.slice(5).trim();
-          try {
-            return JSON.parse(jsonStr);
-          } catch {
-            // If parsing fails, return raw data
-          }
+/**
+ * GitBook returns either plain JSON or SSE-framed JSON
+ * (`event: message\ndata: {...}\n\n`). Pull the JSON out either way.
+ * Returns the raw text if it parses as neither — notifications come back
+ * with an empty body and shouldn't surface as errors.
+ */
+function parseGitBookResponse(text: string): unknown {
+  if (!text) return text;
+  if (text.includes("data:")) {
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data:")) {
+        const jsonStr = line.slice(5).trim();
+        try {
+          return JSON.parse(jsonStr);
+        } catch {
+          // fall through to plain-JSON parse
         }
       }
     }
-    // Try parsing as regular JSON
-    try {
-      return JSON.parse(data);
-    } catch {
-      return data;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function postGitBook(body: unknown): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GITBOOK_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(GITBOOK_MCP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText} from GitBook MCP`);
     }
-  }]
-});
+
+    const text = await response.text();
+    return parseGitBookResponse(text);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 /**
  * Send a JSON-RPC request to the GitBook MCP
  */
 async function sendMcpRequest(method: string, params?: unknown): Promise<unknown> {
-  const response = await mcpClient.post("", {
+  const data = await postGitBook({
     jsonrpc: "2.0",
     id: Date.now(),
     method,
     params: params || {}
-  });
-  
-  if (response.data.error) {
-    throw new Error(response.data.error.message || "MCP request failed");
+  }) as { error?: { message?: string }; result?: unknown };
+
+  if (data.error) {
+    throw new Error(data.error.message || "MCP request failed");
   }
-  
-  return response.data.result;
+
+  return data.result;
 }
 
 /**
@@ -102,9 +119,9 @@ async function initializeConnection(): Promise<void> {
         version: "1.0.0"
       }
     });
-    
-    // Send initialized notification
-    await mcpClient.post("", {
+
+    // Send initialized notification (fire-and-forget; response is ignored)
+    await postGitBook({
       jsonrpc: "2.0",
       method: "notifications/initialized"
     });
@@ -122,17 +139,17 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
   if (cachedTools && Date.now() - toolsCacheTime < TOOLS_CACHE_DURATION) {
     return cachedTools;
   }
-  
+
   try {
     // Initialize connection first
     await initializeConnection();
-    
+
     // Fetch tools list
     const result = await sendMcpRequest("tools/list") as { tools: GitBookTool[] };
-    
+
     cachedTools = result.tools || [];
     toolsCacheTime = Date.now();
-    
+
     if (cachedTools.length > 0) {
       console.error(`✅ Fetched ${cachedTools.length} tools from GitBook MCP`);
     } else {
@@ -151,18 +168,18 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
  * Call a tool on the GitBook MCP server
  */
 export async function callGitBookTool(
-  toolName: string, 
+  toolName: string,
   args: Record<string, unknown>
 ): Promise<GitBookToolResult> {
   try {
     // Ensure connection is initialized
     await initializeConnection();
-    
+
     const result = await sendMcpRequest("tools/call", {
       name: toolName,
       arguments: args
     }) as GitBookToolResult;
-    
+
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

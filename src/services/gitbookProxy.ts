@@ -43,7 +43,7 @@ export interface GitBookToolResult {
  */
 function parseGitBookResponse(text: string): unknown {
   if (!text) return text;
-  if (text.includes("data:")) {
+  if (/^(event:|data:)/m.test(text)) {
     for (const line of text.split("\n")) {
       if (line.startsWith("data:")) {
         const jsonStr = line.slice(5).trim();
@@ -92,13 +92,19 @@ async function postGitBook(body: unknown): Promise<unknown> {
  * Send a JSON-RPC request to the GitBook MCP
  */
 async function sendMcpRequest(method: string, params?: unknown): Promise<unknown> {
-  const data = await postGitBook({
+  const raw = await postGitBook({
     jsonrpc: "2.0",
     id: Date.now(),
     method,
     params: params || {}
-  }) as { error?: { message?: string }; result?: unknown };
+  });
 
+  if (typeof raw !== "object" || raw === null) {
+    const preview = typeof raw === "string" ? raw.slice(0, 200) : String(raw);
+    throw new Error(`MCP ${method}: expected JSON-RPC object, got ${typeof raw} (${preview})`);
+  }
+
+  const data = raw as { error?: { message?: string }; result?: unknown };
   if (data.error) {
     throw new Error(data.error.message || "MCP request failed");
   }

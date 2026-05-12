@@ -300,7 +300,14 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   logger.fatal({ err: error }, "Server error");
-  process.exit(1);
+  // Drain the async destination before exit so the fatal line isn't lost
+  // to a half-flushed SonicBoom buffer. Force-exit after 1s if flush stalls
+  // (e.g. transport worker not draining in dev).
+  const force = setTimeout(() => process.exit(1), 1000);
+  logger.flush(() => {
+    clearTimeout(force);
+    process.exit(1);
+  });
 });
 
 // Flush pending PostHog events on shutdown

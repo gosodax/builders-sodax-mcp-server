@@ -6,12 +6,20 @@
  * the protocol stream for stdio clients.
  *
  * - Level via LOG_LEVEL env (default "info"). Valid: trace|debug|info|warn|error|fatal.
+ *   Unknown values fall back to "info" with a warning rather than crashing at boot.
  * - JSON output in production, pino-pretty in dev.
  */
 
 import pino, { type Logger } from "pino";
 
-const level = process.env.LOG_LEVEL || "info";
+const VALID_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
+type LogLevel = typeof VALID_LEVELS[number];
+
+const requested = process.env.LOG_LEVEL?.toLowerCase();
+const requestedIsValid =
+  requested === undefined || (VALID_LEVELS as readonly string[]).includes(requested);
+const level: LogLevel = (requestedIsValid ? requested ?? "info" : "info") as LogLevel;
+
 const isDev = process.env.NODE_ENV !== "production";
 
 export const logger: Logger = isDev
@@ -24,3 +32,10 @@ export const logger: Logger = isDev
       },
     })
   : pino({ level, timestamp: pino.stdTimeFunctions.isoTime }, pino.destination(2));
+
+if (requested !== undefined && !requestedIsValid) {
+  logger.warn(
+    { requested: process.env.LOG_LEVEL, fallback: "info", valid: VALID_LEVELS },
+    "Invalid LOG_LEVEL — falling back to info",
+  );
+}

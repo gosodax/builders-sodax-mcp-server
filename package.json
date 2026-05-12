@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "axios": "^1.13.5",
     "express": "^4.22.1",
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",

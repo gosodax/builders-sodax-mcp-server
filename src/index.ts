@@ -22,6 +22,7 @@ import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookP
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { withAnalytics, shutdownAnalytics, hashClientIp } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import { logger } from "./services/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,47 +60,48 @@ const GITBOOK_RETRY_DELAY = 5000; // 5 seconds
  */
 async function warmGitBookCache(retryCount = 0): Promise<boolean> {
   gitbookInitAttempts++;
-  console.error(`GitBook proxy init attempt ${retryCount + 1}/${MAX_GITBOOK_RETRIES}...`);
-  
+  const attempt = retryCount + 1;
+  logger.info({ attempt, max: MAX_GITBOOK_RETRIES }, "GitBook proxy init attempt");
+
   try {
     const tools = await fetchGitBookTools();
     gitbookToolsRegistered = tools.length > 0;
-    
+
     if (tools.length > 0) {
-      console.error(`✅ GitBook proxy initialized: ${tools.length} SDK docs tools available`);
+      logger.info({ toolCount: tools.length }, "✅ GitBook proxy initialized");
       return true;
     } else {
-      console.error(`⚠️ GitBook returned 0 tools`);
+      logger.warn("⚠️ GitBook returned 0 tools");
     }
   } catch (error) {
-    console.error(`❌ GitBook proxy attempt ${retryCount + 1} failed:`, error instanceof Error ? error.message : error);
+    logger.warn({ err: error, attempt }, "GitBook proxy attempt failed");
   }
-  
+
   // Retry if we haven't exceeded max attempts
   if (retryCount < MAX_GITBOOK_RETRIES - 1) {
-    console.error(`Retrying in ${GITBOOK_RETRY_DELAY / 1000}s...`);
+    logger.info({ delayMs: GITBOOK_RETRY_DELAY }, "Retrying GitBook proxy init");
     await new Promise(resolve => setTimeout(resolve, GITBOOK_RETRY_DELAY));
     return warmGitBookCache(retryCount + 1);
   }
-  
-  console.error(`⚠️ GitBook proxy unavailable after ${MAX_GITBOOK_RETRIES} attempts. Meta-tools still available.`);
+
+  logger.warn({ maxAttempts: MAX_GITBOOK_RETRIES }, "⚠️ GitBook proxy unavailable. Meta-tools still available.");
   return false;
 }
 
 async function runStdio(): Promise<void> {
   // Warm GitBook cache before creating server
-  console.error("Initializing GitBook SDK docs proxy...");
+  logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
-  
+
   const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("SODAX Builders MCP server running via stdio");
+  logger.info("SODAX Builders MCP server running via stdio");
 }
 
 async function runHTTP(): Promise<void> {
   // Warm GitBook cache before starting HTTP server
-  console.error("Initializing GitBook SDK docs proxy...");
+  logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
   
   const app = express();
@@ -278,11 +280,11 @@ async function runHTTP(): Promise<void> {
 
   const port = parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    console.error(`SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info({ port }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
     // Non-blocking: compare live OpenAPI spec against registered MCP tools.
     // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.
     void checkApiDrift().catch(err => {
-      console.error("⚠️  API drift check threw unexpectedly:", err instanceof Error ? err.message : err);
+      logger.warn({ err }, "⚠️  API drift check threw unexpectedly");
     });
   });
 }
@@ -297,7 +299,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("Server error:", error);
+  logger.fatal({ err: error }, "Server error");
   process.exit(1);
 });
 

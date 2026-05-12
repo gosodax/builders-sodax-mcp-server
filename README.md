@@ -164,6 +164,7 @@ pnpm start
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `NODE_ENV` | - | Set to `production` for deployment |
+| `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. Use `debug` to surface routine GitBook cache refreshes and other noisy events. |
 
 ## Deployment
 

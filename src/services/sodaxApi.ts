@@ -7,6 +7,7 @@
 
 import axios, { AxiosInstance } from "axios";
 import { SODAX_API_BASE_URL, CACHE_DURATION_MS } from "../constants.js";
+import { logger } from "./logger.js";
 import type {
   Chain,
   SwapToken,
@@ -66,7 +67,7 @@ export async function getSupportedChains(): Promise<Chain[]> {
     setCache(cacheKey, chains);
     return chains;
   } catch (error) {
-    console.error("Error fetching chains:", error);
+    logger.error({ err: error }, "Failed to fetch supported chains");
     throw new Error("Failed to fetch supported chains from SODAX API");
   }
 }
@@ -101,7 +102,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
     setCache(cacheKey, tokens);
     return tokens;
   } catch (error) {
-    console.error("Error fetching swap tokens:", error);
+    logger.error({ err: error }, "Failed to fetch swap tokens");
     throw new Error("Failed to fetch swap tokens from SODAX API");
   }
 }
@@ -117,7 +118,7 @@ export async function getTransaction(txHash: string): Promise<Transaction | null
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching transaction:", error);
+    logger.error({ err: error }, "Failed to fetch transaction");
     throw new Error("Failed to fetch transaction from SODAX API");
   }
 }
@@ -151,7 +152,7 @@ export async function getUserTransactions(
     // API returns { items, total, offset, limit }
     return response.data?.items || response.data?.data || [];
   } catch (error) {
-    console.error("Error fetching user transactions:", error);
+    logger.error({ err: error }, "Failed to fetch user transactions");
     throw new Error("Failed to fetch user transactions from SODAX API");
   }
 }
@@ -207,7 +208,7 @@ export async function getVolume(options: {
     setCache(cacheKey, volumeData);
     return volumeData;
   } catch (error) {
-    console.error("Error fetching volume:", error);
+    logger.error({ err: error }, "Failed to fetch volume");
     throw new Error("Failed to fetch volume data from SODAX API");
   }
 }
@@ -230,7 +231,7 @@ export async function getOrderbook(options: {
     // API returns { total, data }
     return response.data?.data || response.data || [];
   } catch (error) {
-    console.error("Error fetching orderbook:", error);
+    logger.error({ err: error }, "Failed to fetch orderbook");
     throw new Error("Failed to fetch orderbook from SODAX API");
   }
 }
@@ -251,7 +252,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     setCache(cacheKey, assets);
     return assets;
   } catch (error) {
-    console.error("Error fetching money market assets:", error);
+    logger.error({ err: error }, "Failed to fetch money market assets");
     throw new Error("Failed to fetch money market assets from SODAX API");
   }
 }
@@ -269,7 +270,7 @@ export async function getUserPosition(
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching user position:", error);
+    logger.error({ err: error }, "Failed to fetch user position");
     throw new Error("Failed to fetch user position from SODAX API");
   }
 }
@@ -292,7 +293,7 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     setCache(cacheKey, partners);
     return partners;
   } catch (error) {
-    console.error("Error fetching partners:", error);
+    logger.error({ err: error }, "Failed to fetch partners");
     throw new Error("Failed to fetch partners from SODAX API");
   }
 }
@@ -312,7 +313,7 @@ export async function getTokenSupply(): Promise<TokenSupply> {
     setCache(cacheKey, supply);
     return supply;
   } catch (error) {
-    console.error("Error fetching token supply:", error);
+    logger.error({ err: error }, "Failed to fetch token supply");
     throw new Error("Failed to fetch token supply from SODAX API");
   }
 }
@@ -330,7 +331,7 @@ export async function getAllConfig(): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching all config:", error);
+    logger.error({ err: error }, "Failed to fetch all config");
     throw new Error("Failed to fetch config from SODAX API");
   }
 }
@@ -348,7 +349,7 @@ export async function getRelayChainIdMap(): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching relay chain ID map:", error);
+    logger.error({ err: error }, "Failed to fetch relay chain ID map");
     throw new Error("Failed to fetch relay chain ID map from SODAX API");
   }
 }
@@ -366,7 +367,7 @@ export async function getAllChainsConfigs(): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching all chains configs:", error);
+    logger.error({ err: error }, "Failed to fetch all chains configs");
     throw new Error("Failed to fetch spoke chain configs from SODAX API");
   }
 }
@@ -385,7 +386,7 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching hub assets:", error);
+    logger.error({ err: error }, "Failed to fetch hub assets");
     throw new Error("Failed to fetch hub assets from SODAX API");
   }
 }
@@ -404,7 +405,7 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching money market tokens:", error);
+    logger.error({ err: error }, "Failed to fetch money market tokens");
     throw new Error("Failed to fetch money market tokens from SODAX API");
   }
 }
@@ -422,7 +423,7 @@ export async function getMoneyMarketReserveAssets(): Promise<unknown> {
     setCache(cacheKey, response.data);
     return response.data;
   } catch (error) {
-    console.error("Error fetching money market reserve assets:", error);
+    logger.error({ err: error }, "Failed to fetch money market reserve assets");
     throw new Error("Failed to fetch money market reserve assets from SODAX API");
   }
 }
@@ -446,7 +447,7 @@ export async function getAmmNftPositions(options?: {
     const response = await apiClient.get(url);
     return response.data;
   } catch (error) {
-    console.error("Error fetching AMM NFT positions:", error);
+    logger.error({ err: error }, "Failed to fetch AMM NFT positions");
     throw new Error("Failed to fetch AMM NFT positions from SODAX API");
   }
 }
@@ -470,7 +471,7 @@ export async function getAmmPoolCandles(
     const response = await apiClient.get(url);
     return response.data;
   } catch (error) {
-    console.error("Error fetching AMM pool candles:", error);
+    logger.error({ err: error }, "Failed to fetch AMM pool candles");
     throw new Error("Failed to fetch AMM pool candles from SODAX API");
   }
 }
@@ -486,7 +487,7 @@ export async function getIntent(intentHash: string): Promise<unknown> {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching intent:", error);
+    logger.error({ err: error }, "Failed to fetch intent");
     throw new Error("Failed to fetch intent from SODAX API");
   }
 }
@@ -507,7 +508,7 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching solver intent:", error);
+    logger.error({ err: error }, "Failed to fetch solver intent");
     throw new Error("Failed to fetch solver intent from SODAX API");
   }
 }
@@ -523,7 +524,7 @@ export async function getMoneyMarketAsset(reserveAddress: string): Promise<unkno
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching money market asset:", error);
+    logger.error({ err: error }, "Failed to fetch money market asset");
     throw new Error("Failed to fetch money market asset from SODAX API");
   }
 }
@@ -545,7 +546,7 @@ export async function getMoneyMarketAssetBorrowers(
     const response = await apiClient.get(url);
     return response.data;
   } catch (error) {
-    console.error("Error fetching asset borrowers:", error);
+    logger.error({ err: error }, "Failed to fetch asset borrowers");
     throw new Error("Failed to fetch money market asset borrowers from SODAX API");
   }
 }
@@ -567,7 +568,7 @@ export async function getMoneyMarketAssetSuppliers(
     const response = await apiClient.get(url);
     return response.data;
   } catch (error) {
-    console.error("Error fetching asset suppliers:", error);
+    logger.error({ err: error }, "Failed to fetch asset suppliers");
     throw new Error("Failed to fetch money market asset suppliers from SODAX API");
   }
 }
@@ -589,7 +590,7 @@ export async function getMoneyMarketBorrowers(options?: {
     const response = await apiClient.get(url);
     return response.data;
   } catch (error) {
-    console.error("Error fetching borrowers:", error);
+    logger.error({ err: error }, "Failed to fetch borrowers");
     throw new Error("Failed to fetch money market borrowers from SODAX API");
   }
 }
@@ -610,7 +611,7 @@ export async function getPartnerSummary(receiver: string, chainId?: string): Pro
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.error("Error fetching partner summary:", error);
+    logger.error({ err: error }, "Failed to fetch partner summary");
     throw new Error("Failed to fetch partner summary from SODAX API");
   }
 }
@@ -623,7 +624,7 @@ export async function getTotalSupply(): Promise<unknown> {
     const response = await apiClient.get("/sodax/total_supply");
     return response.data;
   } catch (error) {
-    console.error("Error fetching total supply:", error);
+    logger.error({ err: error }, "Failed to fetch total supply");
     throw new Error("Failed to fetch total supply from SODAX API");
   }
 }
@@ -636,7 +637,7 @@ export async function getCirculatingSupply(): Promise<unknown> {
     const response = await apiClient.get("/sodax/circulating_supply");
     return response.data;
   } catch (error) {
-    console.error("Error fetching circulating supply:", error);
+    logger.error({ err: error }, "Failed to fetch circulating supply");
     throw new Error("Failed to fetch circulating supply from SODAX API");
   }
 }

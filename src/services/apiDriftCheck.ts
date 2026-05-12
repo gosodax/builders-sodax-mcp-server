@@ -16,8 +16,8 @@
  * the startup call in `src/index.ts` is fire-and-forget and never throws.
  */
 
-import axios from "axios";
 import { SODAX_API_BASE_URL } from "../constants.js";
+import { fetchJson } from "./http.js";
 import { logger } from "./logger.js";
 
 type EndpointKey = string; // e.g. "GET /solver/orderbook"
@@ -138,7 +138,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /intent/user/:userAddress": {
     tool: "sodax_get_user_transactions",
-    params: ["userAddress", "limit", "offset", "startDate", "endDate", "fromTs", "toTs"],
+    params: ["userAddress", "limit", "offset", "fromBlock", "toBlock"],
     requiredParams: ["userAddress"],
     responseFields: ["items", "total", "offset", "limit"],
   },
@@ -360,8 +360,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
 
   let spec: OpenApiSpec;
   try {
-    const response = await axios.get<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
-    spec = response.data;
+    spec = await fetchJson<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
   } catch (error) {
     logger.warn({ err: error }, "⚠️  API drift check: could not fetch OpenAPI spec");
     return emptyReport;

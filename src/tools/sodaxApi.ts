@@ -138,7 +138,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "Get available tokens for swapping on SODAX, optionally filtered by chain",
     {
       chainId: z.string().optional()
-        .describe("Filter tokens by chain ID (e.g., 'base', 'ethereum', 'icon')"),
+        .describe("Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list."),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
@@ -209,21 +209,17 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Maximum number of transactions to return (1-100)"),
       offset: z.number().min(0).optional().default(0)
         .describe("Number of transactions to skip for pagination"),
-      startDate: z.string().optional()
-        .describe("Start date filter (ISO 8601, e.g. '2026-01-01'). Don't mix with fromTs/toTs."),
-      endDate: z.string().optional()
-        .describe("End date filter (ISO 8601). Don't mix with fromTs/toTs."),
-      fromTs: z.number().optional()
-        .describe("Start timestamp filter (unix seconds). Don't mix with startDate/endDate."),
-      toTs: z.number().optional()
-        .describe("End timestamp filter (unix seconds). Don't mix with startDate/endDate."),
+      fromBlock: z.number().optional()
+        .describe("Inclusive lower bound on blockNumber (chain-native ordering)"),
+      toBlock: z.number().optional()
+        .describe("Inclusive upper bound on blockNumber (chain-native ordering)"),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },
     READ_ONLY,
-    async ({ userAddress, limit, offset, startDate, endDate, fromTs, toTs, format }) => {
+    async ({ userAddress, limit, offset, fromBlock, toBlock, format }) => {
       try {
-        const transactions = await getUserTransactions(userAddress, { limit, offset, startDate, endDate, fromTs, toTs });
+        const transactions = await getUserTransactions(userAddress, { limit, offset, fromBlock, toBlock });
         const header = `## Transactions for ${userAddress.slice(0, 10)}...${userAddress.slice(-8)}\n\n`;
         const summary = `${transactions.length} transactions found\n\n`;
         return {
@@ -544,7 +540,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "Get assets representing spoke tokens on the hub (Sonic) chain, optionally filtered by source chain",
     {
       chainId: z.string().optional()
-        .describe("Filter by source chain ID (e.g., 'base', 'ethereum')"),
+        .describe("Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list."),
       format: z.nativeEnum(ResponseFormat).optional().default(ResponseFormat.MARKDOWN)
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text")
     },

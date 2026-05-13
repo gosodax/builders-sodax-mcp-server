@@ -5,19 +5,19 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { SODAX_API_BASE_URL, CACHE_DURATION_MS } from "../constants.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { CACHE_DURATION_MS, SODAX_API_BASE_URL } from '../constants.js';
 import type {
   Chain,
-  SwapToken,
-  Transaction,
-  VolumeData,
-  OrderbookEntry,
   MoneyMarketAsset,
-  UserPosition,
+  OrderbookEntry,
   Partner,
-  TokenSupply
-} from "../types.js";
+  SwapToken,
+  TokenSupply,
+  Transaction,
+  UserPosition,
+  VolumeData,
+} from '../types.js';
+import { fetchJson, fetchJsonOrNull } from './http.js';
 
 // Cache for API responses
 interface CacheEntry<T> {
@@ -49,19 +49,19 @@ function apiUrl(path: string): string {
  * Get all supported blockchain networks
  */
 export async function getSupportedChains(): Promise<Chain[]> {
-  const cacheKey = "chains";
+  const cacheKey = 'chains';
   const cached = getCached<Chain[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
+    const data = await fetchJson<unknown>(apiUrl('/config/spoke/chains'));
     // API returns array directly
-    const chains = Array.isArray(data) ? data as Chain[] : ((data as { data?: Chain[] })?.data || []);
+    const chains = Array.isArray(data) ? (data as Chain[]) : (data as { data?: Chain[] })?.data || [];
     setCache(cacheKey, chains);
     return chains;
   } catch (error) {
-    console.error("Error fetching chains:", error);
-    throw new Error("Failed to fetch supported chains from SODAX API");
+    console.error('Error fetching chains:', error);
+    throw new Error('Failed to fetch supported chains from SODAX API');
   }
 }
 
@@ -69,18 +69,18 @@ export async function getSupportedChains(): Promise<Chain[]> {
  * Get available tokens for swapping on a specific chain
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
-  const cacheKey = `tokens-${chainId || "all"}`;
+  const cacheKey = `tokens-${chainId || 'all'}`;
   const cached = getCached<SwapToken[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : "/config/swap/tokens";
+    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : '/config/swap/tokens';
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     // API returns object keyed by chain ID, flatten if getting all
     let tokens: SwapToken[] = [];
     if (chainId && Array.isArray(data)) {
       tokens = data as SwapToken[];
-    } else if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+    } else if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
       // Flatten all chain tokens into single array
       const dataObj = data as Record<string, unknown>;
       for (const chain of Object.keys(dataObj)) {
@@ -96,8 +96,8 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
     setCache(cacheKey, tokens);
     return tokens;
   } catch (error) {
-    console.error("Error fetching swap tokens:", error);
-    throw new Error("Failed to fetch swap tokens from SODAX API");
+    console.error('Error fetching swap tokens:', error);
+    throw new Error('Failed to fetch swap tokens from SODAX API');
   }
 }
 
@@ -106,14 +106,12 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
   try {
-    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(
-      apiUrl(`/intent/tx/${txHash}`)
-    );
+    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${txHash}`));
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
-    console.error("Error fetching transaction:", error);
-    throw new Error("Failed to fetch transaction from SODAX API");
+    console.error('Error fetching transaction:', error);
+    throw new Error('Failed to fetch transaction from SODAX API');
   }
 }
 
@@ -127,23 +125,23 @@ export async function getUserTransactions(
     offset?: number;
     fromBlock?: number;
     toBlock?: number;
-  }
+  },
 ): Promise<Transaction[]> {
   try {
     const params = new URLSearchParams();
-    if (options?.limit !== undefined) params.append("limit", options.limit.toString());
-    if (options?.offset !== undefined) params.append("offset", options.offset.toString());
-    if (options?.fromBlock !== undefined) params.append("fromBlock", options.fromBlock.toString());
-    if (options?.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
+    if (options?.limit !== undefined) params.append('limit', options.limit.toString());
+    if (options?.offset !== undefined) params.append('offset', options.offset.toString());
+    if (options?.fromBlock !== undefined) params.append('fromBlock', options.fromBlock.toString());
+    if (options?.toBlock !== undefined) params.append('toBlock', options.toBlock.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/intent/user/${userAddress}${queryString ? `?${queryString}` : ''}`);
     const data = await fetchJson<{ items?: Transaction[]; data?: Transaction[] }>(url);
     // API returns { items, total, offset, limit }
     return data?.items || data?.data || [];
   } catch (error) {
-    console.error("Error fetching user transactions:", error);
-    throw new Error("Failed to fetch user transactions from SODAX API");
+    console.error('Error fetching user transactions:', error);
+    throw new Error('Failed to fetch user transactions from SODAX API');
   }
 }
 
@@ -164,41 +162,41 @@ export async function getVolume(options: {
   until?: string;
   fromTs?: number;
   toTs?: number;
-  sort?: "asc" | "desc";
+  sort?: 'asc' | 'desc';
   limit?: number;
   includeData?: boolean;
   cursor?: string;
 }): Promise<VolumeData> {
   // Build cache key from significant params
-  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
+  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || 'all'}-${options.limit || 50}-${options.cursor || 'start'}`;
   const cached = getCached<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
     const params = new URLSearchParams();
-    params.append("inputToken", options.inputToken);
-    params.append("outputToken", options.outputToken);
-    params.append("includeData", (options.includeData ?? false).toString());
-    if (options.chainId) params.append("chainId", options.chainId.toString());
-    if (options.solver) params.append("solver", options.solver);
-    if (options.fromBlock) params.append("fromBlock", options.fromBlock.toString());
-    if (options.toBlock) params.append("toBlock", options.toBlock.toString());
-    if (options.since) params.append("since", options.since);
-    if (options.until) params.append("until", options.until);
-    if (options.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
-    if (options.toTs !== undefined) params.append("toTs", options.toTs.toString());
-    if (options.sort) params.append("sort", options.sort);
-    if (options.limit) params.append("limit", options.limit.toString());
-    if (options.cursor) params.append("cursor", options.cursor);
+    params.append('inputToken', options.inputToken);
+    params.append('outputToken', options.outputToken);
+    params.append('includeData', (options.includeData ?? false).toString());
+    if (options.chainId) params.append('chainId', options.chainId.toString());
+    if (options.solver) params.append('solver', options.solver);
+    if (options.fromBlock) params.append('fromBlock', options.fromBlock.toString());
+    if (options.toBlock) params.append('toBlock', options.toBlock.toString());
+    if (options.since) params.append('since', options.since);
+    if (options.until) params.append('until', options.until);
+    if (options.fromTs !== undefined) params.append('fromTs', options.fromTs.toString());
+    if (options.toTs !== undefined) params.append('toTs', options.toTs.toString());
+    if (options.sort) params.append('sort', options.sort);
+    if (options.limit) params.append('limit', options.limit.toString());
+    if (options.cursor) params.append('cursor', options.cursor);
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/volume${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/volume${queryString ? `?${queryString}` : ''}`);
     const volumeData = await fetchJson<VolumeData>(url);
     setCache(cacheKey, volumeData);
     return volumeData;
   } catch (error) {
-    console.error("Error fetching volume:", error);
-    throw new Error("Failed to fetch volume data from SODAX API");
+    console.error('Error fetching volume:', error);
+    throw new Error('Failed to fetch volume data from SODAX API');
   }
 }
 
@@ -211,17 +209,17 @@ export async function getOrderbook(options: {
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
-    params.append("limit", options.limit.toString());
-    params.append("offset", options.offset.toString());
+    params.append('limit', options.limit.toString());
+    params.append('offset', options.offset.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/orderbook${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/orderbook${queryString ? `?${queryString}` : ''}`);
     const data = await fetchJson<{ data?: OrderbookEntry[] } | OrderbookEntry[]>(url);
     // API returns { total, data }
     return (data as { data?: OrderbookEntry[] })?.data || (data as OrderbookEntry[]) || [];
   } catch (error) {
-    console.error("Error fetching orderbook:", error);
-    throw new Error("Failed to fetch orderbook from SODAX API");
+    console.error('Error fetching orderbook:', error);
+    throw new Error('Failed to fetch orderbook from SODAX API');
   }
 }
 
@@ -229,40 +227,38 @@ export async function getOrderbook(options: {
  * List lending/borrowing assets in money market
  */
 export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
-  const cacheKey = `mm-assets-${chainId || "all"}`;
+  const cacheKey = `mm-assets-${chainId || 'all'}`;
   const cached = getCached<MoneyMarketAsset[]>(cacheKey);
   if (cached) return cached;
 
   try {
     // Always use the /all endpoint, API doesn't support chainId filter
-    const data = await fetchJson<unknown>(apiUrl("/moneymarket/asset/all"));
+    const data = await fetchJson<unknown>(apiUrl('/moneymarket/asset/all'));
     // API returns array directly
     const assets = Array.isArray(data)
-      ? data as MoneyMarketAsset[]
-      : ((data as { data?: MoneyMarketAsset[] })?.data || []);
+      ? (data as MoneyMarketAsset[])
+      : (data as { data?: MoneyMarketAsset[] })?.data || [];
     setCache(cacheKey, assets);
     return assets;
   } catch (error) {
-    console.error("Error fetching money market assets:", error);
-    throw new Error("Failed to fetch money market assets from SODAX API");
+    console.error('Error fetching money market assets:', error);
+    throw new Error('Failed to fetch money market assets from SODAX API');
   }
 }
 
 /**
  * Get user's money market position
  */
-export async function getUserPosition(
-  userAddress: string
-): Promise<UserPosition | null> {
+export async function getUserPosition(userAddress: string): Promise<UserPosition | null> {
   try {
     const data = await fetchJsonOrNull<{ data?: UserPosition } | UserPosition>(
-      apiUrl(`/moneymarket/position/${userAddress}`)
+      apiUrl(`/moneymarket/position/${userAddress}`),
     );
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
   } catch (error) {
-    console.error("Error fetching user position:", error);
-    throw new Error("Failed to fetch user position from SODAX API");
+    console.error('Error fetching user position:', error);
+    throw new Error('Failed to fetch user position from SODAX API');
   }
 }
 
@@ -270,25 +266,23 @@ export async function getUserPosition(
  * List SODAX integration partners
  */
 export async function getPartners(chainId?: number): Promise<Partner[]> {
-  const cacheKey = `partners-${chainId ?? "all"}`;
+  const cacheKey = `partners-${chainId ?? 'all'}`;
   const cached = getCached<Partner[]>(cacheKey);
   if (cached) return cached;
 
   try {
     const params = new URLSearchParams();
-    if (chainId !== undefined) params.append("chainId", chainId.toString());
+    if (chainId !== undefined) params.append('chainId', chainId.toString());
     const queryString = params.toString();
-    const url = apiUrl(`/partners${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/partners${queryString ? `?${queryString}` : ''}`);
     const data = await fetchJson<unknown>(url);
     const dataObj = data as { data?: Partner[]; partners?: Partner[] } | Partner[];
-    const partners = Array.isArray(dataObj)
-      ? dataObj
-      : (dataObj?.data || dataObj?.partners || []);
+    const partners = Array.isArray(dataObj) ? dataObj : dataObj?.data || dataObj?.partners || [];
     setCache(cacheKey, partners);
     return partners;
   } catch (error) {
-    console.error("Error fetching partners:", error);
-    throw new Error("Failed to fetch partners from SODAX API");
+    console.error('Error fetching partners:', error);
+    throw new Error('Failed to fetch partners from SODAX API');
   }
 }
 
@@ -296,19 +290,19 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
  * Get SODA token supply info
  */
 export async function getTokenSupply(): Promise<TokenSupply> {
-  const cacheKey = "token-supply";
+  const cacheKey = 'token-supply';
   const cached = getCached<TokenSupply>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<{ data?: TokenSupply } | TokenSupply>(apiUrl("/sodax/supply"));
+    const data = await fetchJson<{ data?: TokenSupply } | TokenSupply>(apiUrl('/sodax/supply'));
     // API returns data directly
     const supply = (data as { data?: TokenSupply })?.data || (data as TokenSupply);
     setCache(cacheKey, supply);
     return supply;
   } catch (error) {
-    console.error("Error fetching token supply:", error);
-    throw new Error("Failed to fetch token supply from SODAX API");
+    console.error('Error fetching token supply:', error);
+    throw new Error('Failed to fetch token supply from SODAX API');
   }
 }
 
@@ -316,17 +310,17 @@ export async function getTokenSupply(): Promise<TokenSupply> {
  * Get full config (all chains + all tokens in one call)
  */
 export async function getAllConfig(): Promise<unknown> {
-  const cacheKey = "config-all";
+  const cacheKey = 'config-all';
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(apiUrl("/config/all"));
+    const data = await fetchJson<unknown>(apiUrl('/config/all'));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching all config:", error);
-    throw new Error("Failed to fetch config from SODAX API");
+    console.error('Error fetching all config:', error);
+    throw new Error('Failed to fetch config from SODAX API');
   }
 }
 
@@ -334,17 +328,17 @@ export async function getAllConfig(): Promise<unknown> {
  * Get chain ID to intent relay chain ID mapping
  */
 export async function getRelayChainIdMap(): Promise<unknown> {
-  const cacheKey = "relay-chain-id-map";
+  const cacheKey = 'relay-chain-id-map';
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(apiUrl("/config/relay/chain-id-map"));
+    const data = await fetchJson<unknown>(apiUrl('/config/relay/chain-id-map'));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching relay chain ID map:", error);
-    throw new Error("Failed to fetch relay chain ID map from SODAX API");
+    console.error('Error fetching relay chain ID map:', error);
+    throw new Error('Failed to fetch relay chain ID map from SODAX API');
   }
 }
 
@@ -352,17 +346,17 @@ export async function getRelayChainIdMap(): Promise<unknown> {
  * Get full spoke chain configs
  */
 export async function getAllChainsConfigs(): Promise<unknown> {
-  const cacheKey = "all-chains-configs";
+  const cacheKey = 'all-chains-configs';
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(apiUrl("/config/spoke/all-chains-configs"));
+    const data = await fetchJson<unknown>(apiUrl('/config/spoke/all-chains-configs'));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching all chains configs:", error);
-    throw new Error("Failed to fetch spoke chain configs from SODAX API");
+    console.error('Error fetching all chains configs:', error);
+    throw new Error('Failed to fetch spoke chain configs from SODAX API');
   }
 }
 
@@ -370,18 +364,18 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  * Get hub (Sonic) assets representing spoke tokens
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
-  const cacheKey = `hub-assets-${chainId || "all"}`;
+  const cacheKey = `hub-assets-${chainId || 'all'}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/hub/${chainId}/assets` : "/config/hub/assets";
+    const endpoint = chainId ? `/config/hub/${chainId}/assets` : '/config/hub/assets';
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching hub assets:", error);
-    throw new Error("Failed to fetch hub assets from SODAX API");
+    console.error('Error fetching hub assets:', error);
+    throw new Error('Failed to fetch hub assets from SODAX API');
   }
 }
 
@@ -389,18 +383,18 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  * Get money market supported tokens
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
-  const cacheKey = `mm-tokens-${chainId || "all"}`;
+  const cacheKey = `mm-tokens-${chainId || 'all'}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : "/config/money-market/tokens";
+    const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : '/config/money-market/tokens';
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching money market tokens:", error);
-    throw new Error("Failed to fetch money market tokens from SODAX API");
+    console.error('Error fetching money market tokens:', error);
+    throw new Error('Failed to fetch money market tokens from SODAX API');
   }
 }
 
@@ -408,17 +402,17 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
  * Get money market reserve assets
  */
 export async function getMoneyMarketReserveAssets(): Promise<unknown> {
-  const cacheKey = "mm-reserve-assets";
+  const cacheKey = 'mm-reserve-assets';
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(apiUrl("/config/money-market/reserve-assets"));
+    const data = await fetchJson<unknown>(apiUrl('/config/money-market/reserve-assets'));
     setCache(cacheKey, data);
     return data;
   } catch (error) {
-    console.error("Error fetching money market reserve assets:", error);
-    throw new Error("Failed to fetch money market reserve assets from SODAX API");
+    console.error('Error fetching money market reserve assets:', error);
+    throw new Error('Failed to fetch money market reserve assets from SODAX API');
   }
 }
 
@@ -432,16 +426,16 @@ export async function getAmmNftPositions(options?: {
 }): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (options?.owner) params.append("owner", options.owner);
-    if (options?.offset) params.append("offset", options.offset.toString());
-    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.owner) params.append('owner', options.owner);
+    if (options?.offset) params.append('offset', options.offset.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/amm/nft-positions${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/amm/nft-positions${queryString ? `?${queryString}` : ''}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    console.error("Error fetching AMM NFT positions:", error);
-    throw new Error("Failed to fetch AMM NFT positions from SODAX API");
+    console.error('Error fetching AMM NFT positions:', error);
+    throw new Error('Failed to fetch AMM NFT positions from SODAX API');
   }
 }
 
@@ -451,20 +445,20 @@ export async function getAmmNftPositions(options?: {
 export async function getAmmPoolCandles(
   chainId: string,
   poolId: string,
-  options?: { interval?: string; from?: number; to?: number }
+  options?: { interval?: string; from?: number; to?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (options?.interval) params.append("interval", options.interval);
-    if (options?.from) params.append("from", options.from.toString());
-    if (options?.to) params.append("to", options.to.toString());
+    if (options?.interval) params.append('interval', options.interval);
+    if (options?.from) params.append('from', options.from.toString());
+    if (options?.to) params.append('to', options.to.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/amm/pools/${chainId}/${poolId}/candles${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/amm/pools/${chainId}/${poolId}/candles${queryString ? `?${queryString}` : ''}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    console.error("Error fetching AMM pool candles:", error);
-    throw new Error("Failed to fetch AMM pool candles from SODAX API");
+    console.error('Error fetching AMM pool candles:', error);
+    throw new Error('Failed to fetch AMM pool candles from SODAX API');
   }
 }
 
@@ -477,8 +471,8 @@ export async function getIntent(intentHash: string): Promise<unknown> {
     if (data === null) return null;
     return data?.data ?? data ?? null;
   } catch (error) {
-    console.error("Error fetching intent:", error);
-    throw new Error("Failed to fetch intent from SODAX API");
+    console.error('Error fetching intent:', error);
+    throw new Error('Failed to fetch intent from SODAX API');
   }
 }
 
@@ -488,14 +482,14 @@ export async function getIntent(intentHash: string): Promise<unknown> {
 export async function getSolverIntent(intentHash: string, includeAll?: boolean): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (includeAll) params.append("includeAll", "true");
+    if (includeAll) params.append('includeAll', 'true');
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/intents/${intentHash}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/intents/${intentHash}${queryString ? `?${queryString}` : ''}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    console.error("Error fetching solver intent:", error);
-    throw new Error("Failed to fetch solver intent from SODAX API");
+    console.error('Error fetching solver intent:', error);
+    throw new Error('Failed to fetch solver intent from SODAX API');
   }
 }
 
@@ -506,8 +500,8 @@ export async function getMoneyMarketAsset(reserveAddress: string): Promise<unkno
   try {
     return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserveAddress}`));
   } catch (error) {
-    console.error("Error fetching money market asset:", error);
-    throw new Error("Failed to fetch money market asset from SODAX API");
+    console.error('Error fetching money market asset:', error);
+    throw new Error('Failed to fetch money market asset from SODAX API');
   }
 }
 
@@ -516,19 +510,19 @@ export async function getMoneyMarketAsset(reserveAddress: string): Promise<unkno
  */
 export async function getMoneyMarketAssetBorrowers(
   reserveAddress: string,
-  options?: { offset?: number; limit?: number }
+  options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (options?.offset) params.append("offset", options.offset.toString());
-    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.offset) params.append('offset', options.offset.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/borrowers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/borrowers${queryString ? `?${queryString}` : ''}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    console.error("Error fetching asset borrowers:", error);
-    throw new Error("Failed to fetch money market asset borrowers from SODAX API");
+    console.error('Error fetching asset borrowers:', error);
+    throw new Error('Failed to fetch money market asset borrowers from SODAX API');
   }
 }
 
@@ -537,19 +531,19 @@ export async function getMoneyMarketAssetBorrowers(
  */
 export async function getMoneyMarketAssetSuppliers(
   reserveAddress: string,
-  options?: { offset?: number; limit?: number }
+  options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (options?.offset) params.append("offset", options.offset.toString());
-    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.offset) params.append('offset', options.offset.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/suppliers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/suppliers${queryString ? `?${queryString}` : ''}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    console.error("Error fetching asset suppliers:", error);
-    throw new Error("Failed to fetch money market asset suppliers from SODAX API");
+    console.error('Error fetching asset suppliers:', error);
+    throw new Error('Failed to fetch money market asset suppliers from SODAX API');
   }
 }
 
@@ -562,15 +556,15 @@ export async function getMoneyMarketBorrowers(options?: {
 }): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (options?.offset) params.append("offset", options.offset.toString());
-    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.offset) params.append('offset', options.offset.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/borrowers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/borrowers${queryString ? `?${queryString}` : ''}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    console.error("Error fetching borrowers:", error);
-    throw new Error("Failed to fetch money market borrowers from SODAX API");
+    console.error('Error fetching borrowers:', error);
+    throw new Error('Failed to fetch money market borrowers from SODAX API');
   }
 }
 
@@ -580,14 +574,14 @@ export async function getMoneyMarketBorrowers(options?: {
 export async function getPartnerSummary(receiver: string, chainId?: string): Promise<unknown> {
   try {
     const params = new URLSearchParams();
-    if (chainId) params.append("chainId", chainId);
+    if (chainId) params.append('chainId', chainId);
 
     const queryString = params.toString();
-    const url = apiUrl(`/partners/${receiver}/summary${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/partners/${receiver}/summary${queryString ? `?${queryString}` : ''}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    console.error("Error fetching partner summary:", error);
-    throw new Error("Failed to fetch partner summary from SODAX API");
+    console.error('Error fetching partner summary:', error);
+    throw new Error('Failed to fetch partner summary from SODAX API');
   }
 }
 
@@ -596,10 +590,10 @@ export async function getPartnerSummary(receiver: string, chainId?: string): Pro
  */
 export async function getTotalSupply(): Promise<unknown> {
   try {
-    return await fetchJson<unknown>(apiUrl("/sodax/total_supply"));
+    return await fetchJson<unknown>(apiUrl('/sodax/total_supply'));
   } catch (error) {
-    console.error("Error fetching total supply:", error);
-    throw new Error("Failed to fetch total supply from SODAX API");
+    console.error('Error fetching total supply:', error);
+    throw new Error('Failed to fetch total supply from SODAX API');
   }
 }
 
@@ -608,10 +602,10 @@ export async function getTotalSupply(): Promise<unknown> {
  */
 export async function getCirculatingSupply(): Promise<unknown> {
   try {
-    return await fetchJson<unknown>(apiUrl("/sodax/circulating_supply"));
+    return await fetchJson<unknown>(apiUrl('/sodax/circulating_supply'));
   } catch (error) {
-    console.error("Error fetching circulating supply:", error);
-    throw new Error("Failed to fetch circulating supply from SODAX API");
+    console.error('Error fetching circulating supply:', error);
+    throw new Error('Failed to fetch circulating supply from SODAX API');
   }
 }
 
@@ -628,6 +622,6 @@ export function clearCache(): void {
 export function getCacheStats(): { size: number; keys: string[] } {
   return {
     size: cache.size,
-    keys: Array.from(cache.keys())
+    keys: Array.from(cache.keys()),
   };
 }

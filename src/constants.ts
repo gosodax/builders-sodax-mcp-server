@@ -3,15 +3,15 @@
  */
 
 // SODAX API Base URL (Backend API)
-export const SODAX_API_BASE_URL = "https://api.sodax.com/v1/be";
+export const SODAX_API_BASE_URL = 'https://api.sodax.com/v1/be';
 
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;
 
 // SODAX Brand Colors (for reference)
 export const BRAND_COLORS = {
-  cherry: "#E53935",
-  cream: "#FFF8E7",
-  espresso: "#1A1A1A",
-  accent: "#FFD54F"
+  cherry: '#E53935',
+  cream: '#FFF8E7',
+  espresso: '#1A1A1A',
+  accent: '#FFD54F',
 } as const;

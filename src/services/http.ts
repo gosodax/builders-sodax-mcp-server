@@ -14,16 +14,12 @@ interface FetchJsonOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_HEADERS: Record<string, string> = {
-  "Content-Type": "application/json",
-  "Accept": "application/json",
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
 };
 
-async function request<T>(
-  url: string,
-  options: FetchJsonOptions,
-  allow404: boolean
-): Promise<T | null> {
-  const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
+async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
+  const { timeout = DEFAULT_TIMEOUT_MS, method = 'GET', body, headers } = options;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -54,9 +50,6 @@ export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}):
   return (await request<T>(url, options, false)) as T;
 }
 
-export async function fetchJsonOrNull<T>(
-  url: string,
-  options: FetchJsonOptions = {}
-): Promise<T | null> {
+export async function fetchJsonOrNull<T>(url: string, options: FetchJsonOptions = {}): Promise<T | null> {
   return request<T>(url, options, true);
 }

@@ -157,6 +157,32 @@ pnpm build
 pnpm start
 ```
 
+## CI & Local Checks
+
+Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which executes the same four checks you can run locally:
+
+| Command | What it does |
+|---------|--------------|
+| `pnpm checkTs` | Type-checks the project with `tsc --noEmit` (no build output). |
+| `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
+| `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
+| `pnpm test` | Placeholder until the test harness lands (see #17). Currently exits `0`. |
+
+### Git hooks (husky + commitlint + lint-staged)
+
+`pnpm install` installs the hooks automatically via the `prepare` script:
+
+- **`pre-commit`** — runs `pnpm checkTs`, `pnpm test`, then `lint-staged` (which formats staged files with `biome format --write`).
+- **`commit-msg`** — runs `commitlint` against the [Conventional Commits](https://www.conventionalcommits.org/) spec. Messages like `feat: add X` pass; `bad message` is rejected.
+
+To skip the hooks in a one-off emergency:
+
+```bash
+HUSKY=0 git commit -m "your message"
+```
+
+Don't make a habit of it — CI will still enforce the same checks on the PR.
+
 ### Environment Variables
 
 | Variable | Default | Description |

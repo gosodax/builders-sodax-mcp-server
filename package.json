@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "pnpm exec tsc && cp -r src/public dist/",
     "check:drift": "tsx src/scripts/checkDrift.ts",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "packageManager": "pnpm@9.15.0",
@@ -26,8 +27,10 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.19.8",
+    "@vitest/coverage-v8": "^2.1.9",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   },
   "pnpm": {
     "overrides": {

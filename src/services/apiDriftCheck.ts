@@ -303,7 +303,7 @@ type ResolvedFields =
   | { kind: "map" }
   | { kind: "unknown" };
 
-function resolveResponseFields(
+export function resolveResponseFields(
   schema: OpenApiSchema | undefined,
   components: Record<string, OpenApiSchema> | undefined,
   depth = 0
@@ -338,7 +338,7 @@ function resolveResponseFields(
   return { kind: "unknown" };
 }
 
-function diff(expected: string[], actual: string[]): { missing: string[]; extra: string[] } {
+export function diff(expected: string[], actual: string[]): { missing: string[]; extra: string[] } {
   const expectedSet = new Set(expected);
   const actualSet = new Set(actual);
   return {

@@ -155,6 +155,9 @@ pnpm build
 
 # Start production server
 pnpm start
+
+# Run the test suite (unit tests for drift-check logic)
+pnpm test
 ```
 
 ### Environment Variables

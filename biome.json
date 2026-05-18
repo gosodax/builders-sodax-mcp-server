@@ -86,7 +86,7 @@
       "trailingCommas": "all",
       "semicolons": "always",
       "arrowParentheses": "asNeeded",
-      "quoteStyle": "single"
+      "quoteStyle": "double"
     },
     "parser": {
       "unsafeParameterDecoratorsEnabled": true

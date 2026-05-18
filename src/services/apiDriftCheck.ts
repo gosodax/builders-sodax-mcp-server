@@ -16,8 +16,8 @@
  * the startup call in `src/index.ts` is fire-and-forget and never throws.
  */
 
-import { SODAX_API_BASE_URL } from '../constants.js';
-import { fetchJson } from './http.js';
+import { SODAX_API_BASE_URL } from "../constants.js";
+import { fetchJson } from "./http.js";
 
 type EndpointKey = string; // e.g. "GET /solver/orderbook"
 
@@ -57,218 +57,218 @@ const IGNORED_PATHS: Record<EndpointKey, string> = {
  * the check flags the diff so a human updates either the tool or this map.
  */
 const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
-  'GET /config/all': {
-    tool: 'sodax_get_all_config',
+  "GET /config/all": {
+    tool: "sodax_get_all_config",
     params: [],
     requiredParams: [],
   },
-  'GET /config/relay/chain-id-map': {
-    tool: 'sodax_get_relay_chain_id_map',
+  "GET /config/relay/chain-id-map": {
+    tool: "sodax_get_relay_chain_id_map",
     params: [],
     requiredParams: [],
   },
-  'GET /config/spoke/chains': {
-    tool: 'sodax_get_supported_chains',
+  "GET /config/spoke/chains": {
+    tool: "sodax_get_supported_chains",
     params: [],
     requiredParams: [],
   },
-  'GET /config/spoke/all-chains-configs': {
-    tool: 'sodax_get_all_chains_configs',
+  "GET /config/spoke/all-chains-configs": {
+    tool: "sodax_get_all_chains_configs",
     params: [],
     requiredParams: [],
   },
-  'GET /config/hub/assets': {
-    tool: 'sodax_get_hub_assets',
-    params: ['chainId'],
+  "GET /config/hub/assets": {
+    tool: "sodax_get_hub_assets",
+    params: ["chainId"],
     requiredParams: [],
-    allowToolExtra: ['chainId'],
+    allowToolExtra: ["chainId"],
   },
-  'GET /config/hub/:chainId/assets': {
-    tool: 'sodax_get_hub_assets',
-    params: ['chainId'],
-    requiredParams: ['chainId'],
+  "GET /config/hub/:chainId/assets": {
+    tool: "sodax_get_hub_assets",
+    params: ["chainId"],
+    requiredParams: ["chainId"],
   },
-  'GET /config/swap/tokens': {
-    tool: 'sodax_get_swap_tokens',
-    params: ['chainId'],
+  "GET /config/swap/tokens": {
+    tool: "sodax_get_swap_tokens",
+    params: ["chainId"],
     requiredParams: [],
-    allowToolExtra: ['chainId'],
+    allowToolExtra: ["chainId"],
   },
-  'GET /config/swap/:chainId/tokens': {
-    tool: 'sodax_get_swap_tokens',
-    params: ['chainId'],
-    requiredParams: ['chainId'],
-    responseFields: ['symbol', 'name', 'address', 'decimals'],
+  "GET /config/swap/:chainId/tokens": {
+    tool: "sodax_get_swap_tokens",
+    params: ["chainId"],
+    requiredParams: ["chainId"],
+    responseFields: ["symbol", "name", "address", "decimals"],
   },
-  'GET /config/money-market/tokens': {
-    tool: 'sodax_get_money_market_tokens',
-    params: ['chainId'],
+  "GET /config/money-market/tokens": {
+    tool: "sodax_get_money_market_tokens",
+    params: ["chainId"],
     requiredParams: [],
-    allowToolExtra: ['chainId'],
+    allowToolExtra: ["chainId"],
   },
-  'GET /config/money-market/reserve-assets': {
-    tool: 'sodax_get_money_market_reserve_assets',
+  "GET /config/money-market/reserve-assets": {
+    tool: "sodax_get_money_market_reserve_assets",
     params: [],
     requiredParams: [],
   },
-  'GET /config/money-market/:chainId/tokens': {
-    tool: 'sodax_get_money_market_tokens',
-    params: ['chainId'],
-    requiredParams: ['chainId'],
-    responseFields: ['symbol', 'name', 'address', 'decimals'],
+  "GET /config/money-market/:chainId/tokens": {
+    tool: "sodax_get_money_market_tokens",
+    params: ["chainId"],
+    requiredParams: ["chainId"],
+    responseFields: ["symbol", "name", "address", "decimals"],
   },
-  'GET /amm/nft-positions': {
-    tool: 'sodax_get_amm_positions',
-    params: ['owner', 'offset', 'limit'],
+  "GET /amm/nft-positions": {
+    tool: "sodax_get_amm_positions",
+    params: ["owner", "offset", "limit"],
     requiredParams: [],
-    responseFields: ['items', 'pagination'],
+    responseFields: ["items", "pagination"],
   },
-  'GET /amm/pools/:chainId/:poolId/candles': {
-    tool: 'sodax_get_amm_pool_candles',
-    params: ['chainId', 'poolId', 'interval', 'from', 'to'],
-    requiredParams: ['chainId', 'poolId', 'interval', 'from', 'to'],
-    responseFields: ['poolId', 'chainId', 'interval', 'from', 'to', 'candles'],
+  "GET /amm/pools/:chainId/:poolId/candles": {
+    tool: "sodax_get_amm_pool_candles",
+    params: ["chainId", "poolId", "interval", "from", "to"],
+    requiredParams: ["chainId", "poolId", "interval", "from", "to"],
+    responseFields: ["poolId", "chainId", "interval", "from", "to", "candles"],
   },
-  'GET /intent/tx/:txHash': {
-    tool: 'sodax_get_transaction',
-    params: ['txHash'],
-    requiredParams: ['txHash'],
-    responseFields: ['intentHash', 'txHash', 'logIndex', 'chainId', 'blockNumber', 'open', 'intent', 'events'],
+  "GET /intent/tx/:txHash": {
+    tool: "sodax_get_transaction",
+    params: ["txHash"],
+    requiredParams: ["txHash"],
+    responseFields: ["intentHash", "txHash", "logIndex", "chainId", "blockNumber", "open", "intent", "events"],
   },
-  'GET /intent/user/:userAddress': {
-    tool: 'sodax_get_user_transactions',
-    params: ['userAddress', 'limit', 'offset', 'fromBlock', 'toBlock'],
-    requiredParams: ['userAddress'],
-    responseFields: ['items', 'total', 'offset', 'limit'],
+  "GET /intent/user/:userAddress": {
+    tool: "sodax_get_user_transactions",
+    params: ["userAddress", "limit", "offset", "fromBlock", "toBlock"],
+    requiredParams: ["userAddress"],
+    responseFields: ["items", "total", "offset", "limit"],
   },
-  'GET /intent/:intentHash': {
-    tool: 'sodax_get_intent',
-    params: ['intentHash'],
-    requiredParams: ['intentHash'],
-    responseFields: ['intentHash', 'txHash', 'logIndex', 'chainId', 'blockNumber', 'open', 'intent', 'events'],
+  "GET /intent/:intentHash": {
+    tool: "sodax_get_intent",
+    params: ["intentHash"],
+    requiredParams: ["intentHash"],
+    responseFields: ["intentHash", "txHash", "logIndex", "chainId", "blockNumber", "open", "intent", "events"],
   },
-  'GET /solver/orderbook': {
-    tool: 'sodax_get_orderbook',
-    params: ['limit', 'offset'],
-    requiredParams: ['limit', 'offset'],
-    responseFields: ['total', 'data'],
+  "GET /solver/orderbook": {
+    tool: "sodax_get_orderbook",
+    params: ["limit", "offset"],
+    requiredParams: ["limit", "offset"],
+    responseFields: ["total", "data"],
   },
-  'GET /solver/volume': {
-    tool: 'sodax_get_volume',
+  "GET /solver/volume": {
+    tool: "sodax_get_volume",
     params: [
-      'inputToken',
-      'outputToken',
-      'chainId',
-      'solver',
-      'fromBlock',
-      'toBlock',
-      'since',
-      'until',
-      'fromTs',
-      'toTs',
-      'sort',
-      'limit',
-      'includeData',
-      'cursor',
+      "inputToken",
+      "outputToken",
+      "chainId",
+      "solver",
+      "fromBlock",
+      "toBlock",
+      "since",
+      "until",
+      "fromTs",
+      "toTs",
+      "sort",
+      "limit",
+      "includeData",
+      "cursor",
     ],
     requiredParams: [],
-    responseFields: ['items', 'nextCursor', 'hasMore'],
+    responseFields: ["items", "nextCursor", "hasMore"],
   },
-  'GET /solver/intents/:intentHash': {
-    tool: 'sodax_get_solver_intent',
-    params: ['intentHash', 'includeAll'],
-    requiredParams: ['intentHash'],
+  "GET /solver/intents/:intentHash": {
+    tool: "sodax_get_solver_intent",
+    params: ["intentHash", "includeAll"],
+    requiredParams: ["intentHash"],
   },
-  'GET /moneymarket/position/:userAddress': {
-    tool: 'sodax_get_user_position',
-    params: ['userAddress'],
-    requiredParams: ['userAddress'],
-    responseFields: ['userAddress', 'positions'],
+  "GET /moneymarket/position/:userAddress": {
+    tool: "sodax_get_user_position",
+    params: ["userAddress"],
+    requiredParams: ["userAddress"],
+    responseFields: ["userAddress", "positions"],
   },
-  'GET /moneymarket/asset/all': {
-    tool: 'sodax_get_money_market_assets',
+  "GET /moneymarket/asset/all": {
+    tool: "sodax_get_money_market_assets",
     params: [],
     requiredParams: [],
     responseFields: [
-      'reserveAddress',
-      'aTokenAddress',
-      'variableDebtTokenAddress',
-      'totalATokenBalance',
-      'totalVariableDebtTokenBalance',
-      'totalBorrowers',
-      'totalSuppliers',
-      'liquidityRate',
-      'variableBorrowRate',
-      'stableBorrowRate',
-      'liquidityIndex',
-      'variableBorrowIndex',
-      'blockNumber',
-      'symbol',
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
     ],
   },
-  'GET /moneymarket/asset/:reserveAddress': {
-    tool: 'sodax_get_money_market_asset',
-    params: ['reserveAddress'],
-    requiredParams: ['reserveAddress'],
+  "GET /moneymarket/asset/:reserveAddress": {
+    tool: "sodax_get_money_market_asset",
+    params: ["reserveAddress"],
+    requiredParams: ["reserveAddress"],
     responseFields: [
-      'reserveAddress',
-      'aTokenAddress',
-      'variableDebtTokenAddress',
-      'totalATokenBalance',
-      'totalVariableDebtTokenBalance',
-      'totalBorrowers',
-      'totalSuppliers',
-      'liquidityRate',
-      'variableBorrowRate',
-      'stableBorrowRate',
-      'liquidityIndex',
-      'variableBorrowIndex',
-      'blockNumber',
-      'symbol',
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
     ],
   },
-  'GET /moneymarket/asset/:reserveAddress/borrowers': {
-    tool: 'sodax_get_asset_borrowers',
-    params: ['reserveAddress', 'offset', 'limit'],
-    requiredParams: ['reserveAddress'],
-    responseFields: ['borrowers', 'total', 'offset', 'limit'],
+  "GET /moneymarket/asset/:reserveAddress/borrowers": {
+    tool: "sodax_get_asset_borrowers",
+    params: ["reserveAddress", "offset", "limit"],
+    requiredParams: ["reserveAddress"],
+    responseFields: ["borrowers", "total", "offset", "limit"],
   },
-  'GET /moneymarket/asset/:reserveAddress/suppliers': {
-    tool: 'sodax_get_asset_suppliers',
-    params: ['reserveAddress', 'offset', 'limit'],
-    requiredParams: ['reserveAddress'],
-    responseFields: ['suppliers', 'total', 'offset', 'limit'],
+  "GET /moneymarket/asset/:reserveAddress/suppliers": {
+    tool: "sodax_get_asset_suppliers",
+    params: ["reserveAddress", "offset", "limit"],
+    requiredParams: ["reserveAddress"],
+    responseFields: ["suppliers", "total", "offset", "limit"],
   },
-  'GET /moneymarket/borrowers': {
-    tool: 'sodax_get_all_borrowers',
-    params: ['offset', 'limit'],
+  "GET /moneymarket/borrowers": {
+    tool: "sodax_get_all_borrowers",
+    params: ["offset", "limit"],
     requiredParams: [],
-    responseFields: ['borrowers', 'total', 'offset', 'limit'],
+    responseFields: ["borrowers", "total", "offset", "limit"],
   },
-  'GET /partners': {
-    tool: 'sodax_get_partners',
-    params: ['chainId'],
+  "GET /partners": {
+    tool: "sodax_get_partners",
+    params: ["chainId"],
     requiredParams: [],
-    responseFields: ['partners'],
+    responseFields: ["partners"],
   },
-  'GET /partners/:receiver/summary': {
-    tool: 'sodax_get_partner_summary',
-    params: ['receiver', 'chainId'],
-    requiredParams: ['receiver'],
-    responseFields: ['receiver', 'chainId', 'feeByInputToken', 'volumeByOutputToken'],
+  "GET /partners/:receiver/summary": {
+    tool: "sodax_get_partner_summary",
+    params: ["receiver", "chainId"],
+    requiredParams: ["receiver"],
+    responseFields: ["receiver", "chainId", "feeByInputToken", "volumeByOutputToken"],
   },
-  'GET /sodax/total_supply': {
-    tool: 'sodax_get_total_supply',
+  "GET /sodax/total_supply": {
+    tool: "sodax_get_total_supply",
     params: [],
     requiredParams: [],
   },
-  'GET /sodax/circulating_supply': {
-    tool: 'sodax_get_circulating_supply',
+  "GET /sodax/circulating_supply": {
+    tool: "sodax_get_circulating_supply",
     params: [],
     requiredParams: [],
   },
-  'GET /sodax/supply': {
-    tool: 'sodax_get_token_supply',
+  "GET /sodax/supply": {
+    tool: "sodax_get_token_supply",
     params: [],
     requiredParams: [],
     responseFields: [],
@@ -277,7 +277,7 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
 
 interface OpenApiParameter {
   name: string;
-  in: 'query' | 'path' | 'header' | 'cookie';
+  in: "query" | "path" | "header" | "cookie";
   required?: boolean;
 }
 
@@ -293,9 +293,9 @@ interface OpenApiSchema {
 interface OpenApiOperation {
   parameters?: OpenApiParameter[];
   responses?: {
-    '200'?: {
+    "200"?: {
       content?: {
-        'application/json'?: {
+        "application/json"?: {
           schema?: OpenApiSchema;
         };
       };
@@ -312,7 +312,7 @@ interface OpenApiSpec {
 
 interface DriftIssue {
   endpoint: EndpointKey;
-  kind: 'param-missing' | 'param-extra' | 'required-missing' | 'required-extra' | 'field-missing' | 'field-extra';
+  kind: "param-missing" | "param-extra" | "required-missing" | "required-extra" | "field-missing" | "field-extra";
   detail: string;
 }
 
@@ -330,7 +330,7 @@ export interface DriftReport {
 
 /** Normalize an OpenAPI path with `{param}` placeholders to `:param` form. */
 function normalizePath(path: string): string {
-  return path.replace(/\{([^}]+)\}/g, ':$1');
+  return path.replace(/\{([^}]+)\}/g, ":$1");
 }
 
 /**
@@ -343,44 +343,44 @@ function normalizePath(path: string): string {
  *      drift can't be checked at the field level
  */
 type ResolvedFields =
-  | { kind: 'object'; fields: string[] }
-  | { kind: 'primitive' }
-  | { kind: 'map' }
-  | { kind: 'unknown' };
+  | { kind: "object"; fields: string[] }
+  | { kind: "primitive" }
+  | { kind: "map" }
+  | { kind: "unknown" };
 
 function resolveResponseFields(
   schema: OpenApiSchema | undefined,
   components: Record<string, OpenApiSchema> | undefined,
   depth = 0,
 ): ResolvedFields {
-  if (!schema || depth > 4) return { kind: 'unknown' };
+  if (!schema || depth > 4) return { kind: "unknown" };
 
   if (schema.$ref) {
-    const refName = schema.$ref.replace('#/components/schemas/', '');
+    const refName = schema.$ref.replace("#/components/schemas/", "");
     const target = components?.[refName];
     return resolveResponseFields(target, components, depth + 1);
   }
 
   if (schema.properties) {
-    return { kind: 'object', fields: Object.keys(schema.properties) };
+    return { kind: "object", fields: Object.keys(schema.properties) };
   }
 
-  if (schema.type === 'array' && schema.items) {
+  if (schema.type === "array" && schema.items) {
     return resolveResponseFields(schema.items, components, depth + 1);
   }
 
-  if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-    return { kind: 'map' };
+  if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+    return { kind: "map" };
   }
 
-  if (schema.type === 'object') {
+  if (schema.type === "object") {
     // Object declared but no properties listed.
-    return { kind: 'object', fields: [] };
+    return { kind: "object", fields: [] };
   }
 
-  if (schema.type) return { kind: 'primitive' };
+  if (schema.type) return { kind: "primitive" };
 
-  return { kind: 'unknown' };
+  return { kind: "unknown" };
 }
 
 function diff(expected: string[], actual: string[]): { missing: string[]; extra: string[] } {
@@ -406,12 +406,12 @@ export async function checkApiDrift(): Promise<DriftReport> {
   try {
     spec = await fetchJson<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
   } catch (error) {
-    console.error('⚠️  API drift check: could not fetch OpenAPI spec —', error instanceof Error ? error.message : error);
+    console.error("⚠️  API drift check: could not fetch OpenAPI spec —", error instanceof Error ? error.message : error);
     return emptyReport;
   }
 
   if (!spec?.paths) {
-    console.error('⚠️  API drift check: could not parse OpenAPI spec');
+    console.error("⚠️  API drift check: could not parse OpenAPI spec");
     return emptyReport;
   }
 
@@ -437,12 +437,12 @@ export async function checkApiDrift(): Promise<DriftReport> {
   const uncovered: EndpointKey[] = [];
 
   for (const key of coveredKeys) {
-    const [method, path] = key.split(' ');
+    const [method, path] = key.split(" ");
     const op = spec.paths[restoreOpenApiPath(path, spec.paths)]?.[method.toLowerCase()];
     if (!op) continue;
 
     const contract = TOOL_CONTRACT[key];
-    const specParams = (op.parameters ?? []).filter(p => p.in === 'query' || p.in === 'path');
+    const specParams = (op.parameters ?? []).filter(p => p.in === "query" || p.in === "path");
     const specParamNames = specParams.map(p => p.name);
     const specRequiredNames = specParams.filter(p => p.required === true).map(p => p.name);
 
@@ -452,7 +452,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
     for (const name of paramDiff.missing) {
       paramIssues.push({
         endpoint: key,
-        kind: 'param-missing',
+        kind: "param-missing",
         detail: `spec has param "${name}" not in tool "${contract.tool}"`,
       });
     }
@@ -461,7 +461,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
       if (allowExtra.has(name)) continue;
       paramIssues.push({
         endpoint: key,
-        kind: 'param-extra',
+        kind: "param-extra",
         detail: `tool "${contract.tool}" declares param "${name}" not in spec`,
       });
     }
@@ -476,7 +476,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
       if (contract.params.includes(name)) {
         requiredIssues.push({
           endpoint: key,
-          kind: 'required-missing',
+          kind: "required-missing",
           detail: `spec requires "${name}" but tool "${contract.tool}" declares it optional`,
         });
       }
@@ -485,7 +485,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
       if (specParamNames.includes(name)) {
         requiredIssues.push({
           endpoint: key,
-          kind: 'required-extra',
+          kind: "required-extra",
           detail: `tool "${contract.tool}" requires "${name}" but spec marks it optional`,
         });
       }
@@ -497,16 +497,16 @@ export async function checkApiDrift(): Promise<DriftReport> {
       continue;
     }
 
-    const responseSchema = op.responses?.['200']?.content?.['application/json']?.schema;
+    const responseSchema = op.responses?.["200"]?.content?.["application/json"]?.schema;
     const resolved = resolveResponseFields(responseSchema, components);
 
-    if (resolved.kind !== 'object') {
+    if (resolved.kind !== "object") {
       // Contract expects fields but spec doesn't declare an object schema —
       // count that itself as drift.
       fieldIssues.push({
         endpoint: key,
-        kind: 'field-extra',
-        detail: `contract expects fields [${contract.responseFields.join(', ')}] but spec response is ${resolved.kind}`,
+        kind: "field-extra",
+        detail: `contract expects fields [${contract.responseFields.join(", ")}] but spec response is ${resolved.kind}`,
       });
       continue;
     }
@@ -515,14 +515,14 @@ export async function checkApiDrift(): Promise<DriftReport> {
     for (const name of fieldDiff.missing) {
       fieldIssues.push({
         endpoint: key,
-        kind: 'field-missing',
+        kind: "field-missing",
         detail: `spec response has field "${name}" not in contract for "${contract.tool}"`,
       });
     }
     for (const name of fieldDiff.extra) {
       fieldIssues.push({
         endpoint: key,
-        kind: 'field-extra',
+        kind: "field-extra",
         detail: `contract expects field "${name}" not in spec response for "${contract.tool}"`,
       });
     }
@@ -542,27 +542,27 @@ export async function checkApiDrift(): Promise<DriftReport> {
     );
   } else {
     console.error(`⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`);
-    console.error('');
+    console.error("");
     if (endpointGaps.length > 0) {
       console.error(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
       for (const key of endpointGaps) console.error(`  - ${key}`);
-      console.error('  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts');
-      console.error('');
+      console.error("  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts");
+      console.error("");
     }
     if (paramIssues.length > 0) {
       console.error(`Param drift — ${paramIssues.length} issue(s):`);
       for (const issue of paramIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error('');
+      console.error("");
     }
     if (requiredIssues.length > 0) {
       console.error(`Required-flag drift — ${requiredIssues.length} issue(s):`);
       for (const issue of requiredIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error('');
+      console.error("");
     }
     if (fieldIssues.length > 0) {
       console.error(`Response-field drift — ${fieldIssues.length} issue(s):`);
       for (const issue of fieldIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error('');
+      console.error("");
     }
   }
 
@@ -591,7 +591,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
  * matching raw key (`/config/hub/{chainId}/assets`) in the spec's paths
  * object so we can index back into it.
  */
-function restoreOpenApiPath(normalized: string, paths: OpenApiSpec['paths']): string {
+function restoreOpenApiPath(normalized: string, paths: OpenApiSpec["paths"]): string {
   for (const raw of Object.keys(paths)) {
     if (normalizePath(raw) === normalized) return raw;
   }

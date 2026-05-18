@@ -3,8 +3,8 @@
  */
 
 export enum ResponseFormat {
-  JSON = 'json',
-  MARKDOWN = 'markdown',
+  JSON = "json",
+  MARKDOWN = "markdown",
 }
 
 /**
@@ -44,8 +44,8 @@ export interface SwapToken {
 export interface Transaction {
   txHash: string;
   chainId: string;
-  status: 'pending' | 'completed' | 'failed';
-  type: 'swap' | 'bridge' | 'deposit' | 'withdraw' | 'borrow' | 'repay';
+  status: "pending" | "completed" | "failed";
+  type: "swap" | "bridge" | "deposit" | "withdraw" | "borrow" | "repay";
   fromAddress: string;
   toAddress?: string;
   tokenIn?: {
@@ -113,7 +113,7 @@ export interface OrderbookEntry {
     amount: string;
   };
   price: number;
-  status: 'open' | 'partial' | 'filled' | 'cancelled';
+  status: "open" | "partial" | "filled" | "cancelled";
   createdAt: number;
   expiresAt?: number;
 }
@@ -168,7 +168,7 @@ export interface UserPosition {
 export interface Partner {
   id: string;
   name: string;
-  type: 'wallet' | 'dex' | 'bridge' | 'aggregator' | 'lending' | 'other';
+  type: "wallet" | "dex" | "bridge" | "aggregator" | "lending" | "other";
   description?: string;
   website?: string;
   logoUrl?: string;

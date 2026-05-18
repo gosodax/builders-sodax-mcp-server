@@ -5,7 +5,7 @@
  * Wire into CI / pre-deploy gates via `pnpm check:drift`.
  */
 
-import { checkApiDrift } from '../services/apiDriftCheck.js';
+import { checkApiDrift } from "../services/apiDriftCheck.js";
 
 const report = await checkApiDrift();
 process.exit(report.hasDrift ? 1 : 0);

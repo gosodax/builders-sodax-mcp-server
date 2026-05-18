@@ -8,62 +8,62 @@
  * When unset, all tracking is silently skipped.
  */
 
-import { createHash } from 'node:crypto';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { PostHog } from 'posthog-node';
+import { createHash } from "node:crypto";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { PostHog } from "posthog-node";
 
 // ── Configuration ────────────────────────────────────────────────────
-const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || '';
-const POSTHOG_HOST = process.env.POSTHOG_HOST || 'https://eu.i.posthog.com';
-const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || 'sodax-builders-mcp';
-const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || 'builders-mcp';
+const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
+const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
+const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
+const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 
 // ── Tool → Group mapping ─────────────────────────────────────────────
 // Map every tool name to a logical group for PostHog filtering.
 // Update this when you add or remove tools.
 const TOOL_GROUPS: Record<string, string> = {
   // SODAX API tools — config
-  sodax_get_supported_chains: 'api',
-  sodax_get_swap_tokens: 'api',
-  sodax_get_all_config: 'api',
-  sodax_get_relay_chain_id_map: 'api',
-  sodax_get_all_chains_configs: 'api',
-  sodax_get_hub_assets: 'api',
-  sodax_get_money_market_tokens: 'api',
-  sodax_get_money_market_reserve_assets: 'api',
+  sodax_get_supported_chains: "api",
+  sodax_get_swap_tokens: "api",
+  sodax_get_all_config: "api",
+  sodax_get_relay_chain_id_map: "api",
+  sodax_get_all_chains_configs: "api",
+  sodax_get_hub_assets: "api",
+  sodax_get_money_market_tokens: "api",
+  sodax_get_money_market_reserve_assets: "api",
 
   // SODAX API tools — intents & solver
-  sodax_get_transaction: 'api',
-  sodax_get_user_transactions: 'api',
-  sodax_get_intent: 'api',
-  sodax_get_volume: 'api',
-  sodax_get_orderbook: 'api',
-  sodax_get_solver_intent: 'api',
+  sodax_get_transaction: "api",
+  sodax_get_user_transactions: "api",
+  sodax_get_intent: "api",
+  sodax_get_volume: "api",
+  sodax_get_orderbook: "api",
+  sodax_get_solver_intent: "api",
 
   // SODAX API tools — AMM
-  sodax_get_amm_positions: 'api',
-  sodax_get_amm_pool_candles: 'api',
+  sodax_get_amm_positions: "api",
+  sodax_get_amm_pool_candles: "api",
 
   // SODAX API tools — money market
-  sodax_get_money_market_assets: 'api',
-  sodax_get_money_market_asset: 'api',
-  sodax_get_asset_borrowers: 'api',
-  sodax_get_asset_suppliers: 'api',
-  sodax_get_all_borrowers: 'api',
-  sodax_get_user_position: 'api',
+  sodax_get_money_market_assets: "api",
+  sodax_get_money_market_asset: "api",
+  sodax_get_asset_borrowers: "api",
+  sodax_get_asset_suppliers: "api",
+  sodax_get_all_borrowers: "api",
+  sodax_get_user_position: "api",
 
   // SODAX API tools — partners & token
-  sodax_get_partners: 'api',
-  sodax_get_partner_summary: 'api',
-  sodax_get_token_supply: 'api',
-  sodax_get_total_supply: 'api',
-  sodax_get_circulating_supply: 'api',
-  sodax_refresh_cache: 'api',
+  sodax_get_partners: "api",
+  sodax_get_partner_summary: "api",
+  sodax_get_token_supply: "api",
+  sodax_get_total_supply: "api",
+  sodax_get_circulating_supply: "api",
+  sodax_refresh_cache: "api",
 
   // GitBook SDK docs meta-tools
-  docs_health: 'sdk-docs',
-  docs_refresh: 'sdk-docs',
-  docs_list_tools: 'sdk-docs',
+  docs_health: "sdk-docs",
+  docs_refresh: "sdk-docs",
+  docs_list_tools: "sdk-docs",
 };
 
 /**
@@ -72,8 +72,8 @@ const TOOL_GROUPS: Record<string, string> = {
  */
 function resolveToolGroup(toolName: string): string {
   if (TOOL_GROUPS[toolName]) return TOOL_GROUPS[toolName];
-  if (toolName.startsWith('docs_')) return 'sdk-docs';
-  return 'unknown';
+  if (toolName.startsWith("docs_")) return "sdk-docs";
+  return "unknown";
 }
 
 // ── PostHog client (lazy singleton) ──────────────────────────────────
@@ -96,7 +96,7 @@ function getClient(): PostHog | null {
  * storing raw IPs.
  */
 export function hashClientIp(ip: string): string {
-  return createHash('sha256').update(`sodax-mcp:${ip}`).digest('hex').slice(0, 16);
+  return createHash("sha256").update(`sodax-mcp:${ip}`).digest("hex").slice(0, 16);
 }
 
 // ── Core tracking function ───────────────────────────────────────────
@@ -112,7 +112,7 @@ function trackToolCall(
 
   ph.capture({
     distinctId: clientId || DISTINCT_ID,
-    event: 'tool_called',
+    event: "tool_called",
     properties: {
       server: SERVER_NAME,
       tool_name: toolName,
@@ -120,7 +120,7 @@ function trackToolCall(
       duration_ms: durationMs,
       success,
       ...(error && { error_message: error }),
-      transport: process.env.TRANSPORT || 'http',
+      transport: process.env.TRANSPORT || "http",
     },
   });
 }
@@ -144,7 +144,7 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
     const lastIdx = allArgs.length - 1;
     const handler = allArgs[lastIdx];
 
-    if (typeof handler === 'function') {
+    if (typeof handler === "function") {
       allArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
         const start = Date.now();
         try {

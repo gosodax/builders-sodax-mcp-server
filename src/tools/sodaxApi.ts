@@ -39,59 +39,9 @@ import {
   clearCache,
   getCacheStats
 } from "../services/sodaxApi.js";
+import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
 import { ResponseFormat } from "../types.js";
-
-/**
- * Format response based on requested format
- */
-function formatResponse(data: unknown, format: ResponseFormat): string {
-  if (format === ResponseFormat.MARKDOWN) {
-    return formatAsMarkdown(data);
-  }
-  return JSON.stringify(data, null, 2);
-}
-
-/**
- * Format data as Markdown for better readability
- */
-function formatAsMarkdown(data: unknown): string {
-  if (Array.isArray(data)) {
-    if (data.length === 0) return "_No data available_";
-    
-    // Try to create a table for arrays of objects
-    if (typeof data[0] === "object" && data[0] !== null) {
-      const keys = Object.keys(data[0]).slice(0, 6); // Limit columns
-      let md = `| ${keys.join(" | ")} |\n`;
-      md += `| ${keys.map(() => "---").join(" | ")} |\n`;
-      for (const item of data.slice(0, 20)) { // Limit rows
-        const values = keys.map(k => {
-          const val = (item as Record<string, unknown>)[k];
-          if (val === null || val === undefined) return "-";
-          if (typeof val === "object") return JSON.stringify(val).slice(0, 30);
-          return String(val).slice(0, 40);
-        });
-        md += `| ${values.join(" | ")} |\n`;
-      }
-      if (data.length > 20) {
-        md += `\n_... and ${data.length - 20} more items_`;
-      }
-      return md;
-    }
-    return data.map(item => `- ${String(item)}`).join("\n");
-  }
-  
-  if (typeof data === "object" && data !== null) {
-    const entries = Object.entries(data);
-    return entries.map(([key, value]) => {
-      if (typeof value === "object" && value !== null) {
-        return `**${key}:**\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
-      }
-      return `**${key}:** ${value}`;
-    }).join("\n\n");
-  }
-  
-  return String(data);
-}
+import { formatResponse } from "./formatters.js";
 
 /**
  * Register all SODAX API tools with the MCP server
@@ -996,12 +946,15 @@ export function registerSodaxApiTools(server: McpServer): void {
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
-      const statsBefore = getCacheStats();
+      const apiBefore = getCacheStats();
+      const solverBefore = getSolverCacheStats();
       clearCache();
+      clearSolverCache();
+      const total = apiBefore.size + solverBefore.size;
       return {
         content: [{
           type: "text",
-          text: `Cache cleared. ${statsBefore.size} cached entries removed.`
+          text: `Cache cleared. ${total} cached entries removed (${apiBefore.size} api, ${solverBefore.size} solver).`
         }]
       };
     }

@@ -187,3 +187,78 @@ export interface TokenSupply {
   priceUsd?: number;
   marketCapUsd?: number;
 }
+
+/**
+ * Solver oracle price entry — one per (chainId, token) pair the solver tracks.
+ */
+export interface OraclePrice {
+  address: string;
+  chainId: string;
+  symbol: string;
+  priceUsd: number;
+  decimals: number;
+  updatedAt: number;
+}
+
+/**
+ * Solver quote request. `quote_type` controls which side is the
+ * provided amount — `exact_input` quotes the destination amount,
+ * `exact_output` quotes the source amount required.
+ */
+export interface QuoteRequest {
+  token_src: string;
+  token_dst: string;
+  amount: string;
+  quote_type: "exact_input" | "exact_output";
+}
+
+/**
+ * Solver quote response. `quoted_amount` is in the smallest unit
+ * of the destination token (for exact_input) or the source token
+ * (for exact_output).
+ */
+export interface QuoteResponse {
+  quoted_amount: string;
+}
+
+/**
+ * Intent Relay packet — one cross-chain message in flight.
+ * `status === 'executed'` means the destination chain has applied it.
+ */
+export interface RelayPacketData {
+  src_chain_id: number;
+  src_tx_hash: string;
+  src_address: string;
+  status: "pending" | "validating" | "executing" | "executed";
+  dst_chain_id: number;
+  conn_sn: number;
+  dst_address: string;
+  dst_tx_hash: string;
+  signatures: string[];
+  payload: string;
+}
+
+/**
+ * Response for the relay `submit` action.
+ */
+export interface RelaySubmitResponse {
+  success: boolean;
+  message: string;
+}
+
+/**
+ * Response for the relay `get_transaction_packets` action.
+ * Returns every packet emitted by the given source transaction.
+ */
+export interface RelayPacketsResponse {
+  success: boolean;
+  data: RelayPacketData[];
+}
+
+/**
+ * Response for the relay `get_packet` action.
+ * Returns a single packet by its connection serial number.
+ */
+export type RelayGetPacketResponse =
+  | { success: true; data: RelayPacketData }
+  | { success: false; message: string };

@@ -18,6 +18,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
+import { registerSolverRelayTools } from "./tools/solverRelay.js";
 import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { withAnalytics, shutdownAnalytics, hashClientIp } from "./services/analytics.js";
@@ -42,6 +43,7 @@ async function createServer(clientId?: string): Promise<McpServer> {
   withAnalytics(server, clientId);
 
   registerSodaxApiTools(server);
+  registerSolverRelayTools(server);
   await registerGitBookProxyTools(server);
 
   return server;
@@ -146,7 +148,7 @@ async function runHTTP(): Promise<void> {
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    const apiToolCount = 28; // sodax_* tools registered in sodaxApi.ts (27 + refresh_cache)
+    const apiToolCount = 33; // sodax_* tools (28 in sodaxApi.ts + 5 in solverRelay.ts)
     const totalTools = apiToolCount + gitbookToolNames.length;
     res.json({ 
       status: "healthy", 
@@ -240,7 +242,14 @@ async function runHTTP(): Promise<void> {
           "sodax_get_user_transactions",
           "sodax_get_volume",
           "sodax_get_orderbook",
-          "sodax_get_solver_intent"
+          "sodax_get_solver_intent",
+          "sodax_get_solver_oracle",
+          "sodax_get_solver_quote"
+        ],
+        relay: [
+          "sodax_relay_submit_tx",
+          "sodax_relay_get_transaction_packets",
+          "sodax_relay_get_packet"
         ],
         amm: [
           "sodax_get_amm_positions",

@@ -42,6 +42,13 @@ const TOOL_GROUPS: Record<string, string> = {
   sodax_get_volume: "api",
   sodax_get_orderbook: "api",
   sodax_get_solver_intent: "api",
+  sodax_get_solver_oracle: "api",
+  sodax_get_solver_quote: "api",
+
+  // SODAX intent-relay tools
+  sodax_relay_submit_tx: "relay",
+  sodax_relay_get_transaction_packets: "relay",
+  sodax_relay_get_packet: "relay",
 
   // SODAX API tools — AMM
   sodax_get_amm_positions: "api",

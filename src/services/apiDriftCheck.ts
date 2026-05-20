@@ -19,6 +19,7 @@
 import { SODAX_API_BASE_URL } from "../constants.js";
 import { type OpenApiSchema, diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
 import { fetchJson } from "./http.js";
+import { logger } from "./logger.js";
 
 type EndpointKey = string; // e.g. "GET /solver/orderbook"
 
@@ -339,12 +340,12 @@ export async function checkApiDrift(): Promise<DriftReport> {
   try {
     spec = await fetchJson<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
   } catch (error) {
-    console.error("⚠️  API drift check: could not fetch OpenAPI spec —", error instanceof Error ? error.message : error);
+    logger.warn({ err: error }, "⚠️  API drift check: could not fetch OpenAPI spec");
     return emptyReport;
   }
 
   if (!spec?.paths) {
-    console.error("⚠️  API drift check: could not parse OpenAPI spec");
+    logger.warn("⚠️  API drift check: could not parse OpenAPI spec");
     return emptyReport;
   }
 
@@ -470,40 +471,39 @@ export async function checkApiDrift(): Promise<DriftReport> {
   const issueCount = endpointGaps.length + paramIssues.length + requiredIssues.length + fieldIssues.length;
 
   if (!hasDrift) {
-    console.error(
+    logger.info(
+      { totalEndpoints: total, uncovered: uncovered.length },
       `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
     );
   } else {
-    console.error(`⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`);
-    console.error("");
+    logger.warn(
+      { issueCount, totalEndpoints: total },
+      `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`,
+    );
     if (endpointGaps.length > 0) {
-      console.error(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
-      for (const key of endpointGaps) console.error(`  - ${key}`);
-      console.error("  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts");
-      console.error("");
+      logger.warn(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
+      for (const key of endpointGaps) logger.warn(`  - ${key}`);
+      logger.warn("  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts");
     }
     if (paramIssues.length > 0) {
-      console.error(`Param drift — ${paramIssues.length} issue(s):`);
-      for (const issue of paramIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error("");
+      logger.warn(`Param drift — ${paramIssues.length} issue(s):`);
+      for (const issue of paramIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
     }
     if (requiredIssues.length > 0) {
-      console.error(`Required-flag drift — ${requiredIssues.length} issue(s):`);
-      for (const issue of requiredIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error("");
+      logger.warn(`Required-flag drift — ${requiredIssues.length} issue(s):`);
+      for (const issue of requiredIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
     }
     if (fieldIssues.length > 0) {
-      console.error(`Response-field drift — ${fieldIssues.length} issue(s):`);
-      for (const issue of fieldIssues) console.error(`  - ${issue.endpoint}: ${issue.detail}`);
-      console.error("");
+      logger.warn(`Response-field drift — ${fieldIssues.length} issue(s):`);
+      for (const issue of fieldIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
     }
   }
 
   if (uncovered.length > 0) {
-    console.error(
+    logger.info(
       `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`,
     );
-    for (const key of uncovered) console.error(`  - ${key}`);
+    for (const key of uncovered) logger.info(`  - ${key}`);
   }
 
   return {

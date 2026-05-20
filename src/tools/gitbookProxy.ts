@@ -15,6 +15,7 @@ import {
   clearGitBookCache,
   fetchGitBookTools,
 } from "../services/gitbookProxy.js";
+import { logger } from "../services/logger.js";
 
 const DOCS_READ_ONLY: ToolAnnotations = {
   readOnlyHint: true,
@@ -88,11 +89,11 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
     const tools = await fetchGitBookTools();
 
     if (tools.length === 0) {
-      console.error("No tools found from GitBook MCP - meta-tools registered, proxy tools skipped");
+      logger.warn("No tools found from GitBook MCP - meta-tools registered, proxy tools skipped");
       return 0;
     }
 
-    console.error(`Registering ${tools.length} GitBook tools as docs_* proxies...`);
+    logger.debug({ toolCount: tools.length }, "Registering GitBook tools as docs_* proxies");
 
     for (const tool of tools) {
       try {
@@ -133,13 +134,13 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
 
         registeredCount++;
       } catch (toolError) {
-        console.error(`Failed to register GitBook tool ${tool.name}:`, toolError);
+        logger.error({ err: toolError, toolName: tool.name }, "Failed to register GitBook tool");
       }
     }
 
-    console.error(`Registered ${registeredCount} tools from GitBook MCP`);
+    logger.debug({ registeredCount }, "Registered tools from GitBook MCP");
   } catch (error) {
-    console.error("Failed to register GitBook proxy tools:", error);
+    logger.error({ err: error }, "Failed to register GitBook proxy tools");
   }
 
   return registeredCount;

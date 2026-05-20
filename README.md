@@ -193,6 +193,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `NODE_ENV` | - | Set to `production` for deployment |
+| `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 
 ## Deployment
 

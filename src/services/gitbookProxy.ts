@@ -7,6 +7,8 @@
  * This keeps SDK docs in sync as docs.sodax.com updates.
  */
 
+import { logger } from "./logger.js";
+
 // GitBook MCP endpoint
 const GITBOOK_MCP_URL = "https://docs.sodax.com/~gitbook/mcp";
 const GITBOOK_TIMEOUT_MS = 30_000;
@@ -133,7 +135,7 @@ async function initializeConnection(): Promise<void> {
     });
   } catch (error) {
     // Some servers don't require initialization, continue anyway
-    console.error("GitBook MCP init (optional):", error instanceof Error ? error.message : "unknown");
+    logger.debug({ err: error }, "GitBook MCP init (optional) failed");
   }
 }
 
@@ -157,14 +159,13 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
     toolsCacheTime = Date.now();
 
     if (cachedTools.length > 0) {
-      console.error(`✅ Fetched ${cachedTools.length} tools from GitBook MCP`);
+      logger.debug({ toolCount: cachedTools.length }, "Fetched tools from GitBook MCP");
     } else {
-      console.error("⚠️ GitBook MCP returned empty tools list");
+      logger.warn("GitBook MCP returned empty tools list");
     }
     return cachedTools;
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : "unknown error";
-    console.error(`❌ Failed to fetch GitBook tools: ${errorMsg}`);
+    logger.error({ err: error }, "Failed to fetch GitBook tools");
     // Return cached tools even if expired, or empty array
     return cachedTools || [];
   }

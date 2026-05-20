@@ -46,8 +46,14 @@ export async function getSolverOracle(): Promise<OraclePrice[]> {
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<OraclePrice[]>(solverUrl("/oracle"));
-    const prices = Array.isArray(data) ? data : [];
+    const data = await fetchJson<unknown>(solverUrl("/oracle"));
+    if (!Array.isArray(data)) {
+      // Surface contract drift loudly rather than silently caching an empty
+      // list — a 2xx response with an unexpected shape is almost certainly
+      // an upstream change we want to know about.
+      throw new Error(`Unexpected oracle response shape: expected array, got ${typeof data}`);
+    }
+    const prices = data as OraclePrice[];
     setCache(cacheKey, prices);
     return prices;
   } catch (error) {

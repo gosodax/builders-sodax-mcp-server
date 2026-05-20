@@ -17,6 +17,7 @@
  */
 
 import { SODAX_API_BASE_URL } from "../constants.js";
+import { type OpenApiSchema, diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
 import { fetchJson } from "./http.js";
 import { logger } from "./logger.js";
 
@@ -156,7 +157,22 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /solver/volume": {
     tool: "sodax_get_volume",
-    params: ["inputToken", "outputToken", "chainId", "solver", "fromBlock", "toBlock", "since", "until", "fromTs", "toTs", "sort", "limit", "includeData", "cursor"],
+    params: [
+      "inputToken",
+      "outputToken",
+      "chainId",
+      "solver",
+      "fromBlock",
+      "toBlock",
+      "since",
+      "until",
+      "fromTs",
+      "toTs",
+      "sort",
+      "limit",
+      "includeData",
+      "cursor",
+    ],
     requiredParams: [],
     responseFields: ["items", "nextCursor", "hasMore"],
   },
@@ -175,13 +191,43 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     tool: "sodax_get_money_market_assets",
     params: [],
     requiredParams: [],
-    responseFields: ["reserveAddress", "aTokenAddress", "variableDebtTokenAddress", "totalATokenBalance", "totalVariableDebtTokenBalance", "totalBorrowers", "totalSuppliers", "liquidityRate", "variableBorrowRate", "stableBorrowRate", "liquidityIndex", "variableBorrowIndex", "blockNumber", "symbol"],
+    responseFields: [
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
+    ],
   },
   "GET /moneymarket/asset/:reserveAddress": {
     tool: "sodax_get_money_market_asset",
     params: ["reserveAddress"],
     requiredParams: ["reserveAddress"],
-    responseFields: ["reserveAddress", "aTokenAddress", "variableDebtTokenAddress", "totalATokenBalance", "totalVariableDebtTokenBalance", "totalBorrowers", "totalSuppliers", "liquidityRate", "variableBorrowRate", "stableBorrowRate", "liquidityIndex", "variableBorrowIndex", "blockNumber", "symbol"],
+    responseFields: [
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
+    ],
   },
   "GET /moneymarket/asset/:reserveAddress/borrowers": {
     tool: "sodax_get_asset_borrowers",
@@ -237,15 +283,6 @@ interface OpenApiParameter {
   required?: boolean;
 }
 
-interface OpenApiSchema {
-  $ref?: string;
-  type?: string;
-  properties?: Record<string, OpenApiSchema>;
-  items?: OpenApiSchema;
-  additionalProperties?: OpenApiSchema | boolean;
-  allOf?: OpenApiSchema[];
-}
-
 interface OpenApiOperation {
   parameters?: OpenApiParameter[];
   responses?: {
@@ -287,65 +324,6 @@ export interface DriftReport {
 /** Normalize an OpenAPI path with `{param}` placeholders to `:param` form. */
 function normalizePath(path: string): string {
   return path.replace(/\{([^}]+)\}/g, ":$1");
-}
-
-/**
- * Resolve a response schema down to its top-level property names.
- *
- * Returns:
- *   - `{ kind: "object", fields: [...] }` for an object schema (inline or via $ref)
- *   - `{ kind: "object", fields: [...] }` for an array of objects (fields = item props)
- *   - `{ kind: "primitive" }` / `{ kind: "map" }` / `{ kind: "unknown" }` when
- *      drift can't be checked at the field level
- */
-type ResolvedFields =
-  | { kind: "object"; fields: string[] }
-  | { kind: "primitive" }
-  | { kind: "map" }
-  | { kind: "unknown" };
-
-function resolveResponseFields(
-  schema: OpenApiSchema | undefined,
-  components: Record<string, OpenApiSchema> | undefined,
-  depth = 0
-): ResolvedFields {
-  if (!schema || depth > 4) return { kind: "unknown" };
-
-  if (schema.$ref) {
-    const refName = schema.$ref.replace("#/components/schemas/", "");
-    const target = components?.[refName];
-    return resolveResponseFields(target, components, depth + 1);
-  }
-
-  if (schema.properties) {
-    return { kind: "object", fields: Object.keys(schema.properties) };
-  }
-
-  if (schema.type === "array" && schema.items) {
-    return resolveResponseFields(schema.items, components, depth + 1);
-  }
-
-  if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
-    return { kind: "map" };
-  }
-
-  if (schema.type === "object") {
-    // Object declared but no properties listed.
-    return { kind: "object", fields: [] };
-  }
-
-  if (schema.type) return { kind: "primitive" };
-
-  return { kind: "unknown" };
-}
-
-function diff(expected: string[], actual: string[]): { missing: string[]; extra: string[] } {
-  const expectedSet = new Set(expected);
-  const actualSet = new Set(actual);
-  return {
-    missing: actual.filter(x => !expectedSet.has(x)), // in actual but not expected
-    extra: expected.filter(x => !actualSet.has(x)),    // in expected but not actual
-  };
 }
 
 /**
@@ -485,10 +463,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
   }
 
   const hasDrift =
-    endpointGaps.length > 0 ||
-    paramIssues.length > 0 ||
-    requiredIssues.length > 0 ||
-    fieldIssues.length > 0;
+    endpointGaps.length > 0 || paramIssues.length > 0 || requiredIssues.length > 0 || fieldIssues.length > 0;
 
   // ── Output ────────────────────────────────────────────────────────────
   const total = coveredKeys.length + endpointGaps.length;
@@ -498,12 +473,12 @@ export async function checkApiDrift(): Promise<DriftReport> {
   if (!hasDrift) {
     logger.info(
       { totalEndpoints: total, uncovered: uncovered.length },
-      `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`
+      `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
     );
   } else {
     logger.warn(
       { issueCount, totalEndpoints: total },
-      `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`
+      `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`,
     );
     if (endpointGaps.length > 0) {
       logger.warn(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
@@ -525,7 +500,9 @@ export async function checkApiDrift(): Promise<DriftReport> {
   }
 
   if (uncovered.length > 0) {
-    logger.info(`ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`);
+    logger.info(
+      `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`,
+    );
     for (const key of uncovered) logger.info(`  - ${key}`);
   }
 

@@ -13,12 +13,11 @@
 import pino, { type Logger } from "pino";
 
 const VALID_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
-type LogLevel = typeof VALID_LEVELS[number];
+type LogLevel = (typeof VALID_LEVELS)[number];
 
 const requested = process.env.LOG_LEVEL?.toLowerCase();
-const requestedIsValid =
-  requested === undefined || (VALID_LEVELS as readonly string[]).includes(requested);
-const level: LogLevel = (requestedIsValid ? requested ?? "info" : "info") as LogLevel;
+const requestedIsValid = requested === undefined || (VALID_LEVELS as readonly string[]).includes(requested);
+const level: LogLevel = (requestedIsValid ? (requested ?? "info") : "info") as LogLevel;
 
 const isDev = process.env.NODE_ENV !== "production";
 

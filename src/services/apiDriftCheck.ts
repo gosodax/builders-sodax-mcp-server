@@ -17,6 +17,7 @@
  */
 
 import { SODAX_API_BASE_URL } from "../constants.js";
+import { type OpenApiSchema, diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
 import { fetchJson } from "./http.js";
 
 type EndpointKey = string; // e.g. "GET /solver/orderbook"
@@ -281,15 +282,6 @@ interface OpenApiParameter {
   required?: boolean;
 }
 
-interface OpenApiSchema {
-  $ref?: string;
-  type?: string;
-  properties?: Record<string, OpenApiSchema>;
-  items?: OpenApiSchema;
-  additionalProperties?: OpenApiSchema | boolean;
-  allOf?: OpenApiSchema[];
-}
-
 interface OpenApiOperation {
   parameters?: OpenApiParameter[];
   responses?: {
@@ -331,65 +323,6 @@ export interface DriftReport {
 /** Normalize an OpenAPI path with `{param}` placeholders to `:param` form. */
 function normalizePath(path: string): string {
   return path.replace(/\{([^}]+)\}/g, ":$1");
-}
-
-/**
- * Resolve a response schema down to its top-level property names.
- *
- * Returns:
- *   - `{ kind: "object", fields: [...] }` for an object schema (inline or via $ref)
- *   - `{ kind: "object", fields: [...] }` for an array of objects (fields = item props)
- *   - `{ kind: "primitive" }` / `{ kind: "map" }` / `{ kind: "unknown" }` when
- *      drift can't be checked at the field level
- */
-type ResolvedFields =
-  | { kind: "object"; fields: string[] }
-  | { kind: "primitive" }
-  | { kind: "map" }
-  | { kind: "unknown" };
-
-export function resolveResponseFields(
-  schema: OpenApiSchema | undefined,
-  components: Record<string, OpenApiSchema> | undefined,
-  depth = 0,
-): ResolvedFields {
-  if (!schema || depth > 4) return { kind: "unknown" };
-
-  if (schema.$ref) {
-    const refName = schema.$ref.replace("#/components/schemas/", "");
-    const target = components?.[refName];
-    return resolveResponseFields(target, components, depth + 1);
-  }
-
-  if (schema.properties) {
-    return { kind: "object", fields: Object.keys(schema.properties) };
-  }
-
-  if (schema.type === "array" && schema.items) {
-    return resolveResponseFields(schema.items, components, depth + 1);
-  }
-
-  if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
-    return { kind: "map" };
-  }
-
-  if (schema.type === "object") {
-    // Object declared but no properties listed.
-    return { kind: "object", fields: [] };
-  }
-
-  if (schema.type) return { kind: "primitive" };
-
-  return { kind: "unknown" };
-}
-
-export function diff(expected: string[], actual: string[]): { missing: string[]; extra: string[] } {
-  const expectedSet = new Set(expected);
-  const actualSet = new Set(actual);
-  return {
-    missing: actual.filter(x => !expectedSet.has(x)), // in actual but not expected
-    extra: expected.filter(x => !actualSet.has(x)), // in expected but not actual
-  };
 }
 
 /**

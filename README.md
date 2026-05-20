@@ -195,12 +195,10 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 
 ### Environments
 
-The server runs in two Coolify environments on the tech-team infrastructure (`clf.sodax.com`):
+The server is deployed via Coolify with a branch-based promotion flow:
 
-| Environment | URL | Tracks branch |
-|-------------|-----|---------------|
-| Production | https://builders.sodax.com | `master` |
-| Staging | https://test-builders-mcp.coolify.iconblockchain.xyz | `development` |
+- **Production** — tracks `master`, serves https://builders.sodax.com
+- **Staging** — tracks `development` (internal-only)
 
 Promotion flow:
 
@@ -222,7 +220,7 @@ docker run -p 3000:3000 builders-sodax-mcp-server
 docker-compose up -d
 ```
 
-### Railway/Coolify
+### Deployment notes
 
 The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
 - `PORT=3000`

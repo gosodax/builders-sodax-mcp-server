@@ -1,0 +1,95 @@
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "vcs": {
+    "enabled": false,
+    "clientKind": "git",
+    "useIgnoreFile": false
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "ignore": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/public/**",
+      "**/logs/**",
+      "**/.history",
+      "**/.vscode",
+      "**/.git",
+      "**/.DS_Store",
+      "**/.idea",
+      "pnpm-lock.yaml"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120,
+    "lineEnding": "lf",
+    "ignore": []
+  },
+  "linter": {
+    "enabled": true,
+    "include": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.json"],
+    "rules": {
+      "style": {
+        "noNonNullAssertion": "error",
+        "useTemplate": "error",
+        "useImportType": "off",
+        "useNodejsImportProtocol": "error",
+        "noInferrableTypes": "error",
+        "useEnumInitializers": "error",
+        "useNumberNamespace": "error",
+        "noUselessElse": "error",
+        "noUnusedTemplateLiteral": "error",
+        "useSingleVarDeclarator": "off",
+        "useSelfClosingElements": "off",
+        "useDefaultParameterLast": "off",
+        "noParameterAssign": "off",
+        "noCommaOperator": "off"
+      },
+      "complexity": {
+        "useLiteralKeys": "off",
+        "noForEach": "off",
+        "useOptionalChain": "off",
+        "noExtraBooleanCast": "off",
+        "noBannedTypes": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noArrayIndexKey": "off",
+        "noImplicitAnyLet": "error",
+        "noAssignInExpressions": "off",
+        "noAsyncPromiseExecutor": "off"
+      },
+      "performance": {
+        "noDelete": "off",
+        "noAccumulatingSpread": "off"
+      },
+      "correctness": {
+        "noUnsafeFinally": "off"
+      },
+      "a11y": {
+        "useAltText": "off",
+        "useKeyWithClickEvents": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "jsxQuoteStyle": "double",
+      "quoteProperties": "asNeeded",
+      "trailingCommas": "all",
+      "semicolons": "always",
+      "arrowParentheses": "asNeeded",
+      "quoteStyle": "double"
+    },
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": true
+    }
+  }
+}

@@ -9,17 +9,14 @@
  */
 
 import { createHash } from "node:crypto";
-import { PostHog } from "posthog-node";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { PostHog } from "posthog-node";
 
 // ── Configuration ────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
-const POSTHOG_HOST =
-  process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
-const DISTINCT_ID =
-  process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
-const SERVER_NAME =
-  process.env.POSTHOG_SERVER_NAME || "builders-mcp";
+const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
+const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
+const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 
 // ── Tool → Group mapping ─────────────────────────────────────────────
 // Map every tool name to a logical group for PostHog filtering.
@@ -99,10 +96,7 @@ function getClient(): PostHog | null {
  * storing raw IPs.
  */
 export function hashClientIp(ip: string): string {
-  return createHash("sha256")
-    .update(`sodax-mcp:${ip}`)
-    .digest("hex")
-    .slice(0, 16);
+  return createHash("sha256").update(`sodax-mcp:${ip}`).digest("hex").slice(0, 16);
 }
 
 // ── Core tracking function ───────────────────────────────────────────
@@ -111,7 +105,7 @@ function trackToolCall(
   durationMs: number,
   success: boolean,
   clientId?: string,
-  error?: string
+  error?: string,
 ): void {
   const ph = getClient();
   if (!ph) return;
@@ -145,16 +139,16 @@ function trackToolCall(
 export function withAnalytics(server: McpServer, clientId?: string): void {
   const originalTool = server.tool.bind(server);
 
-  (server as any).tool = function (...allArgs: any[]) {
+  (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (...allArgs: unknown[]) => {
     const toolName = allArgs[0] as string;
     const lastIdx = allArgs.length - 1;
     const handler = allArgs[lastIdx];
 
     if (typeof handler === "function") {
-      allArgs[lastIdx] = async (...handlerArgs: any[]) => {
+      allArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
         const start = Date.now();
         try {
-          const result = await handler(...handlerArgs);
+          const result = await (handler as (...args: unknown[]) => unknown)(...handlerArgs);
           trackToolCall(toolName, Date.now() - start, true, clientId);
           return result;
         } catch (err) {
@@ -164,7 +158,7 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
       };
     }
 
-    return (originalTool as any)(...allArgs);
+    return (originalTool as unknown as (...args: unknown[]) => unknown)(...allArgs);
   };
 }
 

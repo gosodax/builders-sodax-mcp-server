@@ -5,19 +5,19 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { SODAX_API_BASE_URL, CACHE_DURATION_MS } from "../constants.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { CACHE_DURATION_MS, SODAX_API_BASE_URL } from "../constants.js";
 import type {
   Chain,
-  SwapToken,
-  Transaction,
-  VolumeData,
-  OrderbookEntry,
   MoneyMarketAsset,
-  UserPosition,
+  OrderbookEntry,
   Partner,
-  TokenSupply
+  SwapToken,
+  TokenSupply,
+  Transaction,
+  UserPosition,
+  VolumeData,
 } from "../types.js";
+import { fetchJson, fetchJsonOrNull } from "./http.js";
 
 // Cache for API responses
 interface CacheEntry<T> {
@@ -56,7 +56,7 @@ export async function getSupportedChains(): Promise<Chain[]> {
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns array directly
-    const chains = Array.isArray(data) ? data as Chain[] : ((data as { data?: Chain[] })?.data || []);
+    const chains = Array.isArray(data) ? (data as Chain[]) : (data as { data?: Chain[] })?.data || [];
     setCache(cacheKey, chains);
     return chains;
   } catch (error) {
@@ -106,9 +106,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
   try {
-    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(
-      apiUrl(`/intent/tx/${txHash}`)
-    );
+    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${txHash}`));
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
@@ -127,7 +125,7 @@ export async function getUserTransactions(
     offset?: number;
     fromBlock?: number;
     toBlock?: number;
-  }
+  },
 ): Promise<Transaction[]> {
   try {
     const params = new URLSearchParams();
@@ -238,8 +236,8 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     const data = await fetchJson<unknown>(apiUrl("/moneymarket/asset/all"));
     // API returns array directly
     const assets = Array.isArray(data)
-      ? data as MoneyMarketAsset[]
-      : ((data as { data?: MoneyMarketAsset[] })?.data || []);
+      ? (data as MoneyMarketAsset[])
+      : (data as { data?: MoneyMarketAsset[] })?.data || [];
     setCache(cacheKey, assets);
     return assets;
   } catch (error) {
@@ -251,12 +249,10 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
 /**
  * Get user's money market position
  */
-export async function getUserPosition(
-  userAddress: string
-): Promise<UserPosition | null> {
+export async function getUserPosition(userAddress: string): Promise<UserPosition | null> {
   try {
     const data = await fetchJsonOrNull<{ data?: UserPosition } | UserPosition>(
-      apiUrl(`/moneymarket/position/${userAddress}`)
+      apiUrl(`/moneymarket/position/${userAddress}`),
     );
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
@@ -281,9 +277,7 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     const url = apiUrl(`/partners${queryString ? `?${queryString}` : ""}`);
     const data = await fetchJson<unknown>(url);
     const dataObj = data as { data?: Partner[]; partners?: Partner[] } | Partner[];
-    const partners = Array.isArray(dataObj)
-      ? dataObj
-      : (dataObj?.data || dataObj?.partners || []);
+    const partners = Array.isArray(dataObj) ? dataObj : dataObj?.data || dataObj?.partners || [];
     setCache(cacheKey, partners);
     return partners;
   } catch (error) {
@@ -451,7 +445,7 @@ export async function getAmmNftPositions(options?: {
 export async function getAmmPoolCandles(
   chainId: string,
   poolId: string,
-  options?: { interval?: string; from?: number; to?: number }
+  options?: { interval?: string; from?: number; to?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
@@ -516,7 +510,7 @@ export async function getMoneyMarketAsset(reserveAddress: string): Promise<unkno
  */
 export async function getMoneyMarketAssetBorrowers(
   reserveAddress: string,
-  options?: { offset?: number; limit?: number }
+  options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
@@ -537,7 +531,7 @@ export async function getMoneyMarketAssetBorrowers(
  */
 export async function getMoneyMarketAssetSuppliers(
   reserveAddress: string,
-  options?: { offset?: number; limit?: number }
+  options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
   try {
     const params = new URLSearchParams();
@@ -628,6 +622,6 @@ export function clearCache(): void {
 export function getCacheStats(): { size: number; keys: string[] } {
   return {
     size: cache.size,
-    keys: Array.from(cache.keys())
+    keys: Array.from(cache.keys()),
   };
 }

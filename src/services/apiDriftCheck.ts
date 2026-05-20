@@ -155,7 +155,22 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   },
   "GET /solver/volume": {
     tool: "sodax_get_volume",
-    params: ["inputToken", "outputToken", "chainId", "solver", "fromBlock", "toBlock", "since", "until", "fromTs", "toTs", "sort", "limit", "includeData", "cursor"],
+    params: [
+      "inputToken",
+      "outputToken",
+      "chainId",
+      "solver",
+      "fromBlock",
+      "toBlock",
+      "since",
+      "until",
+      "fromTs",
+      "toTs",
+      "sort",
+      "limit",
+      "includeData",
+      "cursor",
+    ],
     requiredParams: [],
     responseFields: ["items", "nextCursor", "hasMore"],
   },
@@ -174,13 +189,43 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     tool: "sodax_get_money_market_assets",
     params: [],
     requiredParams: [],
-    responseFields: ["reserveAddress", "aTokenAddress", "variableDebtTokenAddress", "totalATokenBalance", "totalVariableDebtTokenBalance", "totalBorrowers", "totalSuppliers", "liquidityRate", "variableBorrowRate", "stableBorrowRate", "liquidityIndex", "variableBorrowIndex", "blockNumber", "symbol"],
+    responseFields: [
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
+    ],
   },
   "GET /moneymarket/asset/:reserveAddress": {
     tool: "sodax_get_money_market_asset",
     params: ["reserveAddress"],
     requiredParams: ["reserveAddress"],
-    responseFields: ["reserveAddress", "aTokenAddress", "variableDebtTokenAddress", "totalATokenBalance", "totalVariableDebtTokenBalance", "totalBorrowers", "totalSuppliers", "liquidityRate", "variableBorrowRate", "stableBorrowRate", "liquidityIndex", "variableBorrowIndex", "blockNumber", "symbol"],
+    responseFields: [
+      "reserveAddress",
+      "aTokenAddress",
+      "variableDebtTokenAddress",
+      "totalATokenBalance",
+      "totalVariableDebtTokenBalance",
+      "totalBorrowers",
+      "totalSuppliers",
+      "liquidityRate",
+      "variableBorrowRate",
+      "stableBorrowRate",
+      "liquidityIndex",
+      "variableBorrowIndex",
+      "blockNumber",
+      "symbol",
+    ],
   },
   "GET /moneymarket/asset/:reserveAddress/borrowers": {
     tool: "sodax_get_asset_borrowers",
@@ -306,7 +351,7 @@ type ResolvedFields =
 export function resolveResponseFields(
   schema: OpenApiSchema | undefined,
   components: Record<string, OpenApiSchema> | undefined,
-  depth = 0
+  depth = 0,
 ): ResolvedFields {
   if (!schema || depth > 4) return { kind: "unknown" };
 
@@ -343,7 +388,7 @@ export function diff(expected: string[], actual: string[]): { missing: string[];
   const actualSet = new Set(actual);
   return {
     missing: actual.filter(x => !expectedSet.has(x)), // in actual but not expected
-    extra: expected.filter(x => !actualSet.has(x)),    // in expected but not actual
+    extra: expected.filter(x => !actualSet.has(x)), // in expected but not actual
   };
 }
 
@@ -484,10 +529,7 @@ export async function checkApiDrift(): Promise<DriftReport> {
   }
 
   const hasDrift =
-    endpointGaps.length > 0 ||
-    paramIssues.length > 0 ||
-    requiredIssues.length > 0 ||
-    fieldIssues.length > 0;
+    endpointGaps.length > 0 || paramIssues.length > 0 || requiredIssues.length > 0 || fieldIssues.length > 0;
 
   // ── Output ────────────────────────────────────────────────────────────
   const total = coveredKeys.length + endpointGaps.length;
@@ -495,7 +537,9 @@ export async function checkApiDrift(): Promise<DriftReport> {
   const issueCount = endpointGaps.length + paramIssues.length + requiredIssues.length + fieldIssues.length;
 
   if (!hasDrift) {
-    console.error(`✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`);
+    console.error(
+      `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
+    );
   } else {
     console.error(`⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`);
     console.error("");
@@ -523,7 +567,9 @@ export async function checkApiDrift(): Promise<DriftReport> {
   }
 
   if (uncovered.length > 0) {
-    console.error(`ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`);
+    console.error(
+      `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`,
+    );
     for (const key of uncovered) console.error(`  - ${key}`);
   }
 

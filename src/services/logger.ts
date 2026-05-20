@@ -7,7 +7,9 @@
  *
  * - Level via LOG_LEVEL env (default "info"). Valid: trace|debug|info|warn|error|fatal.
  *   Unknown values fall back to "info" with a warning rather than crashing at boot.
- * - JSON output in production, pino-pretty in dev.
+ * - JSON output by default; `pino-pretty` transport only when `NODE_ENV === "development"`
+ *   (opt-in). Defaulting to JSON means an unset `NODE_ENV` on a production-only install
+ *   (`pnpm install --prod`, which strips `pino-pretty`) won't crash at boot.
  */
 
 import pino, { type Logger } from "pino";
@@ -19,7 +21,7 @@ const requested = process.env.LOG_LEVEL?.toLowerCase();
 const requestedIsValid = requested === undefined || (VALID_LEVELS as readonly string[]).includes(requested);
 const level: LogLevel = (requestedIsValid ? (requested ?? "info") : "info") as LogLevel;
 
-const isDev = process.env.NODE_ENV !== "production";
+const isDev = process.env.NODE_ENV === "development";
 
 export const logger: Logger = isDev
   ? pino({

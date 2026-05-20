@@ -4,7 +4,7 @@
 
 export enum ResponseFormat {
   JSON = "json",
-  MARKDOWN = "markdown"
+  MARKDOWN = "markdown",
 }
 
 /**

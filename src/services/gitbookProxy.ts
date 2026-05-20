@@ -71,7 +71,7 @@ async function postGitBook(body: unknown): Promise<unknown> {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
+        Accept: "application/json, text/event-stream",
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -96,7 +96,7 @@ async function sendMcpRequest(method: string, params?: unknown): Promise<unknown
     jsonrpc: "2.0",
     id: Date.now(),
     method,
-    params: params || {}
+    params: params || {},
   });
 
   if (typeof raw !== "object" || raw === null) {
@@ -122,14 +122,14 @@ async function initializeConnection(): Promise<void> {
       capabilities: {},
       clientInfo: {
         name: "builders-sodax-mcp-server",
-        version: "1.0.0"
-      }
+        version: "1.0.0",
+      },
     });
 
     // Send initialized notification (fire-and-forget; response is ignored)
     await postGitBook({
       jsonrpc: "2.0",
-      method: "notifications/initialized"
+      method: "notifications/initialized",
     });
   } catch (error) {
     // Some servers don't require initialization, continue anyway
@@ -151,7 +151,7 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
     await initializeConnection();
 
     // Fetch tools list
-    const result = await sendMcpRequest("tools/list") as { tools: GitBookTool[] };
+    const result = (await sendMcpRequest("tools/list")) as { tools: GitBookTool[] };
 
     cachedTools = result.tools || [];
     toolsCacheTime = Date.now();
@@ -159,7 +159,7 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
     if (cachedTools.length > 0) {
       console.error(`✅ Fetched ${cachedTools.length} tools from GitBook MCP`);
     } else {
-      console.error(`⚠️ GitBook MCP returned empty tools list`);
+      console.error("⚠️ GitBook MCP returned empty tools list");
     }
     return cachedTools;
   } catch (error) {
@@ -173,25 +173,22 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
 /**
  * Call a tool on the GitBook MCP server
  */
-export async function callGitBookTool(
-  toolName: string,
-  args: Record<string, unknown>
-): Promise<GitBookToolResult> {
+export async function callGitBookTool(toolName: string, args: Record<string, unknown>): Promise<GitBookToolResult> {
   try {
     // Ensure connection is initialized
     await initializeConnection();
 
-    const result = await sendMcpRequest("tools/call", {
+    const result = (await sendMcpRequest("tools/call", {
       name: toolName,
-      arguments: args
-    }) as GitBookToolResult;
+      arguments: args,
+    })) as GitBookToolResult;
 
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return {
       content: [{ type: "text", text: `Error calling GitBook tool: ${message}` }],
-      isError: true
+      isError: true,
     };
   }
 }

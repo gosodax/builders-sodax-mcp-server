@@ -1,0 +1,3 @@
+pnpm checkTs
+pnpm test
+npx lint-staged

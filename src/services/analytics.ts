@@ -39,6 +39,13 @@ const TOOL_GROUPS: Record<string, string> = {
   sodax_get_volume: "api",
   sodax_get_orderbook: "api",
   sodax_get_solver_intent: "api",
+  sodax_get_solver_oracle: "api",
+  sodax_get_solver_quote: "api",
+
+  // SODAX intent-relay tools
+  sodax_relay_submit_tx: "relay",
+  sodax_relay_get_transaction_packets: "relay",
+  sodax_relay_get_packet: "relay",
 
   // SODAX API tools — AMM
   sodax_get_amm_positions: "api",
@@ -75,6 +82,23 @@ function resolveToolGroup(toolName: string): string {
   if (toolName.startsWith("docs_")) return "sdk-docs";
   return "unknown";
 }
+
+/**
+ * Per-group tool counts derived from `TOOL_GROUPS`. Keeps `/health` in sync
+ * with the analytics map automatically — no hard-coded number, no drift.
+ *
+ * Example shape: `{ api: 30, relay: 3, "sdk-docs": 3 }`. Consumers should
+ * use `STATIC_TOOL_COUNTS.api` / `STATIC_TOOL_COUNTS.relay` and **exclude**
+ * `"sdk-docs"` from any "static" total (those meta-tools are wrapped around
+ * the dynamic GitBook proxy and counted separately at runtime).
+ */
+export const STATIC_TOOL_COUNTS: Record<string, number> = Object.values(TOOL_GROUPS).reduce(
+  (acc, group) => {
+    acc[group] = (acc[group] ?? 0) + 1;
+    return acc;
+  },
+  {} as Record<string, number>,
+);
 
 // ── PostHog client (lazy singleton) ──────────────────────────────────
 let client: PostHog | null = null;

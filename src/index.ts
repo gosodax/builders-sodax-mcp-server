@@ -17,12 +17,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
+import { STATIC_TOOL_COUNTS, hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { logger } from "./services/logger.js";
 import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
+import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -43,6 +44,7 @@ async function createServer(clientId?: string): Promise<McpServer> {
   withAnalytics(server, clientId);
 
   registerSodaxApiTools(server);
+  registerSolverRelayTools(server);
   await registerGitBookProxyTools(server);
 
   return server;
@@ -149,8 +151,13 @@ async function runHTTP(): Promise<void> {
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    const apiToolCount = 28; // sodax_* tools registered in sodaxApi.ts (27 + refresh_cache)
-    const totalTools = apiToolCount + gitbookToolNames.length;
+    // Per-group breakdown derived from analytics' TOOL_GROUPS (single source
+    // of truth). `api` covers backend + solver tools; `relay` covers the
+    // intent-relay tools; `sdkDocs` is the dynamic GitBook proxy.
+    const apiToolCount = STATIC_TOOL_COUNTS.api ?? 0;
+    const relayToolCount = STATIC_TOOL_COUNTS.relay ?? 0;
+    const sdkDocsToolCount = gitbookToolNames.length;
+    const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
     res.json({
       status: "healthy",
       service: "builders-sodax-mcp-server",
@@ -159,7 +166,8 @@ async function runHTTP(): Promise<void> {
       tools: {
         total: totalTools,
         api: apiToolCount,
-        sdkDocs: gitbookToolNames.length,
+        relay: relayToolCount,
+        sdkDocs: sdkDocsToolCount,
       },
       sdkDocsProxy: {
         healthy: gitbookHealth.healthy,
@@ -245,7 +253,10 @@ async function runHTTP(): Promise<void> {
           "sodax_get_volume",
           "sodax_get_orderbook",
           "sodax_get_solver_intent",
+          "sodax_get_solver_oracle",
+          "sodax_get_solver_quote",
         ],
+        relay: ["sodax_relay_submit_tx", "sodax_relay_get_transaction_packets", "sodax_relay_get_packet"],
         amm: ["sodax_get_amm_positions", "sodax_get_amm_pool_candles"],
         moneyMarket: [
           "sodax_get_money_market_assets",

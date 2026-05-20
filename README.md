@@ -172,7 +172,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 
 `pnpm install` installs the hooks automatically via the `prepare` script:
 
-- **`pre-commit`** — runs `pnpm checkTs`, `pnpm test`, then `lint-staged` (which formats staged files with `biome format --write`).
+- **`pre-commit`** — runs `pnpm checkTs`, `pnpm test`, then `lint-staged` (which runs `biome check --write` on staged files, applying both formatting and safe lint fixes).
 - **`commit-msg`** — runs `commitlint` against the [Conventional Commits](https://www.conventionalcommits.org/) spec. Messages like `feat: add X` pass; `bad message` is rejected.
 
 To skip the hooks in a one-off emergency:

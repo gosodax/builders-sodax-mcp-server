@@ -1098,7 +1098,7 @@ export function registerSodaxApiTools(server: McpServer): void {
   // Bonus Tool: Refresh Cache
   server.tool(
     "sodax_refresh_cache",
-    "Clear the cached API data to force fresh fetches on next requests",
+    "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache.",
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {

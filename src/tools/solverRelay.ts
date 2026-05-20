@@ -250,7 +250,11 @@ export function registerSolverRelayTools(server: McpServer): void {
     {
       chainId: z.string().describe("REQUIRED: Intent-relay chain ID of the source chain (decimal string)"),
       txHash: z.string().describe("REQUIRED: The source-chain transaction hash"),
-      connSn: z.string().describe("REQUIRED: Connection serial number identifying the packet within the tx"),
+      connSn: z.coerce
+        .string()
+        .describe(
+          "REQUIRED: Connection serial number identifying the packet within the tx. Accepts string or number (numeric values are coerced — convenient for piping back a previously-fetched packet's `conn_sn` field).",
+        ),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()

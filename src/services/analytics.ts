@@ -83,6 +83,14 @@ function resolveToolGroup(toolName: string): string {
   return "unknown";
 }
 
+/**
+ * Count of statically-registered SODAX tools (everything in `TOOL_GROUPS`
+ * except the `docs_*` meta-tools, which are dynamically wrapped around the
+ * GitBook proxy). Use this for `/health` so the figure stays in sync as
+ * tools are added/removed — no hard-coded number to drift.
+ */
+export const STATIC_API_TOOL_COUNT = Object.values(TOOL_GROUPS).filter(g => g !== "sdk-docs").length;
+
 // ── PostHog client (lazy singleton) ──────────────────────────────────
 let client: PostHog | null = null;
 

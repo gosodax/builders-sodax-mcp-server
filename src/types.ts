@@ -231,6 +231,12 @@ export interface RelayPacketData {
   src_address: string;
   status: "pending" | "validating" | "executing" | "executed";
   dst_chain_id: number;
+  /**
+   * Connection serial number. Wire format from the relay is numeric, but the
+   * relay's *request* params (and `GetPacketParams.conn_sn`) take it as a
+   * string for URL/JSON consistency. Convert via `String(packet.conn_sn)`
+   * when feeding a previously-fetched packet back into a request.
+   */
   conn_sn: number;
   dst_address: string;
   dst_tx_hash: string;
@@ -248,12 +254,16 @@ export interface RelaySubmitResponse {
 
 /**
  * Response for the relay `get_transaction_packets` action.
- * Returns every packet emitted by the given source transaction.
+ *
+ * Discriminated by `success`:
+ *  - on success → `{ success: true; data: RelayPacketData[] }`
+ *  - on failure → `{ success: false; message: string }` (mirrors `RelayGetPacketResponse`)
+ *
+ * The relay returns the failure shape with HTTP 404 (which `callRelay` parses
+ * normally rather than throwing), so callers must branch on `success` before
+ * touching `data`.
  */
-export interface RelayPacketsResponse {
-  success: boolean;
-  data: RelayPacketData[];
-}
+export type RelayPacketsResponse = { success: true; data: RelayPacketData[] } | { success: false; message: string };
 
 /**
  * Response for the relay `get_packet` action.

@@ -17,7 +17,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
+import { STATIC_API_TOOL_COUNT, hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { logger } from "./services/logger.js";
@@ -151,7 +151,7 @@ async function runHTTP(): Promise<void> {
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    const apiToolCount = 33; // sodax_* tools (28 in sodaxApi.ts + 5 in solverRelay.ts)
+    const apiToolCount = STATIC_API_TOOL_COUNT; // derived from analytics' TOOL_GROUPS — single source of truth
     const totalTools = apiToolCount + gitbookToolNames.length;
     res.json({
       status: "healthy",

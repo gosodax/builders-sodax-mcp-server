@@ -13,7 +13,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "test": "echo 'no tests yet — see #17' && exit 0",
+    "test": "vitest run",
     "prepare": "husky",
     "clean": "rm -rf dist"
   },
@@ -35,10 +35,12 @@
     "@commitlint/config-conventional": "^19.8.0",
     "@types/express": "^5.0.6",
     "@types/node": "^22.19.8",
+    "@vitest/coverage-v8": "^2.1.9",
     "husky": "^9.1.7",
     "lint-staged": "^15.5.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   },
   "commitlint": {
     "extends": ["@commitlint/config-conventional"]

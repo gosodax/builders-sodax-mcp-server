@@ -155,6 +155,9 @@ pnpm build
 
 # Start production server
 pnpm start
+
+# Run the test suite (unit tests for drift-check logic)
+pnpm test
 ```
 
 ## CI & Local Checks
@@ -166,7 +169,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm checkTs` | Type-checks the project with `tsc --noEmit` (no build output). |
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
-| `pnpm test` | Placeholder until the test harness lands (see #17). Currently exits `0`. |
+| `pnpm test` | Runs the Vitest suite (currently covers the drift-check logic in `src/services/apiDriftCheck.ts`). |
 
 ### Git hooks (husky + commitlint + lint-staged)
 

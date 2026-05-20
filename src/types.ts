@@ -4,7 +4,7 @@
 
 export enum ResponseFormat {
   JSON = "json",
-  MARKDOWN = "markdown"
+  MARKDOWN = "markdown",
 }
 
 /**
@@ -259,6 +259,4 @@ export interface RelayPacketsResponse {
  * Response for the relay `get_packet` action.
  * Returns a single packet by its connection serial number.
  */
-export type RelayGetPacketResponse =
-  | { success: true; data: RelayPacketData }
-  | { success: false; message: string };
+export type RelayGetPacketResponse = { success: true; data: RelayPacketData } | { success: false; message: string };

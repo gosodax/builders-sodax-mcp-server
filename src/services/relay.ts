@@ -15,11 +15,8 @@
  */
 
 import { SODAX_RELAY_BASE_URL } from "../constants.js";
-import type {
-  RelayGetPacketResponse,
-  RelayPacketsResponse,
-  RelaySubmitResponse,
-} from "../types.js";
+import type { RelayGetPacketResponse, RelayPacketsResponse, RelaySubmitResponse } from "../types.js";
+import { logger } from "./logger.js";
 
 interface SubmitParams {
   chain_id: string;
@@ -54,11 +51,11 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
   const timeoutId = setTimeout(() => controller.abort(), RELAY_TIMEOUT_MS);
 
   try {
-    const response = await fetch(SODAX_RELAY_BASE_URL + "/", {
+    const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({ action, params }),
       signal: controller.signal,
@@ -83,10 +80,8 @@ export async function submitRelayTx(params: SubmitParams): Promise<RelaySubmitRe
   try {
     return await callRelay<RelaySubmitResponse>("submit", params);
   } catch (error) {
-    console.error("Error submitting relay tx:", error);
-    throw new Error(
-      `Failed to submit relay tx: ${error instanceof Error ? error.message : "Unknown error"}`
-    );
+    logger.error({ err: error }, "Error submitting relay tx");
+    throw new Error(`Failed to submit relay tx: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 
@@ -94,15 +89,13 @@ export async function submitRelayTx(params: SubmitParams): Promise<RelaySubmitRe
  * List every cross-chain packet emitted by the given source transaction.
  * Use this to track relay status — a packet is complete when status === "executed".
  */
-export async function getRelayTransactionPackets(
-  params: GetTransactionPacketsParams
-): Promise<RelayPacketsResponse> {
+export async function getRelayTransactionPackets(params: GetTransactionPacketsParams): Promise<RelayPacketsResponse> {
   try {
     return await callRelay<RelayPacketsResponse>("get_transaction_packets", params);
   } catch (error) {
-    console.error("Error fetching relay transaction packets:", error);
+    logger.error({ err: error }, "Error fetching relay transaction packets");
     throw new Error(
-      `Failed to fetch relay transaction packets: ${error instanceof Error ? error.message : "Unknown error"}`
+      `Failed to fetch relay transaction packets: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
   }
 }
@@ -116,9 +109,7 @@ export async function getRelayPacket(params: GetPacketParams): Promise<RelayGetP
   try {
     return await callRelay<RelayGetPacketResponse>("get_packet", params);
   } catch (error) {
-    console.error("Error fetching relay packet:", error);
-    throw new Error(
-      `Failed to fetch relay packet: ${error instanceof Error ? error.message : "Unknown error"}`
-    );
+    logger.error({ err: error }, "Error fetching relay packet");
+    throw new Error(`Failed to fetch relay packet: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }

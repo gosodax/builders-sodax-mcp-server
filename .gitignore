@@ -6,6 +6,7 @@ dist/
 !.env.example
 .DS_Store
 .agents
+.claude/
 .github/skills/
 .github/copilot-instructions.md
 .mcpregistry_*

@@ -46,12 +46,14 @@ export function formatAsMarkdown(data: unknown): string {
   }
 
   if (typeof data === "object" && data !== null) {
-    return Object.entries(data).map(([key, value]) => {
-      if (typeof value === "object" && value !== null) {
-        return `**${key}:**\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
-      }
-      return `**${key}:** ${value}`;
-    }).join("\n\n");
+    return Object.entries(data)
+      .map(([key, value]) => {
+        if (typeof value === "object" && value !== null) {
+          return `**${key}:**\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+        }
+        return `**${key}:** ${value}`;
+      })
+      .join("\n\n");
   }
 
   return String(data);

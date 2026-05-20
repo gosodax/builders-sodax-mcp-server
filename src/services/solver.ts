@@ -6,9 +6,10 @@
  * API (/v1/be) and the relay service.
  */
 
-import { SODAX_SOLVER_BASE_URL, CACHE_DURATION_MS } from "../constants.js";
-import { fetchJson } from "./http.js";
+import { CACHE_DURATION_MS, SODAX_SOLVER_BASE_URL } from "../constants.js";
 import type { OraclePrice, QuoteRequest, QuoteResponse } from "../types.js";
+import { fetchJson } from "./http.js";
+import { logger } from "./logger.js";
 
 interface CacheEntry<T> {
   data: T;
@@ -50,9 +51,9 @@ export async function getSolverOracle(): Promise<OraclePrice[]> {
     setCache(cacheKey, prices);
     return prices;
   } catch (error) {
-    console.error("Error fetching solver oracle:", error);
+    logger.error({ err: error }, "Error fetching solver oracle");
     throw new Error(
-      `Failed to fetch solver oracle prices: ${error instanceof Error ? error.message : "Unknown error"}`
+      `Failed to fetch solver oracle prices: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
   }
 }
@@ -72,10 +73,8 @@ export async function getSolverQuote(request: QuoteRequest): Promise<QuoteRespon
       body: request,
     });
   } catch (error) {
-    console.error("Error fetching solver quote:", error);
-    throw new Error(
-      `Failed to fetch solver quote: ${error instanceof Error ? error.message : "Unknown error"}`
-    );
+    logger.error({ err: error }, "Error fetching solver quote");
+    throw new Error(`Failed to fetch solver quote: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 

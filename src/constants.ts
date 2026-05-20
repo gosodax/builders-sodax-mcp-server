@@ -19,5 +19,5 @@ export const BRAND_COLORS = {
   cherry: "#E53935",
   cream: "#FFF8E7",
   espresso: "#1A1A1A",
-  accent: "#FFD54F"
+  accent: "#FFD54F",
 } as const;

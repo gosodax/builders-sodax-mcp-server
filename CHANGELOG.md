@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.2.0...builders-sodax-mcp-server-v1.3.0) (2026-05-21)
+
+
+### Features
+
+* add vitest ([#33](https://github.com/gosodax/builders-sodax-mcp-server/issues/33)) ([56a1e23](https://github.com/gosodax/builders-sodax-mcp-server/commit/56a1e236a4f19e0f6ea7b5266c7dd2d51e1a73a8))
+* integrate solver and relay endpoints ([#37](https://github.com/gosodax/builders-sodax-mcp-server/issues/37)) ([#39](https://github.com/gosodax/builders-sodax-mcp-server/issues/39)) ([a6848c3](https://github.com/gosodax/builders-sodax-mcp-server/commit/a6848c39fc249e253d8b47e21fd742cf9a4dfdee))
+* remove axios and fix drifts ([#30](https://github.com/gosodax/builders-sodax-mcp-server/issues/30)) ([bd26ff7](https://github.com/gosodax/builders-sodax-mcp-server/commit/bd26ff7e2cd2753f72fc90ce5fb51d31d324cbe7))
+* structured logging ([#32](https://github.com/gosodax/builders-sodax-mcp-server/issues/32)) ([3d02ac9](https://github.com/gosodax/builders-sodax-mcp-server/commit/3d02ac9a3a0e6315de04ef71494ae405af8a2df3))
+
+
+### Bug Fixes
+
+* remove URLs ([#36](https://github.com/gosodax/builders-sodax-mcp-server/issues/36)) ([cf00bc1](https://github.com/gosodax/builders-sodax-mcp-server/commit/cf00bc1f4ce1c6f07731615642f77ffff0ec6287))
+
+
+### Continuous Integration
+
+* add Biome, husky, commitlint, and CI workflow ([#34](https://github.com/gosodax/builders-sodax-mcp-server/issues/34)) ([340b12d](https://github.com/gosodax/builders-sodax-mcp-server/commit/340b12daf7bd411cc3e475d067d16620b87a77f5))
+
 ## [1.2.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.1.0...builders-sodax-mcp-server-v1.2.0) (2026-04-25)
 
 

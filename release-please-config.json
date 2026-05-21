@@ -18,6 +18,13 @@
         { "type": "ci", "section": "Continuous Integration" },
         { "type": "test", "section": "Tests", "hidden": true },
         { "type": "chore", "section": "Miscellaneous" }
+      ],
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.version"
+        }
       ]
     }
   }

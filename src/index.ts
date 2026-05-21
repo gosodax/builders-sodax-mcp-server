@@ -28,6 +28,10 @@ import { registerSolverRelayTools } from "./tools/solverRelay.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const { version: SERVER_VERSION } = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as {
+  version: string;
+};
+
 /**
  * Creates a fully configured McpServer instance.
  * Used per-request in HTTP mode to avoid transport conflicts
@@ -36,7 +40,7 @@ const __dirname = dirname(__filename);
 async function createServer(clientId?: string): Promise<McpServer> {
   const server = new McpServer({
     name: "builders-sodax-mcp-server",
-    version: "1.1.0",
+    version: SERVER_VERSION,
   });
 
   // Wrap server.tool() so every tool call is tracked in PostHog
@@ -161,7 +165,7 @@ async function runHTTP(): Promise<void> {
     res.json({
       status: "healthy",
       service: "builders-sodax-mcp-server",
-      version: "1.1.0",
+      version: SERVER_VERSION,
       uptime_seconds: Math.floor(process.uptime()),
       tools: {
         total: totalTools,
@@ -231,7 +235,7 @@ async function runHTTP(): Promise<void> {
 
     res.json({
       name: "SODAX Builders MCP Server",
-      version: "1.1.0",
+      version: SERVER_VERSION,
       description:
         "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 17+ networks",
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },

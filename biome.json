@@ -20,7 +20,8 @@
       "**/.git",
       "**/.DS_Store",
       "**/.idea",
-      "pnpm-lock.yaml"
+      "pnpm-lock.yaml",
+      "package.json"
     ]
   },
   "formatter": {

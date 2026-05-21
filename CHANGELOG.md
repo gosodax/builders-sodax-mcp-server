@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.1](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.0...builders-sodax-mcp-server-v1.3.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **ci:** exclude package.json from biome formatter ([#44](https://github.com/gosodax/builders-sodax-mcp-server/issues/44)) ([0eb3b2d](https://github.com/gosodax/builders-sodax-mcp-server/commit/0eb3b2dbea16d2d860860ae05e875360b24764a7))
+* sync runtime version from package.json ([#48](https://github.com/gosodax/builders-sodax-mcp-server/issues/48)) ([91bb10f](https://github.com/gosodax/builders-sodax-mcp-server/commit/91bb10f8b6cc905072dcbf750e8c6c23808b4835))
+
+
+### Miscellaneous
+
+* remove internal Marketing MCP link, blank PostHog defaults in .env.example ([#50](https://github.com/gosodax/builders-sodax-mcp-server/issues/50)) ([abe9e55](https://github.com/gosodax/builders-sodax-mcp-server/commit/abe9e550d7c47dc7bd33f342181438ed34d60d5c))
+
 ## [1.3.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.2.0...builders-sodax-mcp-server-v1.3.0) (2026-05-21)
 
 

@@ -58,32 +58,29 @@ function extractApiErrorMessage(rawBody: string): string | null {
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const response = await fetch(url, {
+    method,
+    headers: { ...DEFAULT_HEADERS, ...headers },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeout),
+  });
 
-  try {
-    const response = await fetch(url, {
-      method,
-      headers: { ...DEFAULT_HEADERS, ...headers },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    if (allow404 && response.status === 404) {
-      return null;
-    }
-
-    if (!response.ok) {
-      const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
-      const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-      const base = `${status} for ${url}`;
-      throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
-    }
-
-    return (await response.json()) as T;
-  } finally {
-    clearTimeout(timeoutId);
+  if (allow404 && response.status === 404) {
+    return null;
   }
+
+  if (!response.ok) {
+    const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
+    const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+    const base = `${status} for ${url}`;
+    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
+  }
+
+  // 204 No Content / empty body: response.json() would throw SyntaxError on
+  // "" — return undefined (or null for the OrNull variant) instead.
+  const text = await response.text();
+  if (!text) return allow404 ? null : (undefined as T);
+  return JSON.parse(text) as T;
 }
 
 export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}): Promise<T> {

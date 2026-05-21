@@ -14,7 +14,7 @@
 
 import pino, { type Logger } from "pino";
 
-const VALID_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
+const VALID_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal", "silent"] as const;
 type LogLevel = (typeof VALID_LEVELS)[number];
 
 const requested = process.env.LOG_LEVEL?.toLowerCase();

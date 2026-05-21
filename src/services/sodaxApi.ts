@@ -205,13 +205,22 @@ export async function getVolume(options: {
  * Get current orderbook entries from solver
  */
 export async function getOrderbook(options: {
-  limit: number;
-  offset: number;
+  limit?: number;
+  offset?: number;
+  srcChain?: number;
+  dstChain?: number;
+  inputToken?: string;
+  outputToken?: string;
+  creator?: string;
+  deadlineBefore?: number;
+  deadlineAfter?: number;
+  excludeZeroDeadline?: boolean;
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
-    params.append("limit", options.limit.toString());
-    params.append("offset", options.offset.toString());
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) params.append(key, String(value));
+    }
 
     const queryString = params.toString();
     const url = apiUrl(`/solver/orderbook${queryString ? `?${queryString}` : ""}`);

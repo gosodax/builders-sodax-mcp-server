@@ -309,8 +309,16 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_orderbook",
     "Get current orderbook entries showing pending/open intents",
     {
-      limit: z.number().min(1).max(100).describe("REQUIRED: Maximum number of orders to return (1-100)"),
-      offset: z.number().min(0).describe("REQUIRED: Number of orders to skip for pagination"),
+      limit: z.number().min(1).max(500).optional().describe("Max results (default server-side, cap 500)"),
+      offset: z.number().min(0).optional().describe("Offset for simple pagination"),
+      srcChain: z.number().optional().describe("Filter by source chain id"),
+      dstChain: z.number().optional().describe("Filter by destination chain id"),
+      inputToken: z.string().optional().describe("Filter by input token address"),
+      outputToken: z.string().optional().describe("Filter by output token address"),
+      creator: z.string().optional().describe("Filter by creator address"),
+      deadlineBefore: z.number().optional().describe("Only return intents with deadline < value (Unix seconds)"),
+      deadlineAfter: z.number().optional().describe("Only return intents with deadline > value (Unix seconds)"),
+      excludeZeroDeadline: z.boolean().optional().describe("Exclude intents where deadline = 0"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -318,9 +326,9 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
     },
     READ_ONLY,
-    async ({ limit, offset, format }) => {
+    async ({ format, ...filters }) => {
       try {
-        const orderbook = await getOrderbook({ limit, offset });
+        const orderbook = await getOrderbook(filters);
         return {
           content: [
             {

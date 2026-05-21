@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.1...builders-sodax-mcp-server-v1.3.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **docker:** skip lifecycle scripts on prod install ([#55](https://github.com/gosodax/builders-sodax-mcp-server/issues/55)) ([d9899dc](https://github.com/gosodax/builders-sodax-mcp-server/commit/d9899dc40adc77c98abbc1087099a8a74d53bee1))
+
 ## [1.3.1](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.0...builders-sodax-mcp-server-v1.3.1) (2026-05-21)
 
 

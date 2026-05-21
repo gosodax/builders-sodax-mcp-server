@@ -29,8 +29,11 @@ RUN apk add --no-cache curl && \
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
 
-# Install production dependencies only
-RUN pnpm install --prod --frozen-lockfile
+# Install production dependencies only.
+# --ignore-scripts: skip lifecycle hooks (e.g. the husky `prepare` script,
+# which would fail here because husky is a devDependency). No prod dep
+# in this project requires postinstall scripts.
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
 # Copy built files
 COPY --from=builder /app/dist ./dist

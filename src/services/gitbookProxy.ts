@@ -65,29 +65,22 @@ function parseGitBookResponse(text: string): unknown {
 }
 
 async function postGitBook(body: unknown): Promise<unknown> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GITBOOK_TIMEOUT_MS);
+  const response = await fetch(GITBOOK_MCP_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(GITBOOK_TIMEOUT_MS),
+  });
 
-  try {
-    const response = await fetch(GITBOOK_MCP_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText} from GitBook MCP`);
-    }
-
-    const text = await response.text();
-    return parseGitBookResponse(text);
-  } finally {
-    clearTimeout(timeoutId);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText} from GitBook MCP`);
   }
+
+  const text = await response.text();
+  return parseGitBookResponse(text);
 }
 
 /**

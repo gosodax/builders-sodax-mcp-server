@@ -1,27 +1,29 @@
 #!/usr/bin/env node
 /**
  * SODAX Builders MCP Server
- * 
+ *
  * Live API data for developers and integration partners.
  * Data fetched live from api.sodax.com.
  * SDK documentation proxied from docs.sodax.com/~gitbook/mcp.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import express, { Request, Response } from "express";
-import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-import { registerSodaxApiTools } from "./tools/sodaxApi.js";
-import { registerGitBookProxyTools, getGitBookToolNames } from "./tools/gitbookProxy.js";
-import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
-import { withAnalytics, shutdownAnalytics, hashClientIp } from "./services/analytics.js";
+import helmet from "helmet";
+import { STATIC_TOOL_COUNTS, hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
+import { logger } from "./services/logger.js";
+import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
+import { registerSodaxApiTools } from "./tools/sodaxApi.js";
+import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,7 +36,7 @@ const __dirname = dirname(__filename);
 async function createServer(clientId?: string): Promise<McpServer> {
   const server = new McpServer({
     name: "builders-sodax-mcp-server",
-    version: "1.1.0"
+    version: "1.1.0",
   });
 
   // Wrap server.tool() so every tool call is tracked in PostHog
@@ -42,6 +44,7 @@ async function createServer(clientId?: string): Promise<McpServer> {
   withAnalytics(server, clientId);
 
   registerSodaxApiTools(server);
+  registerSolverRelayTools(server);
   await registerGitBookProxyTools(server);
 
   return server;
@@ -59,109 +62,117 @@ const GITBOOK_RETRY_DELAY = 5000; // 5 seconds
  */
 async function warmGitBookCache(retryCount = 0): Promise<boolean> {
   gitbookInitAttempts++;
-  console.error(`GitBook proxy init attempt ${retryCount + 1}/${MAX_GITBOOK_RETRIES}...`);
-  
+  const attempt = retryCount + 1;
+  logger.info({ attempt, max: MAX_GITBOOK_RETRIES }, "GitBook proxy init attempt");
+
   try {
     const tools = await fetchGitBookTools();
     gitbookToolsRegistered = tools.length > 0;
-    
+
     if (tools.length > 0) {
-      console.error(`✅ GitBook proxy initialized: ${tools.length} SDK docs tools available`);
+      logger.info({ toolCount: tools.length }, "✅ GitBook proxy initialized");
       return true;
-    } else {
-      console.error(`⚠️ GitBook returned 0 tools`);
     }
+    logger.warn("⚠️ GitBook returned 0 tools");
   } catch (error) {
-    console.error(`❌ GitBook proxy attempt ${retryCount + 1} failed:`, error instanceof Error ? error.message : error);
+    logger.warn({ err: error, attempt }, "GitBook proxy attempt failed");
   }
-  
+
   // Retry if we haven't exceeded max attempts
   if (retryCount < MAX_GITBOOK_RETRIES - 1) {
-    console.error(`Retrying in ${GITBOOK_RETRY_DELAY / 1000}s...`);
+    logger.info({ delayMs: GITBOOK_RETRY_DELAY }, "Retrying GitBook proxy init");
     await new Promise(resolve => setTimeout(resolve, GITBOOK_RETRY_DELAY));
     return warmGitBookCache(retryCount + 1);
   }
-  
-  console.error(`⚠️ GitBook proxy unavailable after ${MAX_GITBOOK_RETRIES} attempts. Meta-tools still available.`);
+
+  logger.warn({ maxAttempts: MAX_GITBOOK_RETRIES }, "⚠️ GitBook proxy unavailable. Meta-tools still available.");
   return false;
 }
 
 async function runStdio(): Promise<void> {
   // Warm GitBook cache before creating server
-  console.error("Initializing GitBook SDK docs proxy...");
+  logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
-  
+
   const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("SODAX Builders MCP server running via stdio");
+  logger.info("SODAX Builders MCP server running via stdio");
 }
 
 async function runHTTP(): Promise<void> {
   // Warm GitBook cache before starting HTTP server
-  console.error("Initializing GitBook SDK docs proxy...");
+  logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
-  
+
   const app = express();
 
   // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
   app.set("trust proxy", 1);
 
   // Security middleware
-  app.use(helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'"]
-      }
-    }
-  }));
-  
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+          fontSrc: ["'self'", "https://fonts.gstatic.com"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'"],
+        },
+      },
+    }),
+  );
+
   // Rate limiting
   const limiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many requests, please try again later." }
+    message: { error: "Too many requests, please try again later." },
   });
   app.use(limiter);
-  
+
   // Stricter rate limit for MCP endpoint
   const mcpLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 60, // 60 MCP requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many MCP requests, please try again later." }
+    message: { error: "Too many MCP requests, please try again later." },
   });
-  
+
   app.use(express.json({ limit: "100kb" }));
   app.use(express.static(join(__dirname, "public")));
 
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    const apiToolCount = 28; // sodax_* tools registered in sodaxApi.ts (27 + refresh_cache)
-    const totalTools = apiToolCount + gitbookToolNames.length;
-    res.json({ 
-      status: "healthy", 
+    // Per-group breakdown derived from analytics' TOOL_GROUPS (single source
+    // of truth). `api` covers backend + solver tools; `relay` covers the
+    // intent-relay tools; `sdkDocs` is the dynamic GitBook proxy.
+    const apiToolCount = STATIC_TOOL_COUNTS.api ?? 0;
+    const relayToolCount = STATIC_TOOL_COUNTS.relay ?? 0;
+    const sdkDocsToolCount = gitbookToolNames.length;
+    const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
+    res.json({
+      status: "healthy",
       service: "builders-sodax-mcp-server",
       version: "1.1.0",
       uptime_seconds: Math.floor(process.uptime()),
       tools: {
         total: totalTools,
         api: apiToolCount,
-        sdkDocs: gitbookToolNames.length
+        relay: relayToolCount,
+        sdkDocs: sdkDocsToolCount,
       },
       sdkDocsProxy: {
         healthy: gitbookHealth.healthy,
-        toolCount: gitbookHealth.toolCount
-      }
+        toolCount: gitbookHealth.toolCount,
+      },
     });
   });
 
@@ -170,7 +181,7 @@ async function runHTTP(): Promise<void> {
     const requestServer = await createServer(clientId);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
-      enableJsonResponse: true
+      enableJsonResponse: true,
     });
     res.on("close", () => transport.close());
     await requestServer.connect(transport);
@@ -217,11 +228,12 @@ async function runHTTP(): Promise<void> {
   app.get("/api", async (_req: Request, res: Response) => {
     // Get dynamic list of GitBook tools
     const gitbookTools = await getGitBookToolNames();
-    
+
     res.json({
       name: "SODAX Builders MCP Server",
       version: "1.1.0",
-      description: "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 17+ networks",
+      description:
+        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 17+ networks",
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       tools: {
         config: [
@@ -232,7 +244,7 @@ async function runHTTP(): Promise<void> {
           "sodax_get_all_chains_configs",
           "sodax_get_hub_assets",
           "sodax_get_money_market_tokens",
-          "sodax_get_money_market_reserve_assets"
+          "sodax_get_money_market_reserve_assets",
         ],
         intents: [
           "sodax_get_transaction",
@@ -240,19 +252,19 @@ async function runHTTP(): Promise<void> {
           "sodax_get_user_transactions",
           "sodax_get_volume",
           "sodax_get_orderbook",
-          "sodax_get_solver_intent"
+          "sodax_get_solver_intent",
+          "sodax_get_solver_oracle",
+          "sodax_get_solver_quote",
         ],
-        amm: [
-          "sodax_get_amm_positions",
-          "sodax_get_amm_pool_candles"
-        ],
+        relay: ["sodax_relay_submit_tx", "sodax_relay_get_transaction_packets", "sodax_relay_get_packet"],
+        amm: ["sodax_get_amm_positions", "sodax_get_amm_pool_candles"],
         moneyMarket: [
           "sodax_get_money_market_assets",
           "sodax_get_money_market_asset",
           "sodax_get_user_position",
           "sodax_get_asset_borrowers",
           "sodax_get_asset_suppliers",
-          "sodax_get_all_borrowers"
+          "sodax_get_all_borrowers",
         ],
         partnersAndToken: [
           "sodax_get_partners",
@@ -260,29 +272,29 @@ async function runHTTP(): Promise<void> {
           "sodax_get_token_supply",
           "sodax_get_total_supply",
           "sodax_get_circulating_supply",
-          "sodax_refresh_cache"
+          "sodax_refresh_cache",
         ],
-        sdkDocs: gitbookTools
+        sdkDocs: gitbookTools,
       },
       sdkDocsProxy: {
         source: "https://docs.sodax.com/~gitbook/mcp",
         description: "SDK documentation tools are proxied from GitBook and update automatically",
         status: gitbookToolsRegistered ? "connected" : "unavailable",
         initAttempts: gitbookInitAttempts,
-        hint: gitbookToolsRegistered 
-          ? "docs_* tools are ready to use" 
-          : "Use docs_list_tools or docs_refresh to check availability"
-      }
+        hint: gitbookToolsRegistered
+          ? "docs_* tools are ready to use"
+          : "Use docs_list_tools or docs_refresh to check availability",
+      },
     });
   });
 
-  const port = parseInt(process.env.PORT || "3000");
+  const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    console.error(`SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info({ port }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
     // Non-blocking: compare live OpenAPI spec against registered MCP tools.
     // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.
     void checkApiDrift().catch(err => {
-      console.error("⚠️  API drift check threw unexpectedly:", err instanceof Error ? err.message : err);
+      logger.warn({ err }, "⚠️  API drift check threw unexpectedly");
     });
   });
 }
@@ -296,9 +308,16 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
+main().catch(error => {
+  logger.fatal({ err: error }, "Server error");
+  // Drain the async destination before exit so the fatal line isn't lost
+  // to a half-flushed SonicBoom buffer. Force-exit after 1s if flush stalls
+  // (e.g. transport worker not draining in dev).
+  const force = setTimeout(() => process.exit(1), 1000);
+  logger.flush(() => {
+    clearTimeout(force);
+    process.exit(1);
+  });
 });
 
 // Flush pending PostHog events on shutdown

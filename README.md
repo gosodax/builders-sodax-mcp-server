@@ -58,7 +58,7 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 | `sodax_get_money_market_tokens` | Money market supported tokens by chain |
 | `sodax_get_money_market_reserve_assets` | Money market reserve assets |
 
-### Intents & Solver (6 tools)
+### Intents & Solver (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -68,6 +68,16 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 | `sodax_get_volume` | Get solver volume data (filled intents) with filtering and pagination |
 | `sodax_get_orderbook` | Get current cross-chain orderbook entries from solver |
 | `sodax_get_solver_intent` | Get solver-side intent details and fill history |
+| `sodax_get_solver_oracle` | Get the solver's oracle prices for every supported (chain, token) pair |
+| `sodax_get_solver_quote` | Get a swap quote from the solver (exact_input or exact_output) |
+
+### Intent Relay (3 tools)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_relay_submit_tx` | Submit a confirmed spoke-chain tx to the intent relay for cross-chain delivery |
+| `sodax_relay_get_transaction_packets` | List every cross-chain packet emitted by a source tx |
+| `sodax_relay_get_packet` | Fetch a single relay packet by connection serial number |
 
 ### AMM & Liquidity (2 tools)
 
@@ -122,6 +132,12 @@ Once connected, try asking your AI coding assistant:
 - *"Show me cross-network solver volume for today"*
 - *"Look up this intent transaction: 0x..."*
 - *"Get intent history for this wallet address"*
+- *"Quote me 100 USDC into SODA on Sonic"*
+- *"What's the current oracle price the solver has for bnUSD on Avalanche?"*
+
+### Cross-Chain Relay
+- *"Track the relay packets for this source tx: 0x..."*
+- *"Has packet conn_sn=42 from this tx been executed yet?"*
 
 ### Money Market & Lending
 - *"What are the lending rates on SODAX money market?"*
@@ -137,7 +153,9 @@ Once connected, try asking your AI coding assistant:
 
 | Source | Type | Cache |
 |--------|------|-------|
-| SODAX API (api.sodax.com) | Live cross-network data | 2 min |
+| SODAX Backend API (api.sodax.com/v1/be) | Live cross-network data | 2 min |
+| SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
+| SODAX Intent Relay (xcall-relay.nw.iconblockchain.xyz) | Cross-chain packet tracking | none |
 | Aggregator | Cross-chain swap token data | 2 min |
 | GitBook (docs.sodax.com) | SDK documentation | Auto-sync |
 
@@ -155,7 +173,36 @@ pnpm build
 
 # Start production server
 pnpm start
+
+# Run the test suite (unit tests for drift-check logic)
+pnpm test
 ```
+
+## CI & Local Checks
+
+Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which executes the same four checks you can run locally:
+
+| Command | What it does |
+|---------|--------------|
+| `pnpm checkTs` | Type-checks the project with `tsc --noEmit` (no build output). |
+| `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
+| `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
+| `pnpm test` | Runs the Vitest suite (currently covers the drift-check logic in `src/services/apiDriftCheck.ts`). |
+
+### Git hooks (husky + commitlint + lint-staged)
+
+`pnpm install` installs the hooks automatically via the `prepare` script:
+
+- **`pre-commit`** — runs `pnpm checkTs`, `pnpm test`, then `lint-staged` (which runs `biome check --write` on staged files, applying both formatting and safe lint fixes).
+- **`commit-msg`** — runs `commitlint` against the [Conventional Commits](https://www.conventionalcommits.org/) spec. Messages like `feat: add X` pass; `bad message` is rejected.
+
+To skip the hooks in a one-off emergency:
+
+```bash
+HUSKY=0 git commit -m "your message"
+```
+
+Don't make a habit of it — CI will still enforce the same checks on the PR.
 
 ### Environment Variables
 
@@ -164,17 +211,16 @@ pnpm start
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `NODE_ENV` | - | Set to `production` for deployment |
+| `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 
 ## Deployment
 
 ### Environments
 
-The server runs in two Coolify environments on the tech-team infrastructure (`clf.sodax.com`):
+The server is deployed via Coolify with a branch-based promotion flow:
 
-| Environment | URL | Tracks branch |
-|-------------|-----|---------------|
-| Production | https://builders.sodax.com | `master` |
-| Staging | https://test-builders-mcp.coolify.iconblockchain.xyz | `development` |
+- **Production** — tracks `master`, serves https://builders.sodax.com
+- **Staging** — tracks `development` (internal-only)
 
 Promotion flow:
 
@@ -196,7 +242,7 @@ docker run -p 3000:3000 builders-sodax-mcp-server
 docker-compose up -d
 ```
 
-### Railway/Coolify
+### Deployment notes
 
 The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
 - `PORT=3000`

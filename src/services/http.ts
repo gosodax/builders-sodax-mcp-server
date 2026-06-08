@@ -78,7 +78,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
 
   // 204 No Content / empty body: response.json() would throw SyntaxError on
   // "" — return undefined (or null for the OrNull variant) instead.
-  const text = await response.text();
+  const text = (await response.text()).trim();
   if (!text) return allow404 ? null : (undefined as T);
   return JSON.parse(text) as T;
 }

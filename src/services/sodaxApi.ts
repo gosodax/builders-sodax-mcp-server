@@ -219,7 +219,14 @@ export async function getOrderbook(options: {
   try {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(options)) {
-      if (value !== undefined) params.append(key, String(value));
+      if (value === undefined) continue;
+      // Skip booleans set to false. The upstream `?flag=false` is unsafe
+      // because some query parsers treat presence (any non-empty string) as
+      // truthy — `excludeZeroDeadline=false` would then *exclude* zero-
+      // deadline intents when the caller asked to include them. The default
+      // is "don't exclude", so omitting matches the intended behavior.
+      if (value === false) continue;
+      params.append(key, String(value));
     }
 
     const queryString = params.toString();

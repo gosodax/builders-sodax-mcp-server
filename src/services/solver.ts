@@ -74,10 +74,18 @@ export async function getSolverOracle(): Promise<OraclePrice[]> {
  */
 export async function getSolverQuote(request: QuoteRequest): Promise<QuoteResponse> {
   try {
-    return await fetchJson<QuoteResponse>(solverUrl("/quote"), {
+    const data = await fetchJson<unknown>(solverUrl("/quote"), {
       method: "POST",
       body: request,
     });
+    // Defensive: matches the getSolverOracle pattern. The http layer now
+    // throws on empty/whitespace bodies, but a 2xx with a non-object or
+    // missing-quoted_amount payload would still slip through as `undefined`
+    // downstream and surface a confusing TypeError at the tool layer.
+    if (typeof data !== "object" || data === null || typeof (data as QuoteResponse).quoted_amount !== "string") {
+      throw new Error(`Unexpected quote response shape: ${JSON.stringify(data)?.slice(0, 200) ?? typeof data}`);
+    }
+    return data as QuoteResponse;
   } catch (error) {
     logger.error({ err: error }, "Error fetching solver quote");
     throw new Error(`Failed to fetch solver quote: ${error instanceof Error ? error.message : "Unknown error"}`);

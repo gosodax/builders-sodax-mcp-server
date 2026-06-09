@@ -47,28 +47,21 @@ const RELAY_TIMEOUT_MS = 30_000;
  * responses are treated as errors.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), RELAY_TIMEOUT_MS);
+  const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ action, params }),
+    signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+  });
 
-  try {
-    const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({ action, params }),
-      signal: controller.signal,
-    });
-
-    if (response.status >= 500) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    }
-
-    return (await response.json()) as T;
-  } finally {
-    clearTimeout(timeoutId);
+  if (response.status >= 500) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
+
+  return (await response.json()) as T;
 }
 
 /**

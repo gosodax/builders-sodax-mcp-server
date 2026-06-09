@@ -5,7 +5,8 @@
  * reserves stdout for JSON-RPC framing. Sending logs to stdout would corrupt
  * the protocol stream for stdio clients.
  *
- * - Level via LOG_LEVEL env (default "info"). Valid: trace|debug|info|warn|error|fatal.
+ * - Level via LOG_LEVEL env (default "info"). Valid: trace|debug|info|warn|error|fatal|silent.
+ *   `silent` disables all logging — used by vitest to keep test runs quiet.
  *   Unknown values fall back to "info" with a warning rather than crashing at boot.
  * - JSON output by default; `pino-pretty` transport only when `NODE_ENV === "development"`
  *   (opt-in). Defaulting to JSON means an unset `NODE_ENV` on a production-only install

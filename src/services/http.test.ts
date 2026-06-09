@@ -34,16 +34,21 @@ describe("fetchJson", () => {
     await expect(fetchJson("http://example.com/x")).rejects.toThrow(/HTTP 500.*Server boom/);
   });
 
-  it("returns undefined on an empty 200 body instead of throwing SyntaxError", async () => {
+  it("throws a clear 'Empty response body' error instead of SyntaxError on an empty 200", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 200 }));
-    await expect(fetchJson("http://example.com/x")).resolves.toBeUndefined();
+    await expect(fetchJson("http://example.com/x")).rejects.toThrow(
+      /Empty response body from http:\/\/example\.com\/x/,
+    );
   });
 
-  it("returns undefined on 204 No Content", async () => {
-    // A real 204 response carries no body; constructing it from the global
-    // Response with status 204 forbids passing a body, so use an empty one.
+  it("throws 'Empty response body' on 204 No Content", async () => {
     fetchSpy.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await expect(fetchJson("http://example.com/x")).resolves.toBeUndefined();
+    await expect(fetchJson("http://example.com/x")).rejects.toThrow(/Empty response body/);
+  });
+
+  it("treats a whitespace-only body as empty (trims before checking)", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("\n  \t\n", { status: 200 }));
+    await expect(fetchJson("http://example.com/x")).rejects.toThrow(/Empty response body/);
   });
 });
 
@@ -61,6 +66,11 @@ describe("fetchJsonOrNull", () => {
   it("returns parsed JSON on 200", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse('{"x":1}', { status: 200 }));
     await expect(fetchJsonOrNull<{ x: number }>("http://example.com/x")).resolves.toEqual({ x: 1 });
+  });
+
+  it("returns null on an empty 200 body (same shape as 404 for the OrNull variant)", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 200 }));
+    await expect(fetchJsonOrNull("http://example.com/x")).resolves.toBeNull();
   });
 });
 

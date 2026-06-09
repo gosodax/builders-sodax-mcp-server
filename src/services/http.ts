@@ -76,10 +76,18 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
     throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
   }
 
-  // 204 No Content / empty body: response.json() would throw SyntaxError on
-  // "" — return undefined (or null for the OrNull variant) instead.
-  const text = await response.text();
-  if (!text) return allow404 ? null : (undefined as T);
+  // 204 No Content / empty body: response.json() would throw a cryptic
+  // "Unexpected end of JSON input" SyntaxError. Trim first so whitespace-
+  // only bodies ("\n", " ") are treated as empty. For the OrNull variant
+  // an empty body is the same shape as a 404 — return null. For strict
+  // fetchJson, throw a clearer error instead of returning undefined-as-T,
+  // which would otherwise lie about the Promise<T> contract and let an
+  // undefined parsed value leak into callers (caching, destructuring etc).
+  const text = (await response.text()).trim();
+  if (!text) {
+    if (allow404) return null;
+    throw new Error(`Empty response body from ${url}`);
+  }
   return JSON.parse(text) as T;
 }
 

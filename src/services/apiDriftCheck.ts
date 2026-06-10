@@ -14,10 +14,17 @@
  *
  * The CLI entrypoint (`src/scripts/checkDrift.ts`) exits non-zero on drift;
  * the startup call in `src/index.ts` is fire-and-forget and never throws.
+ *
+ * When called with `{ notify: true }` (prod server startup only) and drift is
+ * detected, a summary is POSTed to `DISCORD_WEBHOOK_URL` if that env var is
+ * non-empty. The CLI path passes `notify: false` so `pnpm check:drift` stays
+ * side-effect-free; an empty/unset webhook (staging) means no network call.
+ * The notifier catches and logs its own errors — it never crashes the server.
  */
 
 import { SODAX_API_BASE_URL } from "../constants.js";
 import { type OpenApiSchema, diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
+import { DISCORD_CONTENT_LIMIT, postToDiscord } from "./discord.js";
 import { fetchJson } from "./http.js";
 import { logger } from "./logger.js";
 
@@ -352,6 +359,15 @@ export interface DriftReport {
   };
 }
 
+export interface DriftCheckOptions {
+  /**
+   * When true and drift is detected, POST a summary to the Discord webhook in
+   * `DISCORD_WEBHOOK_URL` (when non-empty). Default false — the CLI and tests
+   * stay side-effect-free; only the prod server startup opts in.
+   */
+  notify?: boolean;
+}
+
 /** Normalize an OpenAPI path with `{param}` placeholders to `:param` form. */
 function normalizePath(path: string): string {
   return path.replace(/\{([^}]+)\}/g, ":$1");
@@ -361,7 +377,7 @@ function normalizePath(path: string): string {
  * Run all drift sub-checks. Logs to stderr; returns a structured report
  * so callers (CLI vs. startup) can decide how to react.
  */
-export async function checkApiDrift(): Promise<DriftReport> {
+export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<DriftReport> {
   const emptyReport: DriftReport = {
     hasDrift: false,
     summary: { totalEndpoints: 0, endpointGaps: 0, paramGaps: 0, requiredGaps: 0, fieldGaps: 0, uncovered: 0 },
@@ -501,6 +517,15 @@ export async function checkApiDrift(): Promise<DriftReport> {
 
   const issueCount = endpointGaps.length + paramIssues.length + requiredIssues.length + fieldIssues.length;
 
+  const summary: DriftReport["summary"] = {
+    totalEndpoints: total,
+    endpointGaps: endpointGaps.length,
+    paramGaps: paramIssues.length,
+    requiredGaps: requiredIssues.length,
+    fieldGaps: fieldIssues.length,
+    uncovered: uncovered.length,
+  };
+
   if (!hasDrift) {
     logger.info(
       { totalEndpoints: total, uncovered: uncovered.length },
@@ -537,17 +562,17 @@ export async function checkApiDrift(): Promise<DriftReport> {
     for (const key of uncovered) logger.info(`  - ${key}`);
   }
 
-  return {
-    hasDrift,
-    summary: {
-      totalEndpoints: total,
-      endpointGaps: endpointGaps.length,
-      paramGaps: paramIssues.length,
-      requiredGaps: requiredIssues.length,
-      fieldGaps: fieldIssues.length,
-      uncovered: uncovered.length,
-    },
-  };
+  // ── Runtime notification (prod server startup only) ─────────────────────
+  if (options.notify && hasDrift) {
+    const reportText = buildDriftReportText(endpointGaps, paramIssues, requiredIssues, fieldIssues);
+    const delivered = await postToDiscord({
+      username: "Drift Watcher",
+      content: buildDiscordContent(summary, reportText),
+    });
+    if (delivered) logger.info("📣 Drift notifier: posted drift summary to Discord");
+  }
+
+  return { hasDrift, summary };
 }
 
 /**
@@ -560,4 +585,60 @@ function restoreOpenApiPath(normalized: string, paths: OpenApiSpec["paths"]): st
     if (normalizePath(raw) === normalized) return raw;
   }
   return normalized;
+}
+
+/** Render the detailed drift issues as plain text for the Discord fenced block. */
+function buildDriftReportText(
+  endpointGaps: EndpointKey[],
+  paramIssues: DriftIssue[],
+  requiredIssues: DriftIssue[],
+  fieldIssues: DriftIssue[],
+): string {
+  const lines: string[] = [];
+  if (endpointGaps.length > 0) {
+    lines.push(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
+    for (const key of endpointGaps) lines.push(`  - ${key}`);
+  }
+  if (paramIssues.length > 0) {
+    lines.push(`Param drift — ${paramIssues.length} issue(s):`);
+    for (const issue of paramIssues) lines.push(`  - ${issue.endpoint}: ${issue.detail}`);
+  }
+  if (requiredIssues.length > 0) {
+    lines.push(`Required-flag drift — ${requiredIssues.length} issue(s):`);
+    for (const issue of requiredIssues) lines.push(`  - ${issue.endpoint}: ${issue.detail}`);
+  }
+  if (fieldIssues.length > 0) {
+    lines.push(`Response-field drift — ${fieldIssues.length} issue(s):`);
+    for (const issue of fieldIssues) lines.push(`  - ${issue.endpoint}: ${issue.detail}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Compose the Discord message: a short summary + per-sub-check breakdown,
+ * then the full report inside a fenced block. The report body is truncated so
+ * the whole payload stays within `DISCORD_CONTENT_LIMIT`.
+ */
+function buildDiscordContent(summary: DriftReport["summary"], reportText: string): string {
+  const issueCount = summary.endpointGaps + summary.paramGaps + summary.requiredGaps + summary.fieldGaps;
+  const header = [
+    "**⚠️ API Drift Detected**",
+    `${issueCount} issue(s) across ${summary.totalEndpoints} endpoint(s)`,
+    "",
+    `• Endpoint coverage: ${summary.endpointGaps}`,
+    `• Param drift: ${summary.paramGaps}`,
+    `• Required-flag drift: ${summary.requiredGaps}`,
+    `• Response-field drift: ${summary.fieldGaps}`,
+  ].join("\n");
+
+  const fenceOpen = "\n```\n";
+  const fenceClose = "\n```";
+  const truncationMarker = "\n… (report truncated)";
+  const budget = DISCORD_CONTENT_LIMIT - header.length - fenceOpen.length - fenceClose.length;
+
+  let body = reportText;
+  if (body.length > budget) {
+    body = `${body.slice(0, Math.max(0, budget - truncationMarker.length))}${truncationMarker}`;
+  }
+  return `${header}${fenceOpen}${body}${fenceClose}`;
 }

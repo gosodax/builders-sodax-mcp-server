@@ -19,6 +19,7 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { STATIC_TOOL_COUNTS, hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { logger } from "./services/logger.js";
 import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
@@ -295,9 +296,18 @@ async function runHTTP(): Promise<void> {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    // #38: announce the server is online to Discord (silent when no webhook set).
+    void notifyServerStarted({
+      version: SERVER_VERSION,
+      transport: "http",
+      port,
+      env: process.env.NODE_ENV || "unset",
+    });
     // Non-blocking: compare live OpenAPI spec against registered MCP tools.
     // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.
-    void checkApiDrift().catch(err => {
+    // notify: true → POST a summary to DISCORD_WEBHOOK_URL when drift is found
+    // and the webhook is set (prod). Empty/unset webhook (staging) = silent.
+    void checkApiDrift({ notify: true }).catch(err => {
       logger.warn({ err }, "⚠️  API drift check threw unexpectedly");
     });
   });
@@ -312,24 +322,42 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(error => {
-  logger.fatal({ err: error }, "Server error");
-  // Drain the async destination before exit so the fatal line isn't lost
-  // to a half-flushed SonicBoom buffer. Force-exit after 1s if flush stalls
-  // (e.g. transport worker not draining in dev).
-  const force = setTimeout(() => process.exit(1), 1000);
-  logger.flush(() => {
-    clearTimeout(force);
-    process.exit(1);
+/**
+ * Log a fatal error, best-effort notify Discord (#38), drain the log buffer,
+ * then exit 1. The Discord POST is bounded by the notifier's own 5s timeout;
+ * a 1s force-exit guards against a stalled flush (e.g. transport worker not
+ * draining in dev). Re-entrant calls only log — the first call owns the exit.
+ */
+let exiting = false;
+function fatalExit(context: string, error: unknown): void {
+  logger.fatal({ err: error }, context);
+  if (exiting) return;
+  exiting = true;
+  void notifyError(context, error).finally(() => {
+    const force = setTimeout(() => process.exit(1), 1000);
+    logger.flush(() => {
+      clearTimeout(force);
+      process.exit(1);
+    });
   });
-});
+}
 
-// Flush pending PostHog events on shutdown
-process.on("SIGINT", async () => {
+main().catch(error => fatalExit("Server failed to start", error));
+
+// #38: surface unexpected runtime failures to Discord, then exit — preserving
+// Node's default crash semantics for uncaught errors / unhandled rejections.
+process.on("uncaughtException", error => fatalExit("Uncaught exception", error));
+process.on("unhandledRejection", reason => fatalExit("Unhandled promise rejection", reason));
+
+/**
+ * Graceful shutdown: announce to Discord (#38), flush pending PostHog events,
+ * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
+ */
+async function gracefulShutdown(signal: string): Promise<void> {
+  logger.info({ signal }, "Shutting down");
+  await notifyServerStopping(signal);
   await shutdownAnalytics();
   process.exit(0);
-});
-process.on("SIGTERM", async () => {
-  await shutdownAnalytics();
-  process.exit(0);
-});
+}
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));

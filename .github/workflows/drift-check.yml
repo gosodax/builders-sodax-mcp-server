@@ -1,0 +1,38 @@
+name: Drift Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - development
+      - master
+  schedule:
+    # Daily at 09:00 UTC — surfaces upstream-only drift even when no PR is open.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  drift:
+    name: API Drift Check
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check API drift
+        run: pnpm check:drift

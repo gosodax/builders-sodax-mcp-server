@@ -1,5 +1,6 @@
 [phases.setup]
-nixPkgs = ["nodejs_20"]
+# nodejs_22: required for the `--env-file-if-exists` flag in the start cmd below.
+nixPkgs = ["nodejs_22"]
 
 [phases.install]
 cmds = ["corepack enable", "corepack prepare pnpm@9.15.0 --activate", "pnpm install --frozen-lockfile"]
@@ -8,4 +9,6 @@ cmds = ["corepack enable", "corepack prepare pnpm@9.15.0 --activate", "pnpm inst
 cmds = ["pnpm build"]
 
 [start]
-cmd = "node dist/index.js"
+# Load .env if present (Coolify normally injects env vars directly; the flag
+# no-ops when no .env file exists, so this is safe either way).
+cmd = "node --env-file-if-exists=.env dist/index.js"

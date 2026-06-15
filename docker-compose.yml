@@ -1,14 +1,16 @@
-# Coolify pipeline smoke test: 2026-05-21. No-op edit — safe to remove.
 services:
   builders-sodax-mcp-server:
     build: .
     container_name: builders-sodax-mcp-server
-    env_file: .env
+    # .env is optional — if absent, the defaults below apply (no error).
+    env_file:
+      - path: .env
+        required: false
     ports:
-      - "${PORT}:${PORT}"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
       - NODE_ENV=production
-      - PORT=${PORT}
+      - PORT=${PORT:-3000}
       - TRANSPORT=http
     restart: unless-stopped
     logging:
@@ -17,7 +19,7 @@ services:
         max-size: "10m"
         max-file: "5"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/health"]
       interval: 30s
       timeout: 10s
       retries: 10

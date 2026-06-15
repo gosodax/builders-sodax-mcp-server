@@ -1,4 +1,3 @@
-# Coolify pipeline smoke test: 2026-05-21. No-op edit — safe to remove.
 services:
   builders-sodax-mcp-server:
     build: .

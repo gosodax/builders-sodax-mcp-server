@@ -44,9 +44,15 @@ export function isDiscordConfigured(): boolean {
   return Boolean(process.env.DISCORD_WEBHOOK_URL?.trim());
 }
 
-/** Truncate `text` to at most `max` chars, adding an ellipsis when cut. */
+/**
+ * Truncate `text` to at most `max` characters, adding an ellipsis when cut.
+ * Splits on code points (via `Array.from`) so a multi-byte emoji is never cut
+ * mid-surrogate-pair, which would otherwise leak a lone surrogate (rendered as
+ * `�`) into the Discord payload.
+ */
 function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
 
 /**

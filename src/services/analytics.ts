@@ -37,6 +37,7 @@ const TOOL_GROUPS: Record<string, string> = {
   sodax_get_user_transactions: "api",
   sodax_get_intent: "api",
   sodax_get_volume: "api",
+  sodax_get_volume_stats: "api",
   sodax_get_orderbook: "api",
   sodax_get_solver_intent: "api",
   sodax_get_solver_oracle: "api",

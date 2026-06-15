@@ -2,7 +2,7 @@
  * SODAX API Tools
  *
  * MCP tool definitions for accessing live SODAX API data.
- * Provides 27 tools for developers and integration partners.
+ * Provides 28 tools for developers and integration partners.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -38,6 +38,7 @@ import {
   getUserPosition,
   getUserTransactions,
   getVolume,
+  getVolumeStats,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
 import { ResponseFormat } from "../types.js";
@@ -292,6 +293,38 @@ export function registerSodaxApiTools(server: McpServer): void {
             {
               type: "text",
               text: header + formatResponse(volume.items, format) + pagination,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Tool 5b: Get Volume Stats (aggregate filled-intent count)
+  server.tool(
+    "sodax_get_volume_stats",
+    "Get aggregate solver volume stats: the approximate total number of filled-intent records (fill documents, not distinct intents). Cached ~60s upstream.",
+    {
+      format: z
+        .nativeEnum(ResponseFormat)
+        .optional()
+        .default(ResponseFormat.MARKDOWN)
+        .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
+    },
+    READ_ONLY,
+    async ({ format }) => {
+      try {
+        const stats = await getVolumeStats();
+        return {
+          content: [
+            {
+              type: "text",
+              text: `## SODAX Solver Volume Stats\n\n${formatResponse(stats, format)}`,
             },
           ],
         };

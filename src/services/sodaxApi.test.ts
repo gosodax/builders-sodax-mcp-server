@@ -83,3 +83,36 @@ describe("getSwapTokens", () => {
     expect(result).toEqual([{ symbol: "FALLBACK", chainId: "data" }]);
   });
 });
+
+describe("getVolumeStats", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fetches /solver/volume/stats and returns the filledCount payload", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const mockFetchJson = vi.mocked(http.fetchJson);
+    mockFetchJson.mockResolvedValueOnce({ filledCount: 12345 });
+
+    const result = await mod.getVolumeStats();
+
+    expect(result).toEqual({ filledCount: 12345 });
+    expect(mockFetchJson).toHaveBeenCalledWith(expect.stringContaining("/solver/volume/stats"));
+  });
+
+  it("serves a cached value on the second call without re-fetching", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const mockFetchJson = vi.mocked(http.fetchJson);
+    mockFetchJson.mockResolvedValueOnce({ filledCount: 7 });
+
+    await mod.getVolumeStats();
+    const second = await mod.getVolumeStats();
+
+    expect(second).toEqual({ filledCount: 7 });
+    expect(mockFetchJson).toHaveBeenCalledTimes(1);
+  });
+});

@@ -2,6 +2,9 @@ name: Drift Check
 
 on:
   pull_request:
+    branches:
+      - development
+      - master
   push:
     branches:
       - development

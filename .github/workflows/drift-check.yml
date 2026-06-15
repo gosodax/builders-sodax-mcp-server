@@ -37,5 +37,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Advisory on PRs: upstream API drift shouldn't red-X (or block) an
+      # otherwise-unrelated PR. The push (development/master), scheduled, and
+      # manual runs stay authoritative and fail on drift.
       - name: Check API drift
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: pnpm check:drift

@@ -96,6 +96,14 @@ export interface VolumeData {
 }
 
 /**
+ * Aggregate solver volume stats. `filledCount` is the approximate total number
+ * of filled-intent records (fill documents, not distinct intents).
+ */
+export interface VolumeStats {
+  filledCount: number;
+}
+
+/**
  * Orderbook entry for limit orders
  */
 export interface OrderbookEntry {

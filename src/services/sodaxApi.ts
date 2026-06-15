@@ -16,6 +16,7 @@ import type {
   Transaction,
   UserPosition,
   VolumeData,
+  VolumeStats,
 } from "../types.js";
 import { fetchJson, fetchJsonOrNull } from "./http.js";
 import { logger } from "./logger.js";
@@ -202,16 +203,51 @@ export async function getVolume(options: {
 }
 
 /**
+ * Get aggregate solver volume stats (approximate filled-intent record count).
+ * Backed by a collection-metadata read upstream and cached 60s server-side.
+ */
+export async function getVolumeStats(): Promise<VolumeStats> {
+  const cacheKey = "volume-stats";
+  const cached = getCached<VolumeStats>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const stats = await fetchJson<VolumeStats>(apiUrl("/solver/volume/stats"));
+    setCache(cacheKey, stats);
+    return stats;
+  } catch (error) {
+    logger.error({ err: error }, "Failed to fetch volume stats");
+    throw new Error("Failed to fetch volume stats from SODAX API");
+  }
+}
+
+/**
  * Get current orderbook entries from solver
  */
 export async function getOrderbook(options: {
-  limit: number;
-  offset: number;
+  limit?: number;
+  offset?: number;
+  srcChain?: number;
+  dstChain?: number;
+  inputToken?: string;
+  outputToken?: string;
+  creator?: string;
+  deadlineBefore?: number;
+  deadlineAfter?: number;
+  excludeZeroDeadline?: boolean;
 }): Promise<OrderbookEntry[]> {
   try {
     const params = new URLSearchParams();
-    params.append("limit", options.limit.toString());
-    params.append("offset", options.offset.toString());
+    for (const [key, value] of Object.entries(options)) {
+      if (value === undefined) continue;
+      // Skip booleans set to false. The upstream `?flag=false` is unsafe
+      // because some query parsers treat presence (any non-empty string) as
+      // truthy — `excludeZeroDeadline=false` would then *exclude* zero-
+      // deadline intents when the caller asked to include them. The default
+      // is "don't exclude", so omitting matches the intended behavior.
+      if (value === false) continue;
+      params.append(key, String(value));
+    }
 
     const queryString = params.toString();
     const url = apiUrl(`/solver/orderbook${queryString ? `?${queryString}` : ""}`);

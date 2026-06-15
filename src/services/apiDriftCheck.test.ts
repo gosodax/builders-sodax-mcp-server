@@ -156,3 +156,90 @@ describe("checkApiDrift", () => {
     expect(report.summary.paramGaps).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("checkApiDrift Discord notifier", () => {
+  // An unknown endpoint is the simplest way to force hasDrift: true.
+  const DRIFT_SPEC = { paths: { "/some/unknown/endpoint": { get: {} } } };
+  const originalWebhook = process.env.DISCORD_WEBHOOK_URL;
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    mockFetchJson.mockReset();
+    if (originalWebhook === undefined) delete process.env.DISCORD_WEBHOOK_URL;
+    else process.env.DISCORD_WEBHOOK_URL = originalWebhook;
+  });
+
+  it("does not POST when notify is false, even with a webhook set and drift detected", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.test/webhook";
+    mockFetchJson.mockResolvedValueOnce(DRIFT_SPEC);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const report = await checkApiDrift({ notify: false });
+
+    expect(report.hasDrift).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not POST when notify is true but DISCORD_WEBHOOK_URL is unset (staging stays silent)", async () => {
+    delete process.env.DISCORD_WEBHOOK_URL;
+    mockFetchJson.mockResolvedValueOnce(DRIFT_SPEC);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const report = await checkApiDrift({ notify: true });
+
+    expect(report.hasDrift).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not POST when notify is true and the webhook is set but there is no drift", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.test/webhook";
+    mockFetchJson.mockResolvedValueOnce({ paths: {} }); // nothing to gap on → no drift
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const report = await checkApiDrift({ notify: true });
+
+    expect(report.hasDrift).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("POSTs exactly one drift summary with username 'Drift Watcher' when notify + drift + webhook", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.test/webhook";
+    mockFetchJson.mockResolvedValueOnce(DRIFT_SPEC);
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const report = await checkApiDrift({ notify: true });
+
+    expect(report.hasDrift).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe("https://discord.test/webhook");
+    expect(init.method).toBe("POST");
+    const payload = JSON.parse(init.body as string);
+    expect(payload.username).toBe("Drift Watcher");
+    expect(payload.content).toContain("issue(s) across");
+    expect(payload.content).toContain("Endpoint coverage:");
+    expect(payload.content.length).toBeLessThanOrEqual(1800);
+  });
+
+  it("swallows a network failure on the Discord POST without throwing", async () => {
+    process.env.DISCORD_WEBHOOK_URL = "https://discord.test/webhook";
+    mockFetchJson.mockResolvedValueOnce(DRIFT_SPEC);
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const report = await checkApiDrift({ notify: true });
+
+    // Resolves normally despite the POST failing; the report still reflects drift.
+    expect(report.hasDrift).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});

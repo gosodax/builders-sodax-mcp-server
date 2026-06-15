@@ -9,7 +9,7 @@ on:
     branches:
       - master
       - development
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 jobs:
   build:
@@ -45,3 +45,26 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  docker-build:
+    name: Docker build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Builds the same Dockerfile Coolify deploys — both the `builder` and the
+      # final prod stage. Catches prod-install / image regressions in CI instead
+      # of at deploy time (#54). No push; GitHub Actions cache keeps warm runs fast.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

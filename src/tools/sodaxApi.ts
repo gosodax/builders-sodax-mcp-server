@@ -2,7 +2,7 @@
  * SODAX API Tools
  *
  * MCP tool definitions for accessing live SODAX API data.
- * Provides 27 tools for developers and integration partners.
+ * Provides 28 tools for developers and integration partners.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -38,6 +38,7 @@ import {
   getUserPosition,
   getUserTransactions,
   getVolume,
+  getVolumeStats,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
 import { ResponseFormat } from "../types.js";
@@ -304,13 +305,11 @@ export function registerSodaxApiTools(server: McpServer): void {
     },
   );
 
-  // Tool 6: Get Orderbook
+  // Tool 5b: Get Volume Stats (aggregate filled-intent count)
   server.tool(
-    "sodax_get_orderbook",
-    "Get current orderbook entries showing pending/open intents",
+    "sodax_get_volume_stats",
+    "Get aggregate solver volume stats: the approximate total number of filled-intent records (fill documents, not distinct intents). Cached ~60s upstream.",
     {
-      limit: z.number().min(1).max(100).describe("REQUIRED: Maximum number of orders to return (1-100)"),
-      offset: z.number().min(0).describe("REQUIRED: Number of orders to skip for pagination"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -318,9 +317,51 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
     },
     READ_ONLY,
-    async ({ limit, offset, format }) => {
+    async ({ format }) => {
       try {
-        const orderbook = await getOrderbook({ limit, offset });
+        const stats = await getVolumeStats();
+        return {
+          content: [
+            {
+              type: "text",
+              text: `## SODAX Solver Volume Stats\n\n${formatResponse(stats, format)}`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Tool 6: Get Orderbook
+  server.tool(
+    "sodax_get_orderbook",
+    "Get current orderbook entries showing pending/open intents",
+    {
+      limit: z.number().min(1).max(500).optional().describe("Max results (default server-side, cap 500)"),
+      offset: z.number().min(0).optional().describe("Offset for simple pagination"),
+      srcChain: z.number().optional().describe("Filter by source chain id"),
+      dstChain: z.number().optional().describe("Filter by destination chain id"),
+      inputToken: z.string().optional().describe("Filter by input token address"),
+      outputToken: z.string().optional().describe("Filter by output token address"),
+      creator: z.string().optional().describe("Filter by creator address"),
+      deadlineBefore: z.number().optional().describe("Only return intents with deadline < value (Unix seconds)"),
+      deadlineAfter: z.number().optional().describe("Only return intents with deadline > value (Unix seconds)"),
+      excludeZeroDeadline: z.boolean().optional().describe("Exclude intents where deadline = 0"),
+      format: z
+        .nativeEnum(ResponseFormat)
+        .optional()
+        .default(ResponseFormat.MARKDOWN)
+        .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
+    },
+    READ_ONLY,
+    async ({ format, ...filters }) => {
+      try {
+        const orderbook = await getOrderbook(filters);
         return {
           content: [
             {

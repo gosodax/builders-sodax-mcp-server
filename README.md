@@ -206,12 +206,18 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 
 ### Environment Variables
 
+The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
+flag — requires Node ≥ 22.9.0). Copy `.env.example` to `.env` for local development;
+if no `.env` exists, every variable falls back to the default below. In production,
+Coolify injects these directly into the process environment.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
+| `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |
 
 ## Deployment
 

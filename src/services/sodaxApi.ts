@@ -16,6 +16,7 @@ import type {
   Transaction,
   UserPosition,
   VolumeData,
+  VolumeStats,
 } from "../types.js";
 import { fetchJson, fetchJsonOrNull } from "./http.js";
 import { logger } from "./logger.js";
@@ -198,6 +199,25 @@ export async function getVolume(options: {
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch volume");
     throw new Error("Failed to fetch volume data from SODAX API");
+  }
+}
+
+/**
+ * Get aggregate solver volume stats (approximate filled-intent record count).
+ * Backed by a collection-metadata read upstream and cached 60s server-side.
+ */
+export async function getVolumeStats(): Promise<VolumeStats> {
+  const cacheKey = "volume-stats";
+  const cached = getCached<VolumeStats>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const stats = await fetchJson<VolumeStats>(apiUrl("/solver/volume/stats"));
+    setCache(cacheKey, stats);
+    return stats;
+  } catch (error) {
+    logger.error({ err: error }, "Failed to fetch volume stats");
+    throw new Error("Failed to fetch volume stats from SODAX API");
   }
 }
 

@@ -214,6 +214,12 @@ const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
     requiredParams: [],
     responseFields: ["items", "nextCursor", "hasMore"],
   },
+  "GET /solver/volume/stats": {
+    tool: "sodax_get_volume_stats",
+    params: [],
+    requiredParams: [],
+    responseFields: ["filledCount"],
+  },
   "GET /solver/intents/:intentHash": {
     tool: "sodax_get_solver_intent",
     params: ["intentHash", "includeAll"],

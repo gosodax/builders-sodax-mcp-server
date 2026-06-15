@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.2...builders-sodax-mcp-server-v1.4.0) (2026-06-15)
+
+
+### Features
+
+* add sodax_get_volume_stats tool for /solver/volume/stats ([#62](https://github.com/gosodax/builders-sodax-mcp-server/issues/62)) ([ea0eecc](https://github.com/gosodax/builders-sodax-mcp-server/commit/ea0eecc2699a75d558e677ea464c79b06407934f))
+* Discord alerts, CI checks (drift + docker build), and .env loading ([#16](https://github.com/gosodax/builders-sodax-mcp-server/issues/16), [#38](https://github.com/gosodax/builders-sodax-mcp-server/issues/38), [#54](https://github.com/gosodax/builders-sodax-mcp-server/issues/54)) ([#60](https://github.com/gosodax/builders-sodax-mcp-server/issues/60)) ([a977a2b](https://github.com/gosodax/builders-sodax-mcp-server/commit/a977a2bdd100d2587742508b4b51d307747f8815))
+
+
+### Miscellaneous
+
+* promote development to master ([5e26114](https://github.com/gosodax/builders-sodax-mcp-server/commit/5e26114f4f90ae98efefd4d3be00d882981bf576))
+
 ## [1.3.2](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.1...builders-sodax-mcp-server-v1.3.2) (2026-05-21)
 
 

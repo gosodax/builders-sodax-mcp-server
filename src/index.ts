@@ -355,6 +355,11 @@ process.on("unhandledRejection", reason => fatalExit("Unhandled promise rejectio
  */
 async function gracefulShutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Shutting down");
+  // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
+  // notify is still in flight; share fatalExit's `exiting` flag so the first
+  // exit path wins and we don't double-post / double-flush analytics.
+  if (exiting) return;
+  exiting = true;
   await notifyServerStopping(signal);
   await shutdownAnalytics();
   process.exit(0);

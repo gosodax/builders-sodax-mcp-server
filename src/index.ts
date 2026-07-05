@@ -22,6 +22,7 @@ import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
 import { logger } from "./services/logger.js";
+import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
@@ -163,11 +164,21 @@ async function runHTTP(): Promise<void> {
     const relayToolCount = STATIC_TOOL_COUNTS.relay ?? 0;
     const sdkDocsToolCount = gitbookToolNames.length;
     const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
+    // Live integrated-networks count (ICON filtered out), mirroring the
+    // frontend. Best-effort: a backend hiccup must not fail the health check —
+    // the landing page falls back to its static number when this is null.
+    let networks: number | null = null;
+    try {
+      networks = await getIntegratedNetworksCount();
+    } catch (error) {
+      logger.warn({ err: error }, "Failed to fetch integrated networks count for /health");
+    }
     res.json({
       status: "healthy",
       service: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
       uptime_seconds: Math.floor(process.uptime()),
+      networks,
       tools: {
         total: totalTools,
         api: apiToolCount,
@@ -238,7 +249,7 @@ async function runHTTP(): Promise<void> {
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
       description:
-        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 17+ networks",
+        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 20+ networks",
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       tools: {
         config: [
@@ -256,6 +267,7 @@ async function runHTTP(): Promise<void> {
           "sodax_get_intent",
           "sodax_get_user_transactions",
           "sodax_get_volume",
+          "sodax_get_volume_stats",
           "sodax_get_orderbook",
           "sodax_get_solver_intent",
           "sodax_get_solver_oracle",

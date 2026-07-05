@@ -5,7 +5,7 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { CACHE_DURATION_MS, SODAX_API_BASE_URL } from "../constants.js";
+import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_IDS, SODAX_API_BASE_URL } from "../constants.js";
 import type {
   Chain,
   MoneyMarketAsset,
@@ -65,6 +65,17 @@ export async function getSupportedChains(): Promise<Chain[]> {
     logger.error({ err: error }, "Failed to fetch supported chains");
     throw new Error("Failed to fetch supported chains from SODAX API");
   }
+}
+
+/**
+ * Count of publicly integrated networks, mirroring the frontend's
+ * stats.ts fetchIntegratedNetworksCount(): the length of /config/spoke/chains
+ * with wound-down chains (ICON) filtered out. Reuses getSupportedChains so it
+ * shares the 2-minute cache. The endpoint returns chain-key strings.
+ */
+export async function getIntegratedNetworksCount(): Promise<number> {
+  const chains = (await getSupportedChains()) as unknown as string[];
+  return chains.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_IDS.includes(key)).length;
 }
 
 /**

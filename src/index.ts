@@ -249,7 +249,7 @@ async function runHTTP(): Promise<void> {
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
       description:
-        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 20+ networks",
+        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 19+ networks",
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       tools: {
         config: [

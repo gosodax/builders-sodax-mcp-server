@@ -226,7 +226,7 @@
 
     /* Hero Section */
     .hero {
-      background: var(--cherry-soda);
+      background: var(--cherry-dark);
       padding: 5rem 2rem;
       text-align: center;
       position: relative;
@@ -916,87 +916,136 @@
     /* Footer */
     footer {
       background: var(--almost-white);
-      padding: 5rem 2rem;
+      padding: 7.5rem 2rem;
     }
 
     .footer-container {
       max-width: 944px;
       margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      flex-wrap: wrap;
-      gap: 3rem;
     }
 
-    .footer-brand {
-      max-width: 260px;
+    .footer-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      row-gap: 2.5rem;
     }
 
     .footer-logo {
+      flex-shrink: 0;
       font-family: var(--font-primary);
       font-size: 1.5rem;
       font-weight: 900;
-      color: var(--espresso);
-      margin-bottom: 1rem;
+      color: var(--cherry-grey);
       display: flex;
       align-items: center;
       gap: 0.5rem;
     }
 
-    .footer-logo img {
-      width: 24px;
-      height: 24px;
+    .footer-logo-mark {
+      display: inline-block;
+      width: 30px;
+      height: 32px;
+    }
+
+    .footer-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2.5rem;
+    }
+
+    .footer-column {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .footer-column h4 {
+      font-family: var(--font-primary);
+      font-size: 0.5625rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--clay-light);
+      line-height: 1.2;
+    }
+
+    .footer-link {
+      font-size: 0.75rem;
+      color: #000;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      line-height: 1.4;
+      transition: color 0.2s;
+    }
+
+    .footer-link:hover {
+      color: var(--cherry-bright);
+    }
+
+    .footer-arrow {
+      width: 16px;
+      height: 16px;
+      color: var(--cherry-bright);
+      transition: stroke-width 0.2s;
+    }
+
+    .footer-link:hover .footer-arrow {
+      stroke-width: 3.5;
+    }
+
+    /* Cross-network product pills */
+    .footer-pill {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      height: 1.5rem;
+      padding: 0.125rem 0.75rem 0;
+      border-radius: 9999px;
+      background: var(--cream-white);
+      color: var(--espresso);
+      font-size: 0.75rem;
+      line-height: 1.4;
+      text-decoration: none;
+      border: 2px solid transparent;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .footer-pill:hover {
+      background: var(--cherry-grey);
+    }
+
+    .footer-pill--outline {
+      background: transparent;
+      border-color: var(--cream-white);
+      color: var(--clay);
+    }
+
+    .footer-pill--outline:hover {
+      background: transparent;
+      border-color: var(--cherry-grey);
+    }
+
+    .footer-divider {
+      margin-top: 1.5rem;
+      border-top: 1px solid rgba(185, 172, 171, 0.3);
+    }
+
+    .footer-bottom {
+      margin-top: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
     }
 
     .footer-copyright {
       font-size: 0.75rem;
-      font-weight: 500;
-      color: var(--cherry-bright);
+      color: var(--clay-light);
       line-height: 1.4;
     }
 
-    .footer-links {
-      display: flex;
-      gap: 2.5rem;
-      flex-wrap: wrap;
-    }
-
-    .footer-column h4 {
-      font-family: var(--font-display);
-      font-style: italic;
-      font-size: 1rem;
-      color: var(--cherry-bright);
-      margin-bottom: 0.5rem;
-      line-height: 1.1;
-    }
-
-    .footer-column ul {
-      list-style: none;
-    }
-
-    .footer-column li {
-      margin-bottom: 0.25rem;
-    }
-
-    .footer-column a {
-      font-size: 0.75rem;
-      color: var(--espresso);
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-      transition: color 0.2s;
-    }
-
-    .footer-column a:hover {
-      color: var(--cherry-bright);
-    }
-
-    .footer-column a .external::after {
-      content: '↗';
-      font-size: 0.625rem;
-    }
 
     /* Responsive */
     @media (max-width: 640px) {
@@ -1020,8 +1069,8 @@
         grid-template-columns: 1fr;
       }
 
-      .footer-container {
-        flex-direction: column;
+      footer {
+        padding: 5rem 1.5rem;
       }
     }
   </style>
@@ -1570,37 +1619,39 @@
   <!-- Footer -->
   <footer role="contentinfo">
     <div class="footer-container">
-      <div class="footer-brand">
-        <div class="footer-logo"><img src="/images/symbol.png" alt="SODAX" width="24" height="24"> SODAX</div>
-        <p class="footer-copyright">© 2026 ICON Foundation.<br>All rights reserved.</p>
+      <div class="footer-top">
+        <div class="footer-logo"><svg class="footer-logo-mark" width="30" height="32" viewBox="0 0 29.3333 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SODAX"><path d="M11.8644 11.4094L2.4581 5.80599L0 10.1942L6.98101 14.3461L11.8644 11.4094Z" fill="currentColor"/><path d="M22.3523 14.3461L29.3333 10.1942L26.8752 5.80599L17.4361 11.4094L22.3523 14.3461Z" fill="currentColor"/><path d="M14.6502 9.75527L17.1083 8.3038V0H12.1921V8.3038L14.6502 9.75527Z" fill="currentColor"/><path d="M29.3333 21.8059L17.1084 14.5485L14.6503 13.097L0 21.8059L2.4581 26.194L9.76685 21.8396C9.99628 21.7046 10.2585 21.6033 10.5534 21.6033C11.4711 21.6033 12.1922 22.3459 12.1922 23.2911V32H17.1084V23.2911C17.1084 22.3459 17.8294 21.6033 18.7471 21.6033C19.0421 21.6033 19.3043 21.7046 19.5337 21.8396L26.8752 26.1603L29.3333 21.8059Z" fill="currentColor"/></svg> SODAX</div>
+
+        <nav class="footer-nav" aria-label="Footer">
+          <div class="footer-column">
+            <h4>Cross-network products</h4>
+            <a class="footer-pill" href="https://docs.sodax.com/developers/packages/foundation/sdk/functional-modules/swaps" target="_blank" rel="noopener noreferrer">Intent swaps for apps</a>
+            <a class="footer-pill" href="https://docs.sodax.com/developers/packages/foundation/sdk/functional-modules/money_market" target="_blank" rel="noopener noreferrer">Lend / Borrow for apps</a>
+            <a class="footer-pill" href="https://docs.sodax.com/developers/packages/foundation/sdk/functional-modules/bridge" target="_blank" rel="noopener noreferrer">Bridge service</a>
+          </div>
+
+          <div class="footer-column">
+            <h4>Socials</h4>
+            <a class="footer-link" href="https://x.com/gosodax" target="_blank" rel="noopener noreferrer">X (Twitter)<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+            <a class="footer-link" href="https://www.sodax.com/discord" target="_blank" rel="noopener noreferrer">Discord<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+            <a class="footer-link" href="https://www.linkedin.com/company/gosodax" target="_blank" rel="noopener noreferrer">LinkedIn<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+            <a class="footer-link" href="https://github.com/icon-project" target="_blank" rel="noopener noreferrer">GitHub<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+          </div>
+
+          <div class="footer-column">
+            <h4>Resources</h4>
+            <a class="footer-link" href="/api">API Info</a>
+            <a class="footer-link" href="/health">Health Check</a>
+            <a class="footer-link" href="https://docs.sodax.com" target="_blank" rel="noopener noreferrer">Documentation<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+            <a class="footer-link" href="https://sodaxscan.com/" target="_blank" rel="noopener noreferrer">Transaction scanner<i data-lucide="arrow-up-right" class="footer-arrow"></i></a>
+          </div>
+        </nav>
       </div>
-      
-      <div class="footer-links">
-        <div class="footer-column">
-          <h4>resources</h4>
-          <ul>
-            <li><a href="/api">API Info</a></li>
-            <li><a href="/health">Health Check</a></li>
-            <li><a href="https://docs.sodax.com" class="external">Documentation ↗</a></li>
-          </ul>
-        </div>
-        
-        <div class="footer-column">
-          <h4>socials</h4>
-          <ul>
-            <li><a href="https://discord.gg/sodax" class="external">Discord ↗</a></li>
-            <li><a href="https://twitter.com/sodax" class="external">X (Twitter) ↗</a></li>
-            <li><a href="https://github.com/icon-project" class="external">GitHub ↗</a></li>
-          </ul>
-        </div>
-        
-        <div class="footer-column">
-          <h4>using soda</h4>
-          <ul>
-            <li><a href="https://hanawallet.io" class="external">Hana Wallet ↗</a></li>
-            <li><a href="https://balanced.network" class="external">Balanced DeFi ↗</a></li>
-          </ul>
-        </div>
+
+      <div class="footer-divider"></div>
+
+      <div class="footer-bottom">
+        <p class="footer-copyright">© 2026 SODAX. All rights reserved.</p>
       </div>
     </div>
   </footer>

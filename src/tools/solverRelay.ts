@@ -40,7 +40,9 @@ const RELAY_SUBMIT: ToolAnnotations = {
  * api.sodax.com quote endpoint):
  *  - "not compatible with the quote service" → one address isn't a recognized
  *    hub asset. This fires for spoke-chain (non-chainId-146) or otherwise
- *    unknown addresses; every chainId-146 oracle address passes this check.
+ *    unrecognized addresses; a chainId-146 hub asset passes this check (an
+ *    unroutable one fails later with "No path" instead). Passing the check
+ *    doesn't guarantee a route, so steer callers to the reliable set.
  *  - "No path was found between …" → both tokens are valid chainId-146 hub
  *    assets but the solver couldn't route this pair *for this amount*. Routing
  *    is pair/amount/liquidity-dependent, so a smaller amount or a more liquid
@@ -53,7 +55,7 @@ const RELAY_SUBMIT: ToolAnnotations = {
 export function quoteErrorHint(message: string): string | null {
   const m = message.toLowerCase();
   if (m.includes("not compatible with the quote service")) {
-    return "Hint: one of the addresses isn't a recognized hub asset. tokenSrc/tokenDst must be hub-chain (Sonic, chainId 146) asset addresses — look one up via sodax_get_solver_oracle with chainId='146'. Spoke-chain and other non-146 addresses are rejected here.";
+    return "Hint: one of the addresses isn't a recognized hub asset — spoke-chain and other non-146 addresses are rejected here. Use a hub-chain (Sonic, chainId 146) asset address from sodax_get_solver_oracle; for a reliable next pick prefer a canonical bridged *_ASSET hub token (e.g. BTC_BTC_ASSET, ETH_ASSET) or a major stablecoin like SONIC_USDC_ASSET — chainId 146 alone doesn't guarantee a route.";
   }
   if (m.includes("no path was found")) {
     return "Hint: both tokens are valid hub assets, but the solver couldn't route this pair for this amount. Routing is pair/amount/liquidity-dependent — retry with a smaller amount, or pick a more liquid counterparty (a canonical bridged *_ASSET hub token, or a major stablecoin like SONIC_USDC_ASSET). Many wrapped/derivative entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are oracle-priced but frequently have no route.";
@@ -65,7 +67,7 @@ export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: oracle ──────────────────────────────────────────────────
   server.tool(
     "sodax_get_solver_oracle",
-    "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146': chainId-146 addresses are accepted by the quote service, while spoke-chain (non-146) addresses are rejected with 'not compatible with the quote service'. Caveat: being listed (priced) does NOT guarantee a swap route — canonical bridged *_ASSET hub tokens and major stablecoins route most reliably, while many wrapped/derivative/money-market entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are priced but frequently return 'No path was found', and routability is pair/amount/liquidity-dependent. Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
+    "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146': chainId-146 addresses pass the quote service's compatibility check, while spoke-chain (non-146) addresses are rejected with 'not compatible with the quote service'. Caveat: passing that check (being listed/priced) does NOT guarantee a swap route — canonical bridged *_ASSET hub tokens and major stablecoins route most reliably, while many wrapped/derivative/money-market entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are priced but frequently return 'No path was found', and routability is pair/amount/liquidity-dependent. Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
     {
       chainId: z
         .string()
@@ -113,7 +115,7 @@ export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: quote ───────────────────────────────────────────────────
   server.tool(
     "sodax_get_solver_quote",
-    "Get a swap quote from the SODAX solver. tokenSrc/tokenDst MUST be hub-chain (Sonic, chainId 146) asset addresses — look them up with sodax_get_solver_oracle (chainId='146'). Working example: tokenSrc='0xeb0393893b5bf98a50073d6740738b08e575058b' (BTC_BTC_ASSET) → tokenDst='0xaeafa26e43f46cd83efe89b1e57c858eb5685a24' (ETH_ASSET), amount='99800', quoteType='exact_input' returns a quoted_amount. exact_input quotes the destination amount you'd receive; exact_output quotes the source amount you'd need. There are two distinct HTTP-400 failures, both naming the two addresses: (1) 'not compatible with the quote service' = an address isn't a recognized hub asset (a spoke-chain or otherwise non-chainId-146 address was passed) → use a chainId-146 address from sodax_get_solver_oracle. (2) 'No path was found between X and Y' = both tokens are valid hub assets but the solver couldn't route this pair for this amount → routing is pair/amount/liquidity-dependent, so retry with a smaller amount or a more liquid counterparty (a canonical bridged *_ASSET token, or a major stablecoin like SONIC_USDC_ASSET). Many wrapped/derivative entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are oracle-priced but frequently have no route — prefer canonical bridged *_ASSET hub tokens.",
+    "Get a swap quote from the SODAX solver. tokenSrc/tokenDst MUST be hub-chain (Sonic, chainId 146) asset addresses — look them up with sodax_get_solver_oracle (chainId='146'). Working example: tokenSrc='0xeb0393893b5bf98a50073d6740738b08e575058b' (BTC_BTC_ASSET) → tokenDst='0xaeafa26e43f46cd83efe89b1e57c858eb5685a24' (ETH_ASSET), amount='99800', quoteType='exact_input' returns a quoted_amount. exact_input quotes the destination amount you'd receive; exact_output quotes the source amount you'd need. There are two distinct HTTP-400 failures, both naming the two addresses: (1) 'not compatible with the quote service' = an address isn't a recognized hub asset (a spoke-chain or otherwise non-chainId-146 address was passed) → use a chainId-146 address from sodax_get_solver_oracle, and for a reliable pick prefer a canonical bridged *_ASSET hub token or major stablecoin (chainId 146 alone doesn't guarantee a route). (2) 'No path was found between X and Y' = both tokens are valid hub assets but the solver couldn't route this pair for this amount → routing is pair/amount/liquidity-dependent, so retry with a smaller amount or a more liquid counterparty (a canonical bridged *_ASSET token, or a major stablecoin like SONIC_USDC_ASSET). Many wrapped/derivative entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are oracle-priced but frequently have no route — prefer canonical bridged *_ASSET hub tokens.",
     {
       tokenSrc: z
         .string()

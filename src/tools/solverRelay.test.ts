@@ -17,6 +17,9 @@ describe("quoteErrorHint", () => {
     expect(hint).not.toBeNull();
     expect(hint).toContain("chainId 146");
     expect(hint).toContain("sodax_get_solver_oracle");
+    // Steer to the reliable set — chainId 146 alone doesn't guarantee a route,
+    // so the hint must not regress to overly-broad "any chainId 146" guidance.
+    expect(hint).toContain("*_ASSET");
   });
 
   it("hints that 'no path' is liquidity/amount-dependent and recoverable", () => {

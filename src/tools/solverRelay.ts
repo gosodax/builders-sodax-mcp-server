@@ -37,8 +37,11 @@ const RELAY_SUBMIT: ToolAnnotations = {
  *
  * The solver returns two distinct HTTP-400 failures (both already naming the
  * two addresses), and the right next step differs:
- *  - "not compatible with the quote service" → one address isn't a recognized
- *    hub asset (a spoke-chain or otherwise-wrong address was passed).
+ *  - "not compatible with the quote service" → one address isn't in the
+ *    solver's quotable set. Not every chainId-146 oracle entry is quotable:
+ *    wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*) are
+ *    priced by the oracle but rejected here, as are spoke-chain addresses.
+ *    Only canonical bridged *_ASSET hub tokens and major stablecoins are safe.
  *  - "No path was found between …" → both tokens are valid hub assets but the
  *    solver couldn't route this pair *for this amount*; routing is liquidity-
  *    dependent, so a smaller amount or a more liquid counterparty often works.
@@ -49,10 +52,10 @@ const RELAY_SUBMIT: ToolAnnotations = {
 export function quoteErrorHint(message: string): string | null {
   const m = message.toLowerCase();
   if (m.includes("not compatible with the quote service")) {
-    return "Hint: one of the addresses isn't a recognized hub asset. tokenSrc/tokenDst must be hub-chain (Sonic, chainId 146) addresses — look one up via sodax_get_solver_oracle with chainId='146'. Spoke-chain and other non-hub addresses are rejected here.";
+    return "Hint: one of the addresses isn't in the solver's quotable set. Not every chainId-146 oracle entry is quotable — wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*) are priced by sodax_get_solver_oracle but rejected here, as are spoke-chain addresses. Prefer a canonical bridged *_ASSET hub token (e.g. BTC_BTC_ASSET, ETH_ASSET) or a major stablecoin like SONIC_USDC_ASSET — all chainId 146.";
   }
   if (m.includes("no path was found")) {
-    return "Hint: both tokens are valid hub assets, but the solver couldn't route this pair for this amount. Routing is liquidity-dependent — retry with a smaller amount, or pick a more liquid counterparty (a canonical bridged *_ASSET hub token, or a major stablecoin like SONIC_USDC_ASSET). Wrapped/derivative entries (e.g. WBTC, waLoc*, soda*) are oracle-priced but frequently have no route.";
+    return "Hint: both tokens are quotable hub assets, but the solver couldn't route this pair for this amount. Routing is liquidity-dependent — retry with a smaller amount, or pick a more liquid counterparty (a canonical bridged *_ASSET hub token, or a major stablecoin like SONIC_USDC_ASSET).";
   }
   return null;
 }
@@ -61,7 +64,7 @@ export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: oracle ──────────────────────────────────────────────────
   server.tool(
     "sodax_get_solver_oracle",
-    "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146': every chainId-146 address listed here is accepted by the quote service (spoke-chain addresses are not). Caveat: being listed (priced) does NOT guarantee a swap route — canonical bridged *_ASSET hub tokens and major stablecoins route most reliably, while wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*, lsoda*, xSODA) are priced but frequently have no route, and routability is also liquidity/amount-dependent. Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
+    "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146' — but note that NOT every chainId-146 entry is quotable: only canonical bridged *_ASSET hub tokens and major stablecoins are accepted by the quote service. Wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*, lsoda*, xSODA) are priced here but rejected with 'not compatible with the quote service' (as are spoke-chain addresses). Even among quotable tokens, a specific pair/amount can still return 'No path was found' (routing is liquidity/amount-dependent). Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
     {
       chainId: z
         .string()
@@ -109,12 +112,12 @@ export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: quote ───────────────────────────────────────────────────
   server.tool(
     "sodax_get_solver_quote",
-    "Get a swap quote from the SODAX solver. tokenSrc/tokenDst MUST be hub-chain (Sonic, chainId 146) asset addresses — look them up with sodax_get_solver_oracle (chainId='146'). Working example: tokenSrc='0xeb0393893b5bf98a50073d6740738b08e575058b' (BTC_BTC_ASSET) → tokenDst='0xaeafa26e43f46cd83efe89b1e57c858eb5685a24' (ETH_ASSET), amount='99800', quoteType='exact_input' returns a quoted_amount. exact_input quotes the destination amount you'd receive; exact_output quotes the source amount you'd need. There are two distinct HTTP-400 failures, both naming the two addresses: (1) 'not compatible with the quote service' = an address isn't a recognized hub asset (a spoke-chain or wrong address was passed) → use a chainId-146 address from sodax_get_solver_oracle; (2) 'No path was found between X and Y' = both tokens are valid hub assets but the solver couldn't route this pair for this amount → routing is liquidity-dependent, so retry with a smaller amount or a more liquid counterparty (a canonical bridged *_ASSET token, or a major stablecoin like SONIC_USDC_ASSET). Wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*) are oracle-priced but frequently have no route — prefer canonical bridged *_ASSET hub tokens.",
+    "Get a swap quote from the SODAX solver. tokenSrc/tokenDst MUST be hub-chain (Sonic, chainId 146) asset addresses — look them up with sodax_get_solver_oracle (chainId='146'). Working example: tokenSrc='0xeb0393893b5bf98a50073d6740738b08e575058b' (BTC_BTC_ASSET) → tokenDst='0xaeafa26e43f46cd83efe89b1e57c858eb5685a24' (ETH_ASSET), amount='99800', quoteType='exact_input' returns a quoted_amount. exact_input quotes the destination amount you'd receive; exact_output quotes the source amount you'd need. There are two distinct HTTP-400 failures, both naming the two addresses: (1) 'not compatible with the quote service' = an address isn't in the solver's quotable set. Not every chainId-146 oracle entry is quotable — wrapped/derivative/money-market entries (e.g. WBTC, waLoc*, soda*) are priced by sodax_get_solver_oracle but rejected here, as are spoke-chain addresses → use a canonical bridged *_ASSET hub token (e.g. BTC_BTC_ASSET, ETH_ASSET) or a major stablecoin like SONIC_USDC_ASSET. (2) 'No path was found between X and Y' = both tokens are quotable hub assets but the solver couldn't route this pair for this amount → routing is liquidity-dependent, so retry with a smaller amount or a more liquid counterparty.",
     {
       tokenSrc: z
         .string()
         .describe(
-          "REQUIRED: Source token address (the token you're spending). Hub-chain (Sonic, chainId 146) asset address from sodax_get_solver_oracle. Prefer canonical bridged *_ASSET tokens (e.g. BTC_BTC_ASSET 0xeb0393893b5bf98a50073d6740738b08e575058b); wrapped/derivative entries like WBTC are priced but often have no route.",
+          "REQUIRED: Source token address (the token you're spending). Hub-chain (Sonic, chainId 146) asset address from sodax_get_solver_oracle. Prefer canonical bridged *_ASSET tokens (e.g. BTC_BTC_ASSET 0xeb0393893b5bf98a50073d6740738b08e575058b); wrapped/derivative entries like WBTC are priced but rejected as 'not compatible'.",
         ),
       tokenDst: z
         .string()

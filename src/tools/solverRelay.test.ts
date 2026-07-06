@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { quoteErrorHint } from "./solverRelay.js";
 
 describe("quoteErrorHint", () => {
-  it("steers a not-compatible token toward canonical bridged *_ASSET hub tokens", () => {
+  it("hints to use a chainId-146 hub address when a token is not compatible", () => {
     // Real upstream shape: `{ detail: { message: "One of the following tokens
     // is not compatible with the quote service: 0x…, 0x…" } }`, surfaced by the
-    // http/service layers as part of the thrown Error message.
+    // http/service layers as part of the thrown Error message. Verified against
+    // the live API: this error fires only for spoke-chain / non-chainId-146
+    // addresses — every chainId-146 oracle address passes the compatibility check.
     const message =
       "Failed to fetch solver quote: HTTP 400 for https://api.sodax.com/v1/intent/quote - " +
       "One of the following tokens is not compatible with the quote service: 0xabc, 0xdef";
@@ -15,10 +17,6 @@ describe("quoteErrorHint", () => {
     expect(hint).not.toBeNull();
     expect(hint).toContain("chainId 146");
     expect(hint).toContain("sodax_get_solver_oracle");
-    // Must recommend canonical bridged *_ASSET tokens, not just "any chainId 146"
-    // (per issue #64: ~half of chainId-146 oracle entries are non-quotable).
-    expect(hint).toContain("*_ASSET");
-    expect(hint).toContain("Not every chainId-146 oracle entry is quotable");
   });
 
   it("hints that 'no path' is liquidity/amount-dependent and recoverable", () => {

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.4.0...builders-sodax-mcp-server-v1.5.0) (2026-07-06)
+
+
+### Features
+
+* clarify solver quote token guidance and add error hints ([#65](https://github.com/gosodax/builders-sodax-mcp-server/issues/65)) ([7914d32](https://github.com/gosodax/builders-sodax-mcp-server/commit/7914d3234dca161cba2a0eae2aa85ebc15370371))
+
+
+### Miscellaneous
+
+* promote development to master ([f53f3ec](https://github.com/gosodax/builders-sodax-mcp-server/commit/f53f3ec55f1342163e97de49570d89b30eb13ee4))
+
 ## [1.4.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.3.2...builders-sodax-mcp-server-v1.4.0) (2026-06-15)
 
 

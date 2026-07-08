@@ -17,12 +17,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { STATIC_TOOL_COUNTS, hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
+import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
+import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
+import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
@@ -111,6 +113,11 @@ async function runHTTP(): Promise<void> {
   logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
 
+  // Build one throwaway server instance at startup: registering the tools
+  // populates the tool registry that /health, /api, and the landing page
+  // derive their counts from (per-request instances are only created lazily).
+  await createServer();
+
   const app = express();
 
   // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
@@ -152,16 +159,49 @@ async function runHTTP(): Promise<void> {
   });
 
   app.use(express.json({ limit: "100kb" }));
+
+  // Landing page: the HTML template is read once at startup and served with
+  // live counts injected server-side (see services/landingPage.ts). These
+  // routes must be registered BEFORE express.static, which would otherwise
+  // serve the raw template with un-substituted {{PLACEHOLDER}} tokens.
+  let landingTemplate: string | null = null;
+  try {
+    landingTemplate = readFileSync(join(__dirname, "public", "index.html"), "utf-8");
+  } catch (error) {
+    logger.warn({ err: error }, "Landing page template missing — / will redirect to /api");
+  }
+
+  const serveLandingPage = async (_req: Request, res: Response): Promise<void> => {
+    if (!landingTemplate) {
+      res.redirect("/api");
+      return;
+    }
+    // Best-effort live network count (2-min cache in the service layer); the
+    // page falls back to its evergreen floor when the backend is unavailable.
+    let networks: number | null = null;
+    try {
+      networks = await getIntegratedNetworksCount();
+    } catch (error) {
+      logger.warn({ err: error }, "Failed to fetch integrated networks count for landing page");
+    }
+    const sdkDocsToolCount = (await getGitBookToolNames()).length;
+    res.type("html").send(renderLandingPage(landingTemplate, { networks, sdkDocsToolCount }));
+  };
+
+  app.get("/", serveLandingPage);
+  app.get("/index.html", serveLandingPage);
+
   app.use(express.static(join(__dirname, "public")));
 
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    // Per-group breakdown derived from analytics' TOOL_GROUPS (single source
-    // of truth). `api` covers backend + solver tools; `relay` covers the
+    // Per-group breakdown derived from the tool registry (single source of
+    // truth). `api` covers backend + solver tools; `relay` covers the
     // intent-relay tools; `sdkDocs` is the dynamic GitBook proxy.
-    const apiToolCount = STATIC_TOOL_COUNTS.api ?? 0;
-    const relayToolCount = STATIC_TOOL_COUNTS.relay ?? 0;
+    const staticToolCounts = getStaticToolCounts();
+    const apiToolCount = staticToolCounts.api;
+    const relayToolCount = staticToolCounts.relay;
     const sdkDocsToolCount = gitbookToolNames.length;
     const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
     // Live integrated-networks count (ICON filtered out), mirroring the
@@ -232,65 +272,27 @@ async function runHTTP(): Promise<void> {
     await session.transport.handlePostMessage(req, res, req.body);
   });
 
-  app.get("/", (_req: Request, res: Response) => {
-    try {
-      const html = readFileSync(join(__dirname, "public", "index.html"), "utf-8");
-      res.type("html").send(html);
-    } catch {
-      res.redirect("/api");
-    }
-  });
-
   app.get("/api", async (_req: Request, res: Response) => {
     // Get dynamic list of GitBook tools
     const gitbookTools = await getGitBookToolNames();
 
+    // Best-effort live network count for the description; evergreen fallback.
+    let networks: number | null = null;
+    try {
+      networks = await getIntegratedNetworksCount();
+    } catch (error) {
+      logger.warn({ err: error }, "Failed to fetch integrated networks count for /api");
+    }
+
     res.json({
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
-      description:
-        "Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for 19+ networks",
+      description: `Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
+      // Tool lists derived from the tool registry (single source of truth);
+      // sdkDocs reflects the live GitBook proxy list.
       tools: {
-        config: [
-          "sodax_get_supported_chains",
-          "sodax_get_swap_tokens",
-          "sodax_get_all_config",
-          "sodax_get_relay_chain_id_map",
-          "sodax_get_all_chains_configs",
-          "sodax_get_hub_assets",
-          "sodax_get_money_market_tokens",
-          "sodax_get_money_market_reserve_assets",
-        ],
-        intents: [
-          "sodax_get_transaction",
-          "sodax_get_intent",
-          "sodax_get_user_transactions",
-          "sodax_get_volume",
-          "sodax_get_volume_stats",
-          "sodax_get_orderbook",
-          "sodax_get_solver_intent",
-          "sodax_get_solver_oracle",
-          "sodax_get_solver_quote",
-        ],
-        relay: ["sodax_relay_submit_tx", "sodax_relay_get_transaction_packets", "sodax_relay_get_packet"],
-        amm: ["sodax_get_amm_positions", "sodax_get_amm_pool_candles"],
-        moneyMarket: [
-          "sodax_get_money_market_assets",
-          "sodax_get_money_market_asset",
-          "sodax_get_user_position",
-          "sodax_get_asset_borrowers",
-          "sodax_get_asset_suppliers",
-          "sodax_get_all_borrowers",
-        ],
-        partnersAndToken: [
-          "sodax_get_partners",
-          "sodax_get_partner_summary",
-          "sodax_get_token_supply",
-          "sodax_get_total_supply",
-          "sodax_get_circulating_supply",
-          "sodax_refresh_cache",
-        ],
+        ...getToolNamesByModule(),
         sdkDocs: gitbookTools,
       },
       sdkDocsProxy: {

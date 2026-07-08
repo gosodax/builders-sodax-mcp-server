@@ -16,6 +16,7 @@ import {
   fetchGitBookTools,
 } from "../services/gitbookProxy.js";
 import { logger } from "../services/logger.js";
+import { registerAppTool } from "../services/toolRegistry.js";
 
 const DOCS_READ_ONLY: ToolAnnotations = {
   readOnlyHint: true,
@@ -151,7 +152,9 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
  */
 function registerGitBookMetaTools(server: McpServer): void {
   // Tool to check GitBook MCP health
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_health",
     "Check SDK documentation availability. Call this first if docs tools seem unavailable.",
     {},
@@ -187,7 +190,9 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 
   // Tool to refresh GitBook tools
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_refresh",
     "Reconnect to SDK documentation and refresh available tools. Use if docs seem stale or unavailable.",
     {},
@@ -220,7 +225,9 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 
   // Tool to list available docs tools with full details
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_list_tools",
     "List all SDK documentation tools with parameters. Essential for discovering what's available.",
     {},

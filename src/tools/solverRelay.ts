@@ -13,6 +13,7 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getRelayPacket, getRelayTransactionPackets, submitRelayTx } from "../services/relay.js";
 import { getSolverOracle, getSolverQuote } from "../services/solver.js";
+import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
 
@@ -34,7 +35,9 @@ const RELAY_SUBMIT: ToolAnnotations = {
 
 export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: oracle ──────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_solver_oracle",
     "Get the solver's oracle prices for every (chain, token) pair it can quote. Useful for sanity-checking quote amounts against USD prices the solver is using.",
     {
@@ -82,7 +85,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Solver: quote ───────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_solver_quote",
     "Get a swap quote from the SODAX solver. IMPORTANT: tokenSrc/tokenDst must be hub-chain asset addresses — the SODAX hub is Sonic (chainId 146); spoke-chain token addresses are rejected with 'not compatible with the quote service'. Call sodax_get_solver_oracle with chainId='146' to look up valid token addresses. quote_type='exact_input' quotes the destination amount you'd receive; 'exact_output' quotes the source amount you'd need to supply. Returns 'No path found' if the solver can't route between the tokens.",
     {
@@ -142,7 +147,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: submit ───────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_submit_tx",
     "Submit a confirmed spoke-chain transaction to the SODAX intent relay so it can be delivered to the destination chain. The tx must already be finalized on the source chain. Re-submitting the same tx is a no-op. For split-tx chains (Solana, Bitcoin) supply the optional `data` argument.",
     {
@@ -191,7 +198,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: get transaction packets ──────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_get_transaction_packets",
     "List every cross-chain packet emitted by a given source transaction. Use this to track relay status — a packet is complete when status='executed' and dst_tx_hash is populated.",
     {
@@ -244,7 +253,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: get packet ───────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_get_packet",
     "Fetch a single relay packet by its connection serial number (conn_sn). Returns the packet data on success or a `{success:false, message}` shape if the packet isn't found.",
     {

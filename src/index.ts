@@ -176,8 +176,7 @@ async function runHTTP(): Promise<void> {
       res.redirect("/api");
       return;
     }
-    // Best-effort live network count (2-min cache in the service layer); the
-    // page falls back to its evergreen floor when the backend is unavailable.
+    // Best-effort; renderLandingPage falls back to the evergreen floor on null.
     let networks: number | null = null;
     try {
       networks = await getIntegratedNetworksCount();
@@ -196,17 +195,17 @@ async function runHTTP(): Promise<void> {
   app.get("/health", async (_req: Request, res: Response) => {
     const gitbookHealth = await checkGitBookHealth();
     const gitbookToolNames = await getGitBookToolNames();
-    // Per-group breakdown derived from the tool registry (single source of
-    // truth). `api` covers backend + solver tools; `relay` covers the
-    // intent-relay tools; `sdkDocs` is the dynamic GitBook proxy.
+    // Per-group breakdown derived from the tool registry. `api` covers backend
+    // + solver tools; `relay` the intent-relay tools; `sdkDocs` the dynamic
+    // GitBook proxy.
     const staticToolCounts = getStaticToolCounts();
     const apiToolCount = staticToolCounts.api;
     const relayToolCount = staticToolCounts.relay;
     const sdkDocsToolCount = gitbookToolNames.length;
     const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
     // Live integrated-networks count (ICON filtered out), mirroring the
-    // frontend. Best-effort: a backend hiccup must not fail the health check —
-    // the landing page falls back to its static number when this is null.
+    // frontend. Best-effort: a backend hiccup must not fail the health check,
+    // so this stays null and callers fall back to the evergreen floor.
     let networks: number | null = null;
     try {
       networks = await getIntegratedNetworksCount();
@@ -289,8 +288,8 @@ async function runHTTP(): Promise<void> {
       version: SERVER_VERSION,
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
-      // Tool lists derived from the tool registry (single source of truth);
-      // sdkDocs reflects the live GitBook proxy list.
+      // Tool lists derived from the tool registry; sdkDocs reflects the live
+      // GitBook proxy list.
       tools: {
         ...getToolNamesByModule(),
         sdkDocs: gitbookTools,

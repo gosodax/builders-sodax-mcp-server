@@ -7,7 +7,6 @@
 
 import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_IDS, SODAX_API_BASE_URL } from "../constants.js";
 import type {
-  Chain,
   MoneyMarketAsset,
   OrderbookEntry,
   Partner,
@@ -48,17 +47,21 @@ function apiUrl(path: string): string {
 }
 
 /**
- * Get all supported blockchain networks
+ * Get all supported blockchain networks.
+ *
+ * The `/config/spoke/chains` endpoint returns an array of chain-key strings
+ * (e.g. "0x2105.base", "sonic", "0x1.icon"), NOT chain objects — the return
+ * type reflects that so callers can filter on the keys directly.
  */
-export async function getSupportedChains(): Promise<Chain[]> {
+export async function getSupportedChains(): Promise<string[]> {
   const cacheKey = "chains";
-  const cached = getCached<Chain[]>(cacheKey);
+  const cached = getCached<string[]>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
-    // API returns array directly
-    const chains = Array.isArray(data) ? (data as Chain[]) : (data as { data?: Chain[] })?.data || [];
+    // API returns the array of chain keys directly.
+    const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
     setCache(cacheKey, chains);
     return chains;
   } catch (error) {
@@ -71,10 +74,10 @@ export async function getSupportedChains(): Promise<Chain[]> {
  * Count of publicly integrated networks, mirroring the frontend's
  * stats.ts fetchIntegratedNetworksCount(): the length of /config/spoke/chains
  * with wound-down chains (ICON) filtered out. Reuses getSupportedChains so it
- * shares the 2-minute cache. The endpoint returns chain-key strings.
+ * shares the 2-minute cache.
  */
 export async function getIntegratedNetworksCount(): Promise<number> {
-  const chains = (await getSupportedChains()) as unknown as string[];
+  const chains = await getSupportedChains();
   return chains.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_IDS.includes(key)).length;
 }
 

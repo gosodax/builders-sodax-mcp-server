@@ -22,9 +22,10 @@ export interface LandingPageData {
 /** Evergreen floor used when the live network count is unavailable. */
 const NETWORK_COUNT_FALLBACK = "19+";
 
-/** "24+" when the live count is available, the evergreen floor otherwise. */
+/** "19+"-style string from the live count, or the evergreen floor when it's
+ * unavailable (null) or zero — a "0+" surface would be worse than the floor. */
 export function formatNetworkCount(networks: number | null): string {
-  return networks !== null ? `${networks}+` : NETWORK_COUNT_FALLBACK;
+  return networks !== null && networks > 0 ? `${networks}+` : NETWORK_COUNT_FALLBACK;
 }
 
 /** Substitute every {{PLACEHOLDER}} in the landing-page template. */

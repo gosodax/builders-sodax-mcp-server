@@ -55,9 +55,9 @@ export function registerAppTool<Args extends ZodRawShapeCompat>(
   server.tool(name, description, paramsSchema, annotations, cb);
 }
 
-/** Snapshot of every statically registered tool. */
+/** Snapshot of every statically registered tool (copy — safe to iterate/sort). */
 export function getRegisteredTools(): readonly RegisteredToolInfo[] {
-  return registry;
+  return [...registry];
 }
 
 /** Registry lookup for analytics grouping; undefined for dynamic docs_* proxies. */
@@ -99,10 +99,9 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
 }
 
 /**
- * Static per-group counts for `/health`, same shape as the old
- * `STATIC_TOOL_COUNTS`: `api` spans the SODAX API modules, `relay` the
- * intent-relay tools. docs_* meta-tools are excluded — the sdkDocs total
- * is counted at runtime from the live GitBook tool list.
+ * Static per-group counts for `/health`: `api` spans the SODAX API modules,
+ * `relay` the intent-relay tools. docs_* meta-tools are excluded — the sdkDocs
+ * total is counted at runtime from the live GitBook tool list.
  */
 export function getStaticToolCounts(): { api: number; relay: number } {
   let api = 0;

@@ -20,9 +20,9 @@ const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 
 /**
- * Resolve tool group for PostHog filtering — derived from the tool registry
- * (single source of truth), with a prefix-based fallback for dynamically
- * registered GitBook proxy tools (docs_*) which are not in the registry.
+ * Resolve tool group for PostHog filtering — derived from the tool registry,
+ * with a prefix-based fallback for dynamically registered GitBook proxy tools
+ * (docs_*) which are not in the registry.
  */
 function resolveToolGroup(toolName: string): string {
   const module = getToolModule(toolName);

@@ -58,6 +58,24 @@ async function createServer(clientId?: string): Promise<McpServer> {
   return server;
 }
 
+/**
+ * Seed the module-level tool registry that `/health`, `/api`, and the landing
+ * page read their counts from, without touching GitBook. Only the static SODAX
+ * + relay tools feed those counts — `getStaticToolCounts()` and
+ * `getToolNamesByModule()` skip the `sdkDocs` module, whose live total comes
+ * from `getGitBookToolNames()`. Skipping `registerGitBookProxyTools()` here
+ * avoids a blocking GitBook fetch (up to 30s) that would otherwise delay HTTP
+ * boot when GitBook is unavailable and `warmGitBookCache()` left the cache empty.
+ */
+function seedToolRegistry(): void {
+  const server = new McpServer({
+    name: "builders-sodax-mcp-server",
+    version: SERVER_VERSION,
+  });
+  registerSodaxApiTools(server);
+  registerSolverRelayTools(server);
+}
+
 // GitBook proxy state
 let gitbookToolsRegistered = false;
 let gitbookInitAttempts = 0;
@@ -113,10 +131,11 @@ async function runHTTP(): Promise<void> {
   logger.info("Initializing GitBook SDK docs proxy...");
   await warmGitBookCache();
 
-  // Build one throwaway server instance at startup: registering the tools
-  // populates the tool registry that /health, /api, and the landing page
-  // derive their counts from (per-request instances are only created lazily).
-  await createServer();
+  // Seed the tool registry that /health, /api, and the landing page derive
+  // their counts from (per-request server instances are only created lazily).
+  // Static SODAX + relay tools are all those counts need, so this skips the
+  // GitBook proxy registration and never blocks HTTP boot on a GitBook fetch.
+  seedToolRegistry();
 
   const app = express();
 

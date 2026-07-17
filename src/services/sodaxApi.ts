@@ -5,7 +5,7 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_IDS, SODAX_API_BASE_URL } from "../constants.js";
+import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_KEYS, SODAX_API_BASE_URL } from "../constants.js";
 import type {
   MoneyMarketAsset,
   OrderbookEntry,
@@ -78,7 +78,7 @@ export async function getSupportedChains(): Promise<string[]> {
  */
 export async function getIntegratedNetworksCount(): Promise<number> {
   const chains = await getSupportedChains();
-  return chains.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_IDS.includes(key)).length;
+  return chains.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key)).length;
 }
 
 /**

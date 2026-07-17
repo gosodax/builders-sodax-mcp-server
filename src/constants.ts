@@ -14,10 +14,11 @@ export const SODAX_RELAY_BASE_URL = "https://xcall-relay.nw.iconblockchain.xyz";
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;
 
-// Spoke chains excluded from the public "integrated networks" count.
-// ICON (0x1.icon) is being wound down, so it's filtered out — this mirrors
-// the frontend's stats.ts fetchIntegratedNetworksCount() source of truth.
-export const NETWORK_COUNT_EXCLUDED_CHAIN_IDS: readonly string[] = ["0x1.icon"];
+// Spoke chain keys excluded from the public "integrated networks" count.
+// Values are chain-key strings as returned by /config/spoke/chains (not numeric
+// chain IDs). ICON (0x1.icon) is being wound down, so it's filtered out — this
+// mirrors the frontend's stats.ts fetchIntegratedNetworksCount() source of truth.
+export const NETWORK_COUNT_EXCLUDED_CHAIN_KEYS: readonly string[] = ["0x1.icon"];
 
 // SODAX Brand Colors (for reference)
 export const BRAND_COLORS = {

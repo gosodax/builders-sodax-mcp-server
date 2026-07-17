@@ -41,6 +41,7 @@ import {
   getVolumeStats,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
 
@@ -56,7 +57,9 @@ const READ_ONLY: ToolAnnotations = {
 
 export function registerSodaxApiTools(server: McpServer): void {
   // Tool 1: Get Supported Chains
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_supported_chains",
     "List all blockchain networks supported by SODAX for cross-chain swaps and DeFi operations",
     {
@@ -88,7 +91,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 2: Get Swap Tokens
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_swap_tokens",
     "Get available tokens for swapping on SODAX, optionally filtered by chain",
     {
@@ -129,7 +134,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 3: Get Transaction
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_transaction",
     "Look up a specific transaction by its hash to see status, amounts, and details",
     {
@@ -167,7 +174,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 4: Get User Transactions
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_user_transactions",
     "Get intent/transaction history for a specific wallet address",
     {
@@ -212,7 +221,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 5: Get Volume (Filled Intents)
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_volume",
     "Get solver volume data showing filled intents with filtering and pagination. Requires inputToken and outputToken. Optional filters: chain, solver, block range OR time range (don't mix both).",
     {
@@ -306,7 +317,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 5b: Get Volume Stats (aggregate filled-intent count)
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_volume_stats",
     "Get aggregate solver volume stats: the approximate total number of filled-intent records (fill documents, not distinct intents). Cached ~60s upstream.",
     {
@@ -338,7 +351,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 6: Get Orderbook
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_orderbook",
     "Get current orderbook entries showing pending/open intents",
     {
@@ -380,7 +395,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 7: Get Money Market Assets
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_money_market_assets",
     "List all assets available for lending and borrowing in the SODAX money market",
     {
@@ -414,7 +431,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 8: Get User Position
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_user_position",
     "Get a user's lending and borrowing position in the money market",
     {
@@ -452,7 +471,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 9: Get Partners
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_get_partners",
     "List all SODAX integration partners including wallets, DEXs, and other protocols",
     {
@@ -485,7 +506,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 10: Get Token Supply
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_get_token_supply",
     "Get SODA token supply information including total, circulating, and burned amounts",
     {
@@ -517,7 +540,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 11: Get All Config
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_all_config",
     "Get full SODAX configuration including all supported chains, swap tokens, and protocol settings in one call",
     {
@@ -549,7 +574,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 12: Get Relay Chain ID Map
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_relay_chain_id_map",
     "Get mapping between chain IDs and intent relay chain IDs used by the SODAX relay network",
     {
@@ -581,7 +608,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 13: Get All Spoke Chain Configs
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_all_chains_configs",
     "Get detailed configuration for all spoke chains including contract addresses, RPCs, and token configs",
     {
@@ -613,7 +642,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 14: Get Hub Assets
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_hub_assets",
     "Get assets representing spoke tokens on the hub (Sonic) chain, optionally filtered by source chain",
     {
@@ -652,7 +683,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 15: Get Money Market Tokens
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_money_market_tokens",
     "Get tokens supported for money market lending/borrowing, optionally filtered by chain",
     {
@@ -686,7 +719,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 16: Get Money Market Reserve Assets
-  server.tool(
+  registerAppTool(
+    server,
+    "config",
     "sodax_get_money_market_reserve_assets",
     "Get money market reserve assets used as collateral backing",
     {
@@ -718,7 +753,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 17: Get AMM NFT Positions
-  server.tool(
+  registerAppTool(
+    server,
+    "amm",
     "sodax_get_amm_positions",
     "Get AMM liquidity provider NFT positions, optionally filtered by owner address",
     {
@@ -756,7 +793,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 18: Get AMM Pool Candles
-  server.tool(
+  registerAppTool(
+    server,
+    "amm",
     "sodax_get_amm_pool_candles",
     "Get OHLCV candlestick chart data for an AMM pool",
     {
@@ -793,7 +832,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 19: Get Intent by Hash
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_intent",
     "Look up a specific intent by its intent hash (different from transaction hash)",
     {
@@ -831,7 +872,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 20: Get Solver Intent Details
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_solver_intent",
     "Get solver-side details for an intent including fill history. Use includeAll to see all solver documents.",
     {
@@ -874,7 +917,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 21: Get Single Money Market Asset
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_money_market_asset",
     "Get detailed information for a specific money market asset by its reserve address",
     {
@@ -912,7 +957,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 22: Get Money Market Asset Borrowers
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_asset_borrowers",
     "Get borrowers for a specific money market asset by its reserve address",
     {
@@ -953,7 +1000,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 23: Get Money Market Asset Suppliers
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_asset_suppliers",
     "Get suppliers (lenders) for a specific money market asset by its reserve address",
     {
@@ -994,7 +1043,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 24: Get All Money Market Borrowers
-  server.tool(
+  registerAppTool(
+    server,
+    "moneyMarket",
     "sodax_get_all_borrowers",
     "Get all borrowers across all money market assets with pagination",
     {
@@ -1034,7 +1085,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 25: Get Partner Summary
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_get_partner_summary",
     "Get volume and activity summary for a specific integration partner by their receiver address",
     {
@@ -1073,7 +1126,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 26: Get Total Supply
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_get_total_supply",
     "Get SODA token total supply as a plain number",
     {
@@ -1105,7 +1160,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Tool 27: Get Circulating Supply
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_get_circulating_supply",
     "Get SODA token circulating supply as a plain number",
     {
@@ -1137,7 +1194,9 @@ export function registerSodaxApiTools(server: McpServer): void {
   );
 
   // Bonus Tool: Refresh Cache
-  server.tool(
+  registerAppTool(
+    server,
+    "partnersAndToken",
     "sodax_refresh_cache",
     "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache.",
     {},

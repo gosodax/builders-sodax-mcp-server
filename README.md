@@ -9,9 +9,9 @@
   <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_Builders_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
 </p>
 
-SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 17+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
+SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 19+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
 
-**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 17+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.
+**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 19+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.
 
 ## Quick Start
 
@@ -58,7 +58,7 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 | `sodax_get_money_market_tokens` | Money market supported tokens by chain |
 | `sodax_get_money_market_reserve_assets` | Money market reserve assets |
 
-### Intents & Solver (8 tools)
+### Intents & Solver (9 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -66,6 +66,7 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 | `sodax_get_intent` | Look up a specific intent by its intent hash |
 | `sodax_get_user_transactions` | Get intent/transaction history for a specific wallet address |
 | `sodax_get_volume` | Get solver volume data (filled intents) with filtering and pagination |
+| `sodax_get_volume_stats` | Get aggregated solver volume statistics |
 | `sodax_get_orderbook` | Get current cross-chain orderbook entries from solver |
 | `sodax_get_solver_intent` | Get solver-side intent details and fill history |
 | `sodax_get_solver_oracle` | Get the solver's oracle prices for every supported (chain, token) pair |
@@ -115,6 +116,7 @@ Tools prefixed with `docs_` are automatically proxied from the GitBook MCP at do
 | Tool | Description |
 |------|-------------|
 | `docs_searchDocumentation` | Search cross-chain SDK docs, integration guides, and code examples |
+| `docs_getPage` | Fetch a full documentation page |
 | `docs_list_tools` | List all available documentation tools |
 | `docs_health` | Check GitBook MCP connection status |
 | `docs_refresh` | Refresh the tools list from GitBook |

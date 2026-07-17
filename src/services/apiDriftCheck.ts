@@ -65,7 +65,7 @@ const IGNORED_PATHS: Record<EndpointKey, string> = {
  * and the spec as of first-write (responseFields). When upstream drifts,
  * the check flags the diff so a human updates either the tool or this map.
  */
-const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
+export const TOOL_CONTRACT: Record<EndpointKey, ToolContract> = {
   "GET /config/all": {
     tool: "sodax_get_all_config",
     params: [],

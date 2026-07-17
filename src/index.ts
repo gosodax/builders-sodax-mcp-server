@@ -208,7 +208,11 @@ async function runHTTP(): Promise<void> {
     // so this stays null and callers fall back to the evergreen floor.
     let networks: number | null = null;
     try {
-      networks = await getIntegratedNetworksCount();
+      const count = await getIntegratedNetworksCount();
+      // Normalize a non-positive count to null so clients keep the evergreen
+      // floor instead of surfacing a "0+" (which is worse than the fallback),
+      // mirroring formatNetworkCount's null|0 handling.
+      networks = count > 0 ? count : null;
     } catch (error) {
       logger.warn({ err: error }, "Failed to fetch integrated networks count for /health");
     }

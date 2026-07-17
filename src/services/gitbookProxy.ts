@@ -200,6 +200,16 @@ export async function checkGitBookHealth(): Promise<{ healthy: boolean; toolCoun
 }
 
 /**
+ * Snapshot of the currently cached GitBook tools WITHOUT triggering a network
+ * fetch. Returns whatever is cached (even if expired), or null if nothing has
+ * been cached yet. Callers that only need a display count use this so a cold or
+ * expired cache never makes them block on a 30s GitBook request.
+ */
+export function getCachedGitBookTools(): GitBookTool[] | null {
+  return cachedTools;
+}
+
+/**
  * Clear the tools cache to force a refresh
  */
 export function clearGitBookCache(): void {

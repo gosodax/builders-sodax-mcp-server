@@ -25,7 +25,7 @@ import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js
 import { logger } from "./services/logger.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
-import { getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
+import { getCachedGitBookToolNames, getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
@@ -202,7 +202,10 @@ async function runHTTP(): Promise<void> {
     } catch (error) {
       logger.warn({ err: error }, "Failed to fetch integrated networks count for landing page");
     }
-    const sdkDocsToolCount = (await getGitBookToolNames()).length;
+    // Non-blocking: derive the docs count from the warmed cache so a cold or
+    // expired GitBook cache can't stall the landing page on a 30s fetch — it
+    // renders with the cached (or meta-only) count instead.
+    const sdkDocsToolCount = getCachedGitBookToolNames().length;
     res.type("html").send(renderLandingPage(landingTemplate, { networks, sdkDocsToolCount }));
   };
 

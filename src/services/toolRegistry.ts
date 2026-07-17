@@ -55,9 +55,10 @@ export function registerAppTool<Args extends ZodRawShapeCompat>(
   server.tool(name, description, paramsSchema, annotations, cb);
 }
 
-/** Snapshot of every statically registered tool (copy — safe to iterate/sort). */
+/** Snapshot of every statically registered tool — entries are cloned, so
+ * callers can't mutate the singleton registry (safe to iterate/sort). */
 export function getRegisteredTools(): readonly RegisteredToolInfo[] {
-  return [...registry];
+  return registry.map(t => ({ ...t }));
 }
 
 /** Registry lookup for analytics grouping; undefined for dynamic docs_* proxies. */

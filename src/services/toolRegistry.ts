@@ -21,9 +21,6 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 /** Landing-page / `/api` module a tool belongs to. */
 export type ToolModule = "config" | "intents" | "relay" | "amm" | "moneyMarket" | "partnersAndToken" | "sdkDocs";
 
-/** Modules whose tools count toward the "api" analytics group / static total. */
-const API_MODULES: ToolModule[] = ["config", "intents", "amm", "moneyMarket", "partnersAndToken"];
-
 export interface RegisteredToolInfo {
   name: string;
   module: ToolModule;
@@ -86,30 +83,40 @@ export function getToolNamesByModule(): Record<Exclude<ToolModule, "sdkDocs">, s
   return groups;
 }
 
-/** Per-module counts for the landing-page badges (sdkDocs counted at runtime). */
+/** Per-module counts for the landing-page badges (sdkDocs counted at runtime).
+ * Counts in a single pass rather than materializing name arrays just to read
+ * their length. */
 export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, number> {
-  const groups = getToolNamesByModule();
-  return {
-    config: groups.config.length,
-    intents: groups.intents.length,
-    relay: groups.relay.length,
-    amm: groups.amm.length,
-    moneyMarket: groups.moneyMarket.length,
-    partnersAndToken: groups.partnersAndToken.length,
+  const counts: Record<Exclude<ToolModule, "sdkDocs">, number> = {
+    config: 0,
+    intents: 0,
+    relay: 0,
+    amm: 0,
+    moneyMarket: 0,
+    partnersAndToken: 0,
   };
+  for (const tool of registry) {
+    if (tool.module === "sdkDocs") continue;
+    counts[tool.module]++;
+  }
+  return counts;
 }
 
 /**
- * Static per-group counts for `/health`: `api` spans the SODAX API modules,
- * `relay` the intent-relay tools. docs_* meta-tools are excluded — the sdkDocs
- * total is counted at runtime from the live GitBook tool list.
+ * Static per-group counts for `/health`: `relay` is the intent-relay tools,
+ * `api` is every other static module (config, intents, amm, moneyMarket,
+ * partnersAndToken). docs_* meta-tools (module "sdkDocs") are excluded — the
+ * sdkDocs total is counted at runtime from the live GitBook tool list. Deriving
+ * `api` as "not relay, not sdkDocs" keeps it consistent with analytics'
+ * resolveToolGroup and means a newly added module is counted automatically
+ * rather than silently dropped by an allowlist.
  */
 export function getStaticToolCounts(): { api: number; relay: number } {
   let api = 0;
   let relay = 0;
   for (const tool of registry) {
     if (tool.module === "relay") relay++;
-    else if (API_MODULES.includes(tool.module)) api++;
+    else if (tool.module !== "sdkDocs") api++;
   }
   return { api, relay };
 }

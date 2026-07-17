@@ -20,12 +20,12 @@ import helmet from "helmet";
 import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
-import { checkGitBookHealth, fetchGitBookTools } from "./services/gitbookProxy.js";
+import { fetchGitBookTools, getCachedGitBookHealth } from "./services/gitbookProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
-import { getCachedGitBookToolNames, getGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
+import { getCachedGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
@@ -63,17 +63,20 @@ async function createServer(clientId?: string): Promise<McpServer> {
  * page read their counts from, without touching GitBook. Only the static SODAX
  * + relay tools feed those counts — `getStaticToolCounts()` and
  * `getToolNamesByModule()` skip the `sdkDocs` module, whose live total comes
- * from `getGitBookToolNames()`. Skipping `registerGitBookProxyTools()` here
- * avoids a blocking GitBook fetch (up to 30s) that would otherwise delay HTTP
- * boot when GitBook is unavailable and `warmGitBookCache()` left the cache empty.
+ * from `getGitBookToolNames()`.
+ *
+ * `registerAppTool()` records `{name, module, description}` in the registry as a
+ * side effect, so a no-op recording server (whose `tool()` does nothing) is
+ * enough — no real `McpServer` is built and no MCP registration runs here; that
+ * only happens on the per-request servers. Mirrors the fake server in
+ * `toolRegistry.test.ts`. This also skips `registerGitBookProxyTools()`, whose
+ * blocking GitBook fetch (up to 30s) would otherwise delay HTTP boot when
+ * GitBook is unavailable and `warmGitBookCache()` left the cache empty.
  */
 function seedToolRegistry(): void {
-  const server = new McpServer({
-    name: "builders-sodax-mcp-server",
-    version: SERVER_VERSION,
-  });
-  registerSodaxApiTools(server);
-  registerSolverRelayTools(server);
+  const recordingServer = { tool: () => ({}) } as unknown as McpServer;
+  registerSodaxApiTools(recordingServer);
+  registerSolverRelayTools(recordingServer);
 }
 
 // GitBook proxy state
@@ -215,8 +218,12 @@ async function runHTTP(): Promise<void> {
   app.use(express.static(join(__dirname, "public")));
 
   app.get("/health", async (_req: Request, res: Response) => {
-    const gitbookHealth = await checkGitBookHealth();
-    const gitbookToolNames = await getGitBookToolNames();
+    // Non-blocking: read GitBook health/tool counts from the warmed cache so a
+    // cold or expired cache can't stall the health check on a 30s GitBook fetch
+    // (orchestrators treat a slow /health as unhealthy). warmGitBookCache() and
+    // per-request servers keep the cache fresh; docs_health does the live probe.
+    const gitbookHealth = getCachedGitBookHealth();
+    const gitbookToolNames = getCachedGitBookToolNames();
     // Per-group breakdown derived from the tool registry. `api` covers backend
     // + solver tools; `relay` the intent-relay tools; `sdkDocs` the dynamic
     // GitBook proxy.
@@ -298,8 +305,9 @@ async function runHTTP(): Promise<void> {
   });
 
   app.get("/api", async (_req: Request, res: Response) => {
-    // Get dynamic list of GitBook tools
-    const gitbookTools = await getGitBookToolNames();
+    // Non-blocking: docs tool list from the warmed cache (see /health) so a cold
+    // or expired GitBook cache can't stall the response on a 30s fetch.
+    const gitbookTools = getCachedGitBookToolNames();
 
     // Best-effort live network count for the description; evergreen fallback.
     let networks: number | null = null;

@@ -212,6 +212,18 @@ export function getCachedGitBookToolNames(): string[] {
 }
 
 /**
+ * GitBook proxy health derived from the current cache WITHOUT a network fetch:
+ * `healthy` is true once tools have been cached (a successful fetch happened),
+ * `toolCount` is the cached proxy-tool count. Lets `/health` report proxy
+ * status without blocking up to 30s on a live fetch when GitBook is
+ * unreachable — unlike `checkGitBookHealth()`, which awaits `fetchGitBookTools()`.
+ */
+export function getCachedGitBookHealth(): { healthy: boolean; toolCount: number } {
+  const toolCount = cachedTools?.length ?? 0;
+  return { healthy: toolCount > 0, toolCount };
+}
+
+/**
  * Clear the tools cache to force a refresh
  */
 export function clearGitBookCache(): void {

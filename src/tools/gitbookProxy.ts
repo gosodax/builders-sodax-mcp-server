@@ -14,7 +14,7 @@ import {
   checkGitBookHealth,
   clearGitBookCache,
   fetchGitBookTools,
-  getCachedGitBookTools,
+  getCachedGitBookToolNames as getCachedRawGitBookToolNames,
 } from "../services/gitbookProxy.js";
 import { logger } from "../services/logger.js";
 import { registerAppTool } from "../services/toolRegistry.js";
@@ -296,6 +296,6 @@ export async function getGitBookToolNames(): Promise<string[]> {
  * cold or expired cache never makes the response wait on a 30s GitBook request.
  */
 export function getCachedGitBookToolNames(): string[] {
-  const proxyTools = (getCachedGitBookTools() ?? []).map(t => `docs_${t.name}`);
+  const proxyTools = getCachedRawGitBookToolNames().map(name => `docs_${name}`);
   return [...proxyTools, ...GITBOOK_META_TOOL_NAMES];
 }

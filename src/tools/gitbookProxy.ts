@@ -14,8 +14,10 @@ import {
   checkGitBookHealth,
   clearGitBookCache,
   fetchGitBookTools,
+  getCachedGitBookToolNames as getCachedRawGitBookToolNames,
 } from "../services/gitbookProxy.js";
 import { logger } from "../services/logger.js";
+import { registerAppTool } from "../services/toolRegistry.js";
 
 const DOCS_READ_ONLY: ToolAnnotations = {
   readOnlyHint: true,
@@ -151,7 +153,9 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
  */
 function registerGitBookMetaTools(server: McpServer): void {
   // Tool to check GitBook MCP health
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_health",
     "Check SDK documentation availability. Call this first if docs tools seem unavailable.",
     {},
@@ -187,7 +191,9 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 
   // Tool to refresh GitBook tools
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_refresh",
     "Reconnect to SDK documentation and refresh available tools. Use if docs seem stale or unavailable.",
     {},
@@ -220,7 +226,9 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 
   // Tool to list available docs tools with full details
-  server.tool(
+  registerAppTool(
+    server,
+    "sdkDocs",
     "docs_list_tools",
     "List all SDK documentation tools with parameters. Essential for discovering what's available.",
     {},
@@ -265,6 +273,9 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 }
 
+/** The three docs_* meta-tools that are always registered, even if GitBook is down. */
+const GITBOOK_META_TOOL_NAMES = ["docs_health", "docs_refresh", "docs_list_tools"];
+
 /**
  * Get list of registered GitBook tool names for API response
  */
@@ -272,8 +283,19 @@ export async function getGitBookToolNames(): Promise<string[]> {
   try {
     const tools = await fetchGitBookTools();
     const proxyTools = tools.map(t => `docs_${t.name}`);
-    return [...proxyTools, "docs_health", "docs_refresh", "docs_list_tools"];
+    return [...proxyTools, ...GITBOOK_META_TOOL_NAMES];
   } catch {
-    return ["docs_health", "docs_refresh", "docs_list_tools"];
+    return [...GITBOOK_META_TOOL_NAMES];
   }
+}
+
+/**
+ * Non-blocking variant of getGitBookToolNames: derives the docs_* names from the
+ * current tools cache (plus the always-available meta-tools) WITHOUT triggering
+ * a GitBook fetch. Used by display-count callers (e.g. the landing page) so a
+ * cold or expired cache never makes the response wait on a 30s GitBook request.
+ */
+export function getCachedGitBookToolNames(): string[] {
+  const proxyTools = getCachedRawGitBookToolNames().map(name => `docs_${name}`);
+  return [...proxyTools, ...GITBOOK_META_TOOL_NAMES];
 }

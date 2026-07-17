@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PostHog } from "posthog-node";
+import { getToolModule } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
@@ -18,88 +19,19 @@ const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
 const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 
-// ── Tool → Group mapping ─────────────────────────────────────────────
-// Map every tool name to a logical group for PostHog filtering.
-// Update this when you add or remove tools.
-const TOOL_GROUPS: Record<string, string> = {
-  // SODAX API tools — config
-  sodax_get_supported_chains: "api",
-  sodax_get_swap_tokens: "api",
-  sodax_get_all_config: "api",
-  sodax_get_relay_chain_id_map: "api",
-  sodax_get_all_chains_configs: "api",
-  sodax_get_hub_assets: "api",
-  sodax_get_money_market_tokens: "api",
-  sodax_get_money_market_reserve_assets: "api",
-
-  // SODAX API tools — intents & solver
-  sodax_get_transaction: "api",
-  sodax_get_user_transactions: "api",
-  sodax_get_intent: "api",
-  sodax_get_volume: "api",
-  sodax_get_volume_stats: "api",
-  sodax_get_orderbook: "api",
-  sodax_get_solver_intent: "api",
-  sodax_get_solver_oracle: "api",
-  sodax_get_solver_quote: "api",
-
-  // SODAX intent-relay tools
-  sodax_relay_submit_tx: "relay",
-  sodax_relay_get_transaction_packets: "relay",
-  sodax_relay_get_packet: "relay",
-
-  // SODAX API tools — AMM
-  sodax_get_amm_positions: "api",
-  sodax_get_amm_pool_candles: "api",
-
-  // SODAX API tools — money market
-  sodax_get_money_market_assets: "api",
-  sodax_get_money_market_asset: "api",
-  sodax_get_asset_borrowers: "api",
-  sodax_get_asset_suppliers: "api",
-  sodax_get_all_borrowers: "api",
-  sodax_get_user_position: "api",
-
-  // SODAX API tools — partners & token
-  sodax_get_partners: "api",
-  sodax_get_partner_summary: "api",
-  sodax_get_token_supply: "api",
-  sodax_get_total_supply: "api",
-  sodax_get_circulating_supply: "api",
-  sodax_refresh_cache: "api",
-
-  // GitBook SDK docs meta-tools
-  docs_health: "sdk-docs",
-  docs_refresh: "sdk-docs",
-  docs_list_tools: "sdk-docs",
-};
-
 /**
- * Resolve tool group — static map first, then prefix-based fallback
- * for dynamically registered GitBook proxy tools (docs_*).
+ * Resolve tool group for PostHog filtering — derived from the tool registry,
+ * with a prefix-based fallback for dynamically registered GitBook proxy tools
+ * (docs_*) which are not in the registry.
  */
 function resolveToolGroup(toolName: string): string {
-  if (TOOL_GROUPS[toolName]) return TOOL_GROUPS[toolName];
+  const module = getToolModule(toolName);
+  if (module === "relay") return "relay";
+  if (module === "sdkDocs") return "sdk-docs";
+  if (module) return "api";
   if (toolName.startsWith("docs_")) return "sdk-docs";
   return "unknown";
 }
-
-/**
- * Per-group tool counts derived from `TOOL_GROUPS`. Keeps `/health` in sync
- * with the analytics map automatically — no hard-coded number, no drift.
- *
- * Example shape: `{ api: 30, relay: 3, "sdk-docs": 3 }`. Consumers should
- * use `STATIC_TOOL_COUNTS.api` / `STATIC_TOOL_COUNTS.relay` and **exclude**
- * `"sdk-docs"` from any "static" total (those meta-tools are wrapped around
- * the dynamic GitBook proxy and counted separately at runtime).
- */
-export const STATIC_TOOL_COUNTS: Record<string, number> = Object.values(TOOL_GROUPS).reduce(
-  (acc, group) => {
-    acc[group] = (acc[group] ?? 0) + 1;
-    return acc;
-  },
-  {} as Record<string, number>,
-);
 
 // ── PostHog client (lazy singleton) ──────────────────────────────────
 let client: PostHog | null = null;

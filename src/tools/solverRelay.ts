@@ -13,6 +13,7 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getRelayPacket, getRelayTransactionPackets, submitRelayTx } from "../services/relay.js";
 import { getSolverOracle, getSolverQuote } from "../services/solver.js";
+import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
 
@@ -65,7 +66,9 @@ export function quoteErrorHint(message: string): string | null {
 
 export function registerSolverRelayTools(server: McpServer): void {
   // ── Solver: oracle ──────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_solver_oracle",
     "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146': chainId-146 addresses pass the quote service's compatibility check, while spoke-chain (non-146) addresses are rejected with 'not compatible with the quote service'. Caveat: passing that check (being listed/priced) does NOT guarantee a swap route — canonical bridged *_ASSET hub tokens and major stablecoins route most reliably, while many wrapped/derivative/money-market entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are priced but frequently return 'No path was found', and routability is pair/amount/liquidity-dependent. Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
     {
@@ -113,7 +116,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Solver: quote ───────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "intents",
     "sodax_get_solver_quote",
     "Get a swap quote from the SODAX solver. tokenSrc/tokenDst MUST be hub-chain (Sonic, chainId 146) asset addresses — look them up with sodax_get_solver_oracle (chainId='146'). Working example: tokenSrc='0xeb0393893b5bf98a50073d6740738b08e575058b' (BTC_BTC_ASSET) → tokenDst='0xaeafa26e43f46cd83efe89b1e57c858eb5685a24' (ETH_ASSET), amount='99800', quoteType='exact_input' returns a quoted_amount. exact_input quotes the destination amount you'd receive; exact_output quotes the source amount you'd need. There are two distinct HTTP-400 failures, both naming the two addresses: (1) 'not compatible with the quote service' = an address isn't a recognized hub asset (a spoke-chain or otherwise non-chainId-146 address was passed) → use a chainId-146 address from sodax_get_solver_oracle, and for a reliable pick prefer a canonical bridged *_ASSET hub token or major stablecoin (chainId 146 alone doesn't guarantee a route). (2) 'No path was found between X and Y' = both tokens are valid hub assets but the solver couldn't route this pair for this amount → routing is pair/amount/liquidity-dependent, so retry with a smaller amount or a more liquid counterparty (a canonical bridged *_ASSET token, or a major stablecoin like SONIC_USDC_ASSET). Many wrapped/derivative entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are oracle-priced but frequently have no route — prefer canonical bridged *_ASSET hub tokens.",
     {
@@ -175,7 +180,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: submit ───────────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_submit_tx",
     "Submit a confirmed spoke-chain transaction to the SODAX intent relay so it can be delivered to the destination chain. The tx must already be finalized on the source chain. Re-submitting the same tx is a no-op. For split-tx chains (Solana, Bitcoin) supply the optional `data` argument.",
     {
@@ -224,7 +231,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: get transaction packets ──────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_get_transaction_packets",
     "List every cross-chain packet emitted by a given source transaction. Use this to track relay status — a packet is complete when status='executed' and dst_tx_hash is populated.",
     {
@@ -277,7 +286,9 @@ export function registerSolverRelayTools(server: McpServer): void {
   );
 
   // ── Relay: get packet ───────────────────────────────────────────────
-  server.tool(
+  registerAppTool(
+    server,
+    "relay",
     "sodax_relay_get_packet",
     "Fetch a single relay packet by its connection serial number (conn_sn). Returns the packet data on success or a `{success:false, message}` shape if the packet isn't found.",
     {

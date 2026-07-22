@@ -39,6 +39,14 @@ interface DiscordMessage {
   embeds?: DiscordEmbed[];
 }
 
+/**
+ * Suppress ALL mention parsing (`@everyone`, `@here`, role and user pings).
+ * Message content can embed upstream-controlled text (OpenAPI path names,
+ * error messages, stack traces); without this, an injected `@everyone` would
+ * ping the whole server. Applied unconditionally — no caller needs mentions.
+ */
+const ALLOWED_MENTIONS_NONE = { parse: [] as string[] } as const;
+
 /** True when a webhook URL is configured (non-empty after trim). */
 export function isDiscordConfigured(): boolean {
   return Boolean(process.env.DISCORD_WEBHOOK_URL?.trim());
@@ -67,7 +75,8 @@ export async function postToDiscord(message: DiscordMessage): Promise<boolean> {
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: DISCORD_USERNAME, ...message }),
+      // `allowed_mentions` last: it must not be overridable by the caller.
+      body: JSON.stringify({ username: DISCORD_USERNAME, ...message, allowed_mentions: ALLOWED_MENTIONS_NONE }),
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
     });
     if (!response.ok) {

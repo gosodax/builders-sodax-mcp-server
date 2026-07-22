@@ -3,7 +3,10 @@
 nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["corepack enable", "corepack prepare pnpm@9.15.0 --activate", "pnpm install --frozen-lockfile"]
+# --ignore-scripts: no dependency lifecycle script runs during the deploy build.
+# pnpm >=10 already blocks dependency build scripts (see allowBuilds in
+# pnpm-workspace.yaml); this also skips the project's own husky `prepare` hook.
+cmds = ["corepack enable", "corepack prepare pnpm@11.12.0 --activate", "pnpm install --frozen-lockfile --ignore-scripts"]
 
 [phases.build]
 cmds = ["pnpm build"]

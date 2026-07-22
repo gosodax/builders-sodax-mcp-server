@@ -11,6 +11,9 @@ on:
       - development
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test
@@ -31,8 +34,12 @@ jobs:
           node-version: 22
           cache: 'pnpm'
 
+      # --ignore-scripts: a malicious postinstall in any transitive dependency
+      # would otherwise execute on a runner that can reach repository secrets.
+      # pnpm >=10 also blocks dependency build scripts by default — see
+      # allowBuilds in pnpm-workspace.yaml.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: checkTS
         run: pnpm checkTs
@@ -45,6 +52,49 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  security:
+    name: Security checks
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+
+    steps:
+      # Secret scanning needs full history: a credential committed earlier and
+      # later removed is still a live leak.
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Runs the official gitleaks image pinned by digest rather than
+      # gitleaks-action, which wants an organisation licence key. This gate
+      # BLOCKS — a hit means a credential is present in the repo or its history.
+      - name: Secret scan (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source=/repo --config=/repo/.gitleaks.toml \
+            --redact --verbose --no-banner
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # REPORT-ONLY on purpose. The advisories currently reported sit in
+      # dev-only or non-exploitable transitive paths, so a blocking gate would
+      # produce noise that gets ignored rather than acted on. Read the summary
+      # and patch via the overrides in pnpm-workspace.yaml. Flip
+      # continue-on-error to false once the baseline is clean.
+      - name: Dependency audit (report-only)
+        continue-on-error: true
+        run: pnpm audit --audit-level=moderate
 
   docker-build:
     name: Docker build

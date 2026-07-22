@@ -17,7 +17,7 @@
     "prepare": "husky",
     "clean": "rm -rf dist"
   },
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=22.9.0"
   },
@@ -53,18 +53,5 @@
     "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}": [
       "biome check --write --no-errors-on-unmatched"
     ]
-  },
-  "pnpm": {
-    "overrides": {
-      "ajv@<8.18.0": ">=8.18.0",
-      "qs@>=6.7.0 <6.15.2": ">=6.15.2",
-      "hono@<4.12.21": ">=4.12.21",
-      "@hono/node-server@<1.19.14": "^1.19.14",
-      "path-to-regexp@<0.1.13": "~0.1.13",
-      "path-to-regexp@>=8.0.0 <8.4.2": "^8.4.2",
-      "fast-uri@<3.1.2": ">=3.1.2",
-      "ip-address@<10.1.1": ">=10.1.1",
-      "vite@<6.4.2": "^6.4.2"
-    }
   }
 }

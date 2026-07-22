@@ -213,13 +213,20 @@ export function registerSolverRelayTools(server: McpServer): void {
           tx_hash: txHash,
           ...(data ? { data } : {}),
         });
+        // audit solver-relay-clients:M-1 — this is the only state-changing tool
+        // here, so a relay-reported failure must not read as an accepted
+        // submission. A non-2xx now throws in services/relay.ts; a 2xx body
+        // that says `success: false` is surfaced with isError so the caller
+        // (and the analytics wrapper) both see a failure.
+        const failed = result.success === false;
         return {
           content: [
             {
               type: "text",
-              text: `## Relay Submit\n\n${formatResponse(result, format)}`,
+              text: `## Relay Submit${failed ? " — FAILED" : ""}\n\n${formatResponse(result, format)}`,
             },
           ],
+          ...(failed ? { isError: true } : {}),
         };
       } catch (error) {
         return {

@@ -47,6 +47,38 @@ function apiUrl(path: string): string {
 }
 
 /**
+ * Encode a caller-supplied value for use as a single URL path segment.
+ *
+ * Without this, values like `../../../../etc/passwd` escape the `/v1/be` base
+ * prefix, and values containing `?` smuggle (and clobber) query parameters —
+ * e.g. `/intent/user/x?admin=1?limit=10` silently drops the intended `limit`.
+ *
+ * An empty value, or one that is exactly `.` or `..`, is rejected outright:
+ * the WHATWG URL parser percent-decodes `%2E` before its single/double-dot
+ * check, so no encoding of those values can survive as a literal segment.
+ */
+function seg(value: string | number): string {
+  const raw = String(value);
+  if (raw === "" || /^\.{1,2}$/.test(raw)) {
+    throw new Error(`Invalid URL path segment: ${JSON.stringify(raw)}`);
+  }
+  return encodeURIComponent(raw);
+}
+
+/**
+ * Build an unambiguous cache key.
+ *
+ * Parts are JSON-encoded as a tuple so no combination of values can collide:
+ * a plain `-` join makes ("A","B-C") and ("A-B","C") the same key, and
+ * `chainId ?? "all"` makes a literal chainId of "all" indistinguishable from
+ * the unfiltered case. `undefined` serializes to `null`, which is distinct
+ * from the string `"all"`.
+ */
+function cacheKey(prefix: string, ...parts: unknown[]): string {
+  return parts.length === 0 ? prefix : `${prefix}:${JSON.stringify(parts)}`;
+}
+
+/**
  * Get all supported blockchain networks.
  *
  * The `/config/spoke/chains` endpoint returns an array of chain-key strings
@@ -54,15 +86,15 @@ function apiUrl(path: string): string {
  * type reflects that so callers can filter on the keys directly.
  */
 export async function getSupportedChains(): Promise<string[]> {
-  const cacheKey = "chains";
-  const cached = getCached<string[]>(cacheKey);
+  const key = "chains";
+  const cached = getCached<string[]>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    setCache(cacheKey, chains);
+    setCache(key, chains);
     return chains;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch supported chains");
@@ -85,12 +117,12 @@ export async function getIntegratedNetworksCount(): Promise<number> {
  * Get available tokens for swapping on a specific chain
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
-  const cacheKey = `tokens-${chainId || "all"}`;
-  const cached = getCached<SwapToken[]>(cacheKey);
+  const key = cacheKey("tokens", chainId);
+  const cached = getCached<SwapToken[]>(key);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : "/config/swap/tokens";
+    const endpoint = chainId ? `/config/swap/${seg(chainId)}/tokens` : "/config/swap/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     // API returns object keyed by chain ID, flatten if getting all
     let tokens: SwapToken[] = [];
@@ -109,7 +141,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
         tokens = (dataObj.data as SwapToken[]) || [];
       }
     }
-    setCache(cacheKey, tokens);
+    setCache(key, tokens);
     return tokens;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch swap tokens");
@@ -122,7 +154,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
   try {
-    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${txHash}`));
+    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${seg(txHash)}`));
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
@@ -151,7 +183,7 @@ export async function getUserTransactions(
     if (options?.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/intent/user/${seg(userAddress)}${queryString ? `?${queryString}` : ""}`);
     const data = await fetchJson<{ items?: Transaction[]; data?: Transaction[] }>(url);
     // API returns { items, total, offset, limit }
     return data?.items || data?.data || [];
@@ -184,8 +216,15 @@ export async function getVolume(options: {
   cursor?: string;
 }): Promise<VolumeData> {
   // Build cache key from significant params
-  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
-  const cached = getCached<VolumeData>(cacheKey);
+  const key = cacheKey(
+    "volume",
+    options.inputToken,
+    options.outputToken,
+    options.chainId,
+    options.limit,
+    options.cursor,
+  );
+  const cached = getCached<VolumeData>(key);
   if (cached) return cached;
 
   try {
@@ -208,7 +247,7 @@ export async function getVolume(options: {
     const queryString = params.toString();
     const url = apiUrl(`/solver/volume${queryString ? `?${queryString}` : ""}`);
     const volumeData = await fetchJson<VolumeData>(url);
-    setCache(cacheKey, volumeData);
+    setCache(key, volumeData);
     return volumeData;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch volume");
@@ -221,13 +260,13 @@ export async function getVolume(options: {
  * Backed by a collection-metadata read upstream and cached 60s server-side.
  */
 export async function getVolumeStats(): Promise<VolumeStats> {
-  const cacheKey = "volume-stats";
-  const cached = getCached<VolumeStats>(cacheKey);
+  const key = "volume-stats";
+  const cached = getCached<VolumeStats>(key);
   if (cached) return cached;
 
   try {
     const stats = await fetchJson<VolumeStats>(apiUrl("/solver/volume/stats"));
-    setCache(cacheKey, stats);
+    setCache(key, stats);
     return stats;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch volume stats");
@@ -278,8 +317,8 @@ export async function getOrderbook(options: {
  * List lending/borrowing assets in money market
  */
 export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
-  const cacheKey = `mm-assets-${chainId || "all"}`;
-  const cached = getCached<MoneyMarketAsset[]>(cacheKey);
+  const key = cacheKey("mm-assets", chainId);
+  const cached = getCached<MoneyMarketAsset[]>(key);
   if (cached) return cached;
 
   try {
@@ -289,7 +328,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     const assets = Array.isArray(data)
       ? (data as MoneyMarketAsset[])
       : (data as { data?: MoneyMarketAsset[] })?.data || [];
-    setCache(cacheKey, assets);
+    setCache(key, assets);
     return assets;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market assets");
@@ -303,7 +342,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
 export async function getUserPosition(userAddress: string): Promise<UserPosition | null> {
   try {
     const data = await fetchJsonOrNull<{ data?: UserPosition } | UserPosition>(
-      apiUrl(`/moneymarket/position/${userAddress}`),
+      apiUrl(`/moneymarket/position/${seg(userAddress)}`),
     );
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
@@ -317,8 +356,8 @@ export async function getUserPosition(userAddress: string): Promise<UserPosition
  * List SODAX integration partners
  */
 export async function getPartners(chainId?: number): Promise<Partner[]> {
-  const cacheKey = `partners-${chainId ?? "all"}`;
-  const cached = getCached<Partner[]>(cacheKey);
+  const key = cacheKey("partners", chainId);
+  const cached = getCached<Partner[]>(key);
   if (cached) return cached;
 
   try {
@@ -329,7 +368,7 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     const data = await fetchJson<unknown>(url);
     const dataObj = data as { data?: Partner[]; partners?: Partner[] } | Partner[];
     const partners = Array.isArray(dataObj) ? dataObj : dataObj?.data || dataObj?.partners || [];
-    setCache(cacheKey, partners);
+    setCache(key, partners);
     return partners;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch partners");
@@ -341,15 +380,15 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
  * Get SODA token supply info
  */
 export async function getTokenSupply(): Promise<TokenSupply> {
-  const cacheKey = "token-supply";
-  const cached = getCached<TokenSupply>(cacheKey);
+  const key = "token-supply";
+  const cached = getCached<TokenSupply>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<{ data?: TokenSupply } | TokenSupply>(apiUrl("/sodax/supply"));
     // API returns data directly
     const supply = (data as { data?: TokenSupply })?.data || (data as TokenSupply);
-    setCache(cacheKey, supply);
+    setCache(key, supply);
     return supply;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch token supply");
@@ -361,13 +400,13 @@ export async function getTokenSupply(): Promise<TokenSupply> {
  * Get full config (all chains + all tokens in one call)
  */
 export async function getAllConfig(): Promise<unknown> {
-  const cacheKey = "config-all";
-  const cached = getCached<unknown>(cacheKey);
+  const key = "config-all";
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/all"));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch all config");
@@ -379,13 +418,13 @@ export async function getAllConfig(): Promise<unknown> {
  * Get chain ID to intent relay chain ID mapping
  */
 export async function getRelayChainIdMap(): Promise<unknown> {
-  const cacheKey = "relay-chain-id-map";
-  const cached = getCached<unknown>(cacheKey);
+  const key = "relay-chain-id-map";
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/relay/chain-id-map"));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch relay chain ID map");
@@ -397,13 +436,13 @@ export async function getRelayChainIdMap(): Promise<unknown> {
  * Get full spoke chain configs
  */
 export async function getAllChainsConfigs(): Promise<unknown> {
-  const cacheKey = "all-chains-configs";
-  const cached = getCached<unknown>(cacheKey);
+  const key = "all-chains-configs";
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/all-chains-configs"));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch all chains configs");
@@ -415,14 +454,14 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  * Get hub (Sonic) assets representing spoke tokens
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
-  const cacheKey = `hub-assets-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const key = cacheKey("hub-assets", chainId);
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/hub/${chainId}/assets` : "/config/hub/assets";
+    const endpoint = chainId ? `/config/hub/${seg(chainId)}/assets` : "/config/hub/assets";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch hub assets");
@@ -434,14 +473,14 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  * Get money market supported tokens
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
-  const cacheKey = `mm-tokens-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const key = cacheKey("mm-tokens", chainId);
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : "/config/money-market/tokens";
+    const endpoint = chainId ? `/config/money-market/${seg(chainId)}/tokens` : "/config/money-market/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market tokens");
@@ -453,13 +492,13 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
  * Get money market reserve assets
  */
 export async function getMoneyMarketReserveAssets(): Promise<unknown> {
-  const cacheKey = "mm-reserve-assets";
-  const cached = getCached<unknown>(cacheKey);
+  const key = "mm-reserve-assets";
+  const cached = getCached<unknown>(key);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/money-market/reserve-assets"));
-    setCache(cacheKey, data);
+    setCache(key, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market reserve assets");
@@ -505,7 +544,7 @@ export async function getAmmPoolCandles(
     if (options?.to) params.append("to", options.to.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/amm/pools/${chainId}/${poolId}/candles${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/amm/pools/${seg(chainId)}/${seg(poolId)}/candles${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch AMM pool candles");
@@ -518,7 +557,7 @@ export async function getAmmPoolCandles(
  */
 export async function getIntent(intentHash: string): Promise<unknown> {
   try {
-    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${intentHash}`));
+    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${seg(intentHash)}`));
     if (data === null) return null;
     return data?.data ?? data ?? null;
   } catch (error) {
@@ -536,7 +575,7 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
     if (includeAll) params.append("includeAll", "true");
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/intents/${intentHash}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/intents/${seg(intentHash)}${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch solver intent");
@@ -549,7 +588,7 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
  */
 export async function getMoneyMarketAsset(reserveAddress: string): Promise<unknown> {
   try {
-    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserveAddress}`));
+    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${seg(reserveAddress)}`));
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market asset");
     throw new Error("Failed to fetch money market asset from SODAX API");
@@ -569,7 +608,7 @@ export async function getMoneyMarketAssetBorrowers(
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/borrowers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${seg(reserveAddress)}/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch asset borrowers");
@@ -590,7 +629,7 @@ export async function getMoneyMarketAssetSuppliers(
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/suppliers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${seg(reserveAddress)}/suppliers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch asset suppliers");
@@ -628,7 +667,7 @@ export async function getPartnerSummary(receiver: string, chainId?: string): Pro
     if (chainId) params.append("chainId", chainId);
 
     const queryString = params.toString();
-    const url = apiUrl(`/partners/${receiver}/summary${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/partners/${seg(receiver)}/summary${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch partner summary");

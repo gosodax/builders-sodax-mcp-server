@@ -1,0 +1,22 @@
+# gitleaks config for the CI secret-scanning gate (.github/workflows/ci.yml).
+#
+# The gate BLOCKS, so it has to be free of false positives to stay credible.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Public EVM addresses (0x + 40 hex). This repo documents hub-chain asset and
+contract addresses inline in MCP tool descriptions and tests; they are public
+on-chain identifiers, not credentials, and gitleaks' generic-api-key rule
+matches them by entropy.
+
+Deliberately scoped to the 40-hex *address* form only. 64-hex values are NOT
+allowlisted — that is the shape of an EVM private key, which must keep tripping
+the scanner.
+"""
+regexTarget = "match"
+regexes = [
+  '''0x[a-fA-F0-9]{40}\b''',
+]

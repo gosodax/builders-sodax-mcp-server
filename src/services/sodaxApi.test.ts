@@ -84,6 +84,129 @@ describe("getSwapTokens", () => {
   });
 });
 
+describe("URL path-segment encoding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function loadApi() {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    return { mod, mockFetchJson: vi.mocked(http.fetchJson), mockFetchJsonOrNull: vi.mocked(http.fetchJsonOrNull) };
+  }
+
+  it("keeps a traversal attempt inside a single path segment", async () => {
+    const { mod, mockFetchJsonOrNull } = await loadApi();
+    mockFetchJsonOrNull.mockResolvedValueOnce(null);
+
+    await mod.getTransaction("../../../../etc/passwd");
+
+    const url = new URL(mockFetchJsonOrNull.mock.calls[0][0] as string);
+    expect(url.host).toBe("api.sodax.com");
+    expect(url.pathname).toBe("/v1/be/intent/tx/..%2F..%2F..%2F..%2Fetc%2Fpasswd");
+    expect(url.pathname.startsWith("/v1/be/")).toBe(true);
+  });
+
+  it("rejects a bare '..' segment instead of issuing a traversing request", async () => {
+    // %2E is percent-decoded by the URL parser before its double-dot check, so
+    // ".." cannot be neutralised by encoding — it has to be refused.
+    const { mod, mockFetchJsonOrNull } = await loadApi();
+
+    await expect(mod.getIntent("..")).rejects.toThrow(/Failed to fetch intent/);
+    expect(mockFetchJsonOrNull).not.toHaveBeenCalled();
+  });
+
+  it("does not let a smuggled query param clobber the intended limit", async () => {
+    const { mod, mockFetchJson } = await loadApi();
+    mockFetchJson.mockResolvedValueOnce({ items: [] });
+
+    await mod.getUserTransactions("x?admin=1", { limit: 10 });
+
+    const url = new URL(mockFetchJson.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/v1/be/intent/user/x%3Fadmin%3D1");
+    expect(url.searchParams.get("limit")).toBe("10");
+    expect(url.searchParams.get("admin")).toBeNull();
+  });
+
+  it("encodes every interpolated segment of a multi-segment path", async () => {
+    const { mod, mockFetchJson } = await loadApi();
+    mockFetchJson.mockResolvedValueOnce({});
+
+    await mod.getAmmPoolCandles("../evil", "a/b", { interval: "1h" });
+
+    const url = new URL(mockFetchJson.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/v1/be/amm/pools/..%2Fevil/a%2Fb/candles");
+    expect(url.searchParams.get("interval")).toBe("1h");
+  });
+
+  it("encodes the partner receiver segment", async () => {
+    const { mod, mockFetchJsonOrNull } = await loadApi();
+    mockFetchJsonOrNull.mockResolvedValueOnce(null);
+
+    await mod.getPartnerSummary("a/b?x=1");
+
+    const url = new URL(mockFetchJsonOrNull.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/v1/be/partners/a%2Fb%3Fx%3D1/summary");
+  });
+});
+
+describe("cache keys", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does not collide a literal chainId of 'all' with the unfiltered case", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const mockFetchJson = vi.mocked(http.fetchJson);
+    mockFetchJson.mockResolvedValueOnce([{ symbol: "ONLY_ON_ALL_CHAIN" }]);
+    mockFetchJson.mockResolvedValueOnce({ "1": [{ symbol: "ETH" }] });
+
+    const scoped = await mod.getSwapTokens("all");
+    const unscoped = await mod.getSwapTokens();
+
+    expect(scoped).toEqual([{ symbol: "ONLY_ON_ALL_CHAIN" }]);
+    expect(unscoped).toEqual([{ symbol: "ETH", chainId: "1" }]);
+    expect(mockFetchJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not collide volume token pairs that differ only in delimiter placement", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const mockFetchJson = vi.mocked(http.fetchJson);
+    const first = { items: [{ intentHash: "first" }], hasMore: false };
+    const second = { items: [{ intentHash: "second" }], hasMore: false };
+    mockFetchJson.mockResolvedValueOnce(first);
+    mockFetchJson.mockResolvedValueOnce(second);
+
+    // Under the old `volume-${input}-${output}-...` key these two produced the
+    // identical key "volume-A-B-C-...", so the second caller was served the
+    // first caller's data.
+    const a = await mod.getVolume({ inputToken: "A", outputToken: "B-C" });
+    const b = await mod.getVolume({ inputToken: "A-B", outputToken: "C" });
+
+    expect(a).toEqual(first);
+    expect(b).toEqual(second);
+    expect(mockFetchJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("still serves a genuine cache hit for identical volume params", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const mockFetchJson = vi.mocked(http.fetchJson);
+    mockFetchJson.mockResolvedValueOnce({ items: [], hasMore: false });
+
+    await mod.getVolume({ inputToken: "A", outputToken: "B", limit: 10 });
+    await mod.getVolume({ inputToken: "A", outputToken: "B", limit: 10 });
+
+    expect(mockFetchJson).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("getVolumeStats", () => {
   beforeEach(() => {
     vi.clearAllMocks();

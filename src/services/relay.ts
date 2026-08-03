@@ -41,10 +41,22 @@ interface GetPacketParams {
 const RELAY_TIMEOUT_MS = 30_000;
 
 /**
- * The relay returns a JSON body for every outcome, including 404 (used for
- * "packet not found" responses on get_packet / get_transaction_packets).
- * We parse the body regardless of status — only HTTP 5xx and unparseable
- * responses are treated as errors.
+ * The relay answers every action on `POST /`, and it uses HTTP 404 as a normal
+ * "packet not found" outcome for `get_packet` / `get_transaction_packets`,
+ * returning a well-formed `{ success: false, message }` JSON body. That single
+ * case is the only non-2xx we parse instead of throwing.
+ *
+ * SECURITY / correctness (audit solver-relay-clients:M-1): this used to throw
+ * only on HTTP >= 500 and parse *every* other status, so 400/401/403/429 came
+ * back looking like a successful response — most dangerously on `submit`, the
+ * one state-changing action, where a rejected submission was reported to the
+ * caller as if it had been accepted. Every non-2xx now raises, and a non-JSON
+ * body (an edge/WAF HTML 401 or 429 page, say) reports the HTTP status rather
+ * than a confusing "Unexpected token '<'" JSON parse error.
+ *
+ * Error-message policy mirrors services/http.ts: the message is treated as a
+ * *public* string and carries only the HTTP status and the relay action name.
+ * No bytes of the upstream response body and no full URL are interpolated.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
   const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
@@ -57,11 +69,34 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
     signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
   });
 
-  if (response.status >= 500) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  const text = await response.text().catch(() => "");
+
+  const parse = (): T | undefined => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return undefined;
+    }
+  };
+
+  if (!response.ok) {
+    // 404 with the relay's documented `{success:false,...}` JSON body is a
+    // normal "not found" answer, not a transport failure — hand it back.
+    if (response.status === 404) {
+      const parsed = parse() as { success?: unknown } | undefined;
+      if (parsed && typeof parsed === "object" && parsed.success === false) {
+        return parsed as T;
+      }
+    }
+    throw new Error(`${status} from relay action ${action}`);
   }
 
-  return (await response.json()) as T;
+  const parsed = parse();
+  if (parsed === undefined) {
+    throw new Error(`${status} from relay action ${action} — response was not valid JSON`);
+  }
+  return parsed;
 }
 
 /**

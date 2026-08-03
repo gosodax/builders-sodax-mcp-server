@@ -45,6 +45,38 @@ import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
 
+// Shared identifier validators. Bare `z.string()` let arbitrary text reach URL
+// path segments; these constrain each identifier to its real on-chain shape.
+// EVM (0x + 40 hex) covers every address the SODAX backend indexes for these
+// endpoints — money-market reserves, hub assets and partner receivers are all
+// hub-chain (Sonic) contracts, and intent/position lookups key off the
+// hub-derived EVM wallet address.
+const EVM_ADDRESS = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Must be a 0x-prefixed 40-character hex EVM address");
+
+// Transaction and intent hashes are 32-byte values (0x + 64 hex).
+const HASH_32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "Must be a 0x-prefixed 64-character hex hash");
+
+// Chain IDs are the SODAX chain keys ("sonic", "0x2105.base", "0x1.icon",
+// "ethereum"). Deliberately a character allowlist rather than an enum so newly
+// launched chains keep working; it still excludes "/", "?", "#", "%" and "..".
+const CHAIN_ID = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(
+    /^[0-9a-zA-Z][0-9a-zA-Z._-]*$/,
+    "Must be a chain key such as 'sonic', 'ethereum' or '0x2105.base' (letters, digits, '.', '_', '-')",
+  );
+
+// Pool identifiers are usually an EVM pool address, but the API documents them
+// as "address or ID", so this stays a bounded safe-charset allowlist rather
+// than a strict address regex.
+const POOL_ID = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[0-9a-zA-Z][0-9a-zA-Z._-]*$/, "Must be a pool address or ID (letters, digits, '.', '_', '-')");
+
 /**
  * Register all SODAX API tools with the MCP server
  */
@@ -97,12 +129,9 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_swap_tokens",
     "Get available tokens for swapping on SODAX, optionally filtered by chain",
     {
-      chainId: z
-        .string()
-        .optional()
-        .describe(
-          "Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list.",
-        ),
+      chainId: CHAIN_ID.optional().describe(
+        "Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list.",
+      ),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -140,7 +169,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_transaction",
     "Look up a specific transaction by its hash to see status, amounts, and details",
     {
-      txHash: z.string().describe("The transaction hash to look up (e.g., '0x...')"),
+      txHash: HASH_32.describe("The transaction hash to look up (66-character hex string starting with 0x)"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -180,7 +209,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_user_transactions",
     "Get intent/transaction history for a specific wallet address",
     {
-      userAddress: z.string().describe("The wallet address to look up (e.g., '0x...')"),
+      userAddress: EVM_ADDRESS.describe("The wallet address to look up (42-character hex string starting with 0x)"),
       limit: z
         .number()
         .min(1)
@@ -401,7 +430,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_assets",
     "List all assets available for lending and borrowing in the SODAX money market",
     {
-      chainId: z.string().optional().describe("Filter by chain ID"),
+      chainId: CHAIN_ID.optional().describe("Filter by chain ID"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -437,7 +466,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_user_position",
     "Get a user's lending and borrowing position in the money market",
     {
-      userAddress: z.string().describe("The wallet address to look up"),
+      userAddress: EVM_ADDRESS.describe("The wallet address to look up (42-character hex string starting with 0x)"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -648,12 +677,9 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_hub_assets",
     "Get assets representing spoke tokens on the hub (Sonic) chain, optionally filtered by source chain",
     {
-      chainId: z
-        .string()
-        .optional()
-        .describe(
-          "Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list.",
-        ),
+      chainId: CHAIN_ID.optional().describe(
+        "Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list.",
+      ),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -689,7 +715,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_tokens",
     "Get tokens supported for money market lending/borrowing, optionally filtered by chain",
     {
-      chainId: z.string().optional().describe("Filter by chain ID"),
+      chainId: CHAIN_ID.optional().describe("Filter by chain ID"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -799,8 +825,8 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_amm_pool_candles",
     "Get OHLCV candlestick chart data for an AMM pool",
     {
-      chainId: z.string().describe("Chain ID where the pool is deployed (e.g., 'sonic')"),
-      poolId: z.string().describe("The pool contract address or ID"),
+      chainId: CHAIN_ID.describe("Chain ID where the pool is deployed (e.g., 'sonic')"),
+      poolId: POOL_ID.describe("The pool contract address or ID"),
       interval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).describe("REQUIRED: Candle interval"),
       from: z.number().describe("REQUIRED: Start timestamp (unix seconds)"),
       to: z.number().describe("REQUIRED: End timestamp (unix seconds)"),
@@ -838,7 +864,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_intent",
     "Look up a specific intent by its intent hash (different from transaction hash)",
     {
-      intentHash: z.string().describe("The intent hash to look up (66 character hex string starting with 0x)"),
+      intentHash: HASH_32.describe("The intent hash to look up (66 character hex string starting with 0x)"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -878,7 +904,7 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_solver_intent",
     "Get solver-side details for an intent including fill history. Use includeAll to see all solver documents.",
     {
-      intentHash: z.string().describe("The intent hash to look up"),
+      intentHash: HASH_32.describe("The intent hash to look up (66 character hex string starting with 0x)"),
       includeAll: z
         .boolean()
         .optional()
@@ -923,7 +949,9 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_asset",
     "Get detailed information for a specific money market asset by its reserve address",
     {
-      reserveAddress: z.string().describe("The reserve contract address of the asset"),
+      reserveAddress: EVM_ADDRESS.describe(
+        "The reserve contract address of the asset (42-character hex string starting with 0x)",
+      ),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -963,7 +991,9 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_asset_borrowers",
     "Get borrowers for a specific money market asset by its reserve address",
     {
-      reserveAddress: z.string().describe("The reserve contract address of the asset"),
+      reserveAddress: EVM_ADDRESS.describe(
+        "The reserve contract address of the asset (42-character hex string starting with 0x)",
+      ),
       offset: z.number().min(0).optional().default(0).describe("Number of borrowers to skip for pagination"),
       limit: z
         .number()
@@ -1006,7 +1036,9 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_asset_suppliers",
     "Get suppliers (lenders) for a specific money market asset by its reserve address",
     {
-      reserveAddress: z.string().describe("The reserve contract address of the asset"),
+      reserveAddress: EVM_ADDRESS.describe(
+        "The reserve contract address of the asset (42-character hex string starting with 0x)",
+      ),
       offset: z.number().min(0).optional().default(0).describe("Number of suppliers to skip for pagination"),
       limit: z
         .number()
@@ -1091,8 +1123,8 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_partner_summary",
     "Get volume and activity summary for a specific integration partner by their receiver address",
     {
-      receiver: z.string().describe("The partner receiver address"),
-      chainId: z.string().optional().describe("Filter by chain ID"),
+      receiver: EVM_ADDRESS.describe("The partner receiver address (42-character hex string starting with 0x)"),
+      chainId: CHAIN_ID.optional().describe("Filter by chain ID"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()

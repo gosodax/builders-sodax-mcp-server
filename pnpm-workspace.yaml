@@ -1,0 +1,31 @@
+# pnpm settings. These used to live under the `pnpm` key in package.json, which
+# pnpm >=10 no longer reads ("The 'pnpm' field in package.json is no longer read
+# by pnpm"). Keeping them there meant the overrides below would silently stop
+# applying — and the advisories they patch would quietly come back — the first
+# time the lockfile was regenerated with a current pnpm. See package.json
+# `packageManager`, which must stay >=10 for this file to be honoured.
+
+# Dependency install scripts are blocked by default (pnpm >=10). Nothing in this
+# project needs one: biome resolves its platform binary through
+# optionalDependencies, and esbuild ships prebuilt per-platform packages. Both
+# are listed explicitly so a *new* package wanting to run a build script fails
+# the install loudly instead of executing unreviewed code in CI.
+allowBuilds:
+  '@biomejs/biome': false
+  esbuild: false
+
+# Security overrides for transitive dependencies with published advisories.
+# Upper bound = the vulnerable range, value = the first fixed version. Caret
+# ranges keep the bump inside the current major so a re-lock can't silently
+# pull a breaking major.
+overrides:
+  'ajv@<8.18.0': '>=8.18.0'
+  'qs@>=6.7.0 <6.15.2': '>=6.15.2'
+  '@hono/node-server@<1.19.14': '^1.19.14'
+  'path-to-regexp@<0.1.13': '~0.1.13'
+  'path-to-regexp@>=8.0.0 <8.4.2': '^8.4.2'
+  'fast-uri@<3.1.2': '>=3.1.2'
+  'ip-address@<10.1.1': '>=10.1.1'
+  'hono@<4.12.25': '^4.12.25'
+  'vite@<6.4.3': '^6.4.3'
+  'js-yaml@<4.2.0': '^4.2.0'

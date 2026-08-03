@@ -55,6 +55,22 @@ describe("postToDiscord", () => {
     expect(payload.content).toBe("hello");
   });
 
+  it("always sends allowed_mentions: { parse: [] } so @everyone/@here never pings", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await postToDiscord({ content: "@everyone @here <@123> deploy failed" });
+    const payload = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
+    expect(payload.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("does not let a caller re-enable mention parsing", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await postToDiscord({ content: "x", ...{ allowed_mentions: { parse: ["everyone"] } } } as never);
+    const payload = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
+    expect(payload.allowed_mentions).toEqual({ parse: [] });
+  });
+
   it("lets the caller override the username (e.g. the drift notifier)", async () => {
     process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
     const fetchSpy = stubFetch();

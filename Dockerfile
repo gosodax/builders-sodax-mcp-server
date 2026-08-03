@@ -3,13 +3,17 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.12.0 --activate
 
 # Copy package files
-COPY package.json pnpm-lock.yaml* ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile
+# Install dependencies.
+# --ignore-scripts: no dependency lifecycle script runs during the build. pnpm
+# >=10 already blocks dependency build scripts (see allowBuilds in
+# pnpm-workspace.yaml); this also skips the project's own husky `prepare` hook,
+# which is useless in an image with no .git.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source
 COPY . .
@@ -24,10 +28,10 @@ WORKDIR /app
 
 # Install pnpm and curl (curl is used by the Docker healthcheck)
 RUN apk add --no-cache curl && \
-    corepack enable && corepack prepare pnpm@9.15.0 --activate
+    corepack enable && corepack prepare pnpm@11.12.0 --activate
 
 # Copy package files
-COPY package.json pnpm-lock.yaml* ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Install production dependencies only.
 # --ignore-scripts: skip lifecycle hooks (e.g. the husky `prepare` script,

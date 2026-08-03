@@ -12,8 +12,12 @@
  *                             frozen contract (only for endpoints whose
  *                             service returns a typed shape)
  *
- * The CLI entrypoint (`src/scripts/checkDrift.ts`) exits non-zero on drift;
- * the startup call in `src/index.ts` is fire-and-forget and never throws.
+ * The CLI entrypoint (`src/scripts/checkDrift.ts`) exits non-zero on drift AND
+ * when the check could not run at all (`report.ran === false`, e.g. the spec
+ * could not be fetched or parsed) — a CI gate must never pass just because the
+ * network failed. The startup call in `src/index.ts` is fire-and-forget: it
+ * ignores the report entirely, so an unreachable docs endpoint never blocks
+ * server boot.
  *
  * When called with `{ notify: true }` (prod server startup only) and drift is
  * detected, a summary is POSTed to `DISCORD_WEBHOOK_URL` if that env var is
@@ -354,6 +358,15 @@ interface DriftIssue {
 }
 
 export interface DriftReport {
+  /**
+   * True when the check actually completed (spec fetched AND parsed). False
+   * means the comparison never ran, so `hasDrift: false` carries NO signal.
+   * Callers that gate on drift (CI) must treat `ran: false` as a failure;
+   * the fire-and-forget startup call ignores it.
+   */
+  ran: boolean;
+  /** Human-readable cause when `ran` is false; undefined when `ran` is true. */
+  reason?: string;
   hasDrift: boolean;
   summary: {
     totalEndpoints: number;
@@ -374,6 +387,9 @@ export interface DriftCheckOptions {
   notify?: boolean;
 }
 
+/** The only path-item keys that are HTTP operations per the OpenAPI spec. */
+const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+
 /** Normalize an OpenAPI path with `{param}` placeholders to `:param` form. */
 function normalizePath(path: string): string {
   return path.replace(/\{([^}]+)\}/g, ":$1");
@@ -384,22 +400,27 @@ function normalizePath(path: string): string {
  * so callers (CLI vs. startup) can decide how to react.
  */
 export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<DriftReport> {
-  const emptyReport: DriftReport = {
+  const notRunReport = (reason: string): DriftReport => ({
+    ran: false,
+    reason,
     hasDrift: false,
     summary: { totalEndpoints: 0, endpointGaps: 0, paramGaps: 0, requiredGaps: 0, fieldGaps: 0, uncovered: 0 },
-  };
+  });
+
+  const specUrl = `${SODAX_API_BASE_URL}/docs-json`;
 
   let spec: OpenApiSpec;
   try {
-    spec = await fetchJson<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
+    spec = await fetchJson<OpenApiSpec>(specUrl, { timeout: 10000 });
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     logger.warn({ err: error }, "⚠️  API drift check: could not fetch OpenAPI spec");
-    return emptyReport;
+    return notRunReport(`could not fetch OpenAPI spec from ${specUrl}: ${detail}`);
   }
 
   if (!spec?.paths) {
     logger.warn("⚠️  API drift check: could not parse OpenAPI spec");
-    return emptyReport;
+    return notRunReport(`could not parse OpenAPI spec from ${specUrl}: response has no "paths" object`);
   }
 
   const components = spec.components?.schemas;
@@ -410,6 +431,10 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
 
   for (const [path, methods] of Object.entries(spec.paths)) {
     for (const method of Object.keys(methods)) {
+      // A path item's siblings include non-operation keys (`parameters`,
+      // `summary`, `description`, `servers`, `$ref`). Treating those as HTTP
+      // methods invents endpoints like "PARAMETERS /foo" → false CI failures.
+      if (!HTTP_METHODS.has(method.toLowerCase())) continue;
       const key: EndpointKey = `${method.toUpperCase()} ${normalizePath(path)}`;
       if (IGNORED_PATHS[key]) continue;
       if (TOOL_CONTRACT[key]) coveredKeys.push(key);
@@ -578,7 +603,7 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
     if (delivered) logger.info("📣 Drift notifier: posted drift summary to Discord");
   }
 
-  return { hasDrift, summary };
+  return { ran: true, hasDrift, summary };
 }
 
 /**
@@ -625,6 +650,17 @@ function buildDriftReportText(
  * then the full report inside a fenced block. The report body is truncated so
  * the whole payload stays within `DISCORD_CONTENT_LIMIT`.
  */
+/**
+ * Replace every backtick in untrusted text with U+02CB (MODIFIER LETTER GRAVE
+ * ACCENT), a visually near-identical character Discord does not treat as
+ * markup. Endpoint paths and param names come from the upstream OpenAPI spec,
+ * so a ``` in one of them would otherwise close the fenced block early and let
+ * the rest of the report render as markdown.
+ */
+function neutralizeBackticks(text: string): string {
+  return text.replace(/`/g, "ˋ");
+}
+
 function buildDiscordContent(summary: DriftReport["summary"], reportText: string): string {
   const issueCount = summary.endpointGaps + summary.paramGaps + summary.requiredGaps + summary.fieldGaps;
   const header = [
@@ -642,7 +678,7 @@ function buildDiscordContent(summary: DriftReport["summary"], reportText: string
   const truncationMarker = "\n… (report truncated)";
   const budget = DISCORD_CONTENT_LIMIT - header.length - fenceOpen.length - fenceClose.length;
 
-  let body = reportText;
+  let body = neutralizeBackticks(reportText);
   if (body.length > budget) {
     body = `${body.slice(0, Math.max(0, budget - truncationMarker.length))}${truncationMarker}`;
   }

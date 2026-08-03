@@ -82,6 +82,41 @@ function trackToolCall(
   });
 }
 
+/**
+ * Never let telemetry break a tool call (audit analytics-posthog:I-1).
+ *
+ * `trackToolCall` used to run inside the handler's own `try`, so a synchronous
+ * throw from `posthog.capture` (bad key, client in a bad state, serialization
+ * failure) would be caught by the `catch` below — converting a *successful*
+ * tool call into a client-visible error and double-tracking it. Tracking now
+ * runs through this wrapper, which swallows its own failures.
+ */
+function safeTrackToolCall(
+  toolName: string,
+  durationMs: number,
+  success: boolean,
+  clientId?: string,
+  error?: string,
+): void {
+  try {
+    trackToolCall(toolName, durationMs, success, clientId, error);
+  } catch {
+    // Telemetry is strictly best-effort. Swallow — deliberately not logged
+    // here to avoid a noisy log line on every call if PostHog is misbehaving.
+  }
+}
+
+/**
+ * MCP tools in this server signal failure by *returning* `{ isError: true }`
+ * rather than throwing (that is the MCP tool-result convention), so a resolved
+ * promise is not evidence of success. Without this check every call was tracked
+ * as `success: true` and the PostHog error rate was structurally always 0
+ * (audit analytics-posthog:L-1).
+ */
+function isErrorResult(result: unknown): boolean {
+  return typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true;
+}
+
 // ── Server wrapper ───────────────────────────────────────────────────
 
 /**
@@ -104,14 +139,25 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
     if (typeof handler === "function") {
       allArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
         const start = Date.now();
+        let result: unknown;
         try {
-          const result = await (handler as (...args: unknown[]) => unknown)(...handlerArgs);
-          trackToolCall(toolName, Date.now() - start, true, clientId);
-          return result;
+          result = await (handler as (...args: unknown[]) => unknown)(...handlerArgs);
         } catch (err) {
-          trackToolCall(toolName, Date.now() - start, false, clientId, String(err));
+          // A genuine throw (handler bug / unhandled rejection). The message is
+          // the already-sanitized error surface produced by services/http.ts —
+          // never raw upstream body text or a full URL.
+          safeTrackToolCall(toolName, Date.now() - start, false, clientId, String(err));
           throw err;
         }
+        // Tracking sits OUTSIDE the try so it can never turn a good call bad.
+        safeTrackToolCall(
+          toolName,
+          Date.now() - start,
+          !isErrorResult(result),
+          clientId,
+          isErrorResult(result) ? "tool_returned_is_error" : undefined,
+        );
+        return result;
       };
     }
 

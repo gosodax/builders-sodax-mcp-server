@@ -79,6 +79,52 @@ function seedToolRegistry(): void {
   registerSolverRelayTools(recordingServer);
 }
 
+// ── DNS-rebinding protection (audit http-entrypoint-transport:M-1) ────
+//
+// A DNS-rebinding attack works from inside a *browser*: an attacker page
+// re-points a hostname it controls at 127.0.0.1 (or an internal IP) and then
+// makes the victim's browser talk to this MCP server. Every such request
+// carries an `Origin` header naming the attacker's site, so origin allow-
+// listing is what actually stops it. Non-browser MCP clients (Claude Desktop,
+// Cursor, the SDK client, curl) send no `Origin` at all.
+//
+// The SDK's check (`validateRequestHeaders`) is deliberately asymmetric:
+//   - `allowedHosts`  — rejects when the `Host` header is missing OR not listed.
+//   - `allowedOrigins` — rejects only when an `Origin` header is *present* and
+//                        not listed; a request without `Origin` passes.
+//
+// So we enable protection with an ORIGIN allowlist by default and leave the
+// HOST allowlist empty (opt-in via env). That is permissive-but-explicit: it
+// blocks the browser-driven rebinding case without breaking any existing
+// non-browser client, and without depending on the exact `Host` value the
+// reverse proxy (Coolify/Traefik) forwards, which would hard-fail every
+// request the moment the deployed hostname changed.
+//
+// Override with comma-separated env vars:
+//   MCP_ALLOWED_ORIGINS — browser origins permitted to call /mcp and /sse.
+//   MCP_ALLOWED_HOSTS   — if set, the `Host` header must match exactly
+//                         (include the port, e.g. "localhost:3000"). Set this
+//                         once the deployed hostname is known to be stable for
+//                         defense in depth.
+const DEFAULT_ALLOWED_ORIGINS = ["https://builders.sodax.com", "http://localhost:3000", "http://127.0.0.1:3000"];
+
+function parseOriginList(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(value => value.length > 0);
+}
+
+const ALLOWED_ORIGINS = parseOriginList(process.env.MCP_ALLOWED_ORIGINS);
+const ALLOWED_HOSTS = parseOriginList(process.env.MCP_ALLOWED_HOSTS);
+
+/** Shared DNS-rebinding options for both HTTP transports. */
+const DNS_REBINDING_OPTIONS = {
+  enableDnsRebindingProtection: true,
+  allowedOrigins: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : DEFAULT_ALLOWED_ORIGINS,
+  ...(ALLOWED_HOSTS.length > 0 ? { allowedHosts: ALLOWED_HOSTS } : {}),
+} as const;
+
 // GitBook proxy state
 let gitbookToolsRegistered = false;
 let gitbookInitAttempts = 0;
@@ -151,7 +197,13 @@ async function runHTTP(): Promise<void> {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+          // audit http-entrypoint-transport:M-2 — the lucide icon library is
+          // now vendored under public/vendor/ and served from our own origin,
+          // so no third-party CDN is allowed to execute script here.
+          // 'unsafe-inline' is still required: the landing page carries inline
+          // <script> blocks (GTM, lucide.createIcons(), the status topbar).
+          // Removing it needs per-script nonces/hashes — tracked separately.
+          scriptSrc: ["'self'", "'unsafe-inline'"],
           styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
           fontSrc: ["'self'", "https://fonts.gstatic.com"],
           imgSrc: ["'self'", "data:", "https:"],
@@ -270,6 +322,7 @@ async function runHTTP(): Promise<void> {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
+      ...DNS_REBINDING_OPTIONS,
     });
     res.on("close", () => transport.close());
     await requestServer.connect(transport);
@@ -282,7 +335,7 @@ async function runHTTP(): Promise<void> {
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(clientId);
-    const transport = new SSEServerTransport("/messages", res);
+    const transport = new SSEServerTransport("/messages", res, { ...DNS_REBINDING_OPTIONS });
     sseSessions.set(transport.sessionId, { transport, server: sseServer });
 
     res.on("close", () => {
@@ -343,6 +396,13 @@ async function runHTTP(): Promise<void> {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info(
+      {
+        allowedOrigins: DNS_REBINDING_OPTIONS.allowedOrigins,
+        allowedHosts: ALLOWED_HOSTS.length > 0 ? ALLOWED_HOSTS : "(host validation disabled)",
+      },
+      "DNS-rebinding protection enabled for /mcp and /sse",
+    );
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,

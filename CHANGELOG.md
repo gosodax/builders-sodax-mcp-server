@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.5.0...builders-sodax-mcp-server-v1.6.0) (2026-07-17)
+
+
+### Features
+
+* **ui:** refresh landing page — live counts, sodax.com footer, dark hero ([#66](https://github.com/gosodax/builders-sodax-mcp-server/issues/66)) ([a03cd04](https://github.com/gosodax/builders-sodax-mcp-server/commit/a03cd04aa4001205afd52364c72e64f00577ac47))
+
 ## [1.5.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.4.0...builders-sodax-mcp-server-v1.5.0) (2026-07-06)
 
 

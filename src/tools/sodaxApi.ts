@@ -2,7 +2,7 @@
  * SODAX API Tools
  *
  * MCP tool definitions for accessing live SODAX API data.
- * Provides 28 tools for developers and integration partners.
+ * Provides SODAX API tools for developers and integration partners.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -30,7 +30,7 @@ import {
   getPartners,
   getRelayChainIdMap,
   getSolverIntent,
-  getSupportedChains,
+  getSupportedChainsDetailed,
   getSwapTokens,
   getTokenSupply,
   getTotalSupply,
@@ -39,6 +39,7 @@ import {
   getUserTransactions,
   getVolume,
   getVolumeStats,
+  resolveChainSupport,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
 import { registerAppTool } from "../services/toolRegistry.js";
@@ -72,12 +73,57 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ format }) => {
       try {
-        const chains = await getSupportedChains();
+        const chains = await getSupportedChainsDetailed();
+        // JSON: the {key, name} objects. Markdown: a readable "Name — `key`"
+        // list, since the raw keys (0x2105.base, injective-1) read awkwardly.
+        // The key is what other tools take as `chainId`, so it's always shown.
+        const text =
+          format === ResponseFormat.JSON
+            ? formatResponse(chains, format)
+            : `## Supported Chains (${chains.length})\n\n${chains.map(c => `- **${c.name}** — \`${c.key}\``).join("\n")}`;
+        return {
+          content: [{ type: "text", text }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Tool: Check chain support (name/ticker → supported?)
+  registerAppTool(
+    server,
+    "config",
+    "sodax_check_chain_support",
+    "Check whether SODAX supports a specific blockchain, given its name, ticker, or chain key (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
+    {
+      chain: z
+        .string()
+        .min(1)
+        .describe("Chain name, ticker, or key — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base'"),
+    },
+    READ_ONLY,
+    async ({ chain }) => {
+      try {
+        const result = await resolveChainSupport(chain);
+        if (result.supported && result.chainKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains.`,
+              },
+            ],
+          };
+        }
         return {
           content: [
             {
               type: "text",
-              text: formatResponse(chains, format),
+              text: `❌ SODAX does not currently support a chain matching "${chain}".\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}\n\nIf you expected a match, try the exact chain key or call sodax_get_supported_chains.`,
             },
           ],
         };
@@ -101,7 +147,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list.",
+          "Filter tokens by spoke chain key (e.g. 'sonic', 'ethereum', '0x2105.base', 'hedera'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -652,7 +698,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list.",
+          "Filter by source spoke chain key (e.g. 'sonic', 'ethereum', 'hedera'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)

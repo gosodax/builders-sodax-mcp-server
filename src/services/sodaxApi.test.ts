@@ -116,3 +116,86 @@ describe("getVolumeStats", () => {
     expect(mockFetchJson).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("resolveChainKey", () => {
+  const live = ["sonic", "0x2105.base", "0xa4b1.arbitrum", "hedera", "0x1.icon", "robinhood"];
+
+  it("matches an exact chain key", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("hedera", live)).toEqual({ key: "hedera", matchedAs: "hedera" });
+  });
+
+  it("resolves a ticker/alias case-insensitively (HBAR → hedera)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("HBAR", live)).toEqual({ key: "hedera", matchedAs: "hbar" });
+  });
+
+  it("resolves the human suffix of a dotted key (arbitrum → 0xa4b1.arbitrum)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("Arbitrum", live)).toEqual({ key: "0xa4b1.arbitrum", matchedAs: "arbitrum" });
+  });
+
+  it("returns null for an unknown chain", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("dogechain", live)).toEqual({ key: null, matchedAs: null });
+  });
+});
+
+describe("resolveChainSupport", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports supported:true against the live registry (Hedera)", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "hedera", "0x2105.base"]);
+
+    const result = await mod.resolveChainSupport("Hedera");
+
+    expect(result.supported).toBe(true);
+    expect(result.chainKey).toBe("hedera");
+  });
+
+  it("reports supported:false (and no key) when an alias names a chain not in the live set", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    // hbar aliases hedera, but the live registry does NOT include it here
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "ethereum"]);
+
+    const result = await mod.resolveChainSupport("HBAR");
+
+    expect(result.supported).toBe(false);
+    // never assert a key the live registry didn't confirm
+    expect(result.chainKey).toBeNull();
+  });
+
+  it("resolves an alias to the live key spelling even if the live key is reformatted", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    // Live registry moved hedera to an EVM-style key; alias map still says "hedera"
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x128.hedera"]);
+
+    const result = await mod.resolveChainSupport("HBAR");
+
+    expect(result.supported).toBe(true);
+    expect(result.chainKey).toBe("0x128.hedera");
+    expect(result.displayName).toBe("Hedera");
+  });
+
+  it("excludes wound-down ICON from support and the count", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "hedera", "0x1.icon"]);
+
+    const result = await mod.resolveChainSupport("icon");
+
+    expect(result.supported).toBe(false);
+    expect(result.supportedChains).not.toContain("0x1.icon");
+    expect(result.supportedChains).toHaveLength(2);
+  });
+});

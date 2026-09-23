@@ -9,9 +9,9 @@
   <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_Builders_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
 </p>
 
-SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 19+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
+SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 20+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
 
-**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 19+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.
+**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 20+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.
 
 ## Quick Start
 
@@ -45,11 +45,12 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 
 ## Tools
 
-### Network Configuration (8 tools)
+### Network Configuration (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `sodax_get_supported_chains` | List all blockchain networks supported by SODAX for cross-chain swaps |
+| `sodax_check_chain_support` | Check whether SODAX supports a chain by name, ticker, or key (e.g. "Hedera", "HBAR") |
 | `sodax_get_swap_tokens` | Get available tokens for cross-network swapping, optionally filtered by chain |
 | `sodax_get_all_config` | Get full SODAX configuration (chains + tokens) in one call |
 | `sodax_get_all_chains_configs` | Detailed spoke chain configs with contract addresses and RPCs |
@@ -111,15 +112,15 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 
 ### Cross-Chain SDK Documentation (dynamic)
 
-Tools prefixed with `docs_` are automatically proxied from the GitBook MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
+Tools prefixed with `docs_` are automatically proxied from the SODAX docs MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
 
 | Tool | Description |
 |------|-------------|
-| `docs_searchDocumentation` | Search cross-chain SDK docs, integration guides, and code examples |
-| `docs_getPage` | Fetch a full documentation page |
+| `docs_search_sodax_docs` | Search cross-chain SDK docs, integration guides, and code examples |
+| `docs_query_docs_filesystem_sodax_docs` | Read a full documentation page from the docs filesystem |
 | `docs_list_tools` | List all available documentation tools |
-| `docs_health` | Check GitBook MCP connection status |
-| `docs_refresh` | Refresh the tools list from GitBook |
+| `docs_health` | Check SDK docs MCP connection status |
+| `docs_refresh` | Refresh the tools list from the docs MCP |
 
 ## Example Prompts
 
@@ -159,7 +160,7 @@ Once connected, try asking your AI coding assistant:
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (xcall-relay.nw.iconblockchain.xyz) | Cross-chain packet tracking | none |
 | Aggregator | Cross-chain swap token data | 2 min |
-| GitBook (docs.sodax.com) | SDK documentation | Auto-sync |
+| SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 
 ## Local Development
 

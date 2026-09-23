@@ -5,7 +5,13 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_KEYS, SODAX_API_BASE_URL } from "../constants.js";
+import {
+  CACHE_DURATION_MS,
+  CHAIN_ALIASES,
+  NETWORK_COUNT_EXCLUDED_CHAIN_KEYS,
+  SODAX_API_BASE_URL,
+  chainDisplayName,
+} from "../constants.js";
 import type {
   MoneyMarketAsset,
   OrderbookEntry,
@@ -70,6 +76,23 @@ export async function getSupportedChains(): Promise<string[]> {
   }
 }
 
+export interface ChainInfo {
+  /** Canonical chain key — pass this as `chainId` to other tools. */
+  key: string;
+  /** Human-readable name, e.g. "Injective" for "injective-1". */
+  name: string;
+}
+
+/**
+ * Supported chains with human display names attached. `getSupportedChains`
+ * returns raw keys (what the API and other tools use); this pairs each with a
+ * readable name for presentation.
+ */
+export async function getSupportedChainsDetailed(): Promise<ChainInfo[]> {
+  const chains = await getSupportedChains();
+  return chains.map(key => ({ key, name: chainDisplayName(key) }));
+}
+
 /**
  * Count of publicly integrated networks, mirroring the frontend's
  * stats.ts fetchIntegratedNetworksCount(): the length of /config/spoke/chains
@@ -115,6 +138,78 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
     logger.error({ err: error }, "Failed to fetch swap tokens");
     throw new Error("Failed to fetch swap tokens from SODAX API");
   }
+}
+
+export interface ChainSupport {
+  query: string;
+  /** True when the query resolved to a chain in the LIVE registry. */
+  supported: boolean;
+  /** Canonical live chain key (e.g. "hedera", "0x2105.base") if resolved. */
+  chainKey: string | null;
+  /** Human display name of the resolved chain, if any. */
+  displayName: string | null;
+  /** How the query matched (the alias/key/suffix that resolved it), if any. */
+  matchedAs: string | null;
+  /** The live supported-chain keys, for context and suggestions. */
+  supportedChains: string[];
+}
+
+/**
+ * Resolve a human chain name / ticker / key to a key that IS in `liveChains`.
+ *
+ * The returned key is always drawn from `liveChains` (never a hardcoded alias
+ * spelling), and all comparisons are case-insensitive, so a match can never be
+ * defeated by the live registry re-casing or reformatting a key. A live match
+ * (exact key, dotted suffix, or Cosmos `<slug>-<n>` slug) is tried before the
+ * alias table, and an alias is resolved back to the live key it names.
+ */
+export function resolveChainKey(query: string, liveChains: string[]): { key: string | null; matchedAs: string | null } {
+  const norm = query.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!norm) return { key: null, matchedAs: null };
+
+  // Does `needle` name a live key — as the key itself, its dotted suffix, or
+  // its Cosmos slug (strip `-<n>`)? All lower-cased.
+  const matchLive = (needle: string): string | undefined =>
+    liveChains.find(k => {
+      const kl = k.toLowerCase();
+      return kl === needle || kl.split(".").pop() === needle || kl.replace(/-\d+$/, "") === needle;
+    });
+
+  // 1. The query directly names a live chain.
+  const direct = matchLive(norm);
+  if (direct) return { key: direct, matchedAs: norm };
+
+  // 2. The query is a known ticker/alias — map it to its canonical key, then
+  //    resolve THAT back to the live registry's spelling.
+  for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
+    if (!aliases.includes(norm)) continue;
+    const cl = canonical.toLowerCase();
+    const viaAlias = matchLive(cl) ?? matchLive(cl.split(".").pop() ?? cl) ?? matchLive(cl.replace(/-\d+$/, ""));
+    if (viaAlias) return { key: viaAlias, matchedAs: norm };
+  }
+
+  return { key: null, matchedAs: null };
+}
+
+/**
+ * Answer "does SODAX support chain X?" in one hop. Resolves a name/ticker/key
+ * against the LIVE `/config/spoke/chains` registry (minus wound-down chains, to
+ * match the app-wide network count), so the answer is always current.
+ */
+export async function resolveChainSupport(query: string): Promise<ChainSupport> {
+  const all = await getSupportedChains();
+  // Exclude wound-down chains (ICON) so this agrees with /health, /api, the
+  // landing page and README, which all report the filtered count.
+  const supportedChains = all.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key));
+  const { key, matchedAs } = resolveChainKey(query, supportedChains);
+  return {
+    query,
+    supported: key !== null,
+    chainKey: key,
+    displayName: key ? chainDisplayName(key) : null,
+    matchedAs,
+    supportedChains,
+  };
 }
 
 /**

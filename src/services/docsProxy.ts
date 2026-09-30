@@ -1,7 +1,7 @@
 /**
- * GitBook MCP Proxy Service
+ * Mintlify MCP Proxy Service
  *
- * Connects to the SODAX SDK documentation MCP server (GitBook)
+ * Connects to the SODAX SDK documentation MCP server (Mintlify)
  * and proxies its tools through our builders server.
  *
  * This keeps SDK docs in sync as docs.sodax.com updates.
@@ -9,16 +9,16 @@
 
 import { logger } from "./logger.js";
 
-// GitBook MCP endpoint
-const GITBOOK_MCP_URL = "https://docs.sodax.com/~gitbook/mcp";
-const GITBOOK_TIMEOUT_MS = 30_000;
+// Mintlify MCP endpoint
+const DOCS_MCP_URL = "https://docs.sodax.com/mcp";
+const DOCS_TIMEOUT_MS = 30_000;
 
 // Cache for tools list (refresh every 10 minutes)
-let cachedTools: GitBookTool[] | null = null;
+let cachedTools: DocsTool[] | null = null;
 let toolsCacheTime = 0;
 const TOOLS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-export interface GitBookTool {
+export interface DocsTool {
   name: string;
   description: string;
   inputSchema: {
@@ -28,7 +28,7 @@ export interface GitBookTool {
   };
 }
 
-export interface GitBookToolResult {
+export interface DocsToolResult {
   content: Array<{
     type: string;
     text?: string;
@@ -38,12 +38,12 @@ export interface GitBookToolResult {
 }
 
 /**
- * GitBook returns either plain JSON or SSE-framed JSON
+ * Mintlify returns either plain JSON or SSE-framed JSON
  * (`event: message\ndata: {...}\n\n`). Pull the JSON out either way.
  * Returns the raw text if it parses as neither — notifications come back
  * with an empty body and shouldn't surface as errors.
  */
-function parseGitBookResponse(text: string): unknown {
+function parseDocsResponse(text: string): unknown {
   if (!text) return text;
   if (/^(event:|data:)/m.test(text)) {
     for (const line of text.split("\n")) {
@@ -64,30 +64,30 @@ function parseGitBookResponse(text: string): unknown {
   }
 }
 
-async function postGitBook(body: unknown): Promise<unknown> {
-  const response = await fetch(GITBOOK_MCP_URL, {
+async function postDocs(body: unknown): Promise<unknown> {
+  const response = await fetch(DOCS_MCP_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(GITBOOK_TIMEOUT_MS),
+    signal: AbortSignal.timeout(DOCS_TIMEOUT_MS),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText} from GitBook MCP`);
+    throw new Error(`HTTP ${response.status} ${response.statusText} from Mintlify MCP`);
   }
 
   const text = await response.text();
-  return parseGitBookResponse(text);
+  return parseDocsResponse(text);
 }
 
 /**
- * Send a JSON-RPC request to the GitBook MCP
+ * Send a JSON-RPC request to the Mintlify MCP
  */
 async function sendMcpRequest(method: string, params?: unknown): Promise<unknown> {
-  const raw = await postGitBook({
+  const raw = await postDocs({
     jsonrpc: "2.0",
     id: Date.now(),
     method,
@@ -122,20 +122,20 @@ async function initializeConnection(): Promise<void> {
     });
 
     // Send initialized notification (fire-and-forget; response is ignored)
-    await postGitBook({
+    await postDocs({
       jsonrpc: "2.0",
       method: "notifications/initialized",
     });
   } catch (error) {
     // Some servers don't require initialization, continue anyway
-    logger.debug({ err: error }, "GitBook MCP init (optional) failed");
+    logger.debug({ err: error }, "Mintlify MCP init (optional) failed");
   }
 }
 
 /**
- * Fetch available tools from the GitBook MCP server
+ * Fetch available tools from the Mintlify MCP server
  */
-export async function fetchGitBookTools(): Promise<GitBookTool[]> {
+export async function fetchDocsTools(): Promise<DocsTool[]> {
   // Return cached tools if still valid
   if (cachedTools && Date.now() - toolsCacheTime < TOOLS_CACHE_DURATION) {
     return cachedTools;
@@ -146,28 +146,28 @@ export async function fetchGitBookTools(): Promise<GitBookTool[]> {
     await initializeConnection();
 
     // Fetch tools list
-    const result = (await sendMcpRequest("tools/list")) as { tools: GitBookTool[] };
+    const result = (await sendMcpRequest("tools/list")) as { tools: DocsTool[] };
 
     cachedTools = result.tools || [];
     toolsCacheTime = Date.now();
 
     if (cachedTools.length > 0) {
-      logger.debug({ toolCount: cachedTools.length }, "Fetched tools from GitBook MCP");
+      logger.debug({ toolCount: cachedTools.length }, "Fetched tools from Mintlify MCP");
     } else {
-      logger.warn("GitBook MCP returned empty tools list");
+      logger.warn("Mintlify MCP returned empty tools list");
     }
     return cachedTools;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch GitBook tools");
+    logger.error({ err: error }, "Failed to fetch Mintlify tools");
     // Return cached tools even if expired, or empty array
     return cachedTools || [];
   }
 }
 
 /**
- * Call a tool on the GitBook MCP server
+ * Call a tool on the Mintlify MCP server
  */
-export async function callGitBookTool(toolName: string, args: Record<string, unknown>): Promise<GitBookToolResult> {
+export async function callDocsTool(toolName: string, args: Record<string, unknown>): Promise<DocsToolResult> {
   try {
     // Ensure connection is initialized
     await initializeConnection();
@@ -175,24 +175,24 @@ export async function callGitBookTool(toolName: string, args: Record<string, unk
     const result = (await sendMcpRequest("tools/call", {
       name: toolName,
       arguments: args,
-    })) as GitBookToolResult;
+    })) as DocsToolResult;
 
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return {
-      content: [{ type: "text", text: `Error calling GitBook tool: ${message}` }],
+      content: [{ type: "text", text: `Error calling Mintlify tool: ${message}` }],
       isError: true,
     };
   }
 }
 
 /**
- * Check if the GitBook MCP is reachable
+ * Check if the Mintlify MCP is reachable
  */
-export async function checkGitBookHealth(): Promise<{ healthy: boolean; toolCount: number }> {
+export async function checkDocsHealth(): Promise<{ healthy: boolean; toolCount: number }> {
   try {
-    const tools = await fetchGitBookTools();
+    const tools = await fetchDocsTools();
     return { healthy: true, toolCount: tools.length };
   } catch {
     return { healthy: false, toolCount: 0 };
@@ -200,25 +200,25 @@ export async function checkGitBookHealth(): Promise<{ healthy: boolean; toolCoun
 }
 
 /**
- * Names of the currently cached GitBook tools WITHOUT triggering a network
+ * Names of the currently cached Mintlify tools WITHOUT triggering a network
  * fetch. Returns a fresh array of the cached tool names (even if expired), or an
  * empty array if nothing has been cached yet. Names are immutable strings and
  * the array is a copy, so callers cannot mutate the cache through it. Lets
- * display-count callers avoid blocking on a 30s GitBook request when the cache
+ * display-count callers avoid blocking on a 30s Mintlify request when the cache
  * is cold or expired.
  */
-export function getCachedGitBookToolNames(): string[] {
+export function getCachedDocsToolNames(): string[] {
   return (cachedTools ?? []).map(t => t.name);
 }
 
 /**
- * GitBook proxy health derived from the current cache WITHOUT a network fetch:
+ * Mintlify proxy health derived from the current cache WITHOUT a network fetch:
  * `healthy` is true once tools have been cached (a successful fetch happened),
  * `toolCount` is the cached proxy-tool count. Lets `/health` report proxy
- * status without blocking up to 30s on a live fetch when GitBook is
- * unreachable — unlike `checkGitBookHealth()`, which awaits `fetchGitBookTools()`.
+ * status without blocking up to 30s on a live fetch when Mintlify is
+ * unreachable — unlike `checkDocsHealth()`, which awaits `fetchDocsTools()`.
  */
-export function getCachedGitBookHealth(): { healthy: boolean; toolCount: number } {
+export function getCachedDocsHealth(): { healthy: boolean; toolCount: number } {
   const toolCount = cachedTools?.length ?? 0;
   return { healthy: toolCount > 0, toolCount };
 }
@@ -226,7 +226,7 @@ export function getCachedGitBookHealth(): { healthy: boolean; toolCount: number 
 /**
  * Clear the tools cache to force a refresh
  */
-export function clearGitBookCache(): void {
+export function clearDocsCache(): void {
   cachedTools = null;
   toolsCacheTime = 0;
 }

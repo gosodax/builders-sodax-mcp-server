@@ -30,7 +30,7 @@ const fakeServer = { tool: () => ({}) } as unknown as McpServer;
 
 beforeAll(() => {
   // Populate the registry the same way createServer() does (minus the
-  // network-dependent GitBook proxy — its tools are dynamic by design).
+  // network-dependent Mintlify proxy — its tools are dynamic by design).
   registerSodaxApiTools(fakeServer);
   registerSolverRelayTools(fakeServer);
 });

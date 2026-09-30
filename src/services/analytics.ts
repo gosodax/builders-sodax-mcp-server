@@ -21,7 +21,7 @@ const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 
 /**
  * Resolve tool group for PostHog filtering — derived from the tool registry,
- * with a prefix-based fallback for dynamically registered GitBook proxy tools
+ * with a prefix-based fallback for dynamically registered Mintlify proxy tools
  * (docs_*) which are not in the registry.
  */
 function resolveToolGroup(toolName: string): string {

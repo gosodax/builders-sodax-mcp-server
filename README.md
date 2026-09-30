@@ -111,15 +111,15 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 
 ### Cross-Chain SDK Documentation (dynamic)
 
-Tools prefixed with `docs_` are automatically proxied from the GitBook MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
+Tools prefixed with `docs_` are automatically proxied from the Mintlify MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
 
 | Tool | Description |
 |------|-------------|
-| `docs_searchDocumentation` | Search cross-chain SDK docs, integration guides, and code examples |
-| `docs_getPage` | Fetch a full documentation page |
+| `docs_search_sodax_docs` | Search cross-chain SDK docs, integration guides, and code examples |
+| `docs_query_docs_filesystem_sodax_docs` | Read full documentation pages (read-only `head`/`cat` over the docs `.mdx` files) |
 | `docs_list_tools` | List all available documentation tools |
-| `docs_health` | Check GitBook MCP connection status |
-| `docs_refresh` | Refresh the tools list from GitBook |
+| `docs_health` | Check Mintlify MCP connection status |
+| `docs_refresh` | Refresh the tools list from Mintlify |
 
 ## Example Prompts
 
@@ -159,7 +159,7 @@ Once connected, try asking your AI coding assistant:
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (xcall-relay.nw.iconblockchain.xyz) | Cross-chain packet tracking | none |
 | Aggregator | Cross-chain swap token data | 2 min |
-| GitBook (docs.sodax.com) | SDK documentation | Auto-sync |
+| Mintlify (docs.sodax.com) | SDK documentation | Auto-sync |
 
 ## Local Development
 

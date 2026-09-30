@@ -4,7 +4,7 @@
  *
  * Live API data for developers and integration partners.
  * Data fetched live from api.sodax.com.
- * SDK documentation proxied from docs.sodax.com/~gitbook/mcp.
+ * SDK documentation proxied from docs.sodax.com/mcp.
  */
 
 import { readFileSync } from "node:fs";
@@ -20,12 +20,12 @@ import helmet from "helmet";
 import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
-import { fetchGitBookTools, getCachedGitBookHealth } from "./services/gitbookProxy.js";
+import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
-import { getCachedGitBookToolNames, registerGitBookProxyTools } from "./tools/gitbookProxy.js";
+import { getCachedDocsToolNames, registerDocsProxyTools } from "./tools/docsProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
@@ -53,25 +53,25 @@ async function createServer(clientId?: string): Promise<McpServer> {
 
   registerSodaxApiTools(server);
   registerSolverRelayTools(server);
-  await registerGitBookProxyTools(server);
+  await registerDocsProxyTools(server);
 
   return server;
 }
 
 /**
  * Seed the module-level tool registry that `/health`, `/api`, and the landing
- * page read their counts from, without touching GitBook. Only the static SODAX
+ * page read their counts from, without touching Mintlify. Only the static SODAX
  * + relay tools feed those counts — `getStaticToolCounts()` and
  * `getToolNamesByModule()` skip the `sdkDocs` module, whose live total comes
- * from `getGitBookToolNames()`.
+ * from `getDocsToolNames()`.
  *
  * `registerAppTool()` records `{name, module, description}` in the registry as a
  * side effect, so a no-op recording server (whose `tool()` does nothing) is
  * enough — no real `McpServer` is built and no MCP registration runs here; that
  * only happens on the per-request servers. Mirrors the fake server in
- * `toolRegistry.test.ts`. This also skips `registerGitBookProxyTools()`, whose
- * blocking GitBook fetch (up to 30s) would otherwise delay HTTP boot when
- * GitBook is unavailable and `warmGitBookCache()` left the cache empty.
+ * `toolRegistry.test.ts`. This also skips `registerDocsProxyTools()`, whose
+ * blocking Mintlify fetch (up to 30s) would otherwise delay HTTP boot when
+ * Mintlify is unavailable and `warmDocsCache()` left the cache empty.
  */
 function seedToolRegistry(): void {
   const recordingServer = { tool: () => ({}) } as unknown as McpServer;
@@ -79,49 +79,49 @@ function seedToolRegistry(): void {
   registerSolverRelayTools(recordingServer);
 }
 
-// GitBook proxy state
-let gitbookToolsRegistered = false;
-let gitbookInitAttempts = 0;
-const MAX_GITBOOK_RETRIES = 3;
-const GITBOOK_RETRY_DELAY = 5000; // 5 seconds
+// Mintlify proxy state
+let docsToolsRegistered = false;
+let docsInitAttempts = 0;
+const MAX_DOCS_RETRIES = 3;
+const DOCS_RETRY_DELAY = 5000; // 5 seconds
 
 /**
- * Warm the GitBook tools cache at startup with retry logic.
+ * Warm the Mintlify tools cache at startup with retry logic.
  * Tools are cached in the service layer and reused by createServer().
  */
-async function warmGitBookCache(retryCount = 0): Promise<boolean> {
-  gitbookInitAttempts++;
+async function warmDocsCache(retryCount = 0): Promise<boolean> {
+  docsInitAttempts++;
   const attempt = retryCount + 1;
-  logger.info({ attempt, max: MAX_GITBOOK_RETRIES }, "GitBook proxy init attempt");
+  logger.info({ attempt, max: MAX_DOCS_RETRIES }, "Mintlify proxy init attempt");
 
   try {
-    const tools = await fetchGitBookTools();
-    gitbookToolsRegistered = tools.length > 0;
+    const tools = await fetchDocsTools();
+    docsToolsRegistered = tools.length > 0;
 
     if (tools.length > 0) {
-      logger.info({ toolCount: tools.length }, "✅ GitBook proxy initialized");
+      logger.info({ toolCount: tools.length }, "✅ Mintlify proxy initialized");
       return true;
     }
-    logger.warn("⚠️ GitBook returned 0 tools");
+    logger.warn("⚠️ Mintlify returned 0 tools");
   } catch (error) {
-    logger.warn({ err: error, attempt }, "GitBook proxy attempt failed");
+    logger.warn({ err: error, attempt }, "Mintlify proxy attempt failed");
   }
 
   // Retry if we haven't exceeded max attempts
-  if (retryCount < MAX_GITBOOK_RETRIES - 1) {
-    logger.info({ delayMs: GITBOOK_RETRY_DELAY }, "Retrying GitBook proxy init");
-    await new Promise(resolve => setTimeout(resolve, GITBOOK_RETRY_DELAY));
-    return warmGitBookCache(retryCount + 1);
+  if (retryCount < MAX_DOCS_RETRIES - 1) {
+    logger.info({ delayMs: DOCS_RETRY_DELAY }, "Retrying Mintlify proxy init");
+    await new Promise(resolve => setTimeout(resolve, DOCS_RETRY_DELAY));
+    return warmDocsCache(retryCount + 1);
   }
 
-  logger.warn({ maxAttempts: MAX_GITBOOK_RETRIES }, "⚠️ GitBook proxy unavailable. Meta-tools still available.");
+  logger.warn({ maxAttempts: MAX_DOCS_RETRIES }, "⚠️ Mintlify proxy unavailable. Meta-tools still available.");
   return false;
 }
 
 async function runStdio(): Promise<void> {
-  // Warm GitBook cache before creating server
-  logger.info("Initializing GitBook SDK docs proxy...");
-  await warmGitBookCache();
+  // Warm Mintlify cache before creating server
+  logger.info("Initializing Mintlify SDK docs proxy...");
+  await warmDocsCache();
 
   const server = await createServer();
   const transport = new StdioServerTransport();
@@ -130,14 +130,14 @@ async function runStdio(): Promise<void> {
 }
 
 async function runHTTP(): Promise<void> {
-  // Warm GitBook cache before starting HTTP server
-  logger.info("Initializing GitBook SDK docs proxy...");
-  await warmGitBookCache();
+  // Warm Mintlify cache before starting HTTP server
+  logger.info("Initializing Mintlify SDK docs proxy...");
+  await warmDocsCache();
 
   // Seed the tool registry that /health, /api, and the landing page derive
   // their counts from (per-request server instances are only created lazily).
   // Static SODAX + relay tools are all those counts need, so this skips the
-  // GitBook proxy registration and never blocks HTTP boot on a GitBook fetch.
+  // Mintlify proxy registration and never blocks HTTP boot on a Mintlify fetch.
   seedToolRegistry();
 
   const app = express();
@@ -206,9 +206,9 @@ async function runHTTP(): Promise<void> {
       logger.warn({ err: error }, "Failed to fetch integrated networks count for landing page");
     }
     // Non-blocking: derive the docs count from the warmed cache so a cold or
-    // expired GitBook cache can't stall the landing page on a 30s fetch — it
+    // expired Mintlify cache can't stall the landing page on a 30s fetch — it
     // renders with the cached (or meta-only) count instead.
-    const sdkDocsToolCount = getCachedGitBookToolNames().length;
+    const sdkDocsToolCount = getCachedDocsToolNames().length;
     res.type("html").send(renderLandingPage(landingTemplate, { networks, sdkDocsToolCount }));
   };
 
@@ -218,19 +218,19 @@ async function runHTTP(): Promise<void> {
   app.use(express.static(join(__dirname, "public")));
 
   app.get("/health", async (_req: Request, res: Response) => {
-    // Non-blocking: read GitBook health/tool counts from the warmed cache so a
-    // cold or expired cache can't stall the health check on a 30s GitBook fetch
-    // (orchestrators treat a slow /health as unhealthy). warmGitBookCache() and
+    // Non-blocking: read Mintlify health/tool counts from the warmed cache so a
+    // cold or expired cache can't stall the health check on a 30s Mintlify fetch
+    // (orchestrators treat a slow /health as unhealthy). warmDocsCache() and
     // per-request servers keep the cache fresh; docs_health does the live probe.
-    const gitbookHealth = getCachedGitBookHealth();
-    const gitbookToolNames = getCachedGitBookToolNames();
+    const docsHealth = getCachedDocsHealth();
+    const docsToolNames = getCachedDocsToolNames();
     // Per-group breakdown derived from the tool registry. `api` covers backend
     // + solver tools; `relay` the intent-relay tools; `sdkDocs` the dynamic
-    // GitBook proxy.
+    // Mintlify proxy.
     const staticToolCounts = getStaticToolCounts();
     const apiToolCount = staticToolCounts.api;
     const relayToolCount = staticToolCounts.relay;
-    const sdkDocsToolCount = gitbookToolNames.length;
+    const sdkDocsToolCount = docsToolNames.length;
     const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
     // Live integrated-networks count (ICON filtered out), mirroring the
     // frontend. Best-effort: a backend hiccup must not fail the health check,
@@ -258,8 +258,8 @@ async function runHTTP(): Promise<void> {
         sdkDocs: sdkDocsToolCount,
       },
       sdkDocsProxy: {
-        healthy: gitbookHealth.healthy,
-        toolCount: gitbookHealth.toolCount,
+        healthy: docsHealth.healthy,
+        toolCount: docsHealth.toolCount,
       },
     });
   });
@@ -306,8 +306,8 @@ async function runHTTP(): Promise<void> {
 
   app.get("/api", async (_req: Request, res: Response) => {
     // Non-blocking: docs tool list from the warmed cache (see /health) so a cold
-    // or expired GitBook cache can't stall the response on a 30s fetch.
-    const gitbookTools = getCachedGitBookToolNames();
+    // or expired Mintlify cache can't stall the response on a 30s fetch.
+    const docsTools = getCachedDocsToolNames();
 
     // Best-effort live network count for the description; evergreen fallback.
     let networks: number | null = null;
@@ -323,17 +323,17 @@ async function runHTTP(): Promise<void> {
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       // Tool lists derived from the tool registry; sdkDocs reflects the live
-      // GitBook proxy list.
+      // Mintlify proxy list.
       tools: {
         ...getToolNamesByModule(),
-        sdkDocs: gitbookTools,
+        sdkDocs: docsTools,
       },
       sdkDocsProxy: {
-        source: "https://docs.sodax.com/~gitbook/mcp",
-        description: "SDK documentation tools are proxied from GitBook and update automatically",
-        status: gitbookToolsRegistered ? "connected" : "unavailable",
-        initAttempts: gitbookInitAttempts,
-        hint: gitbookToolsRegistered
+        source: "https://docs.sodax.com/mcp",
+        description: "SDK documentation tools are proxied from Mintlify and update automatically",
+        status: docsToolsRegistered ? "connected" : "unavailable",
+        initAttempts: docsInitAttempts,
+        hint: docsToolsRegistered
           ? "docs_* tools are ready to use"
           : "Use docs_list_tools or docs_refresh to check availability",
       },

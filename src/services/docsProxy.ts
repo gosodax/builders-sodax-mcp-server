@@ -44,6 +44,15 @@ const TOOLS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 const FAILED_FETCH_BACKOFF_MS = 60 * 1000;
 let lastFailedFetchAt = 0;
 
+// Concurrent per-request servers can start overlapping fetches. Each fetch takes
+// a sequence number and only applies its outcome if no LATER-started fetch has
+// applied one yet — otherwise a slow failure (e.g. a 30s timeout) finishing after
+// a newer success would re-set lastFailedFetchAt (health stuck false for the
+// whole TTL) or overwrite good tools with an empty list. clearDocsCache() bumps
+// appliedFetchSeq so fetches already in flight at a refresh are discarded too.
+let fetchSeq = 0;
+let appliedFetchSeq = 0;
+
 // MCP session id, if the docs server issues one via the `Mcp-Session-Id`
 // response header. Mintlify currently answers statelessly (no session), so this
 // stays null; captured and echoed back defensively in case that changes.
@@ -186,6 +195,7 @@ export async function fetchDocsTools(options: { force?: boolean } = {}): Promise
     return cachedTools || [];
   }
 
+  const seq = ++fetchSeq;
   try {
     // Initialize connection first
     await initializeConnection();
@@ -200,6 +210,8 @@ export async function fetchDocsTools(options: { force?: boolean } = {}): Promise
       logger.debug({ dropped }, "docs MCP: ignoring non-allowlisted upstream tools");
     }
 
+    if (seq < appliedFetchSeq) return cachedTools || [];
+    appliedFetchSeq = seq;
     cachedTools = allowed;
     toolsCacheTime = Date.now();
 
@@ -212,8 +224,10 @@ export async function fetchDocsTools(options: { force?: boolean } = {}): Promise
     }
     return cachedTools;
   } catch (error) {
-    lastFailedFetchAt = Date.now();
     logger.error({ err: error }, "Failed to fetch SODAX docs tools");
+    if (seq < appliedFetchSeq) return cachedTools || [];
+    appliedFetchSeq = seq;
+    lastFailedFetchAt = Date.now();
     // Return cached tools even if expired, or empty array
     return cachedTools || [];
   }
@@ -297,4 +311,5 @@ export function clearDocsCache(): void {
   cachedTools = null;
   toolsCacheTime = 0;
   lastFailedFetchAt = 0;
+  appliedFetchSeq = fetchSeq;
 }

@@ -105,7 +105,6 @@ function seedToolRegistry(): void {
 }
 
 // SDK docs proxy state
-let docsToolsRegistered = false;
 let docsInitAttempts = 0;
 const MAX_DOCS_RETRIES = 3;
 const DOCS_RETRY_DELAY = 5000; // 5 seconds
@@ -122,7 +121,6 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
   try {
     // force: each startup attempt must reach upstream, not the failure back-off.
     const tools = await fetchDocsTools({ force: true });
-    docsToolsRegistered = tools.length > 0;
 
     if (tools.length > 0) {
       logger.info({ toolCount: tools.length }, "✅ SDK docs proxy initialized");
@@ -342,6 +340,9 @@ async function runHTTP(): Promise<void> {
     // Non-blocking: docs tool list from the warmed cache (see /health) so a cold
     // or expired SDK docs cache can't stall the response on a 30s fetch.
     const docsTools = getCachedDocsToolNames();
+    // Current proxy health, so recovery after startup (a later request or
+    // docs_refresh) and a failed refresh after a good start are both reflected.
+    const docsConnected = getCachedDocsHealth().healthy;
 
     // Best-effort live network count for the description; evergreen fallback.
     let networks: number | null = null;
@@ -365,9 +366,9 @@ async function runHTTP(): Promise<void> {
       sdkDocsProxy: {
         source: "https://docs.sodax.com/mcp",
         description: "SDK documentation tools are proxied from docs.sodax.com (Mintlify) and update automatically",
-        status: docsToolsRegistered ? "connected" : "unavailable",
+        status: docsConnected ? "connected" : "unavailable",
         initAttempts: docsInitAttempts,
-        hint: docsToolsRegistered
+        hint: docsConnected
           ? "docs_* tools are ready to use"
           : "Use docs_list_tools or docs_refresh to check availability",
       },

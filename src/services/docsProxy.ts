@@ -256,8 +256,8 @@ export async function callDocsTool(toolName: string, args: Record<string, unknow
  */
 export async function checkDocsHealth(): Promise<{ healthy: boolean; toolCount: number }> {
   try {
-    const tools = await fetchDocsTools();
-    return { healthy: tools.length > 0, toolCount: tools.length };
+    await fetchDocsTools();
+    return getCachedDocsHealth();
   } catch {
     return { healthy: false, toolCount: 0 };
   }
@@ -277,14 +277,17 @@ export function getCachedDocsToolNames(): string[] {
 
 /**
  * Docs proxy health derived from the current cache WITHOUT a network fetch:
- * `healthy` is true once tools have been cached (a successful fetch happened),
- * `toolCount` is the cached proxy-tool count. Lets `/health` report proxy
+ * `healthy` is true only while tools are cached AND the most recent fetch
+ * succeeded — a failed or empty refresh flips it to false even though the
+ * stale tools stay cached and registered, so a docs endpoint that moves or
+ * goes down after a good fetch is still reported. `toolCount` is the cached
+ * proxy-tool count. Lets `/health` report proxy
  * status without blocking up to 30s on a live fetch when the docs MCP is
  * unreachable — unlike `checkDocsHealth()`, which awaits `fetchDocsTools()`.
  */
 export function getCachedDocsHealth(): { healthy: boolean; toolCount: number } {
   const toolCount = cachedTools?.length ?? 0;
-  return { healthy: toolCount > 0, toolCount };
+  return { healthy: toolCount > 0 && lastFailedFetchAt === 0, toolCount };
 }
 
 /**

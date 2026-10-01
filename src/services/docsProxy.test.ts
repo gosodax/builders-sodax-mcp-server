@@ -96,6 +96,27 @@ describe("docsProxy allowlist", () => {
     expect((await fetchDocsTools({ force: true })).map(t => t.name)).toEqual(["search_sodax_docs"]);
   });
 
+  it("reports unhealthy after a failed refresh even though stale tools stay cached", async () => {
+    vi.useFakeTimers();
+    try {
+      const { fetchDocsTools, getCachedDocsHealth, getCachedDocsToolNames } = await import("./docsProxy.js");
+      expect(await fetchDocsTools()).toHaveLength(2);
+      expect(getCachedDocsHealth()).toEqual({ healthy: true, toolCount: 2 });
+
+      // Cache expires and upstream has gone away.
+      vi.advanceTimersByTime(11 * 60 * 1000);
+      globalThis.fetch = vi.fn(async () => {
+        throw new Error("upstream down");
+      }) as unknown as typeof fetch;
+
+      expect(await fetchDocsTools()).toHaveLength(2); // stale tools still served
+      expect(getCachedDocsToolNames()).toHaveLength(2);
+      expect(getCachedDocsHealth()).toEqual({ healthy: false, toolCount: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backs off after a failed fetch instead of re-hitting upstream on every call", async () => {
     vi.useFakeTimers();
     try {

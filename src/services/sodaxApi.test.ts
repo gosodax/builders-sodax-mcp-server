@@ -135,6 +135,34 @@ describe("resolveChainKey", () => {
     expect(resolveChainKey("Arbitrum", live)).toEqual({ key: "0xa4b1.arbitrum", matchedAs: "arbitrum" });
   });
 
+  it("resolves every CHAINS entry by its display name", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    const { CHAINS } = await import("../constants.js");
+    const allKeys = Object.keys(CHAINS);
+    for (const [key, { name }] of Object.entries(CHAINS)) {
+      expect(resolveChainKey(name, allKeys).key, name).toBe(key);
+    }
+  });
+
+  it("resolves a display name that differs from the key suffix (Avalanche → 0xa86a.avax)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("Avalanche", ["0xa86a.avax", "sonic"]).key).toBe("0xa86a.avax");
+  });
+
+  it.each([
+    ["Avalanche C-Chain", "0xa86a.avax"],
+    ["Robinhood Chain", "robinhood"],
+    ["BNB Smart Chain", "0x38.bsc"],
+    ["Polygon PoS", "0x89.polygon"],
+    ["Hedera Hashgraph", "hedera"],
+    ["Hyper EVM", "hyper"],
+    ["Base mainnet", "0x2105.base"],
+  ])("drops a trailing qualifier (%s → %s)", async (query, expected) => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    const live = ["0xa86a.avax", "robinhood", "0x38.bsc", "0x89.polygon", "hedera", "hyper", "0x2105.base"];
+    expect(resolveChainKey(query, live).key).toBe(expected);
+  });
+
   it("returns null for an unknown chain", async () => {
     const { resolveChainKey } = await import("./sodaxApi.js");
     expect(resolveChainKey("dogechain", live)).toEqual({ key: null, matchedAs: null });

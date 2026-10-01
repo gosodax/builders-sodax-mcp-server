@@ -123,7 +123,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `❌ SODAX does not currently support a chain matching "${chain}".\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}\n\nIf you expected a match, try the exact chain key or call sodax_get_supported_chains.`,
+              text: `❌ No chain matching "${chain}" was found in the live SODAX registry. Check the supported list below before concluding it is unsupported — the chain may be listed under a different name or key.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}\n\nIf you expected a match, try the exact chain key or call sodax_get_supported_chains.`,
             },
           ],
         };

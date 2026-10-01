@@ -154,6 +154,11 @@ export interface ChainSupport {
   supportedChains: string[];
 }
 
+// Trailing words users append to a chain name that never change which chain
+// they mean. Only stripped after a space, so a bare "chain" query is untouched.
+const CHAIN_QUALIFIER_SUFFIX =
+  /\s+(?:smart chain|c-chain|chain|network|mainnet|blockchain|protocol|pos|evm|hashgraph)$/;
+
 /**
  * Resolve a human chain name / ticker / key to a key that IS in `liveChains`.
  *
@@ -175,17 +180,25 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
       return kl === needle || kl.split(".").pop() === needle || kl.replace(/-\d+$/, "") === needle;
     });
 
-  // 1. The query directly names a live chain.
-  const direct = matchLive(norm);
-  if (direct) return { key: direct, matchedAs: norm };
+  // Try the query as typed, then with a trailing qualifier dropped
+  // ("Robinhood Chain", "Avalanche C-Chain", "Polygon PoS", "BNB Smart Chain"),
+  // so common phrasings don't produce a confident "unsupported".
+  const stripped = norm.replace(CHAIN_QUALIFIER_SUFFIX, "");
+  const candidates = stripped && stripped !== norm ? [norm, stripped] : [norm];
 
-  // 2. The query is a known ticker/alias — map it to its canonical key, then
-  //    resolve THAT back to the live registry's spelling.
-  for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
-    if (!aliases.includes(norm)) continue;
-    const cl = canonical.toLowerCase();
-    const viaAlias = matchLive(cl) ?? matchLive(cl.split(".").pop() ?? cl) ?? matchLive(cl.replace(/-\d+$/, ""));
-    if (viaAlias) return { key: viaAlias, matchedAs: norm };
+  for (const needle of candidates) {
+    // 1. The query directly names a live chain.
+    const direct = matchLive(needle);
+    if (direct) return { key: direct, matchedAs: needle };
+
+    // 2. The query is a known name/ticker/alias — map it to its canonical key,
+    //    then resolve THAT back to the live registry's spelling.
+    for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
+      if (!aliases.includes(needle)) continue;
+      const cl = canonical.toLowerCase();
+      const viaAlias = matchLive(cl) ?? matchLive(cl.split(".").pop() ?? cl) ?? matchLive(cl.replace(/-\d+$/, ""));
+      if (viaAlias) return { key: viaAlias, matchedAs: needle };
+    }
   }
 
   return { key: null, matchedAs: null };

@@ -24,8 +24,9 @@ export const NETWORK_COUNT_EXCLUDED_CHAIN_KEYS: readonly string[] = ["0x1.icon"]
 // as returned by /config/spoke/chains. `name` is the human display name;
 // `aliases` are extra tickers/spellings a user might type that are NOT already
 // derivable from the key itself — resolveChainKey automatically matches the
-// key, its dotted suffix ("base" in "0x2105.base") and its Cosmos slug
-// ("injective" in "injective-1"), so those need not be listed here. Support is
+// key, its dotted suffix ("base" in "0x2105.base"), its Cosmos slug
+// ("injective" in "injective-1") and the display `name` ("Avalanche" for
+// "0xa86a.avax"), so those need not be listed here. Support is
 // always confirmed against the LIVE registry, so entries here only aid display
 // and name resolution and cannot themselves make a chain look (un)supported.
 export const CHAINS: Readonly<Record<string, { name: string; aliases: readonly string[] }>> = {
@@ -54,8 +55,11 @@ export const CHAINS: Readonly<Record<string, { name: string; aliases: readonly s
 };
 
 // Ticker/spelling → chain-key aliases, derived from CHAINS so the two can't drift.
+// The lower-cased display name is always included: a key whose suffix differs
+// from its name (e.g. "0xa86a.avax" / "Avalanche") is otherwise unresolvable by
+// the very name sodax_get_supported_chains shows.
 export const CHAIN_ALIASES: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
-  Object.entries(CHAINS).map(([key, v]) => [key, v.aliases]),
+  Object.entries(CHAINS).map(([key, v]) => [key, [v.name.toLowerCase(), ...v.aliases]]),
 );
 
 /**

@@ -86,11 +86,14 @@ export interface ChainInfo {
 /**
  * Supported chains with human display names attached. `getSupportedChains`
  * returns raw keys (what the API and other tools use); this pairs each with a
- * readable name for presentation.
+ * readable name for presentation. Wound-down chains (ICON) are left out so the
+ * list agrees with sodax_check_chain_support and the app-wide network count.
  */
 export async function getSupportedChainsDetailed(): Promise<ChainInfo[]> {
   const chains = await getSupportedChains();
-  return chains.map(key => ({ key, name: chainDisplayName(key) }));
+  return chains
+    .filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key))
+    .map(key => ({ key, name: chainDisplayName(key) }));
 }
 
 /**
@@ -150,6 +153,12 @@ export interface ChainSupport {
   displayName: string | null;
   /** How the query matched (the alias/key/suffix that resolved it), if any. */
   matchedAs: string | null;
+  /**
+   * Live key of a wound-down chain (e.g. "0x1.icon") the query named, if it
+   * matched no supported chain — so the reply can say "being wound down"
+   * rather than a bare "not found".
+   */
+  windingDownKey: string | null;
   /** The live supported-chain keys, for context and suggestions. */
   supportedChains: string[];
 }
@@ -215,12 +224,19 @@ export async function resolveChainSupport(query: string): Promise<ChainSupport> 
   // landing page and README, which all report the filtered count.
   const supportedChains = all.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key));
   const { key, matchedAs } = resolveChainKey(query, supportedChains);
+  const windingDownKey = key
+    ? null
+    : resolveChainKey(
+        query,
+        all.filter(k => NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(k)),
+      ).key;
   return {
     query,
     supported: key !== null,
     chainKey: key,
     displayName: key ? chainDisplayName(key) : null,
     matchedAs,
+    windingDownKey,
     supportedChains,
   };
 }

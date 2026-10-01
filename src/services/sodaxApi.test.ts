@@ -223,7 +223,34 @@ describe("resolveChainSupport", () => {
     const result = await mod.resolveChainSupport("icon");
 
     expect(result.supported).toBe(false);
+    expect(result.windingDownKey).toBe("0x1.icon");
     expect(result.supportedChains).not.toContain("0x1.icon");
     expect(result.supportedChains).toHaveLength(2);
+  });
+
+  it("leaves windingDownKey null for an unknown chain", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x1.icon"]);
+
+    const result = await mod.resolveChainSupport("dogechain");
+
+    expect(result.supported).toBe(false);
+    expect(result.windingDownKey).toBeNull();
+  });
+});
+
+describe("getSupportedChainsDetailed", () => {
+  it("omits wound-down ICON so the list matches the network count", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x1.icon", "0xa86a.avax"]);
+
+    expect(await mod.getSupportedChainsDetailed()).toEqual([
+      { key: "sonic", name: "Sonic" },
+      { key: "0xa86a.avax", name: "Avalanche" },
+    ]);
   });
 });

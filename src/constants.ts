@@ -31,7 +31,7 @@ export const NETWORK_COUNT_EXCLUDED_CHAIN_KEYS: readonly string[] = ["0x1.icon"]
 // and name resolution and cannot themselves make a chain look (un)supported.
 export const CHAINS: Readonly<Record<string, { name: string; aliases: readonly string[] }>> = {
   sonic: { name: "Sonic", aliases: ["s"] },
-  ethereum: { name: "Ethereum", aliases: ["eth", "ether", "mainnet"] },
+  ethereum: { name: "Ethereum", aliases: ["eth", "ether"] },
   "0xa4b1.arbitrum": { name: "Arbitrum", aliases: ["arb", "arbitrum one"] },
   "0x2105.base": { name: "Base", aliases: [] },
   "0x38.bsc": { name: "BNB Chain", aliases: ["bnb", "bnb chain", "binance", "binance smart chain"] },

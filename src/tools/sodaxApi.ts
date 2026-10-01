@@ -8,6 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { chainDisplayName } from "../constants.js";
 import {
   clearCache,
   getAllChainsConfigs,
@@ -115,6 +116,16 @@ export function registerSodaxApiTools(server: McpServer): void {
               {
                 type: "text",
                 text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains.`,
+              },
+            ],
+          };
+        }
+        if (result.windingDownKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `⚠️ **${chainDisplayName(result.windingDownKey)}** (\`${result.windingDownKey}\`) is being wound down on SODAX and is no longer counted as a supported network. Do not build new integrations against it.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}`,
               },
             ],
           };

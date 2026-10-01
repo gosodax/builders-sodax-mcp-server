@@ -8,7 +8,7 @@
  * grouping — derives from this registry, so adding or removing a tool
  * updates them all with no manual count edits.
  *
- * Dynamic SDK docs proxy tools (`docs_getPage`, …) are intentionally NOT in
+ * Dynamic SDK docs proxy tools (`docs_search_sodax_docs`, …) are intentionally NOT in
  * the registry: they change at runtime and are counted via
  * `getDocsToolNames()` where needed. Only the three docs_* meta-tools
  * are registered here (module "sdkDocs") so analytics can group them.

@@ -117,35 +117,46 @@ describe("docsProxy allowlist", () => {
     }
   });
 
-  it("ignores a slow failure that finishes after a newer successful fetch", async () => {
-    vi.useFakeTimers();
-    try {
-      // First fetch hangs until we reject it; the second one succeeds immediately.
-      let rejectSlow: (e: Error) => void = () => {};
-      const good = makeFetchMock();
-      let first = true;
-      globalThis.fetch = vi.fn(async (url: string, init?: { body?: string }) => {
-        const body = init?.body ? (JSON.parse(init.body) as { method?: string }) : {};
-        if (first && body.method === "tools/list") {
-          first = false;
-          return new Promise<Response>((_, reject) => {
-            rejectSlow = reject;
-          });
-        }
-        return good(url, init);
-      }) as unknown as typeof fetch;
-      const { fetchDocsTools, getCachedDocsHealth } = await import("./docsProxy.js");
+  it("shares one in-flight fetch between concurrent callers", async () => {
+    const mock = makeFetchMock();
+    globalThis.fetch = mock as unknown as typeof fetch;
+    const { fetchDocsTools, getCachedDocsHealth } = await import("./docsProxy.js");
 
-      const slow = fetchDocsTools({ force: true }); // A: started first, still in flight
-      await vi.waitFor(() => expect(first).toBe(false));
-      expect(await fetchDocsTools({ force: true })).toHaveLength(2); // B: started later, succeeds
-      rejectSlow(new Error("timeout")); // A fails after B already applied
-      await slow;
+    const [a, b, c] = await Promise.all([fetchDocsTools(), fetchDocsTools(), fetchDocsTools({ force: true })]);
 
-      expect(getCachedDocsHealth()).toEqual({ healthy: true, toolCount: 2 });
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(a).toHaveLength(2);
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    const listCalls = mock.mock.calls.filter(([, init]) => (init?.body ?? "").includes('"tools/list"'));
+    expect(listCalls).toHaveLength(1);
+    expect(getCachedDocsHealth()).toEqual({ healthy: true, toolCount: 2 });
+  });
+
+  it("discards a fetch that was in flight when the cache was cleared", async () => {
+    // First tools/list hangs until rejected; everything after it succeeds.
+    let rejectSlow: (e: Error) => void = () => {};
+    const good = makeFetchMock();
+    let first = true;
+    globalThis.fetch = vi.fn(async (url: string, init?: { body?: string }) => {
+      const body = init?.body ? (JSON.parse(init.body) as { method?: string }) : {};
+      if (first && body.method === "tools/list") {
+        first = false;
+        return new Promise<Response>((_, reject) => {
+          rejectSlow = reject;
+        });
+      }
+      return good(url, init);
+    }) as unknown as typeof fetch;
+    const { fetchDocsTools, clearDocsCache, getCachedDocsHealth } = await import("./docsProxy.js");
+
+    const slow = fetchDocsTools(); // in flight, will fail
+    await vi.waitFor(() => expect(first).toBe(false));
+    clearDocsCache(); // docs_refresh
+    expect(await fetchDocsTools()).toHaveLength(2); // the refresh's own fetch succeeds
+    rejectSlow(new Error("timeout")); // the stale fetch fails afterwards
+    await slow;
+
+    expect(getCachedDocsHealth()).toEqual({ healthy: true, toolCount: 2 });
   });
 
   it("backs off after a failed fetch instead of re-hitting upstream on every call", async () => {

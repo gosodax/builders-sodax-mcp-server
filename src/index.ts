@@ -120,7 +120,8 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
   logger.info({ attempt, max: MAX_DOCS_RETRIES }, "SDK docs proxy init attempt");
 
   try {
-    const tools = await fetchDocsTools();
+    // force: each startup attempt must reach upstream, not the failure back-off.
+    const tools = await fetchDocsTools({ force: true });
     docsToolsRegistered = tools.length > 0;
 
     if (tools.length > 0) {

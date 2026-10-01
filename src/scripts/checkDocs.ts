@@ -14,7 +14,7 @@
 
 import { fetchDocsTools } from "../services/docsProxy.js";
 
-const tools = await fetchDocsTools();
+const tools = await fetchDocsTools({ force: true });
 
 if (tools.length === 0) {
   console.error("");

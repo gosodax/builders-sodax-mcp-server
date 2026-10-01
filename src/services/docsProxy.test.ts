@@ -90,8 +90,44 @@ describe("docsProxy allowlist", () => {
     }) as unknown as typeof fetch;
 
     const { fetchDocsTools } = await import("./docsProxy.js");
-    expect(await fetchDocsTools()).toHaveLength(0); // empty, must NOT be cached
+    expect(await fetchDocsTools()).toHaveLength(0); // empty, must NOT be cached for the full TTL
     state.onlyWrite = false; // upstream recovers
-    expect((await fetchDocsTools()).map(t => t.name)).toEqual(["search_sodax_docs"]);
+    // force (startup warm-up) bypasses the short failure back-off
+    expect((await fetchDocsTools({ force: true })).map(t => t.name)).toEqual(["search_sodax_docs"]);
+  });
+
+  it("backs off after a failed fetch instead of re-hitting upstream on every call", async () => {
+    vi.useFakeTimers();
+    try {
+      const failing = vi.fn(async () => {
+        throw new Error("upstream down");
+      });
+      globalThis.fetch = failing as unknown as typeof fetch;
+      const { fetchDocsTools, clearDocsCache } = await import("./docsProxy.js");
+
+      expect(await fetchDocsTools()).toEqual([]);
+      const callsAfterFirst = failing.mock.calls.length;
+      expect(callsAfterFirst).toBeGreaterThan(0);
+
+      // Within the back-off window: served from cache, no upstream traffic.
+      expect(await fetchDocsTools()).toEqual([]);
+      expect(await fetchDocsTools()).toEqual([]);
+      expect(failing.mock.calls.length).toBe(callsAfterFirst);
+
+      // After the window: upstream is tried again (and recovers).
+      globalThis.fetch = makeFetchMock() as unknown as typeof fetch;
+      vi.advanceTimersByTime(61_000);
+      expect(await fetchDocsTools()).toHaveLength(2);
+
+      // clearDocsCache (docs_refresh) also resets the back-off.
+      globalThis.fetch = failing as unknown as typeof fetch;
+      clearDocsCache();
+      await fetchDocsTools();
+      globalThis.fetch = makeFetchMock() as unknown as typeof fetch;
+      clearDocsCache();
+      expect(await fetchDocsTools()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

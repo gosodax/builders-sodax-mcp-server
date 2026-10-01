@@ -35,6 +35,15 @@ let cachedTools: DocsTool[] | null = null;
 let toolsCacheTime = 0;
 const TOOLS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
+// Negative cache. createServer() awaits fetchDocsTools() on EVERY /mcp and /sse
+// request, so without a back-off a failed or empty fetch would make each request
+// re-run the initialize + tools/list round-trips (up to 30s each when upstream
+// hangs). After a failed or empty fetch we serve whatever is cached (possibly
+// nothing) for this long before trying upstream again. Startup warm-up and
+// docs_refresh bypass it via `force` / clearDocsCache().
+const FAILED_FETCH_BACKOFF_MS = 60 * 1000;
+let lastFailedFetchAt = 0;
+
 // MCP session id, if the docs server issues one via the `Mcp-Session-Id`
 // response header. Mintlify currently answers statelessly (no session), so this
 // stays null; captured and echoed back defensively in case that changes.
@@ -164,14 +173,17 @@ async function initializeConnection(): Promise<void> {
 /**
  * Fetch available (allowlisted) tools from the docs MCP server
  */
-export async function fetchDocsTools(): Promise<DocsTool[]> {
+export async function fetchDocsTools(options: { force?: boolean } = {}): Promise<DocsTool[]> {
   // Return cached tools if still valid. An EMPTY cache is deliberately not
   // treated as a valid hit: caching `[]` (upstream up but no allowlisted tools,
-  // e.g. a tool rename) would otherwise poison the cache for the full TTL and
-  // turn warmDocsCache's startup retries into no-ops, so we keep retrying until
-  // a non-empty list is fetched.
+  // e.g. a tool rename) would otherwise poison the cache for the full TTL, so an
+  // empty result is only held for the short FAILED_FETCH_BACKOFF_MS window, and
+  // warmDocsCache's startup retries pass `force` to skip even that.
   if (cachedTools && cachedTools.length > 0 && Date.now() - toolsCacheTime < TOOLS_CACHE_DURATION) {
     return cachedTools;
+  }
+  if (!options.force && Date.now() - lastFailedFetchAt < FAILED_FETCH_BACKOFF_MS) {
+    return cachedTools || [];
   }
 
   try {
@@ -192,12 +204,15 @@ export async function fetchDocsTools(): Promise<DocsTool[]> {
     toolsCacheTime = Date.now();
 
     if (cachedTools.length > 0) {
+      lastFailedFetchAt = 0;
       logger.debug({ toolCount: cachedTools.length }, "Fetched tools from SODAX docs MCP");
     } else {
+      lastFailedFetchAt = Date.now();
       logger.warn({ upstreamCount: upstream.length }, "SODAX docs MCP returned no allowlisted tools");
     }
     return cachedTools;
   } catch (error) {
+    lastFailedFetchAt = Date.now();
     logger.error({ err: error }, "Failed to fetch SODAX docs tools");
     // Return cached tools even if expired, or empty array
     return cachedTools || [];
@@ -278,4 +293,5 @@ export function getCachedDocsHealth(): { healthy: boolean; toolCount: number } {
 export function clearDocsCache(): void {
   cachedTools = null;
   toolsCacheTime = 0;
+  lastFailedFetchAt = 0;
 }

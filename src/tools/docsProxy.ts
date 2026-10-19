@@ -1,7 +1,7 @@
 /**
- * GitBook MCP Proxy Tools
+ * SODAX Docs MCP Proxy Tools
  *
- * Dynamically registers tools from the GitBook MCP server
+ * Dynamically registers tools from the SODAX docs MCP server
  * and proxies requests to it for live SDK documentation access.
  */
 
@@ -9,13 +9,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
-  GitBookTool,
-  callGitBookTool,
-  checkGitBookHealth,
-  clearGitBookCache,
-  fetchGitBookTools,
-  getCachedGitBookToolNames as getCachedRawGitBookToolNames,
-} from "../services/gitbookProxy.js";
+  DocsTool,
+  callDocsTool,
+  checkDocsHealth,
+  clearDocsCache,
+  fetchDocsTools,
+  getCachedDocsToolNames as getCachedRawDocsToolNames,
+} from "../services/docsProxy.js";
 import { logger } from "../services/logger.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 
@@ -26,9 +26,9 @@ const DOCS_READ_ONLY: ToolAnnotations = {
 };
 
 /**
- * Convert GitBook tool input schema to Zod schema
+ * Convert docs tool input schema to Zod schema
  */
-function convertToZodSchema(inputSchema: GitBookTool["inputSchema"]): z.ZodTypeAny {
+function convertToZodSchema(inputSchema: DocsTool["inputSchema"]): z.ZodTypeAny {
   if (!inputSchema.properties || Object.keys(inputSchema.properties).length === 0) {
     return z.object({});
   }
@@ -78,24 +78,24 @@ function convertToZodSchema(inputSchema: GitBookTool["inputSchema"]): z.ZodTypeA
 }
 
 /**
- * Register GitBook MCP tools as proxied tools in our server.
+ * Register SODAX docs MCP tools as proxied tools in our server.
  * Safe to call on each new McpServer instance (per-request isolation).
  */
-export async function registerGitBookProxyTools(server: McpServer): Promise<number> {
+export async function registerDocsProxyTools(server: McpServer): Promise<number> {
   let registeredCount = 0;
 
-  // Register meta tools (work even if GitBook is down)
-  registerGitBookMetaTools(server);
+  // Register meta tools (work even if the docs MCP is down)
+  registerDocsMetaTools(server);
 
   try {
-    const tools = await fetchGitBookTools();
+    const tools = await fetchDocsTools();
 
     if (tools.length === 0) {
-      logger.warn("No tools found from GitBook MCP - meta-tools registered, proxy tools skipped");
+      logger.warn("No tools found from SODAX docs MCP - meta-tools registered, proxy tools skipped");
       return 0;
     }
 
-    logger.debug({ toolCount: tools.length }, "Registering GitBook tools as docs_* proxies");
+    logger.debug({ toolCount: tools.length }, "Registering docs tools as docs_* proxies");
 
     for (const tool of tools) {
       try {
@@ -109,7 +109,22 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
           zodSchema._def.typeName === "ZodObject" ? (zodSchema as z.ZodObject<z.ZodRawShape>).shape : {},
           DOCS_READ_ONLY,
           async args => {
-            const result = await callGitBookTool(tool.name, args as Record<string, unknown>);
+            const result = await callDocsTool(tool.name, args as Record<string, unknown>);
+
+            // Guard a malformed/contentless upstream reply (untrusted surface)
+            // so it degrades to a friendly message instead of throwing a raw
+            // TypeError on result.isError / result.content.map below.
+            if (!result || !Array.isArray(result.content)) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `⚠️ docs_${tool.name} returned an unexpected response.\n\nTry docs_refresh to reconnect, or visit https://docs.sodax.com directly.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
 
             // Add helpful context if the call failed
             if (result.isError) {
@@ -136,23 +151,23 @@ export async function registerGitBookProxyTools(server: McpServer): Promise<numb
 
         registeredCount++;
       } catch (toolError) {
-        logger.error({ err: toolError, toolName: tool.name }, "Failed to register GitBook tool");
+        logger.error({ err: toolError, toolName: tool.name }, "Failed to register docs tool");
       }
     }
 
-    logger.debug({ registeredCount }, "Registered tools from GitBook MCP");
+    logger.debug({ registeredCount }, "Registered tools from SODAX docs MCP");
   } catch (error) {
-    logger.error({ err: error }, "Failed to register GitBook proxy tools");
+    logger.error({ err: error }, "Failed to register docs proxy tools");
   }
 
   return registeredCount;
 }
 
 /**
- * Register meta tools for managing GitBook MCP connection
+ * Register meta tools for managing SODAX docs MCP connection
  */
-function registerGitBookMetaTools(server: McpServer): void {
-  // Tool to check GitBook MCP health
+function registerDocsMetaTools(server: McpServer): void {
+  // Tool to check SODAX docs MCP health
   registerAppTool(
     server,
     "sdkDocs",
@@ -161,8 +176,8 @@ function registerGitBookMetaTools(server: McpServer): void {
     {},
     DOCS_READ_ONLY,
     async () => {
-      const health = await checkGitBookHealth();
-      const tools = await fetchGitBookTools();
+      const health = await checkDocsHealth();
+      const tools = await fetchDocsTools();
 
       if (health.healthy && tools.length > 0) {
         const toolNames = tools
@@ -190,7 +205,7 @@ function registerGitBookMetaTools(server: McpServer): void {
     },
   );
 
-  // Tool to refresh GitBook tools
+  // Tool to refresh docs tools
   registerAppTool(
     server,
     "sdkDocs",
@@ -199,15 +214,15 @@ function registerGitBookMetaTools(server: McpServer): void {
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
-      clearGitBookCache();
-      const tools = await fetchGitBookTools();
+      clearDocsCache();
+      const tools = await fetchDocsTools();
 
       if (tools.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "⚠️ Could not connect to docs.sodax.com\n\nThe GitBook MCP may be temporarily unavailable. Try again later or visit https://docs.sodax.com directly.",
+              text: "⚠️ Could not connect to docs.sodax.com\n\nThe SODAX docs MCP may be temporarily unavailable. Try again later or visit https://docs.sodax.com directly.",
             },
           ],
         };
@@ -234,13 +249,13 @@ function registerGitBookMetaTools(server: McpServer): void {
     {},
     DOCS_READ_ONLY,
     async () => {
-      const tools = await fetchGitBookTools();
+      const tools = await fetchDocsTools();
       if (tools.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "⚠️ No SDK documentation tools available.\n\n**Troubleshooting:**\n1. Run `docs_refresh` to reconnect\n2. Check `docs_health` for status\n3. The GitBook MCP at docs.sodax.com may be temporarily down\n\n**Alternative:** SODAX API tools (sodax_*) work independently.",
+              text: "⚠️ No SDK documentation tools available.\n\n**Troubleshooting:**\n1. Run `docs_refresh` to reconnect\n2. Check `docs_health` for status\n3. The SODAX docs MCP at docs.sodax.com may be temporarily down\n\n**Alternative:** SODAX API tools (sodax_*) work independently.",
             },
           ],
         };
@@ -273,29 +288,29 @@ function registerGitBookMetaTools(server: McpServer): void {
   );
 }
 
-/** The three docs_* meta-tools that are always registered, even if GitBook is down. */
-const GITBOOK_META_TOOL_NAMES = ["docs_health", "docs_refresh", "docs_list_tools"];
+/** The three docs_* meta-tools that are always registered, even if the docs MCP is down. */
+const DOCS_META_TOOL_NAMES = ["docs_health", "docs_refresh", "docs_list_tools"];
 
 /**
- * Get list of registered GitBook tool names for API response
+ * Get list of registered docs tool names for API response
  */
-export async function getGitBookToolNames(): Promise<string[]> {
+export async function getDocsToolNames(): Promise<string[]> {
   try {
-    const tools = await fetchGitBookTools();
+    const tools = await fetchDocsTools();
     const proxyTools = tools.map(t => `docs_${t.name}`);
-    return [...proxyTools, ...GITBOOK_META_TOOL_NAMES];
+    return [...proxyTools, ...DOCS_META_TOOL_NAMES];
   } catch {
-    return [...GITBOOK_META_TOOL_NAMES];
+    return [...DOCS_META_TOOL_NAMES];
   }
 }
 
 /**
- * Non-blocking variant of getGitBookToolNames: derives the docs_* names from the
+ * Non-blocking variant of getDocsToolNames: derives the docs_* names from the
  * current tools cache (plus the always-available meta-tools) WITHOUT triggering
- * a GitBook fetch. Used by display-count callers (e.g. the landing page) so a
- * cold or expired cache never makes the response wait on a 30s GitBook request.
+ * a docs fetch. Used by display-count callers (e.g. the landing page) so a
+ * cold or expired cache never makes the response wait on a 30s docs request.
  */
-export function getCachedGitBookToolNames(): string[] {
-  const proxyTools = getCachedRawGitBookToolNames().map(name => `docs_${name}`);
-  return [...proxyTools, ...GITBOOK_META_TOOL_NAMES];
+export function getCachedDocsToolNames(): string[] {
+  const proxyTools = getCachedRawDocsToolNames().map(name => `docs_${name}`);
+  return [...proxyTools, ...DOCS_META_TOOL_NAMES];
 }

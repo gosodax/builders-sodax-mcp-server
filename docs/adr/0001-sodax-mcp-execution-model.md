@@ -11,8 +11,9 @@ Today this server is a read-only proxy over the SODAX APIs and docs. Agents can 
 What shapes the design:
 
 - The Swaps API builds every transaction: approve, swap and cancel. We never encode one ourselves.
-- `submit-tx` expects a source transaction that is already mined, together with the exact intent and relay data from the quote.
-- The `includeTxData` option on the quote builds an intent with no deadline and no room for slippage.
+- `submit-tx` expects a source transaction that is already mined, together with the exact intent and relay data from the quote. It doesn't check that transaction on chain.
+- The `includeTxData` option on the quote builds an intent with no deadline and no room for slippage. The backend cancels and refunds expired intents, but never one with no deadline, so an unfilled one stays open until the user cancels it.
+- Public RPC endpoints are rate-limited and unreliable. The backend already reads chains through its own RPCs.
 - Every MCP user reaches the Swaps API from this server's IP.
 - Canary runs on mainnet chains, so a canary swap moves real funds.
 
@@ -24,7 +25,7 @@ What shapes the design:
 
 **Decision.**
 - The server runs at `builders.sodax.com` only. Phase 1 has no local signing mode.
-- It never signs or broadcasts. It returns unsigned transactions, and the agent signs and sends them with its own wallet tool.
+- It never signs or broadcasts. It returns unsigned transactions. The agent signs and sends them with its own wallet tool, then passes the tx hash back.
 
 **Consequences.**
 - An agent needs a wallet tool next to this server to complete a swap.
@@ -32,40 +33,33 @@ What shapes the design:
 
 ### D2. API keys and rate limits
 
-This changes the epic's D2, which assumed a gateway in front of `builders.sodax.com` and no throttling in the MCP.
-
-**Context.** A partner's limits and swap volume should follow its API key. `builders.sodax.com` isn't behind the API gateway today: the server has its own per-IP limit, and all its outbound calls come from one IP.
+**Context.** A partner's limits and swap volume should follow its API key. Today `builders.sodax.com` isn't behind the API edge: the server has its own per-IP limit, and all its outbound calls come from one IP.
 
 **Decision.**
-- Stay at `builders.sodax.com`.
-- Forward the caller's `x-api-key` on Swaps API calls. It comes from the HTTP header, or from `SODAX_API_KEY` on stdio.
-- Until the gateway question under [Open questions](#open-questions) is settled, keep the server's inbound limit and put a small guard on Swaps API calls:
-  - keep `submit-tx` under the backend's per-IP limit;
-  - on a 429, wait out `Retry-After` instead of retrying at once;
-  - tell the agent when to come back (`RATE_LIMITED` with `retryAfterSec`).
+- Put `builders.sodax.com` behind the same HAProxy edge as the API, so keys and limits are enforced in one place.
+- The server is a plain forwarder for keys. When the caller sends `x-api-key` (the HTTP header, or `SODAX_API_KEY` on stdio), it goes on every backend call. Without one, the server calls the backend keyless, and the backend's key policy decides what is allowed.
+- Drop the server's own inbound limit once the edge is in front, so only one counter applies. Behind a proxy it would only see the edge's IP anyway.
+- On a 429, wait out `Retry-After` instead of retrying at once, and tell the agent when to come back (`RATE_LIMITED` with `retryAfterSec`). A 401 or 403 becomes "API key required", with where to get one.
 
 **Consequences.**
-- A swap submitted with a key is attributed to that key.
-- Keyless callers share one IP's budget, so submit throughput is low for now.
-- Keyless callers get the same tools, because the backend doesn't require keys yet. If it starts to, they'll be rejected wherever a key is required.
+- A swap submitted with a key is attributed to that key and limited by its org.
+- Keyless callers are limited per IP. Until the edge can tell real clients apart behind this server, they share its IP budget (see [Open questions](#open-questions)).
 
-### D3. Client layer: `@sodax/swaps-api`, `@sodax/types` and `viem`
+### D3. Client layer: `@sodax/sdk` and `@sodax/types`
 
-This replaces the epic's plan to use `@sodax/sdk`.
-
-**Context.** The backend builds every transaction, so the SDK's local builders aren't needed, and the full SDK is heavy. Measured on 2026-10-22 with Node 22.15 (`npm i --ignore-scripts`, then `du -sh node_modules` and `npm audit`):
-- `@sodax/sdk@2.2.0` with `@sodax/types@2.2.0`: 777 MB, 35 advisories (11 high).
-- `@sodax/swaps-api@2.2.0`, the client the SDK wraps, with `@sodax/types@2.2.0` and `viem`: 82 MB, no advisories.
+**Context.** Phase 1 needs the Swaps API client and a few chain helpers. Later phases add features like money market and staking, which have no backend API that builds transactions yet, and the SDK already covers them. The full SDK is heavy. Measured on 2026-10-22 with Node 22.15 (`npm i --ignore-scripts`, then `du -sh node_modules` and `npm audit`): `@sodax/sdk@2.2.0` with `@sodax/types@2.2.0` is 777 MB with 35 advisories (11 high). The high ones trace back to four packages: `axios`, `bigint-buffer`, `toml` and `ws`.
 
 **Decision.**
-- Use `@sodax/swaps-api`, `@sodax/types` and `viem`, pinned to exact versions.
-- Keep plain REST for the solver, oracle and relay calls, which have no light client. Move the relay base URL to `api.sodax.com/v1/relay`.
+- Use `@sodax/sdk` and `@sodax/types`, pinned to exact versions.
+- Override `axios`, `bigint-buffer` and `toml` to fixed versions. `ws` has no fix yet, so track it.
+- Build one `Sodax` instance from env at boot (production or canary, RPC overrides) for chain helpers. Give each request its own Swaps API client carrying the caller's key, so keys never mix between callers.
+- Use SDK clients where they exist, and keep plain REST and the drift check for the rest. Move the relay base URL to `api.sodax.com/v1/relay`.
 - Raise `engines.node` to `>=22.12.0`, which `@sodax/types` requires.
 
 **Consequences.**
-- It's the same client the SDK uses, so Swaps API changes reach us through the package.
-- The standalone client accepts a custom `fetch`, which the D2 guard needs.
-- Once SDK v3 ships chain plugins, our chain readers move to them.
+- Swaps API changes reach us through the SDK.
+- Later phases can use SDK features without a new dependency.
+- The Docker image grows. The PR records its size.
 
 ### D4. Tool profiles
 
@@ -83,18 +77,17 @@ This replaces the epic's plan to use `@sodax/sdk`.
 
 ### D5. Chains
 
-**Context.** The Swaps API builds source transactions for many chain families, and each has its own quirks.
+**Context.** The Swaps API builds source transactions for many chain families, and each has its own quirks. Checking a source transaction on chain needs a reader per family.
 
 **Decision.**
-- Sources: every chain the Swaps API builds transactions for. That's the EVM chains, Sonic, Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin. Destinations: any chain.
-- Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
-- Before building a swap to NEAR or Stellar, check that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
-- No `rpcUrl` input. Operators set RPC URLs per chain through env.
+- Sources in phase 1: the EVM chains and Sonic. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
+- When those sources open, Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
+- Before building a swap to NEAR or Stellar, check with the SDK that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
+- No `rpcUrl` input. Operators set RPC URLs per chain through env. The server only reads EVM source chains, NEAR and Stellar.
 
 **Consequences.**
-- Cancel isn't offered when the source is Solana or Bitcoin, because no endpoint returns the relay data those need.
-- A Bitcoin source needs a short-lived token minted in the user's browser, so agents will rarely use one.
-- Non-EVM balance and receipt reads are tested on recorded data first, not on live swaps.
+- Phase 1 covers the swaps most agents start with, without a reader for every chain family.
+- Non-EVM sources wait on backend work.
 
 ### D6. Workflow tools on one action template
 
@@ -103,18 +96,26 @@ This replaces the epic's plan to use `@sodax/sdk`.
 **Decision.**
 - Five tools: `sodax_resolve_token`, `sodax_get_balance`, `sodax_swap_quote`, `sodax_swap_track` and `sodax_swap_cancel`.
 - They share one template, `registerActionTool`. It screens inputs for secrets, validates them, turns failures into an error with a code and a next step, returns structured output ending in one `nextStep` sentence, and records analytics.
+- Balances come from a backend endpoint, not from the server's own chain reads.
 
 **Consequences.**
 - Phase 2 tools reuse the template.
 - Builder tools stay as they are.
+- `sodax_get_balance` and the quote's balance check need the backend balance endpoint.
 
 ## How the swap tools behave
 
 ### Quote
 
 - Amounts go in as human units (`"0.5"`), and base units come back alongside.
-- The intent is built with `createIntent`, not `includeTxData`. The minimum output comes from the slippage (1 to 500 bps, default 100), and the deadline from `getDeadline` (5 to 60 minutes, default 15).
-- The answer shows the expected output, minimum received, solver fee and expiry. The partner fee is always zero today and the API has no speed tier, so neither appears.
+- The intent is built with `createIntent`, not `includeTxData`. The minimum output comes from the slippage (1 to 500 bps, default 100), and the deadline from `getDeadline` (5 to 60 minutes, default 15). An intent that isn't filled in time is cancelled and refunded by the backend.
+- The answer shows the expected output, minimum received, solver fee, partner fee and expiry. The API has no speed tier.
+- The partner fee comes from the connection, never from tool input:
+  - the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers;
+  - or `partnerAddress` and `partnerFeeBps` in the URL query, for clients that only take a URL;
+  - or `SODAX_PARTNER_FEE_ADDRESS` and `SODAX_PARTNER_FEE_BPS` on stdio.
+
+  The address must be a valid EVM address and the fee 1 to 100 bps. Anything else is rejected when connecting. The same fee goes to the quote and the intent, and is cached with them. Without it, there is no partner fee.
 - With `fromAddress`, the quote checks the balance and the destination, then lists the steps to sign in order: a reset approve if needed, an approve if needed, then the swap.
 - Without `fromAddress`, it's a price quote only.
 - The intent is cached under a `quoteId`, so the model never retypes bigint fields.
@@ -122,16 +123,17 @@ This replaces the epic's plan to use `@sodax/sdk`.
 ### Track
 
 - It reads the backend status first. If the swap was already submitted, it just reports the status, so repeated calls never resubmit.
-- Otherwise it checks on chain that this transaction is the quoted deposit:
-  - on EVM, the receipt succeeded and holds the message log from the chain's SODAX `connection` contract, carrying the relay payload cached with the quote;
-  - on other chains, phase 1 checks that the transaction succeeded and was sent from the quote's source address. Each chain reader adds the message check once it can read that chain's logs.
+- Otherwise it checks that this transaction is the quoted deposit before calling `submit-tx`. Without the check, a wrong hash, such as the approve's, is queued and later abandoned.
+- The right place for the check is `submit-tx` itself, so every client gets it. Until the backend does it, the server checks EVM sources through the env RPCs: the receipt succeeded and holds the message log from the chain's SODAX `connection` contract, carrying the relay payload cached with the quote.
 - Matching the transaction input isn't enough. The same bytes can be sent to a different contract, and a smart-wallet batch can succeed while the inner call fails. The message log only exists if the deposit happened.
 - Then it calls `submit-tx` once and reports progress in plain words until `solved` or `failed`.
 
 ### Cancel
 
-- The first call returns the unsigned cancel transaction. The second, with `cancelTxHash`, checks the receipt and relays it.
+- The first call checks the status. If the swap is already solved, it says so. Otherwise it returns the unsigned cancel transaction.
+- The second call, with `cancelTxHash`, checks the receipt and relays it through `/swaps/intents/submit`, because the cancel endpoint only builds the transaction.
 - The intent comes from the hub or the quote cache, never from model input.
+- Once Solana and Bitcoin sources open, cancel isn't offered for them: relaying needs relay data the cancel endpoint doesn't return. The answer there is to wait for the deadline, after which the backend refunds.
 
 ### Quote cache
 
@@ -153,6 +155,7 @@ This replaces the epic's plan to use `@sodax/sdk`.
 - `SODAX_ENV` chooses production or canary once, at boot. There's no per-request switch.
 - No keys or secrets in logs. Analytics carry the `quoteId`, the chains and a USD bucket, never addresses.
 - No caller-supplied RPC URLs. A hosted server shouldn't fetch arbitrary URLs, and paid RPC URLs embed their own keys.
+- The partner fee is set by the connection, never by tool input, so a prompt can't redirect it.
 
 ## Other swap MCPs
 
@@ -169,5 +172,14 @@ We follow the same pattern: look up tokens, quote with unsigned transactions, si
 
 ## Open questions
 
-- Should `builders.sodax.com` move behind the API gateway, with the MCP calling the backend internally? Limits would then be enforced once, per real caller, and the D2 guard could go. This needs the gateway and backend owners.
-- If `submit-tx` could take only the tx hash and source chain and read the intent from chain, the quote cache's restart window would go away.
+- Edge setup for this server:
+  - One tool call is one request into the server and several backend calls (a quote makes three to six). Should a key be counted on the way in, on the backend calls, or both?
+  - The edge's per-IP write cap and jail apply to backend calls from this server's IP. Should the edge trust `X-Forwarded-For` from the server, or exempt its IP?
+  - Should the server require an API key, or keep allowing keyless callers?
+- Backend work. Phase 1 needs the first item; the rest would simplify the server:
+  - a wallet balance endpoint;
+  - `submit-tx` checking the source transaction on chain, which opens non-EVM sources and removes the server's own EVM check;
+  - the destination check (NEAR storage, Stellar trustline) in `/swaps/intents`, so every client gets it;
+  - `includeTxData` taking slippage and a deadline, so a quote with transaction data is one call;
+  - a partner fee per org, read from the API key, so builders don't set it on each connection;
+  - `submit-tx` taking only the tx hash and source chain and reading the intent from chain, which removes the quote cache's restart window.

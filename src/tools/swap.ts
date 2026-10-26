@@ -20,7 +20,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_resolve_token",
-    "Resolve a token on a chain to the address, decimals and hub asset the swap tools need. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
+    "Look up a token on a chain: its address, decimals and hub asset. sodax_swap_quote takes symbols itself; use this when it returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
     {
       chain: chainArg.describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
@@ -37,19 +37,21 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_quote",
-    "Quote a cross-chain swap. Without fromAddress it returns a price only; with it, the transactions for the user's wallet to sign (approve if needed, then the swap). This server never signs or moves funds.",
+    "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
-      fromChain: chainArg.describe("Source chain key from sodax_resolve_token."),
-      fromToken: tokenArg.describe("Address of the token the user sends, from sodax_resolve_token."),
-      toChain: chainArg.describe("Destination chain key from sodax_resolve_token."),
-      toToken: tokenArg.describe("Address of the token the user receives, from sodax_resolve_token."),
+      fromChain: chainArg.describe('Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      fromToken: tokenArg.describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
+      toChain: chainArg.describe("Destination chain name, ticker or key."),
+      toToken: tokenArg.describe('Token the user receives: symbol, contract address, or "native".'),
       amount: z
         .string()
         .trim()
         .min(1)
         .max(96)
         .describe('Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".'),
-      fromAddress: addressArg.describe("The user's wallet on the source chain. Omit for a price-only quote."),
+      fromAddress: addressArg.describe(
+        "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
+      ),
       toAddress: addressArg.describe(
         "Recipient on the destination chain. Defaults to fromAddress when the destination is EVM.",
       ),
@@ -110,7 +112,7 @@ export function resolveNextStep(resolution: Resolution): string {
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
           : `which of ${labels.join(", ")} on ${chain} they mean`;
-      return `Ask the user ${ask}, then call sodax_resolve_token again with its address.`;
+      return `Ask the user ${ask}, then pass its address to sodax_swap_quote.`;
     }
     case "not_found": {
       const [first] = resolution.suggestions;

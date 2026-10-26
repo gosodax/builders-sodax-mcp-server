@@ -150,9 +150,12 @@ afterEach(() => {
 });
 
 describe("sodax_swap_quote", () => {
-  it("returns a price only without fromAddress, and builds nothing", async () => {
+  it.each([
+    ["keys and addresses", USDC_TO_SONIC],
+    ["names and symbols", { fromChain: "arb", fromToken: "USDC", toChain: "Sonic", toToken: "usdc" }],
+  ])("returns a price only without fromAddress, and builds nothing (%s)", async (_case, sides) => {
     const calls = stubSwaps();
-    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    const { out } = await quote({ ...sides, amount: "5" });
     expect(out).toMatchObject({
       status: "price_only",
       missing: ["fromAddress"],

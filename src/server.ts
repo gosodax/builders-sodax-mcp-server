@@ -43,9 +43,10 @@ const BUILDER_INSTRUCTIONS = [
 ].join("\n\n");
 
 const SWAP_INSTRUCTIONS = [
-  "To prepare a swap, resolve each side with `sodax_resolve_token` (a chain plus a symbol, an address",
-  'or "native"). When it returns ambiguous or not_found, ask the user; never guess a token or an address.',
-  "Then quote with `sodax_swap_quote`: a price without the user's address, the transactions for their wallet with it.",
+  "To prepare a swap, call `sodax_swap_quote` with each side as the user names it (a chain plus a symbol, an",
+  'address or "native") and, when you know it, the user\'s wallet as fromAddress; without it you get a price only.',
+  "If the quote returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
+  "token or an address.",
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
 ].join(" ");
 

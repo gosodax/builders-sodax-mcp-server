@@ -86,7 +86,7 @@ What shapes the design:
 - Sources in phase 1: the EVM chains and Sonic. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
 - When those sources open, Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
 - Before building a swap to NEAR or Stellar, check with the SDK that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
-- No `rpcUrl` input. Operators set RPC URLs per chain through env. The server only reads EVM source chains, NEAR and Stellar.
+- No `rpcUrl` input. Operators set RPC URLs per chain through env. The server reads chains only through the SDK: source transactions on EVM source chains, recipients on NEAR and Stellar, and wallet balances and allowances.
 
 **Consequences.**
 - Phase 1 covers the swaps most agents start with, without a reader for every chain family.
@@ -99,12 +99,12 @@ What shapes the design:
 **Decision.**
 - Five tools: `sodax_resolve_token`, `sodax_get_balance`, `sodax_swap_quote`, `sodax_swap_track` and `sodax_swap_cancel`.
 - They share one template, `registerActionTool`. It screens inputs for secrets, validates them, turns failures into an error with a code and a next step, returns structured output ending in one `nextStep` sentence, and records analytics.
-- Balances come from a backend endpoint, not from the server's own chain reads.
+- Balances and allowances come from the server's own reads through the SDK, on the env RPCs. No backend balance endpoint exists; one may replace these reads later.
 
 **Consequences.**
 - Phase 2 tools reuse the template.
 - Builder tools stay as they are.
-- `sodax_get_balance` and the quote's balance check need the backend balance endpoint.
+- `sodax_get_balance` and the quote's balance check depend on the SDK and the env RPCs. SDK shortcomings are fixed in the SDK, not worked around in the server.
 
 ## How the swap tools behave
 
@@ -178,8 +178,8 @@ We follow the same pattern: look up tokens, quote with unsigned transactions, si
 - Edge setup for this server:
   - One tool call is one request into the server and several backend calls (a quote makes three to six). Should a key be counted on the way in, on the backend calls, or both?
   - The edge's per-IP write cap and jail apply to backend calls from this server's IP. Should the edge trust `X-Forwarded-For` from the server, or exempt its IP?
-- Backend work. Phase 1 needs the first item; the rest would simplify the server:
-  - a wallet balance endpoint;
+- Backend work. None of it blocks phase 1; each item would simplify the server:
+  - a wallet balance endpoint, so balances on every chain come from one place;
   - `submit-tx` checking the source transaction on chain, which opens non-EVM sources and removes the server's own EVM check;
   - the destination check (NEAR storage, Stellar trustline) in `/swaps/intents`, so every client gets it;
   - `includeTxData` taking slippage and a deadline, so a quote with transaction data is one call;

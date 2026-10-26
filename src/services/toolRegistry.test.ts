@@ -45,14 +45,16 @@ describe("tool registry", () => {
   it("has at least one tool in every static module", () => {
     const counts = getToolCountsByModule();
     for (const [module, count] of Object.entries(counts)) {
+      if (module === "swap") continue; // empty until swap tools exist
       expect(count, `module "${module}" has no tools`).toBeGreaterThan(0);
     }
   });
 
-  it("static api/relay counts add up to the grouped /api lists", () => {
-    const { api, relay } = getStaticToolCounts();
+  it("static api/relay/swap counts add up to the grouped /api lists", () => {
+    const { api, relay, swap } = getStaticToolCounts();
     const groups = getToolNamesByModule();
     expect(relay).toBe(groups.relay.length);
+    expect(swap).toBe(groups.swap.length);
     expect(api).toBe(
       groups.config.length +
         groups.intents.length +
@@ -90,6 +92,8 @@ describe("landing page template", () => {
       "AMM_TOOLS",
       "MONEY_MARKET_TOOLS",
       "PARTNERS_TOOLS",
+      "SWAP_TOOLS",
+      "SWAP_CARD_HIDDEN",
       "SDK_DOCS_TOOLS",
     ]) {
       expect(template, `missing {{${key}}} in index.html`).toContain(`{{${key}}}`);
@@ -97,20 +101,27 @@ describe("landing page template", () => {
   });
 
   it("renders with every placeholder substituted", () => {
-    const html = renderLandingPage(template, { networks: 24, sdkDocsToolCount: 5 });
+    const html = renderLandingPage(template, { networks: 24, sdkDocsToolCount: 5, swapToolsEnabled: false });
     expect(html).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(html).toContain("24+");
   });
 
   it("falls back to the evergreen network floor when the live count is unavailable", () => {
-    const html = renderLandingPage(template, { networks: null, sdkDocsToolCount: 3 });
+    const html = renderLandingPage(template, { networks: null, sdkDocsToolCount: 3, swapToolsEnabled: false });
     expect(html).toContain("19+");
     expect(html).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
 
   it("derives the total tool count from the registry plus the live docs count", () => {
-    const { api, relay } = getStaticToolCounts();
-    const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5 });
-    expect(html).toBe(String(api + relay + 5));
+    const { api, relay, swap } = getStaticToolCounts();
+    const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5, swapToolsEnabled: false });
+    expect(html).toBe(String(api + relay + swap + 5));
+  });
+
+  it("hides the Swaps card while the swap tools are off", () => {
+    const card = (swapToolsEnabled: boolean) =>
+      renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0, swapToolsEnabled });
+    expect(card(false)).toBe("<details hidden>");
+    expect(card(true)).toBe("<details >");
   });
 });

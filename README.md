@@ -43,11 +43,12 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 }
 ```
 
-### API Key (Optional)
+### API Key
 
-Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header and the server
-forwards it on its calls to the SODAX data API and solver, and nowhere else (not to the relay either). Over stdio,
-set `SODAX_API_KEY` instead. A value that isn't a SODAX key (`sodax_…`) is ignored.
+Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header. The builder
+tools work without one; the swap tools need it. The server forwards it on its calls to the SODAX data API and solver,
+and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY` instead. A value that isn't a SODAX key
+(`sodax_…`) is ignored.
 
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
 carries. The MCP SDKs' SSE clients already send their headers on both.
@@ -62,6 +63,20 @@ carries. The MCP SDKs' SSE clients already send their headers on both.
   }
 }
 ```
+
+### Profiles
+
+A connection picks which tools it gets with `?profile=<name>` on the URL or the `x-sodax-profile` header (stdio:
+`--profile <name>` or `MCP_PROFILE`).
+
+| Profile | Tools |
+|---------|-------|
+| `all` (default) | The builder tools, plus the swap tools when you send an API key |
+| `builder` | The data, relay and SDK docs tools |
+| `swap` | The swap tools only. Needs an API key |
+
+An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403. The swap tools are not enabled on
+the public server yet.
 
 ## Tools
 
@@ -240,6 +255,8 @@ Coolify injects these directly into the process environment.
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
+| `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
+| `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |
@@ -284,9 +301,9 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Landing page |
-| `GET /api` | Server info and tool list |
+| `GET /api` | Server info, tool list and profiles |
 | `GET /health` | Health check |
-| `POST /mcp` | MCP endpoint (streamable HTTP) |
+| `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
 

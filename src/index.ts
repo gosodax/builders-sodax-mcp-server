@@ -18,72 +18,30 @@ import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
-import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
+import { SERVER_VERSION, createServer } from "./server.js";
+import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import {
+  ConnectionError,
+  type Toolsets,
+  parseSwapToolsEnabled,
+  profileFromArgs,
+  profileFromRequest,
+  selectToolsets,
+} from "./services/profiles.js";
 import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
-import { getCachedDocsToolNames, registerDocsProxyTools } from "./tools/docsProxy.js";
+import { getCachedDocsToolNames } from "./tools/docsProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-const { version: SERVER_VERSION } = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as {
-  version: string;
-};
-
-/**
- * Creates a fully configured McpServer instance.
- * Used per-request in HTTP mode to avoid transport conflicts
- * when handling parallel requests.
- */
-// Server-level instructions sent on `initialize`. They steer clients to answer
-// support questions ("does SODAX support chain/token X?") from the live tools
-// rather than the model's training priors, which predate newer chains such as
-// Hedera, Robinhood and Stacks and otherwise produce confidently wrong "no"s.
-const SERVER_INSTRUCTIONS = [
-  [
-    "This server exposes LIVE SODAX protocol data. It is authoritative and current;",
-    "your training data is not. For any question about what SODAX supports —",
-    "chains/networks, swap tokens, money-market assets, relay chain IDs — or about",
-    "SODAX concepts, SDK usage or protocol behaviour, ANSWER FROM THE TOOLS, never",
-    "from prior knowledge, and do not claim something is unsupported without checking.",
-  ].join(" "),
-  [
-    "To check whether a chain is supported, call `sodax_check_chain_support` (accepts a",
-    'name, ticker or chain key, e.g. "Hedera", "HBAR", "hedera"). For the full',
-    "network list use `sodax_get_supported_chains`; for tokens on a chain,",
-    "`sodax_get_swap_tokens`. For conceptual/SDK questions, use the `docs_*` tools",
-    "(SODAX documentation search). Prefer information returned by these tools over",
-    "prior knowledge, and cite the tool result you used.",
-  ].join(" "),
-].join("\n\n");
-
-async function createServer(clientId?: string): Promise<McpServer> {
-  const server = new McpServer(
-    {
-      name: "builders-sodax-mcp-server",
-      version: SERVER_VERSION,
-    },
-    { instructions: SERVER_INSTRUCTIONS },
-  );
-
-  // Wrap server.tool() so every tool call is tracked in PostHog
-  // ⚠️  Must be called BEFORE registering any tools
-  withAnalytics(server, clientId);
-
-  registerSodaxApiTools(server);
-  registerSolverRelayTools(server);
-  await registerDocsProxyTools(server);
-
-  return server;
-}
 
 /**
  * Seed the module-level tool registry that `/health`, `/api`, and the landing
@@ -152,17 +110,23 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
   return false;
 }
 
-async function runStdio(): Promise<void> {
-  // Warm SDK docs cache before creating server
-  logger.info("Initializing SODAX docs proxy...");
-  await warmDocsCache();
-
+async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   if (process.env.SODAX_API_KEY && !apiKey) {
     logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
   }
+  // Before the docs warm-up, so a refused profile fails fast.
+  const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
+    hasApiKey: apiKey !== undefined,
+    swapToolsEnabled,
+  });
+
+  // Warm SDK docs cache before creating server
+  logger.info("Initializing SODAX docs proxy...");
+  await warmDocsCache();
+
   setFallbackRequestContext({ apiKey });
-  const server = await createServer();
+  const server = await createServer(toolsets);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("SODAX Builders MCP server running via stdio");
@@ -173,10 +137,23 @@ function callerApiKey(req: Request): string | undefined {
   return parseApiKey(req.get("x-api-key"));
 }
 
-async function runHTTP(): Promise<void> {
+async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   if (process.env.SODAX_API_KEY) {
     logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
   }
+
+  /** The toolsets a connection gets, or undefined once it has been refused. */
+  const connectionToolsets = (req: Request, res: Response): Toolsets | undefined => {
+    try {
+      return selectToolsets(profileFromRequest(req), { hasApiKey: callerApiKey(req) !== undefined, swapToolsEnabled });
+    } catch (error) {
+      if (!(error instanceof ConnectionError)) throw error;
+      res
+        .status(error.httpStatus)
+        .json({ jsonrpc: "2.0", error: { code: error.rpcCode, message: error.message }, id: null });
+      return undefined;
+    }
+  };
 
   // Warm SDK docs cache before starting HTTP server
   logger.info("Initializing SODAX docs proxy...");
@@ -257,7 +234,7 @@ async function runHTTP(): Promise<void> {
     // expired SDK docs cache can't stall the landing page on a 30s fetch — it
     // renders with the cached (or meta-only) count instead.
     const sdkDocsToolCount = getCachedDocsToolNames().length;
-    res.type("html").send(renderLandingPage(landingTemplate, { networks, sdkDocsToolCount }));
+    res.type("html").send(renderLandingPage(landingTemplate, { networks, sdkDocsToolCount, swapToolsEnabled }));
   };
 
   app.get("/", serveLandingPage);
@@ -273,13 +250,14 @@ async function runHTTP(): Promise<void> {
     const docsHealth = getCachedDocsHealth();
     const docsToolNames = getCachedDocsToolNames();
     // Per-group breakdown derived from the tool registry. `api` covers backend
-    // + solver tools; `relay` the intent-relay tools; `sdkDocs` the dynamic
-    // SDK docs proxy.
+    // + solver tools; `relay` the intent-relay tools; `swap` the swap profile;
+    // `sdkDocs` the dynamic SDK docs proxy.
     const staticToolCounts = getStaticToolCounts();
     const apiToolCount = staticToolCounts.api;
     const relayToolCount = staticToolCounts.relay;
+    const swapToolCount = staticToolCounts.swap;
     const sdkDocsToolCount = docsToolNames.length;
-    const totalTools = apiToolCount + relayToolCount + sdkDocsToolCount;
+    const totalTools = apiToolCount + relayToolCount + swapToolCount + sdkDocsToolCount;
     // Live integrated-networks count (ICON filtered out), mirroring the
     // frontend. Best-effort: a backend hiccup must not fail the health check,
     // so this stays null and callers fall back to the evergreen floor.
@@ -303,6 +281,7 @@ async function runHTTP(): Promise<void> {
         total: totalTools,
         api: apiToolCount,
         relay: relayToolCount,
+        swap: swapToolCount,
         sdkDocs: sdkDocsToolCount,
       },
       sdkDocsProxy: {
@@ -313,8 +292,10 @@ async function runHTTP(): Promise<void> {
   });
 
   app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+    const toolsets = connectionToolsets(req, res);
+    if (!toolsets) return;
     const clientId = hashClientIp(req.ip || "unknown");
-    const requestServer = await createServer(clientId);
+    const requestServer = await createServer(toolsets, clientId);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -328,8 +309,10 @@ async function runHTTP(): Promise<void> {
   const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
+    const toolsets = connectionToolsets(req, res);
+    if (!toolsets) return;
     const clientId = hashClientIp(req.ip || "unknown");
-    const sseServer = await createServer(clientId);
+    const sseServer = await createServer(toolsets, clientId);
     const transport = new SSEServerTransport("/messages", res);
     sseSessions.set(transport.sessionId, { transport, server: sseServer });
 
@@ -376,6 +359,13 @@ async function runHTTP(): Promise<void> {
       version: SERVER_VERSION,
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
+      profiles: {
+        default: "all",
+        select: "?profile=<name> or the x-sodax-profile header",
+        builder: "Data, relay and SDK docs tools",
+        swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Not enabled on this server yet",
+        all: "Both; the swap tools only with an x-api-key header",
+      },
       // Tool lists derived from the tool registry; sdkDocs reflects the live
       // SDK docs proxy list.
       tools: {
@@ -396,7 +386,10 @@ async function runHTTP(): Promise<void> {
 
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info({ port, sodaxEnv: SODAX_ENV }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info(
+      { port, sodaxEnv: SODAX_ENV, swapToolsEnabled },
+      `SODAX Builders MCP server running on http://0.0.0.0:${port}`,
+    );
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,
@@ -417,11 +410,12 @@ async function runHTTP(): Promise<void> {
 
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
+  const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
-    await runStdio();
+    await runStdio(swapToolsEnabled);
   } else {
-    await runHTTP();
+    await runHTTP(swapToolsEnabled);
   }
 }
 

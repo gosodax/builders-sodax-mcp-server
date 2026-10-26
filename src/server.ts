@@ -48,6 +48,9 @@ const SWAP_INSTRUCTIONS = [
   "If the quote returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
   "token or an address.",
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
+  "After the user's wallet sends the swap, call `sodax_swap_track` with the quoteId and the swap's tx hash: it submits",
+  "the swap, so call it at least once, and again until it reports solved or failed. Never resend a swap the tracker",
+  "hasn't reported as failed at the source. To cancel a submitted swap, use `sodax_swap_cancel`.",
 ].join(" ");
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };

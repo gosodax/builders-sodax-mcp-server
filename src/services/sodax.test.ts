@@ -6,11 +6,13 @@ import { logger } from "./logger.js";
 import {
   approveCalldata,
   checksumValid,
+  connectionFor,
   encodeRecipient,
   evmChainIdFor,
   initSodax,
   intentChainId,
   packagedToken,
+  parseRpcOverrides,
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
@@ -169,5 +171,34 @@ describe("sdkLogger", () => {
     sdkLogger.error("rpc failed");
     expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
     expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
+  });
+});
+
+describe("parseRpcOverrides", () => {
+  it("maps SODAX_RPC_URL_<chainId> to the chain key, ignoring everything else", () => {
+    const env = {
+      SODAX_RPC_URL_42161: "https://arb.example/key",
+      SODAX_RPC_URL_137: "",
+      SODAX_RPC_URL: "https://no-id.example",
+      PATH: "/bin",
+    };
+    expect(parseRpcOverrides(env)).toEqual({ "0xa4b1.arbitrum": "https://arb.example/key" });
+  });
+
+  it.each([
+    ["SODAX_RPC_URL_42161", "http://arb.example/secret-key", "must be an https URL"],
+    ["SODAX_RPC_URL_42161", "not a url secret-key", "must be an https URL"],
+    ["SODAX_RPC_URL_999999", "https://nowhere.example/secret-key", "doesn't name a SODAX EVM chain id"],
+  ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
+    expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
+    expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
+  });
+});
+
+describe("connectionFor", () => {
+  it("pins a spoke's connection from the packaged config, and has none for the hub", () => {
+    expect(connectionFor("0xa4b1.arbitrum")).toBe("0x4555aC13D7338D9E671584C1D118c06B2a3C88eD");
+    expect(connectionFor("sonic")).toBeUndefined();
+    expect(connectionFor("not-a-chain")).toBeUndefined();
   });
 });

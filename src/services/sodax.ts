@@ -8,6 +8,7 @@
  */
 
 import {
+  type EvmSpokeOnlyChainKey,
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
@@ -30,10 +31,33 @@ export const sdkLogger = {
   error: (message: string) => logger.error({ source: "sodax-sdk" }, message),
 };
 
-export async function initSodax(): Promise<void> {
+/** `rpcUrls` overrides the packaged RPC per chain key (see `parseRpcOverrides`). */
+export async function initSodax(rpcUrls: Record<string, string> = {}): Promise<void> {
   if (loaded) return;
   const sdk = await import("@sodax/sdk");
-  loaded = { sdk, sodax: new sdk.Sodax({ api: { baseURL: `${SODAX_API_ORIGIN}/v1` }, logger: sdkLogger }) };
+  const chains = Object.fromEntries(Object.entries(rpcUrls).map(([chainKey, rpcUrl]) => [chainKey, { rpcUrl }]));
+  const options = { api: { baseURL: `${SODAX_API_ORIGIN}/v1` }, logger: sdkLogger, chains };
+  loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
+}
+
+type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> };
+const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
+
+/**
+ * `SODAX_RPC_URL_<evmChainId>` overrides by chain key; without one the SDK's packaged RPC is used.
+ * A bad one stops the boot, named by its variable, never its value (paid URLs embed keys).
+ */
+export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    const chainId = /^SODAX_RPC_URL_(\d+)$/.exec(name)?.[1];
+    if (!chainId || !value) continue;
+    const chainKey = Object.keys(chainConfigs).find(key => evmChainIdFor(key) === Number(chainId));
+    if (!chainKey) throw new Error(`${name} doesn't name a SODAX EVM chain id`);
+    if (!URL.canParse(value) || new URL(value).protocol !== "https:") throw new Error(`${name} must be an https URL`);
+    overrides[chainKey] = value;
+  }
+  return overrides;
 }
 
 function sdk() {
@@ -60,15 +84,15 @@ export function encodeRecipient(chainKey: string, address: string): string | und
  * from the hub, else the spoke's asset manager.
  */
 export function swapContractFor(chainKey: string): string | undefined {
-  const config = spokeChainConfig as Record<string, { addresses?: { assetManager?: unknown } } | undefined>;
-  const contract = isHubChain(chainKey) ? solverConfig.intentsContract : config[chainKey]?.addresses?.assetManager;
-  return typeof contract === "string" && EVM_ADDRESS_PATTERN.test(contract) ? contract : undefined;
+  const contract = isHubChain(chainKey)
+    ? solverConfig.intentsContract
+    : chainConfigs[chainKey]?.addresses?.assetManager;
+  return asEvmAddress(contract);
 }
 
 /** A chain's EVM chain id, from the packaged config. */
 export function evmChainIdFor(chainKey: string): number | undefined {
-  const config = spokeChainConfig as Record<string, { chain?: { type?: unknown; chainId?: unknown } } | undefined>;
-  const chain = config[chainKey]?.chain;
+  const chain = chainConfigs[chainKey]?.chain;
   return chain?.type === "EVM" && typeof chain.chainId === "number" ? chain.chainId : undefined;
 }
 
@@ -96,16 +120,28 @@ export function checksumValid(address: string): boolean {
   return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
 }
 
+/**
+ * The spoke's `connection` contract, from the packaged config. Its `Message` log is the proof that a
+ * deposit or a cancel was sent to the hub. The hub has none.
+ */
+export function connectionFor(chainKey: string): string | undefined {
+  return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
+}
+
+const asEvmAddress = (value: unknown) =>
+  typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
+
 const SDK_CALL_TIMEOUT_MS = 15_000;
+const RPC_CALL_TIMEOUT_MS = 8_000;
 
 /** A bounded SDK call whose failure (timeout included) carries no SDK text. */
-async function bounded<T>(call: () => Promise<T>): Promise<T> {
+async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TIMEOUT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       call(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), SDK_CALL_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
       }),
     ]);
   } catch {
@@ -118,6 +154,46 @@ async function bounded<T>(call: () => Promise<T>): Promise<T> {
 /** The user's own hub wallet for an address on a chain (an intent's creator). One hub RPC read, cached by the SDK. */
 export function userHubWallet(chainKey: string, address: string): Promise<string> {
   return bounded(() => sdk().sodax.hubProvider.getUserHubWalletAddress(address, chainKey as SpokeChainKey));
+}
+
+export interface EvmReceipt {
+  reverted: boolean;
+  logs: { address: string; topics: string[]; data: string }[];
+}
+
+// viem's not-found errors are told apart by name; their messages carry the RPC URL.
+const isNotFound = (error: unknown) =>
+  error instanceof Error && /^Transaction(Receipt)?NotFoundError$/.test(error.name);
+
+/** A mined tx's receipt on an EVM spoke, or `null` while it isn't mined. Fails as a bare error. */
+export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmReceipt | null> {
+  return bounded(async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
+      return {
+        reverted: status !== "success",
+        logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
+      };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
+/** Whether an EVM spoke's node knows the tx at all, mined or pending. */
+export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
+  return bounded(async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      await client.getTransaction({ hash: txHash as `0x${string}` });
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
+  }, RPC_CALL_TIMEOUT_MS);
 }
 
 /** Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. */

@@ -28,6 +28,25 @@ const MAX_SUGGESTIONS = 5;
 // What many wallets and aggregators pass for an EVM chain's gas token.
 const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
+/**
+ * A chain as a person would name it, or by EVM chain id. Refused otherwise with the supported list and any
+ * within two typos.
+ */
+export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string): ChainInfo {
+  const key = findChainKey(catalog, chainQuery);
+  if (key) return toChain(key);
+  const supported = Object.keys(catalog.tokens).map(toChain);
+  const near = nearestChains(supported, chainQuery);
+  const names = near.map(chain => chain.name).join(" or ");
+  throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
+    details: { supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
+    nextStep:
+      near.length > 0
+        ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
+        : undefined,
+  });
+}
+
 /** The chains within two typos of the query, by name or key, closest first. */
 function nearestChains(chains: ChainInfo[], query: string): ChainInfo[] {
   const needle = normalize(query);
@@ -41,22 +60,8 @@ function nearestChains(chains: ChainInfo[], query: string): ChainInfo[] {
 }
 
 export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string): Resolution {
-  const key = findChainKey(catalog, chainQuery);
-  if (!key) {
-    const supported = Object.keys(catalog.tokens).map(toChain);
-    const near = nearestChains(supported, chainQuery);
-    const names = near.map(chain => chain.name).join(" or ");
-    throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
-      details: { supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
-      nextStep:
-        near.length > 0
-          ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
-          : undefined,
-    });
-  }
-
-  const chain = toChain(key);
-  const tokens = catalog.tokens[key];
+  const chain = resolveSwapChain(catalog, chainQuery);
+  const tokens = catalog.tokens[chain.key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", `The swap token list for ${chain.name} is unavailable.`);
@@ -69,10 +74,10 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
     suggestions,
   });
 
-  const byAddress = findToken(catalog, key, q);
+  const byAddress = findToken(catalog, chain.key, q);
   if (byAddress) return { status: "resolved", chain, matchedBy: "address", token: byAddress };
 
-  const isEvm = catalog.chains[key]?.type === "EVM";
+  const isEvm = catalog.chains[chain.key]?.type === "EVM";
   if (q.toLowerCase() === "native" || (isEvm && q.toLowerCase() === EVM_NATIVE_PLACEHOLDER)) {
     const native = tokens.find(token => token.isNative);
     return native ? { status: "resolved", chain, matchedBy: "native", token: native } : notFound([]);
@@ -95,7 +100,7 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
   // At most one per chain, by address or else by exact symbol. Never a native token by address: the zero
   // address is each chain's own gas token, not one token.
   const otherChains = Object.keys(catalog.tokens)
-    .filter(other => other !== key)
+    .filter(other => other !== chain.key)
     .flatMap(other => {
       const byAddress = findToken(catalog, other, q);
       const token =
@@ -134,7 +139,7 @@ function suggest(tokens: SwapsApiToken[], needle: string): SwapsApiToken[] {
   return suggestions.slice(0, MAX_SUGGESTIONS);
 }
 
-function toChain(key: string): ChainInfo {
+export function toChain(key: string): ChainInfo {
   return { key, name: chainDisplayName(key) };
 }
 

@@ -7,19 +7,18 @@
  */
 
 import { createHash } from "node:crypto";
-import { ZERO_ADDRESS_PATTERN } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
+import { callerKeyHash } from "../requestContext.js";
 import {
   type SwapTx,
   approveCalldata,
   encodeRecipient,
-  evmChainIdFor,
   intentChainId,
   isHubChain,
   packagedToken,
   rebuildSwapTx,
-  swapContractFor,
   userHubWallet,
 } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
@@ -27,6 +26,7 @@ import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { putQuote } from "./quoteCache.js";
 import { resolveToken } from "./resolver.js";
+import { configDisagrees, sourceChainFor } from "./source.js";
 import {
   type Approval,
   type BuiltIntent,
@@ -106,11 +106,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
   const to = resolveSide(catalog, input.toChain, input.toToken, "to");
-  // The catalog only keeps an EVM chain with a numeric id; the typeof narrows it for TypeScript.
-  const { chainId } = from.config;
-  if (from.config.type !== "EVM" || typeof chainId !== "number") {
-    throw new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${from.chain.name} aren't supported here yet.`);
-  }
+  // Only a chain track can prove the deposit on: nothing else would submit the swap. The chain id
+  // and swap contract are pinned from the SDK config.
+  const { chainId, assetManager: swapContract } = sourceChainFor(catalog, from.chain);
   const dstEvm = to.config.type === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
@@ -156,13 +154,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     return { status: "price_only", ...summary, missing };
   }
 
-  // Pinned from the packaged config; the live chain config must agree with it. Five EVM chains
-  // share one asset manager, so the chain id is pinned too.
-  const swapContract = swapContractFor(from.chain.key);
+  // The live chain config must agree with the pinned swap contract.
   const live = from.config.swapContract;
-  if (!swapContract || (live && !same(live, swapContract))) throw configDisagrees(from.chain.key, "swapContract");
-  const pinnedChainId = evmChainIdFor(from.chain.key);
-  if (pinnedChainId !== chainId) throw configDisagrees(from.chain.key, "chainId");
+  if (live && !same(live, swapContract)) throw configDisagrees(from.chain.key, "swapContract");
 
   const recipient = await checkRecipient({
     chainKey: to.chain.key,
@@ -221,7 +215,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
   }
 
-  const { quoteId } = putQuote({ ...request, intent: built.intent, relayData: built.relayData });
+  const { quoteId } = putQuote({
+    ...request,
+    intent: built.intent,
+    relayData: built.relayData,
+    keyHash: callerKeyHash(),
+    minimumReceived: { amount: summary.to.minimumAmount, symbol: to.token.symbol, chainName: to.chain.name },
+  });
   return {
     status: "ready",
     ...summary,
@@ -231,7 +231,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     fromAddress,
     toAddress,
     checks: { balance: "not_checked", recipient },
-    ...toSteps(built.tx, approval, pinnedChainId, fromAddress),
+    ...toSteps(built.tx, approval, chainId, fromAddress),
   };
 }
 
@@ -262,12 +262,6 @@ function resolveSide(
   return { ...resolution, config };
 }
 
-/** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
-function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
-  logger.error({ chainKey, field, token }, "The live SODAX config differs from the SDK's");
-  return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX config doesn't agree with the SDK's.");
-}
-
 function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }): Side {
   return { chain, symbol: token.symbol, address: token.address };
 }
@@ -281,7 +275,6 @@ function checkAddress(address: string, chain: ChainInfo): string {
   return address;
 }
 
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** A token as an intent names it: a hub token (native S included) as is, else by its hub asset. */
 const intentToken = (chainKey: string, token: SwapsApiToken) => (isHubChain(chainKey) ? token.address : token.hubAsset);
 /** A value as a 32-byte ABI word (hex, no prefix). */
@@ -302,7 +295,7 @@ function findMismatch(
     from: SwapsApiToken;
     to: SwapsApiToken;
     fee: bigint;
-    /** The contract the swap calls: the spoke's asset manager, or the intents contract from the hub. */
+    /** The contract the swap calls: the spoke's asset manager. */
     swapContract: string;
     hubWallet: string;
     /** The SDK's rebuild of the swap tx, if it could. */
@@ -355,7 +348,7 @@ function findMismatch(
  * Hex quantities, as `eth_sendTransaction` takes them. The chain id is in the tx: several chains share the
  * contracts a step calls, so a wallet on another network must refuse it rather than send it there.
  */
-function toStepTx(tx: EvmTx, chainId: number): StepTx {
+export function toStepTx(tx: EvmTx, chainId: number): StepTx {
   return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
 }
 

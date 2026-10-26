@@ -65,6 +65,8 @@ describe("instructions", () => {
     expect(builder).toContain("sodax_check_chain_support");
     expect(builder).not.toContain("sodax_resolve_token");
     expect(swap).toContain("sodax_resolve_token");
+    expect(swap).toContain("sodax_swap_track");
+    expect(swap).toContain("sodax_swap_cancel");
     expect(swap).not.toContain("sodax_check_chain_support");
     expect(await instructions({ builder: true, swap: true })).toBe(`${builder}\n\n${swap}`);
   });

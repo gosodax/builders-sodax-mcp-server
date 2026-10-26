@@ -1,9 +1,9 @@
-import { EvmSolverService, Sodax, SonicSpokeService } from "@sodax/sdk";
-import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { EvmSolverService, Sodax } from "@sodax/sdk";
+import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
-import { setFallbackRequestContext } from "../services/requestContext.js";
+import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
 import { type IntentJson, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
@@ -37,8 +37,6 @@ const ASSET_MANAGER = "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3";
 const ZERO = `0x${"0".repeat(40)}`;
 // The user's hub wallet (the intent's creator), as the mocked lookup returns it.
 const HUB_WALLET = `0x${"c".repeat(40)}`;
-// The hub intents contract the SDK config pins; a swap from Sonic calls it directly.
-const INTENTS = solverConfig.intentsContract;
 /** A 32-byte ABI word: a number, or a hex value left-padded. */
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
@@ -84,17 +82,8 @@ async function sdkIntent(body: Record<string, string> & { partnerFee?: { address
     deadline: BigInt(body.deadline),
     allowPartialFill: false,
   } as unknown as Parameters<typeof EvmSolverService.constructCreateIntentData>[0];
-  const [, intent] =
-    body.srcChainKey === "sonic"
-      ? await SonicSpokeService.createSwapIntent({
-          createIntentParams: params,
-          creatorHubWalletAddress: HUB_WALLET,
-          solverConfig,
-          fee: body.partnerFee,
-          hubProvider: builder.hubProvider,
-          raw: true,
-        })
-      : EvmSolverService.constructCreateIntentData(params, HUB_WALLET, builder.config, body.partnerFee);
+  // Swaps start from EVM spokes only: the quote refuses Sonic before building.
+  const [, intent] = EvmSolverService.constructCreateIntentData(params, HUB_WALLET, builder.config, body.partnerFee);
   const json = Object.entries(intent).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value]);
   return Object.fromEntries(json) as IntentJson;
 }
@@ -114,10 +103,9 @@ function stubSwaps(stub: SwapsStub = {}) {
     if (path === "/allowance/check") return Response.json({ valid: stub.valid ?? false });
     if (path === "/approve") {
       const approve = { from: USER, to: body.inputToken, value: "0" };
-      const spender = body.srcChainKey === "sonic" ? INTENTS : ASSET_MANAGER;
       return Response.json({
-        tx: { ...approve, data: stub.approveData ?? approveData(spender, body.inputAmount) },
-        ...(stub.resetTx && { resetTx: { ...approve, data: stub.resetData ?? approveData(spender, 0n) } }),
+        tx: { ...approve, data: stub.approveData ?? approveData(ASSET_MANAGER, body.inputAmount) },
+        ...(stub.resetTx && { resetTx: { ...approve, data: stub.resetData ?? approveData(ASSET_MANAGER, 0n) } }),
       });
     }
     if (path === "/intents") {
@@ -224,14 +212,17 @@ describe("sodax_swap_quote", () => {
       dstAddress: USER,
     });
     expect(calls.find(call => call.path.startsWith("/deadline"))?.path).toBe("/deadline?offsetSeconds=900");
-    expect(getCachedQuote(String(out.quoteId))).toMatchObject({
+    expect(getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({
       minOutputAmount: 4941968n,
       relayData: { address: HUB_WALLET },
+      minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
     });
+    expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
     expect(out.nextStep).toContain("Balances aren't checked here.");
-    expect(out.nextStep).toContain("don't send any of the steps or the batch");
+    expect(out.nextStep).toContain("then call sodax_swap_track with the quoteId");
+    expect(out.nextStep).not.toContain("don't send");
   });
 
   it("skips the approve when the allowance is already enough (a native token)", async () => {
@@ -521,15 +512,16 @@ describe("sodax_swap_quote", () => {
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch: "rebuild" }), expect.any(String));
   });
 
-  it("builds a swap from Sonic as createIntent on the pinned intents contract", async () => {
-    stubSwaps();
-    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+  // A hub swap has no connection Message for track to check, so nothing could submit it.
+  it.each([
+    ["USDC", SONIC_USDC],
+    ["native S", "native"],
+  ])("refuses a swap from Sonic (%s) until track can check one", async (_case, fromToken) => {
+    const calls = stubSwaps();
+    const sonic = { fromChain: "sonic", fromToken, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
     const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
-    expect(out.status).toBe("ready");
-    expect(out.steps?.map(step => [step.kind, step.chainId, step.tx.to])).toEqual([
-      ["approve", 146, SONIC_USDC],
-      ["swap", 146, INTENTS],
-    ]);
+    expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
+    expect(calls).toEqual([]);
   });
 
   // The SDK names a hub token in the intent as is: native S stays 0x0…0, not its hub asset wS.
@@ -537,32 +529,7 @@ describe("sodax_swap_quote", () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, toToken: "native", amount: "5", fromAddress: USER });
     expect(out.status).toBe("ready");
-    expect(getCachedQuote(String(out.quoteId))?.intent.outputToken).toBe(ZERO);
-  });
-
-  it("builds a swap from native S as createIntent with the amount as value", async () => {
-    stubSwaps({ valid: true });
-    const sonicS = { fromChain: "sonic", fromToken: "native", toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
-    const { out } = await quote({ ...sonicS, amount: "5", fromAddress: USER });
-    expect(out.status).toBe("ready");
-    expect(out.steps).toMatchObject([
-      { kind: "swap", chainId: 146, tx: { to: INTENTS, value: `0x${(5n * 10n ** 18n).toString(16)}` } },
-    ]);
-    expect(getCachedQuote(String(out.quoteId))?.intent.inputToken).toBe(ZERO);
-  });
-
-  it.each<[string, SwapsStub, string]>([
-    ["another contract", { swapTo: ASSET_MANAGER }, "tx.to"],
-    ["a relay payload that isn't the tx", { relayPayload: "0x" }, "relay payload"],
-    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "tx.data"],
-    ["an approval for another spender", { approveData: approveData(ASSET_MANAGER, 5000000n) }, "approval"],
-  ])("refuses a swap from Sonic with %s", async (_case, stub, mismatch) => {
-    stubSwaps(stub);
-    const error = vi.spyOn(logger, "error");
-    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
-    const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("SWAP_MISMATCH");
-    expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch }), expect.any(String));
+    expect(getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({ intent: { outputToken: ZERO } });
   });
 
   it("builds native HBAR with the value Hedera expects (scaled to 18 decimals)", async () => {
@@ -574,14 +541,15 @@ describe("sodax_swap_quote", () => {
     expect(out.steps?.at(-1)?.tx.value).toBe(`0x${(5n * 10n ** 18n).toString(16)}`);
   });
 
-  it("refuses to build from a chain the SDK config doesn't know", async () => {
+  it("refuses a source chain the SDK config doesn't know", async () => {
     const packaged = spokeChainConfig as Record<string, unknown>;
     const arbitrum = packaged["0xa4b1.arbitrum"];
     delete packaged["0xa4b1.arbitrum"];
     try {
-      stubSwaps();
+      const calls = stubSwaps();
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-      expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+      expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
+      expect(calls).toEqual([]);
     } finally {
       packaged["0xa4b1.arbitrum"] = arbitrum;
     }
@@ -608,8 +576,11 @@ describe("sodax_swap_quote", () => {
     configs["0xa4b1.arbitrum"].chain.chainId = 8453;
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
-    expect(calls.map(call => call.path)).not.toContain("/intents");
+    expect(out.error).toMatchObject({
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "The SODAX config doesn't agree with the SDK's.",
+    });
+    expect(calls).toEqual([]);
   });
 
   it.each([

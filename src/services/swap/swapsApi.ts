@@ -5,8 +5,8 @@
  */
 
 import { z } from "zod";
-import { EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
-import { HttpError, fetchJson } from "../http.js";
+import { EVM_ADDRESS_PATTERN, EVM_TX_HASH_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
+import { HttpError, fetchJson, fetchJsonOrNull } from "../http.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { ActionError, type ActionErrorCode } from "./errors.js";
@@ -50,6 +50,29 @@ const builtIntentSchema = z.object({
   relayData: z.object({ address: evmAddress, payload: z.string().regex(HEX_DATA) }),
 });
 export type BuiltIntent = z.infer<typeof builtIntentSchema>;
+export type Intent = BuiltIntent["intent"];
+
+// Non-EVM destinations have their own fill hash formats.
+const FILL_TX_HASH = /^[A-Za-z0-9:_-]{1,128}$/;
+
+// Only what track and cancel act on; `userMessage` and `failureReason` are upstream text and stay out.
+// A hash that doesn't look like one is dropped, not passed on.
+const submitTxStatusSchema = z.object({
+  data: z.object({
+    status: z.string().max(64),
+    failedAtStep: z.string().max(64).optional(),
+    abandonedAt: z.string().optional(),
+    relayedForRefundAt: z.string().optional(),
+    intentCancelled: z.boolean().optional(),
+    result: z
+      .object({
+        dstIntentTxHash: z.string().regex(EVM_TX_HASH_PATTERN).optional().catch(undefined),
+        fillTxHash: z.string().regex(FILL_TX_HASH).optional().catch(undefined),
+      })
+      .optional(),
+  }),
+});
+export type SubmitTxStatus = z.infer<typeof submitTxStatusSchema>["data"];
 
 interface QuoteRequest {
   tokenSrc: string;
@@ -128,6 +151,54 @@ export async function buildApprove(request: IntentRequest): Promise<Approval> {
   return call(z.object({ tx: evmTxSchema, resetTx: evmTxSchema.optional() }), "/approve", intentBody(request));
 }
 
+/** The backend's record of a submitted swap, or `null` if it has none. Keyless. */
+export async function getSubmitTxStatus(txHash: string, srcChainKey: string): Promise<SubmitTxStatus | null> {
+  const query = new URLSearchParams({ txHash, srcChainKey });
+  const status = await callOrNull(submitTxStatusSchema, `/submit-tx/status?${query}`);
+  return status?.data ?? null;
+}
+
+/** Hands a mined deposit to the backend, which relays it and posts it to the solver. Idempotent per tx. */
+export async function submitTx(body: {
+  txHash: string;
+  srcChainKey: string;
+  walletAddress: string;
+  intent: Intent;
+  /** The relay payload, not the `relayData` object. */
+  relayData: string;
+}): Promise<"inserted" | "duplicate"> {
+  const schema = z.object({
+    success: z.boolean(),
+    data: z.object({ status: z.enum(["inserted", "duplicate"]) }).optional(),
+  });
+  const { success, data } = await call(schema, "/submit-tx", body);
+  if (!success || !data) {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service didn't accept the swap for processing.");
+  }
+  return data.status;
+}
+
+/** The intent a hub transaction created. */
+export async function getHubIntent(hubTxHash: string): Promise<Intent> {
+  return call(intentSchema, `/intents/${hubTxHash}`);
+}
+
+/** The unsigned cancel tx for an intent, from its source chain. */
+export async function buildCancel(srcChainKey: string, intent: Intent): Promise<EvmTx> {
+  const { tx } = await call(z.object({ tx: evmTxSchema }), "/intents/cancel", { srcChainKey, intent });
+  return tx;
+}
+
+/**
+ * Asks the relay to carry a mined spoke tx to the hub; `chainId` is the relay id (an intent's `srcChain`).
+ * Through the Swaps API, not the relay itself (`relay.ts`), so the caller's key and limits apply (ADR §Cancel).
+ */
+export async function relaySpokeTx(chainId: string, txHash: string): Promise<boolean> {
+  const schema = z.object({ result: z.object({ success: z.boolean() }) });
+  const { result } = await call(schema, "/intents/submit", { chainId, txHash });
+  return result.success;
+}
+
 function intentBody(request: IntentRequest): Record<string, unknown> {
   const { inputAmount, minOutputAmount, partnerFee, ...rest } = request;
   return {
@@ -143,21 +214,32 @@ function wirePartnerFee(partnerFee?: PartnerFee): { partnerFee?: { address: stri
   return partnerFee ? { partnerFee: { address: partnerFee.address, percentage: partnerFee.bps } } : {};
 }
 
-async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Promise<T> {
-  const route = path.split("?")[0];
-  let raw: unknown;
+// Output and input differ for a schema with `.catch()`; what comes in is unchecked JSON either way.
+type Schema<T> = z.ZodType<T, z.ZodTypeDef, unknown>;
+
+async function call<T>(schema: Schema<T>, path: string, body?: unknown): Promise<T> {
+  return parse(schema, path, await send(path, body, fetchJson));
+}
+
+/** Like `call`, but a 404 is `null`. */
+async function callOrNull<T>(schema: Schema<T>, path: string): Promise<T | null> {
+  const raw = await send(path, undefined, fetchJsonOrNull);
+  return raw === null ? null : parse(schema, path, raw);
+}
+
+async function send(path: string, body: unknown, fetcher: typeof fetchJsonOrNull): Promise<unknown> {
   try {
-    raw = await fetchJson<unknown>(`${SODAX_SWAPS_BASE_URL}${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      body,
-      timeout: TIMEOUT_MS,
-    });
+    const options = { method: body === undefined ? "GET" : "POST", body, timeout: TIMEOUT_MS };
+    return await fetcher<unknown>(`${SODAX_SWAPS_BASE_URL}${path}`, options);
   } catch (error) {
-    throw toActionError(error, route);
+    throw toActionError(error, routeOf(path));
   }
+}
+
+function parse<T>(schema: Schema<T>, path: string, raw: unknown): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    logger.error({ route }, "Unexpected Swaps API response");
+    logger.error({ route: routeOf(path) }, "Unexpected Swaps API response");
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
   }
   return parsed.data;
@@ -192,6 +274,9 @@ const REFUSALS = new Map<number, Refusal>([
   [-14, tryOther("The amount is too large for the swap service to quote.", "the amount is too large")],
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
 ]);
+
+// A hash in the path is the caller's; the route logged is the endpoint, not the value.
+const routeOf = (path: string) => path.split("?")[0].replace(/0x[0-9a-fA-F]+/g, ":hash");
 
 function toActionError(error: unknown, route: string): ActionError {
   if (!(error instanceof HttpError)) {

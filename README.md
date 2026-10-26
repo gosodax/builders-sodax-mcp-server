@@ -267,6 +267,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
+| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC `sodax_swap_track` and `sodax_swap_cancel` read an EVM source chain through, by chain id (e.g. `SODAX_RPC_URL_42161`). `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |

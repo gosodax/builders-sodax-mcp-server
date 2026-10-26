@@ -2,6 +2,9 @@
  * Quotes ready to sign, by `quoteId`, so the agent never retypes the intent's
  * bigint fields and track/cancel trust only what was quoted. In memory: a quote
  * lost to a restart can't be submitted from here (see ADR §Quote cache).
+ *
+ * A quote belongs to the API key that made it: the cache is shared by every caller,
+ * so only its creator may submit, relay or alert on it.
  */
 
 import { randomUUID } from "node:crypto";
@@ -12,8 +15,16 @@ export type CachedQuote = IntentRequest & {
   quoteId: string;
   intent: BuiltIntent["intent"];
   relayData: BuiltIntent["relayData"];
+  /** SHA-256 of the creator's API key. */
+  keyHash: string;
+  /** The least the recipient gets, as track reports it once the swap is solved. */
+  minimumReceived: { amount: string; symbol: string; chainName: string };
   /** Epoch ms: the deadline plus a grace period, so a tx signed near expiry can still be tracked. */
   expiresAt: number;
+  /** The deposit submitted for this quote; one intent can only come from one deposit. */
+  submittedTxHash?: string;
+  /** Set once an expired deposit was relayed so the backend refunds it. */
+  relayedForRefund?: boolean;
 };
 
 const MAX_QUOTES = 10_000;
@@ -46,13 +57,39 @@ export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): Cac
   return entry;
 }
 
-export function getCachedQuote(quoteId: string): CachedQuote | undefined {
+/** The quote, `undefined` if it's gone, or `"key_mismatch"` if another key made it. */
+export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | "key_mismatch" | undefined {
   const quote = quotes.get(quoteId);
-  if (quote && quote.expiresAt <= Date.now()) {
+  if (!quote) return undefined;
+  if (quote.expiresAt <= Date.now()) {
     quotes.delete(quoteId);
     return undefined;
   }
-  return quote;
+  return quote.keyHash === keyHash ? quote : "key_mismatch";
+}
+
+export function markSubmitted(quoteId: string, txHash: string): void {
+  const quote = quotes.get(quoteId);
+  if (quote) quote.submittedTxHash = txHash;
+}
+
+/** Undoes `markSubmitted` when handing the deposit over failed, so the next call tries again. */
+export function releaseSubmitted(quoteId: string, txHash: string): void {
+  const quote = quotes.get(quoteId);
+  if (quote?.submittedTxHash === txHash && !quote.relayedForRefund) quote.submittedTxHash = undefined;
+}
+
+// A relayed deposit has no backend row, so its quote is the only record that it's being refunded.
+const RELAYED_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+export function markRelayedForRefund(quoteId: string, txHash: string): void {
+  const quote = quotes.get(quoteId);
+  if (!quote) return;
+  Object.assign(quote, {
+    submittedTxHash: txHash,
+    relayedForRefund: true,
+    expiresAt: Math.max(quote.expiresAt, Date.now() + RELAYED_RETENTION_MS),
+  });
 }
 
 export function clearQuoteCache(): void {

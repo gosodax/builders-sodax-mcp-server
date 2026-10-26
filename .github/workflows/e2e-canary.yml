@@ -1,0 +1,95 @@
+name: Canary swap E2E
+
+# One real 5 USDC swap between Arbitrum and Base through the swap tools, against canary (mainnet chains:
+# real funds), signed by a funded test wallet. Never on pull requests: the secrets are in the canary-e2e
+# environment, which only the default branch can use.
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      amount:
+        description: "USDC to swap (an amount the wallet doesn't hold makes a deliberate red run)"
+        required: false
+        default: "5"
+      dry_run:
+        description: "Quote only: checks the environment and API key without a funded wallet"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two runs at once would race for the wallet's nonces.
+  group: e2e-canary
+  cancel-in-progress: false
+
+jobs:
+  swap:
+    name: Swap on canary
+    runs-on: ubuntu-latest
+    # Track waits up to 5 min past the quote's expiry, and delivery up to 3 more.
+    timeout-minutes: 35
+    environment: canary-e2e
+
+    steps:
+      # Pinned by commit and no dependency cache: this job holds a funded wallet's key.
+      - name: Check out code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        run: pnpm build
+
+      - name: Start the server
+        env:
+          SODAX_ENV: canary
+          SODAX_SWAP_TOOLS_ENABLED: "true"
+          LOG_LEVEL: info
+          PORT: "3000"
+          SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}
+          SODAX_RPC_URL_8453: ${{ secrets.SODAX_RPC_URL_8453 }}
+        run: |
+          nohup node dist/index.js > server.log 2>&1 &
+          curl --retry 60 --retry-delay 2 --retry-connrefused -sf http://127.0.0.1:3000/health -o /dev/null
+
+      - name: Swap and track
+        id: e2e
+        timeout-minutes: 28
+        env:
+          MCP_URL: http://127.0.0.1:3000/mcp?profile=swap
+          SODAX_API_KEY: ${{ secrets.E2E_SODAX_API_KEY }}
+          E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
+          # Empty on a scheduled run: the script defaults to 5.
+          AMOUNT: ${{ inputs.amount }}
+          E2E_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}
+          SODAX_RPC_URL_8453: ${{ secrets.SODAX_RPC_URL_8453 }}
+        run: pnpm e2e:canary
+
+      - name: Server log
+        if: failure()
+        run: cat server.log || true
+
+      - name: Alert Discord
+        if: failure() || cancelled()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          STAGE: ${{ steps.e2e.outputs.stage || 'setup' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then echo "No DISCORD_WEBHOOK_URL: not alerting"; exit 0; fi
+          jq -n --arg stage "$STAGE" --arg url "$RUN_URL" \
+            '{username: "SODAX MCP Server", embeds: [{title: "Canary swap E2E failed", description: "Stage: \($stage) · \($url)", color: 15158332}]}' \
+            | curl -fsS -m 10 -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"

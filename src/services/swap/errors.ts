@@ -22,7 +22,7 @@ const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SOD
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
   UNSUPPORTED_SOURCE:
-    "Swaps can start only from an EVM chain or Sonic for now; ask the user to send from one of those.",
+    "Swaps can only start from an EVM chain such as Arbitrum or Base for now; ask the user to send from one.",
   UNKNOWN_TOKEN:
     "Resolve that token with sodax_resolve_token first, then pass the chain key and token address it returns.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
@@ -30,7 +30,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",
   AMOUNT_TOO_LOW: "Ask the user for a larger amount.",
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
-  SWAP_REJECTED: "Tell the user the swap service refused this swap and why; don't retry it unchanged.",
+  SWAP_REJECTED:
+    "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
   API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header: ${API_KEYS_DOCS_URL}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
   UPSTREAM_UNAVAILABLE: RETRY_LATER,

@@ -3,8 +3,8 @@
  * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
-import { setFallbackRequestContext } from "../services/requestContext.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { getCachedQuote } from "../services/swap/quoteCache.js";
 import { formatUnits } from "../services/swap/units.js";
@@ -14,7 +14,14 @@ const USER = "0x000000000000000000000000000000000000dEaD";
 const ARB_USDC = { fromChain: "0xa4b1.arbitrum", fromToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" };
 const TO_BASE_USDC = { toChain: "0x2105.base", toToken: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" };
 
+// Set SODAX_API_KEY once the Swaps API enforces keys.
+const apiKey = parseApiKey(process.env.SODAX_API_KEY);
+
 describe("sodax_swap_quote against the live Swaps API", () => {
+  beforeEach(() => {
+    setFallbackRequestContext({ apiKey });
+  });
+
   afterEach(() => {
     setFallbackRequestContext({});
   });
@@ -36,7 +43,8 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(minutes).toBeLessThan(16);
   });
 
-  it("builds a swap from Sonic", async () => {
+  // Sonic's swap goes to the hub intents contract, which only the SDK config names: refused until then.
+  it("refuses a swap from Sonic until its contract is known", async () => {
     const { out } = await callQuote({
       fromChain: "sonic",
       fromToken: "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
@@ -44,8 +52,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       amount: "5",
       fromAddress: USER,
     });
-    expect(out.status).toBe("ready");
-    expect(out.steps?.at(-1)).toMatchObject({ kind: "swap", chainId: 146 });
+    expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
   });
 
   it("needs no approve for native ETH, and sends the amount as the tx value", async () => {
@@ -74,7 +81,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
 
   it("takes the partner fee from the amount sent, as the built intent confirms", async () => {
     const plain = await callQuote({ ...ARB_USDC, ...TO_BASE_USDC, amount: "100" });
-    setFallbackRequestContext({ partnerFee: { address: USER, bps: 100 } });
+    setFallbackRequestContext({ apiKey, partnerFee: { address: USER, bps: 100 } });
     const { out } = await callQuote({ ...ARB_USDC, ...TO_BASE_USDC, amount: "100", fromAddress: USER });
     expect(out.status).toBe("ready");
     expect(out.partnerFee).toEqual({ bps: 100, amount: "1", symbol: "USDC" });

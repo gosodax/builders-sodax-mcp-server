@@ -15,6 +15,9 @@
       "name": "Hyper",
       "type": "EVM"
     },
+    "addresses": {
+      "assetManager": "0xAfd6A6e4287A511D3BAAd013093815268846FBb7"
+    },
     "nativeToken": "0x0000000000000000000000000000000000000000"
   },
   "0x1.icon": {
@@ -23,6 +26,9 @@
       "chainId": "0x1.icon",
       "name": "ICON",
       "type": "ICON"
+    },
+    "addresses": {
+      "assetManager": "cx1be33c283c7dc7617181d1b21a6a2309e71b1ee7"
     },
     "nativeToken": "cx0000000000000000000000000000000000000000"
   },
@@ -33,6 +39,9 @@
       "name": "Arbitrum",
       "type": "EVM"
     },
+    "addresses": {
+      "assetManager": "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3"
+    },
     "nativeToken": "0x0000000000000000000000000000000000000000"
   },
   "0xa86a.avax": {
@@ -42,6 +51,9 @@
       "name": "Avalanche",
       "type": "EVM"
     },
+    "addresses": {
+      "assetManager": "0x5bDD1E1C5173F4c912cC919742FB94A55ECfaf86"
+    },
     "nativeToken": "0x0000000000000000000000000000000000000000"
   },
   "sui": {
@@ -50,6 +62,9 @@
       "chainId": "sui",
       "name": "SUI",
       "type": "SUI"
+    },
+    "addresses": {
+      "assetManager": "0xa17a409164d1676db71b411ab50813ba2c7dd547d2df538c699049566f1ff922::asset_manager::0xcb7346339340b7f8dea40fcafb70721dc2fcfa7e8626a89fd954d46c1f928b61"
     },
     "nativeToken": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
   }

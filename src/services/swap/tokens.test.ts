@@ -25,7 +25,13 @@ describe("getSwapCatalog", () => {
     expect(first).toBe(second);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(first.tokens.hyper.filter(token => token.isNative).map(token => token.symbol)).toEqual(["HYPE"]);
-    expect(first.chains["0xa4b1.arbitrum"]).toEqual({ type: "EVM", chainId: 42161 });
+    expect(first.chains["0xa4b1.arbitrum"]).toEqual({
+      type: "EVM",
+      chainId: 42161,
+      swapContract: "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3",
+    });
+    // Sonic is the hub: no asset manager, so no swap contract from this config.
+    expect(first.chains.sonic).toEqual({ type: "EVM", chainId: 146 });
     expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
   });
 

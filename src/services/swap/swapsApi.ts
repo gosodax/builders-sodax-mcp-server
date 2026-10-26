@@ -13,8 +13,6 @@ import { ActionError } from "./errors.js";
 
 const TIMEOUT_MS = 15_000;
 const UINT = /^\d+$/;
-// The upstream reason reaches the agent only as one plain line: no markup, braces or line breaks.
-const PLAIN_REASON = /^[\p{L}\p{N} .,:;'"()_\/+-]+$/u;
 
 const evmTxSchema = z.object({
   from: z.string().regex(EVM_ADDRESS_PATTERN),
@@ -34,7 +32,12 @@ const builtIntentSchema = z.object({
       inputAmount: z.string().regex(UINT),
       minOutputAmount: z.string().regex(UINT),
       deadline: z.string().regex(UINT),
+      allowPartialFill: z.boolean(),
+      srcAddress: z.string(),
       dstAddress: z.string(),
+      solver: z.string(),
+      /** The fee envelope: `0x` without a partner fee. */
+      data: z.string(),
     })
     .passthrough(),
   relayData: z.object({ address: z.string(), payload: z.string() }),
@@ -74,6 +77,8 @@ export async function getQuote(request: QuoteRequest): Promise<bigint> {
 
 // The hub clock may run a little off ours; anything further off is not a deadline we asked for.
 const MAX_CLOCK_SKEW_SEC = 300;
+// Never earlier than asked by more than this: a deadline that is already near would expire in flight.
+const MAX_EARLY_SEC = 60;
 
 /** A deadline `offsetSeconds` from now on the hub clock (unix seconds). */
 export async function getDeadline(offsetSeconds: number): Promise<string> {
@@ -82,7 +87,8 @@ export async function getDeadline(offsetSeconds: number): Promise<string> {
     `/deadline?offsetSeconds=${offsetSeconds}`,
   );
   const expected = Math.floor(Date.now() / 1000) + offsetSeconds;
-  if (Math.abs(Number(deadline) - expected) > MAX_CLOCK_SKEW_SEC) {
+  const offBy = Number(deadline) - expected;
+  if (offBy < -MAX_EARLY_SEC || offBy > MAX_CLOCK_SKEW_SEC) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service returned an unusable deadline.");
   }
   return deadline;
@@ -132,7 +138,7 @@ async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Prom
       timeout: TIMEOUT_MS,
     });
   } catch (error) {
-    throw toActionError(error);
+    throw toActionError(error, path.split("?")[0]);
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
@@ -142,8 +148,13 @@ async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Prom
   return parsed.data;
 }
 
-function toActionError(error: unknown): ActionError {
+function toActionError(error: unknown, path: string): ActionError {
   if (error instanceof HttpError) {
+    // The status, code and reason go to the log, not to the agent: upstream text isn't ours to pass on.
+    if (error.status < 500) {
+      const { status, apiCode, apiMessage } = error;
+      logger.warn({ path, status, apiCode, apiMessage: apiMessage?.slice(0, 300) }, "Swaps API refused a request");
+    }
     if (error.status === 401 || error.status === 403) {
       return new ActionError("API_KEY_REQUIRED", "The swap service needs a valid SODAX API key.");
     }
@@ -157,12 +168,11 @@ function toActionError(error: unknown): ActionError {
     }
     // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
     if (error.status === 400 || error.status === 422) {
-      const reason = error.apiMessage?.replace(/\s+/g, " ").trim().slice(0, 200);
       return new ActionError("SWAP_REJECTED", "The swap service refused this swap.", {
-        details: { status: error.status, ...(reason && PLAIN_REASON.test(reason) && { reason }) },
+        details: { status: error.status },
       });
     }
   }
-  logger.warn({ err: error }, "Swaps API call failed");
+  logger.warn({ err: error, path }, "Swaps API call failed");
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
 }

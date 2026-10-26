@@ -22,7 +22,11 @@ function quoteDue(minutes: number) {
       inputAmount: "5000000",
       minOutputAmount: "4941968",
       deadline,
+      allowPartialFill: false,
+      srcAddress: "0x000000000000000000000000000000000000dEaD",
       dstAddress: "0x000000000000000000000000000000000000dEaD",
+      solver: `0x${"0".repeat(40)}`,
+      data: "0x",
     },
     relayData: { address: "0x000000000000000000000000000000000000dEaD", payload: "0x01" },
   });

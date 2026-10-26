@@ -87,6 +87,15 @@ describe("HttpError", () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 503 }));
     expect((await failure()).retryAfterSec).toBeUndefined();
   });
+
+  it.each([
+    ["7.5", undefined],
+    ["soon", undefined],
+    ["99999999", 3600],
+  ])("ignores a malformed Retry-After and caps a long one: %j", async (header, expected) => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 429, headers: { "Retry-After": header } }));
+    expect((await failure()).retryAfterSec).toBe(expected);
+  });
 });
 
 describe("error messages", () => {

@@ -151,9 +151,15 @@ function quoteNextStep(quote: SwapQuote): string {
     );
     return `${show}. To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
   }
-  // Until sodax_swap_track lands, nothing submits the deposit to the solver, so the swap must not be sent.
+  // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
+  const sameAddress =
+    quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
+      ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
+      : "";
+  // Until sodax_swap_track lands, nothing submits the deposit to the solver, so nothing may be sent.
   return [
-    `${show} at ${quote.toAddress}; the quote expires at ${quote.expiresAt}.`,
-    "This server can't submit swaps yet: don't send the swap step or the batch, or the deposit would sit unfilled.",
+    `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.`,
+    "Balances aren't checked here.",
+    "This server can't submit swaps yet: don't send any of the steps or the batch.",
   ].join(" ");
 }

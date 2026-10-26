@@ -7,6 +7,7 @@
  */
 
 import { EVM_ADDRESS_PATTERN } from "../../constants.js";
+import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
@@ -96,10 +97,11 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
   const to = resolveSide(catalog, input.toChain, input.toToken, "to");
   // The catalog only keeps an EVM chain with a numeric id; the typeof narrows it for TypeScript.
-  if (from.config.type !== "EVM" || typeof from.config.chainId !== "number") {
+  // Without a known contract to send to (Sonic, for now) the built swap can't be checked, so it's refused.
+  const { chainId, swapContract } = from.config;
+  if (from.config.type !== "EVM" || typeof chainId !== "number" || !swapContract) {
     throw new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${from.chain.name} aren't supported here yet.`);
   }
-  const chainId = from.config.chainId;
   const dstEvm = to.config.type === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
@@ -165,8 +167,20 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   // A native token needs no approval.
   const [built, approved] = await Promise.all([buildIntent(request), from.token.isNative || checkAllowance(request)]);
   const approval = approved ? undefined : await buildApprove(request);
-  if (!matchesQuote(request, { from: from.token, to: to.token, fee }, built, approval)) {
-    throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service built a different swap than the one quoted.");
+  const mismatch = findMismatch(
+    request,
+    { ...expected(from.token, to.token, fee, partnerFee), swapContract },
+    built,
+    approval,
+  );
+  if (mismatch) {
+    logger.error(
+      { mismatch, srcChainKey: request.srcChainKey },
+      "The Swaps API built a swap that doesn't match the quote",
+    );
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service built a different swap than the one quoted.", {
+      nextStep: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
+    });
   }
 
   const { quoteId } = putQuote({ ...request, intent: built.intent, relayData: built.relayData });
@@ -208,48 +222,106 @@ function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }):
 }
 
 function checkAddress(address: string, evm: boolean, chain: ChainInfo): string {
-  if (!(evm ? EVM_ADDRESS_PATTERN : ANY_ADDRESS).test(address)) {
+  const valid = evm ? EVM_ADDRESS_PATTERN.test(address) && !ZERO_ADDRESS.test(address) : ANY_ADDRESS.test(address);
+  if (!valid) {
     throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
   }
   return address;
 }
 
 const APPROVE_SELECTOR = "0x095ea7b3";
+const ZERO_ADDRESS = /^0x0{40}$/;
+const HEX = /^0x[0-9a-fA-F]+$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** A value as a 32-byte ABI word (hex, no prefix). */
+const word = (value: bigint | string) =>
+  (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
+
+interface Expected {
+  /** Hub assets of the tokens sent and received. */
+  inputHubAsset: string;
+  outputHubAsset: string;
+  isNative: boolean;
+  fee: bigint;
+  /** The intent's fee envelope: `0x01`, the fee and the receiver, or `0x` without a fee. */
+  feeData: string;
+  swapContract: string;
+}
+
+function expected(from: SwapsApiToken, to: SwapsApiToken, fee: bigint, partnerFee?: PartnerFee) {
+  return {
+    inputHubAsset: from.hubAsset,
+    outputHubAsset: to.hubAsset,
+    isNative: from.isNative,
+    fee,
+    feeData: partnerFee ? `0x01${word(fee)}${word(partnerFee.address)}` : "0x",
+  };
+}
 
 /**
- * The Swaps API builds what the user signs, so check it is the swap that was quoted: amounts
- * (the intent's input is net of the partner fee, so this checks the fee shown), deadline,
- * tokens (as hub assets), recipient, sender and value, and that an approval is
- * `approve(swap target, exact amount)` on the source token. A non-hex recipient
- * (base58, names) is encoded per chain, so only a hex one is compared.
+ * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name
+ * the first check that fails. The intent JSON must say what was asked (input net of the partner
+ * fee, minimum, deadline, hub tokens, recipient, sender, fee envelope, no partial fill, any
+ * solver), and the signed tx must carry it: sent to the chain's known contract, with the right
+ * value, and its data holding the relay payload track submits and each of those fields as an ABI
+ * word. That ties the JSON to the bytes without a full decode. An approval must be
+ * `approve(that contract, exact amount)` on the source token. A non-hex recipient (base58,
+ * names) is encoded per chain, so only a hex one is compared with what was asked.
  */
-function matchesQuote(
+function findMismatch(
   request: IntentRequest,
-  tokens: { from: SwapsApiToken; to: SwapsApiToken; fee: bigint },
+  want: Expected,
   built: BuiltIntent,
   approval?: Approval,
-): boolean {
-  const { intent, tx } = built;
+): string | undefined {
+  const { intent, tx, relayData } = built;
+  const data = tx.data.toLowerCase();
+  const carries = (value: string) => HEX.test(value) && data.includes(value.slice(2).toLowerCase());
   const approves = (step: EvmTx, amount: bigint) =>
     same(step.from, request.srcAddress) &&
     same(step.to, request.inputToken) &&
     BigInt(step.value) === 0n &&
     step.data.length === 138 &&
     step.data.slice(0, 10) === APPROVE_SELECTOR &&
-    same(`0x${step.data.slice(34, 74)}`, tx.to) &&
+    step.data.slice(10, 74).toLowerCase() === word(want.swapContract) &&
     BigInt(`0x${step.data.slice(74)}`) === amount;
-  return (
-    intent.inputAmount === (request.inputAmount - tokens.fee).toString() &&
-    intent.minOutputAmount === request.minOutputAmount.toString() &&
-    intent.deadline === request.deadline &&
-    same(intent.inputToken, tokens.from.hubAsset) &&
-    same(intent.outputToken, tokens.to.hubAsset) &&
-    (!request.dstAddress.startsWith("0x") || same(intent.dstAddress, request.dstAddress)) &&
-    same(tx.from, request.srcAddress) &&
-    BigInt(tx.value) === (tokens.from.isNative ? request.inputAmount : 0n) &&
-    (!approval || (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))))
-  );
+  const checks: [string, boolean][] = [
+    ["inputAmount", intent.inputAmount === (request.inputAmount - want.fee).toString()],
+    ["minOutputAmount", intent.minOutputAmount === request.minOutputAmount.toString()],
+    ["deadline", intent.deadline === request.deadline],
+    ["inputToken", same(intent.inputToken, want.inputHubAsset)],
+    ["outputToken", same(intent.outputToken, want.outputHubAsset)],
+    // Compared as numbers: a short Sui address comes back padded to 32 bytes.
+    [
+      "dstAddress",
+      HEX.test(intent.dstAddress) &&
+        (!HEX.test(request.dstAddress) || BigInt(intent.dstAddress) === BigInt(request.dstAddress)),
+    ],
+    ["srcAddress", same(intent.srcAddress, request.srcAddress)],
+    ["feeData", intent.data.toLowerCase() === want.feeData],
+    ["allowPartialFill", intent.allowPartialFill === false],
+    ["solver", ZERO_ADDRESS.test(intent.solver)],
+    ["tx.from", same(tx.from, request.srcAddress)],
+    ["tx.to", same(tx.to, want.swapContract)],
+    ["tx.value", BigInt(tx.value) === (want.isNative ? request.inputAmount : 0n)],
+    ["tx.data payload", carries(relayData.payload)],
+    [
+      "tx.data fields",
+      [
+        word(BigInt(intent.inputAmount)),
+        word(request.minOutputAmount),
+        word(BigInt(request.deadline)),
+        word(intent.inputToken),
+        word(intent.outputToken),
+      ].every(field => data.includes(field)) && carries(intent.dstAddress),
+    ],
+    [
+      "approval",
+      !approval ||
+        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
+    ],
+  ];
+  return checks.find(([, ok]) => !ok)?.[0];
 }
 
 /** Values as hex quantities, as `eth_sendTransaction` and `wallet_sendCalls` take them. */

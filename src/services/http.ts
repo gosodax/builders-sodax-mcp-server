@@ -55,12 +55,18 @@ export class HttpError extends Error {
   }
 }
 
-/** `Retry-After` as seconds from now: either delta-seconds or an HTTP date. */
+const MAX_RETRY_AFTER_SEC = 3600;
+// IMF-fixdate, the HTTP-date form servers send: "Sun, 06 Nov 1994 08:49:37 GMT".
+const HTTP_DATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/** `Retry-After` as seconds from now (delta-seconds or an HTTP date), at most an hour; anything else is ignored. */
 function retryAfterSeconds(value: string | null): number | undefined {
-  if (!value) return undefined;
-  if (/^\d+$/.test(value.trim())) return Number(value.trim());
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - Date.now()) / 1000));
+  const text = value?.trim() ?? "";
+  let seconds: number;
+  if (/^\d{1,10}$/.test(text)) seconds = Number(text);
+  else if (HTTP_DATE.test(text)) seconds = Math.ceil((Date.parse(text) - Date.now()) / 1000);
+  else return undefined;
+  return Math.min(Math.max(seconds, 0), MAX_RETRY_AFTER_SEC);
 }
 
 /**

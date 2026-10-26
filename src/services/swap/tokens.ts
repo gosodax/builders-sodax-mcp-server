@@ -41,7 +41,10 @@ const chainSchema = z
   })
   .refine(chain => chain.type !== "EVM" || typeof chain.chainId === "number");
 
-export type SwapChain = z.infer<typeof chainSchema>;
+export type SwapChain = z.infer<typeof chainSchema> & {
+  /** The contract a swap from this chain calls: a spoke's asset manager. Sonic, the hub, has none here. */
+  swapContract?: string;
+};
 
 /** Tokens by chain key, and each chain's family and id when its config gives them. */
 export interface SwapCatalog {
@@ -155,7 +158,14 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
     }
     const config = asRecord(configs[chainKey]);
     const chain = chainSchema.safeParse(config.chain);
-    if (chain.success) catalog.chains[chainKey] = chain.data;
+    const assetManager = asRecord(config.addresses).assetManager;
+    if (chain.success) {
+      catalog.chains[chainKey] = {
+        ...chain.data,
+        ...(typeof assetManager === "string" &&
+          EVM_ADDRESS_PATTERN.test(assetManager) && { swapContract: assetManager }),
+      };
+    }
     const nativeAddress = typeof config.nativeToken === "string" ? canonicalAddress(config.nativeToken) : undefined;
     catalog.tokens[chainKey] = entries.flatMap(entry => {
       const parsed = tokenSchema.safeParse(entry);

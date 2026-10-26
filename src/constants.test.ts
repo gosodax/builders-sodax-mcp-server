@@ -12,7 +12,8 @@ describe("parseSodaxEnv", () => {
     expect(parseSodaxEnv(" Canary ")).toBe("canary");
   });
 
-  it("rejects anything else", () => {
-    expect(() => parseSodaxEnv("staging")).toThrow('SODAX_ENV must be "production" or "canary"');
+  it("returns undefined for anything else, including object prototype keys", () => {
+    expect(parseSodaxEnv("staging")).toBeUndefined();
+    expect(parseSodaxEnv("constructor")).toBeUndefined();
   });
 });

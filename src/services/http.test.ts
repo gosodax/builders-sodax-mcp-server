@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SODAX_API_BASE_URL } from "../constants.js";
-import { API_KEY_HINT, fetchJson, fetchJsonOrNull } from "./http.js";
+import { SODAX_API_BASE_URL, SODAX_API_ORIGIN, SODAX_RELAY_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
+import { fetchJson, fetchJsonOrNull } from "./http.js";
 import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -121,35 +121,41 @@ describe("headers", () => {
 });
 
 describe("API key forwarding", () => {
-  const sodaxUrl = `${SODAX_API_BASE_URL}/config/spoke/chains`;
-  const sentKey = () => ((fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>)["x-api-key"];
+  const dataUrl = `${SODAX_API_BASE_URL}/config/spoke/chains`;
+  const sentInit = () => fetchSpy.mock.calls[0]?.[1] as RequestInit;
+  const sentKey = () => (sentInit().headers as Record<string, string>)["x-api-key"];
+  const fetchWithKey = (url: string) => runWithRequestContext({ apiKey: "sodax_k1" }, () => fetchJson(url));
 
-  it("sends the caller's key to the SODAX API", async () => {
+  it.each([dataUrl, `${SODAX_SOLVER_BASE_URL}/quote`])("sends the caller's key to %s", async url => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
-    await runWithRequestContext({ apiKey: "k1" }, () => fetchJson(sodaxUrl));
-    expect(sentKey()).toBe("k1");
+    await fetchWithKey(url);
+    expect(sentKey()).toBe("sodax_k1");
   });
 
-  it("never sends the key to another host", async () => {
+  it.each([
+    `${SODAX_RELAY_BASE_URL}/`,
+    `${SODAX_API_ORIGIN}/v1/sponsorships/x`,
+    `${SODAX_API_BASE_URL}/intent/tx/../../../sponsorships/x`,
+    "https://docs.sodax.com/mcp",
+  ])("never sends the key to %s", async url => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
-    await runWithRequestContext({ apiKey: "k1" }, () => fetchJson("https://docs.sodax.com/mcp"));
+    await fetchWithKey(url);
     expect(sentKey()).toBeUndefined();
   });
 
   it("sends no key when the caller has none", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
-    await fetchJson(sodaxUrl);
+    await fetchJson(dataUrl);
     expect(sentKey()).toBeUndefined();
   });
 
-  it.each([401, 403])("tells the agent how to fix a rejected key (%i)", async status => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse('{"message":"Invalid API key"}', { status }));
-    await expect(fetchJson(sodaxUrl)).rejects.toThrow(`Invalid API key. ${API_KEY_HINT}`);
-  });
+  it("refuses redirects only when a key is attached", async () => {
+    fetchSpy.mockImplementation(async () => jsonResponse("{}", { status: 200 }));
+    await fetchWithKey(dataUrl);
+    expect(sentInit().redirect).toBe("error");
 
-  it("adds no key hint to another host's 401", async () => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse("nope", { status: 401 }));
-    const error = await fetchJson("https://example.com/x").catch((e: Error) => e);
-    expect((error as Error).message).not.toContain(API_KEY_HINT);
+    fetchSpy.mockClear();
+    await fetchJson(dataUrl);
+    expect(sentInit().redirect).toBe("follow");
   });
 });

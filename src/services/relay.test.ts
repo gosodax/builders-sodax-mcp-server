@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_KEY_HINT } from "./http.js";
 import { getRelayTransactionPackets, submitRelayTx } from "./relay.js";
 import { runWithRequestContext } from "./requestContext.js";
 
@@ -18,12 +17,12 @@ afterEach(() => {
 const params = { chain_id: "146", tx_hash: "0xabc" };
 
 describe("relay client", () => {
-  it("posts to the SODAX API relay with the caller's key", async () => {
+  it("posts to the SODAX API relay route without the caller's key", async () => {
     fetchSpy.mockResolvedValueOnce(new Response('{"success":true,"message":"Transaction registered"}'));
-    await runWithRequestContext({ apiKey: "k1" }, () => submitRelayTx(params));
+    await runWithRequestContext({ apiKey: "sodax_k1" }, () => submitRelayTx(params));
     const [url, init] = fetchSpy.mock.calls[0] ?? [];
     expect(url).toBe("https://api.sodax.com/v1/relay/");
-    expect((init as RequestInit).headers).toMatchObject({ "x-api-key": "k1" });
+    expect((init as RequestInit).headers).not.toHaveProperty("x-api-key");
   });
 
   it("still returns the relay's 404 body", async () => {
@@ -36,8 +35,10 @@ describe("relay client", () => {
     });
   });
 
-  it("tells the agent how to fix a rejected key", async () => {
-    fetchSpy.mockResolvedValueOnce(new Response("", { status: 401 }));
-    await expect(submitRelayTx(params)).rejects.toThrow(API_KEY_HINT);
+  it("treats the edge's 429 as an error, not a relay answer", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response('{"ok":false,"error":"rate_limited"}', { status: 429, headers: { "Retry-After": "10" } }),
+    );
+    await expect(submitRelayTx(params)).rejects.toThrow("HTTP 429 rate limited, retry after 10s");
   });
 });

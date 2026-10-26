@@ -9,14 +9,22 @@ const SODAX_API_ORIGINS = {
 
 export type SodaxEnv = keyof typeof SODAX_API_ORIGINS;
 
-/** `SODAX_ENV` picks the SODAX API host once, at boot. Unset means production. */
-export function parseSodaxEnv(value: string | undefined): SodaxEnv {
+const SODAX_ENVS = Object.keys(SODAX_API_ORIGINS) as SodaxEnv[];
+
+/** `SODAX_ENV` picks the SODAX API host once, at boot. Unset means production; undefined means invalid. */
+export function parseSodaxEnv(value: string | undefined): SodaxEnv | undefined {
   const env = value?.trim().toLowerCase() || "production";
-  if (env === "production" || env === "canary") return env;
-  throw new Error(`SODAX_ENV must be "production" or "canary", got "${value}"`);
+  return SODAX_ENVS.find(known => known === env);
 }
 
-export const SODAX_ENV = parseSodaxEnv(process.env.SODAX_ENV);
+const parsedSodaxEnv = parseSodaxEnv(process.env.SODAX_ENV);
+
+// Checked in main() rather than thrown here, so a bad value goes through the fatal-exit
+// path (log + Discord alert). The production fallback below is never used: main() stops first.
+export const SODAX_ENV_ERROR = parsedSodaxEnv
+  ? undefined
+  : `SODAX_ENV must be one of ${SODAX_ENVS.join(", ")}, got "${process.env.SODAX_ENV}"`;
+export const SODAX_ENV: SodaxEnv = parsedSodaxEnv ?? "production";
 export const SODAX_API_ORIGIN = SODAX_API_ORIGINS[SODAX_ENV];
 
 // SODAX API Base URL (Backend API)

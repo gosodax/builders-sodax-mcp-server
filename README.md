@@ -46,7 +46,8 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ### API Key (Optional)
 
 Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header and the server
-forwards it on its calls to the SODAX API, and to no other host. Over stdio, set `SODAX_API_KEY` instead.
+forwards it on its calls to the SODAX data API and solver, and nowhere else (not to the relay either). Over stdio,
+set `SODAX_API_KEY` instead. A value that isn't a SODAX key (`sodax_…`) is ignored.
 
 ```json
 {
@@ -234,8 +235,8 @@ Coolify injects these directly into the process environment.
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
-| `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). Anything else stops the server at startup. |
-| `SODAX_API_KEY` | - | stdio only: the API key forwarded to the SODAX API. Ignored over HTTP, where each client sends its own `x-api-key`. |
+| `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`; its relay is the testnet relay). Anything else stops the server at startup. |
+| `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |

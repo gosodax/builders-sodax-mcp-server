@@ -21,21 +21,18 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
-export const API_KEY_HINT =
-  "Send a valid SODAX API key in the x-api-key header (SODAX_API_KEY on stdio): https://docs.sodax.com/developers/how-to/api-keys";
+// Routes that take the caller's key: the data API and the solver. Other routes on the
+// same host reach other origins; the relay, for one, must never get it.
+const KEYED_PATH_PREFIXES = ["/v1/be/", "/v1/intent/"];
 
-function isSodaxApiUrl(url: string): boolean {
-  return new URL(url).origin === SODAX_API_ORIGIN;
+function carriesApiKey(url: string): boolean {
+  const { origin, pathname } = new URL(url); // `..` segments are resolved here
+  return origin === SODAX_API_ORIGIN && KEYED_PATH_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
-/** The caller's key, for SODAX API hosts only: it must never reach a third party. */
-export function sodaxApiKeyHeader(url: string): Record<string, string> {
+function apiKeyHeader(url: string): Record<string, string> {
   const { apiKey } = getRequestContext();
-  return apiKey && isSodaxApiUrl(url) ? { "x-api-key": apiKey } : {};
-}
-
-export function isApiKeyRejection(url: string, status: number): boolean {
-  return (status === 401 || status === 403) && isSodaxApiUrl(url);
+  return apiKey && carriesApiKey(url) ? { "x-api-key": apiKey } : {};
 }
 
 /**
@@ -78,10 +75,13 @@ function extractApiErrorMessage(rawBody: string): string | null {
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
+  const keyHeader = apiKeyHeader(url);
   const response = await fetch(url, {
     method,
-    headers: { ...DEFAULT_HEADERS, ...sodaxApiKeyHeader(url), ...headers },
+    headers: { ...DEFAULT_HEADERS, ...keyHeader, ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
+    redirect: "x-api-key" in keyHeader ? "error" : "follow",
     signal: AbortSignal.timeout(timeout),
   });
 
@@ -93,8 +93,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
     const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
-    const message = apiMessage ? `${base} - ${apiMessage}` : base;
-    throw new Error(isApiKeyRejection(url, response.status) ? `${message}. ${API_KEY_HINT}` : message);
+    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
   }
 
   // 204 No Content / empty body: response.json() would throw a cryptic

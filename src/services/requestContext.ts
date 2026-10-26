@@ -27,3 +27,12 @@ export function getRequestContext(): RequestContext {
 export function setFallbackRequestContext(context: RequestContext): void {
   fallback = context;
 }
+
+// SODAX keys are `sodax_` + base64url. Anything else (another service's secret,
+// two x-api-key headers joined with ", ") is dropped rather than forwarded.
+const SODAX_API_KEY_PATTERN = /^sodax_[A-Za-z0-9_-]+$/;
+
+export function parseApiKey(value: string | undefined): string | undefined {
+  const key = value?.trim();
+  return key && SODAX_API_KEY_PATTERN.test(key) ? key : undefined;
+}

@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { getRequestContext, runWithRequestContext, setFallbackRequestContext } from "./requestContext.js";
+import { getRequestContext, parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./requestContext.js";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -27,6 +27,16 @@ describe("runWithRequestContext", () => {
     setFallbackRequestContext({ apiKey: "stdio" });
     expect(getRequestContext().apiKey).toBe("stdio");
     expect(runWithRequestContext({}, () => getRequestContext().apiKey)).toBeUndefined();
+  });
+});
+
+describe("parseApiKey", () => {
+  it("accepts a SODAX key, trimmed", () => {
+    expect(parseApiKey(" sodax_test-key_1 ")).toBe("sodax_test-key_1");
+  });
+
+  it.each([undefined, "", "sk-live-abc123", "sodax_a, sodax_b", "Bearer sodax_a"])("drops %j", value => {
+    expect(parseApiKey(value)).toBeUndefined();
   });
 });
 

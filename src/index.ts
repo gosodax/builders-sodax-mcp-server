@@ -17,14 +17,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { SODAX_ENV } from "./constants.js";
+import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
 import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
-import { runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
+import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames, registerDocsProxyTools } from "./tools/docsProxy.js";
@@ -157,16 +157,20 @@ async function runStdio(): Promise<void> {
   logger.info("Initializing SODAX docs proxy...");
   await warmDocsCache();
 
-  setFallbackRequestContext({ apiKey: process.env.SODAX_API_KEY?.trim() || undefined });
+  const apiKey = parseApiKey(process.env.SODAX_API_KEY);
+  if (process.env.SODAX_API_KEY && !apiKey) {
+    logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
+  }
+  setFallbackRequestContext({ apiKey });
   const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
-/** The key a client sent, forwarded on its backend calls. Absent → keyless. */
+/** The SODAX API key a client sent, forwarded on its data API and solver calls. Absent → keyless. */
 function callerApiKey(req: Request): string | undefined {
-  return req.get("x-api-key")?.trim() || undefined;
+  return parseApiKey(req.get("x-api-key"));
 }
 
 async function runHTTP(): Promise<void> {
@@ -321,13 +325,14 @@ async function runHTTP(): Promise<void> {
   });
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
-  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
+  // apiKey: sent on GET /sse; used when a POST /messages carries none.
+  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; apiKey?: string }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(clientId);
     const transport = new SSEServerTransport("/messages", res);
-    sseSessions.set(transport.sessionId, { transport, server: sseServer });
+    sseSessions.set(transport.sessionId, { transport, server: sseServer, apiKey: callerApiKey(req) });
 
     res.on("close", () => {
       sseSessions.delete(transport.sessionId);
@@ -345,7 +350,7 @@ async function runHTTP(): Promise<void> {
       res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
       return;
     }
-    await runWithRequestContext({ apiKey: callerApiKey(req) }, () =>
+    await runWithRequestContext({ apiKey: callerApiKey(req) ?? session.apiKey }, () =>
       session.transport.handlePostMessage(req, res, req.body),
     );
   });
@@ -410,6 +415,7 @@ async function runHTTP(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
     await runStdio();

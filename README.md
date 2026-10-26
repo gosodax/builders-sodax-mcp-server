@@ -201,7 +201,8 @@ Once connected, try asking your AI coding assistant:
 | SODAX Backend API (api.sodax.com/v1/be) | Live cross-network data | 2 min |
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
-| SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list (swap tools) | 2 min (up to 30 min while the API is down) |
+| SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list, quotes and transactions (swap tools) | 2 min for the token list (up to 30 min while the API is down) |
+| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 
@@ -254,7 +255,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 ### Environment Variables
 
 The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
-flag — requires Node ≥ 22.9.0). Copy `.env.example` to `.env` for local development;
+flag; the SODAX SDK needs Node ≥ 22.12.0). Copy `.env.example` to `.env` for local development;
 if no `.env` exists, every variable falls back to the default below. In production,
 Coolify injects these directly into the process environment.
 

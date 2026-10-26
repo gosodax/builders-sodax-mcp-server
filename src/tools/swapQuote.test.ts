@@ -1,7 +1,9 @@
+import { solverConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
+import { initSodax } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import {
   encodeApprove,
@@ -27,7 +29,8 @@ const ASSET_MANAGER = "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3";
 const ZERO = `0x${"0".repeat(40)}`;
 // The user's hub wallet (the intent's creator) and the hub intents contract, as the stub builds them.
 const HUB_WALLET = `0x${"c".repeat(40)}`;
-const INTENTS = `0x${"d".repeat(40)}`;
+// The hub intents contract the SDK config pins; a swap from Sonic calls it directly.
+const INTENTS = solverConfig.intentsContract;
 const approveData = (spender: string, amount: bigint | string) => encodeApprove(spender, BigInt(amount));
 const catalog = fixtureCatalog();
 
@@ -50,6 +53,7 @@ interface SwapsStub {
   transferAmount?: bigint;
   hubWallet?: string;
   hubApprove?: string;
+  intentsTarget?: string;
   relayPayload?: string;
   /** and the tx itself. */
   swapTo?: string;
@@ -74,9 +78,10 @@ function stubSwaps(stub: SwapsStub = {}) {
     if (path === "/allowance/check") return Response.json({ valid: stub.valid ?? false });
     if (path === "/approve") {
       const approve = { from: USER, to: body.inputToken, value: "0" };
+      const spender = body.srcChainKey === "sonic" ? INTENTS : ASSET_MANAGER;
       return Response.json({
-        tx: { ...approve, data: stub.approveData ?? approveData(ASSET_MANAGER, body.inputAmount) },
-        ...(stub.resetTx && { resetTx: { ...approve, data: stub.resetData ?? approveData(ASSET_MANAGER, 0n) } }),
+        tx: { ...approve, data: stub.approveData ?? approveData(spender, body.inputAmount) },
+        ...(stub.resetTx && { resetTx: { ...approve, data: stub.resetData ?? approveData(spender, 0n) } }),
       });
     }
     if (path === "/intents") {
@@ -105,15 +110,21 @@ function stubSwaps(stub: SwapsStub = {}) {
       };
       const payload = encodeCalls([
         { to: intent.inputToken, value: 0n, data: stub.hubApprove ?? encodeApprove(INTENTS, gross) },
-        { to: INTENTS, value: 0n, data: encodeCreateIntent({ ...intent, ...stub.signedIntent }) },
+        { to: stub.intentsTarget ?? INTENTS, value: 0n, data: encodeCreateIntent({ ...intent, ...stub.signedIntent }) },
       ]);
+      const value = stub.swapValue ?? (src?.isNative ? body.inputAmount : "0");
+      if (body.srcChainKey === "sonic") {
+        // From the hub: createIntent on the intents contract, which is also the relay payload.
+        const data = stub.swapData ?? encodeCreateIntent({ ...intent, ...stub.signedIntent });
+        const tx = { from: USER, to: stub.swapTo ?? INTENTS, value, data };
+        return Response.json({ tx, intent, relayData: { address: HUB_WALLET, payload: stub.relayPayload ?? data } });
+      }
       const data = encodeTransfer(
         stub.transferToken ?? body.inputToken,
         stub.hubWallet ?? HUB_WALLET,
         stub.transferAmount ?? gross,
         payload,
       );
-      const value = stub.swapValue ?? (src?.isNative ? body.inputAmount : "0");
       const tx = { from: USER, to: stub.swapTo ?? ASSET_MANAGER, value, data: stub.swapData ?? data };
       return Response.json({ tx, intent, relayData: { address: HUB_WALLET, payload: stub.relayPayload ?? payload } });
     }
@@ -243,6 +254,11 @@ describe("sodax_swap_quote", () => {
     ["a relay payload that isn't what's signed", { relayPayload: encodeCalls([]) }, "relay payload"],
     ["a hub approve for another spender", { hubApprove: encodeApprove(`0x${"a".repeat(40)}`, 5000000n) }, "hub calls"],
     ["a hub approve for more", { hubApprove: encodeApprove(INTENTS, 5000001n) }, "hub calls"],
+    [
+      "an intent created on another contract",
+      { intentsTarget: `0x${"f".repeat(40)}`, hubApprove: encodeApprove(`0x${"f".repeat(40)}`, 5000000n) },
+      "hub calls",
+    ],
     ["a hub call that isn't an approve", { hubApprove: "0xa9059cbb" }, "hub calls"],
     ["a source approve that isn't one", { approveData: "0xa9059cbb" }, "approval"],
     [
@@ -442,29 +458,74 @@ describe("sodax_swap_quote", () => {
     expect(out.error?.code).toBe(code);
   });
 
-  it("prices a swap from Sonic, but won't build one until its contract is pinned", async () => {
-    const sonic = {
-      fromChain: "sonic",
-      fromToken: SONIC_USDC,
+  it("builds a swap from Sonic as createIntent on the pinned intents contract", async () => {
+    stubSwaps();
+    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+    const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(out.steps?.map(step => [step.kind, step.chainId, step.tx.to])).toEqual([
+      ["approve", 146, SONIC_USDC],
+      ["swap", 146, INTENTS],
+    ]);
+  });
+
+  it.each<[string, SwapsStub, string]>([
+    ["another contract", { swapTo: ASSET_MANAGER }, "tx.to"],
+    ["a relay payload that isn't the tx", { relayPayload: encodeCalls([]) }, "relay payload"],
+    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "signed intent"],
+    ["an approval for another spender", { approveData: approveData(ASSET_MANAGER, 5000000n) }, "approval"],
+  ])("refuses a swap from Sonic with %s", async (_case, stub, mismatch) => {
+    stubSwaps(stub);
+    const error = vi.spyOn(logger, "error");
+    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+    const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
+    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch }), expect.any(String));
+  });
+
+  it("prices native HBAR but won't build it until the SDK exports Hedera's value scaling", async () => {
+    const hbar = {
+      fromChain: "hedera",
+      fromToken: "native",
       toChain: "0xa4b1.arbitrum",
       toToken: ARB_USDC,
       amount: "5",
     };
     stubSwaps();
-    expect((await quote(sonic)).out.status).toBe("price_only");
+    expect((await quote(hbar)).out.status).toBe("price_only");
     const calls = stubSwaps();
-    const { out } = await quote({ ...sonic, fromAddress: USER });
+    const { out } = await quote({ ...hbar, fromAddress: USER });
     expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
     expect(calls.map(call => call.path)).not.toContain("/intents");
   });
 
-  it("reports a source chain whose config names no swap contract as unavailable, not unsupported", async () => {
+  it("refuses to build from a chain the SDK config doesn't know", async () => {
+    const { spokeChainConfig } = await initSodax();
+    const packaged = spokeChainConfig as Record<string, unknown>;
+    const arbitrum = packaged["0xa4b1.arbitrum"];
+    delete packaged["0xa4b1.arbitrum"];
+    try {
+      stubSwaps();
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    } finally {
+      packaged["0xa4b1.arbitrum"] = arbitrum;
+    }
+  });
+
+  it("takes the swap contract from the SDK config, and refuses a live config that disagrees", async () => {
     const configs = JSON.parse(fixtureText("chain-configs.json"));
     delete configs["0xa4b1.arbitrum"].addresses;
     stubSwaps({ configs: JSON.stringify(configs) });
-    expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
+    expect((await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER })).out.status).toBe("ready");
+
+    clearSwapCatalogCache();
+    clearCache();
+    configs["0xa4b1.arbitrum"].addresses = { assetManager: `0x${"e".repeat(40)}` };
+    const calls = stubSwaps({ configs: JSON.stringify(configs) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(calls.map(call => call.path)).not.toContain("/intents");
   });
 
   it("warns about a defaulted recipient only across chains", async () => {
@@ -484,9 +545,36 @@ describe("sodax_swap_quote", () => {
 });
 
 describe("checkRecipient", () => {
-  it("refuses NEAR and Stellar recipients until it can check them", async () => {
-    await expect(checkRecipient("NEAR")).rejects.toMatchObject({ code: "UNSUPPORTED_CHAIN" });
-    await expect(checkRecipient("STELLAR")).rejects.toMatchObject({ code: "UNSUPPORTED_CHAIN" });
-    await expect(checkRecipient("EVM")).resolves.toBe("not_needed");
+  const near = { chainKey: "near", chainType: "NEAR", chainName: "NEAR", address: "alice.near", amount: 5n };
+  const token = { address: "usdc.near", symbol: "USDC" };
+
+  it("asks the SDK whether a NEAR or Stellar recipient can hold the token, and needs nothing elsewhere", async () => {
+    const { spoke } = (await initSodax()).sodax;
+    const storage = vi.spyOn(spoke.near, "isStorageRegistered").mockResolvedValue(true);
+    const trustline = vi.spyOn(spoke.stellar, "hasSufficientTrustline").mockResolvedValue(true);
+    await expect(checkRecipient({ ...near, token })).resolves.toBe("ok");
+    expect(storage).toHaveBeenCalledWith("usdc.near", "alice.near");
+    await expect(
+      checkRecipient({ ...near, chainKey: "stellar", chainType: "STELLAR", chainName: "Stellar", token }),
+    ).resolves.toBe("ok");
+    expect(trustline).toHaveBeenCalledWith("usdc.near", 5n, "alice.near");
+    await expect(checkRecipient({ ...near, chainType: "EVM", token })).resolves.toBe("not_needed");
+  });
+
+  it("refuses a recipient that isn't ready, and reports a failed check without its error", async () => {
+    const { spoke } = (await initSodax()).sodax;
+    vi.spyOn(spoke.near, "isStorageRegistered").mockResolvedValueOnce(false);
+    await expect(checkRecipient({ ...near, token })).rejects.toMatchObject({
+      code: "DESTINATION_NOT_READY",
+      nextStep: expect.stringContaining("register storage for USDC on NEAR"),
+    });
+    vi.spyOn(spoke.stellar, "hasSufficientTrustline").mockResolvedValueOnce(false);
+    await expect(
+      checkRecipient({ ...near, chainKey: "stellar", chainType: "STELLAR", chainName: "Stellar", token }),
+    ).rejects.toMatchObject({ code: "DESTINATION_NOT_READY", nextStep: expect.stringContaining("trustline for USDC") });
+    vi.spyOn(spoke.near, "isStorageRegistered").mockRejectedValueOnce(new Error("URL: https://rpc.example/key123"));
+    const failure = checkRecipient({ ...near, token });
+    await expect(failure).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    await expect(failure).rejects.not.toHaveProperty("message", expect.stringContaining("key123"));
   });
 });

@@ -532,5 +532,23 @@
       "chainKey": "sui",
       "hubAsset": "0x2037d840f01e903e09e33b146f2dd3fa4a4d2c21"
     }
+  ],
+  "hedera": [
+    {
+      "symbol": "HBAR",
+      "name": "HBAR",
+      "decimals": 8,
+      "address": "0x0000000000000000000000000000000000000000",
+      "chainKey": "hedera",
+      "hubAsset": "0x5c18c543b6B6EA97dE739F48C49CfC291B3AD465"
+    },
+    {
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "address": "0x000000000000000000000000000000000006f89a",
+      "chainKey": "hedera",
+      "hubAsset": "0xafafae0c1476424c4b81f09095bd7dcb858047c8"
+    }
   ]
 }

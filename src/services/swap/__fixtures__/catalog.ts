@@ -1,6 +1,6 @@
 /**
  * Test helpers around the recorded catalog sources: live `/v1/swaps/tokens` and chain
- * config on 2026-10-26, trimmed to six chains, plus one bad token entry. Not built.
+ * config on 2026-10-26, trimmed to seven chains, plus one bad token entry. Not built.
  */
 
 import { readFileSync } from "node:fs";

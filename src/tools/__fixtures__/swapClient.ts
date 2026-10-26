@@ -3,9 +3,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../../server.js";
+import { initSodax } from "../../services/sodax.js";
 import type { SwapQuote } from "../../services/swap/quote.js";
 
 export async function swapClient(): Promise<Client> {
+  // The swap tools need the SDK, which the server loads at boot when they are on.
+  await initSodax();
   const server = await createServer({ builder: false, swap: true });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);

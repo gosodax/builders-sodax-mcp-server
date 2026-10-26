@@ -4,4 +4,6 @@
 #                     Swaps API (api.sodax.com/v1/swaps), src/services/swap/tokens.ts
 #   sodax-solver-v2 - solver API (api.sodax.com/v1/intent), src/services/solver.ts
 #   intent-relay    - intent relay API, src/services/relay.ts
-depends_on: [sodax-backend, sodax-solver-v2, intent-relay]
+#   sodax-sdks      - @sodax/sdk and @sodax/types (swap tools): recipient checks, address
+#                     encoding and the pinned swap contracts, src/services/sodax.ts
+depends_on: [sodax-backend, sodax-solver-v2, intent-relay, sodax-sdks]

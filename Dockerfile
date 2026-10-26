@@ -8,8 +8,8 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile
+# Install dependencies. No install scripts: native add-ons fall back to their JS builds.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source
 COPY . .

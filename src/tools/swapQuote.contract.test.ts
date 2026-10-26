@@ -3,6 +3,7 @@
  * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
+import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
@@ -43,8 +44,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(minutes).toBeLessThan(16);
   });
 
-  // Sonic's swap goes to the hub intents contract, which only the SDK config names: refused until then.
-  it("refuses a swap from Sonic until its contract is known", async () => {
+  it("builds a swap from Sonic as createIntent on the pinned hub intents contract", async () => {
     const { out } = await callQuote({
       fromChain: "sonic",
       fromToken: "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
@@ -52,7 +52,45 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       amount: "5",
       fromAddress: USER,
     });
-    expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
+    expect(out.status).toBe("ready");
+    expect(out.steps?.at(-1)).toMatchObject({ kind: "swap", chainId: 146, tx: { to: solverConfig.intentsContract } });
+  });
+
+  it.each([
+    [
+      "NEAR",
+      {
+        toChain: "near",
+        toToken: "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+        toAddress: "sodax-mcp-contract-test-nobody.near",
+      },
+    ],
+    [
+      "Stellar",
+      {
+        toChain: "stellar",
+        toToken: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+        toAddress: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7",
+      },
+    ],
+  ])("refuses a %s recipient that can't hold the token yet", async (_chain, destination) => {
+    const { out } = await callQuote({ ...ARB_USDC, ...destination, amount: "5", fromAddress: USER });
+    expect(out.error.code).toBe("DESTINATION_NOT_READY");
+  });
+
+  it("matches the SDK's packaged asset manager for every EVM spoke the live config names", async () => {
+    const configs = (await getAllChainsConfigs()) as Record<
+      string,
+      { chain?: { type?: string }; addresses?: { assetManager?: string } }
+    >;
+    const packaged = spokeChainConfig as Record<string, { addresses?: { assetManager?: string } }>;
+    const spokes = Object.entries(configs).filter(([, c]) => c.chain?.type === "EVM" && c.addresses?.assetManager);
+    expect(spokes.length).toBeGreaterThan(5);
+    for (const [key, config] of spokes) {
+      expect(packaged[key]?.addresses?.assetManager?.toLowerCase(), key).toBe(
+        config.addresses?.assetManager?.toLowerCase(),
+      );
+    }
   });
 
   it("needs no approve for native ETH, and sends the amount as the tx value", async () => {
@@ -98,6 +136,11 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     [
       "a Solana source",
       { fromChain: "solana", fromToken: "native", ...TO_BASE_USDC, amount: "1" },
+      "UNSUPPORTED_SOURCE",
+    ],
+    [
+      "native HBAR from Hedera, until the SDK exports its value scaling",
+      { fromChain: "hedera", fromToken: "native", ...TO_BASE_USDC, amount: "1000", fromAddress: USER },
       "UNSUPPORTED_SOURCE",
     ],
   ])("refuses %s", async (_case, args, code) => {

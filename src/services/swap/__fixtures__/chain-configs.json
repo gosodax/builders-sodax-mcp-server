@@ -67,5 +67,17 @@
       "assetManager": "0xa17a409164d1676db71b411ab50813ba2c7dd547d2df538c699049566f1ff922::asset_manager::0xcb7346339340b7f8dea40fcafb70721dc2fcfa7e8626a89fd954d46c1f928b61"
     },
     "nativeToken": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+  },
+  "hedera": {
+    "chain": {
+      "id": "hedera",
+      "chainId": 295,
+      "name": "Hedera",
+      "type": "EVM"
+    },
+    "addresses": {
+      "assetManager": "0x0df73542cC68bDC01b361d231c60F726B0e0bC05"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000"
   }
 }

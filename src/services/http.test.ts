@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { SODAX_API_BASE_URL } from "../constants.js";
+import { API_KEY_HINT, fetchJson, fetchJsonOrNull } from "./http.js";
+import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
@@ -115,5 +117,39 @@ describe("headers", () => {
     await fetchJson("http://example.com/x", { headers: { "Content-Type": "text/plain" } });
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     expect(init.headers).toMatchObject({ "Content-Type": "text/plain" });
+  });
+});
+
+describe("API key forwarding", () => {
+  const sodaxUrl = `${SODAX_API_BASE_URL}/config/spoke/chains`;
+  const sentKey = () => ((fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>)["x-api-key"];
+
+  it("sends the caller's key to the SODAX API", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
+    await runWithRequestContext({ apiKey: "k1" }, () => fetchJson(sodaxUrl));
+    expect(sentKey()).toBe("k1");
+  });
+
+  it("never sends the key to another host", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
+    await runWithRequestContext({ apiKey: "k1" }, () => fetchJson("https://docs.sodax.com/mcp"));
+    expect(sentKey()).toBeUndefined();
+  });
+
+  it("sends no key when the caller has none", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
+    await fetchJson(sodaxUrl);
+    expect(sentKey()).toBeUndefined();
+  });
+
+  it.each([401, 403])("tells the agent how to fix a rejected key (%i)", async status => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse('{"message":"Invalid API key"}', { status }));
+    await expect(fetchJson(sodaxUrl)).rejects.toThrow(`Invalid API key. ${API_KEY_HINT}`);
+  });
+
+  it("adds no key hint to another host's 401", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("nope", { status: 401 }));
+    const error = await fetchJson("https://example.com/x").catch((e: Error) => e);
+    expect((error as Error).message).not.toContain(API_KEY_HINT);
   });
 });

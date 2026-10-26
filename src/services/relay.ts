@@ -1,8 +1,8 @@
 /**
  * SODAX Intent Relay Service
  *
- * Client for the cross-chain message relayer used by SODAX intents.
- * Hosted on ICON's xCall infrastructure at xcall-relay.nw.iconblockchain.xyz.
+ * Client for the cross-chain message relayer used by SODAX intents,
+ * served by the SODAX API at /v1/relay.
  *
  * All requests are POST / with `{ action, params }` in the body; the
  * action dispatches to one of three operations:
@@ -16,6 +16,7 @@
 
 import { SODAX_RELAY_BASE_URL } from "../constants.js";
 import type { RelayGetPacketResponse, RelayPacketsResponse, RelaySubmitResponse } from "../types.js";
+import { API_KEY_HINT, isApiKeyRejection, sodaxApiKeyHeader } from "./http.js";
 import { logger } from "./logger.js";
 
 interface SubmitParams {
@@ -43,15 +44,17 @@ const RELAY_TIMEOUT_MS = 30_000;
 /**
  * The relay returns a JSON body for every outcome, including 404 (used for
  * "packet not found" responses on get_packet / get_transaction_packets).
- * We parse the body regardless of status — only HTTP 5xx and unparseable
- * responses are treated as errors.
+ * We parse the body regardless of status — only HTTP 5xx, a rejected API
+ * key and unparseable responses are treated as errors.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
-  const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
+  const url = `${SODAX_RELAY_BASE_URL}/`;
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
+      ...sodaxApiKeyHeader(url),
     },
     body: JSON.stringify({ action, params }),
     signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
@@ -59,6 +62,9 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
 
   if (response.status >= 500) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+  if (isApiKeyRejection(url, response.status)) {
+    throw new Error(`HTTP ${response.status}. ${API_KEY_HINT}`);
   }
 
   return (await response.json()) as T;

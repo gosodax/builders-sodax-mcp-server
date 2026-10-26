@@ -5,6 +5,9 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
+import { SODAX_API_ORIGIN } from "../constants.js";
+import { getRequestContext } from "./requestContext.js";
+
 interface FetchJsonOptions {
   timeout?: number;
   method?: string;
@@ -17,6 +20,23 @@ const DEFAULT_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
   Accept: "application/json",
 };
+
+export const API_KEY_HINT =
+  "Send a valid SODAX API key in the x-api-key header (SODAX_API_KEY on stdio): https://docs.sodax.com/developers/how-to/api-keys";
+
+function isSodaxApiUrl(url: string): boolean {
+  return new URL(url).origin === SODAX_API_ORIGIN;
+}
+
+/** The caller's key, for SODAX API hosts only: it must never reach a third party. */
+export function sodaxApiKeyHeader(url: string): Record<string, string> {
+  const { apiKey } = getRequestContext();
+  return apiKey && isSodaxApiUrl(url) ? { "x-api-key": apiKey } : {};
+}
+
+export function isApiKeyRejection(url: string, status: number): boolean {
+  return (status === 401 || status === 403) && isSodaxApiUrl(url);
+}
 
 /**
  * Extract a human-readable message from an error response body so callers
@@ -60,7 +80,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
 
   const response = await fetch(url, {
     method,
-    headers: { ...DEFAULT_HEADERS, ...headers },
+    headers: { ...DEFAULT_HEADERS, ...sodaxApiKeyHeader(url), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(timeout),
   });
@@ -73,7 +93,8 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
     const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
-    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
+    const message = apiMessage ? `${base} - ${apiMessage}` : base;
+    throw new Error(isApiKeyRejection(url, response.status) ? `${message}. ${API_KEY_HINT}` : message);
   }
 
   // 204 No Content / empty body: response.json() would throw a cryptic

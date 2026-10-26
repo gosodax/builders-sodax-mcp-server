@@ -37,13 +37,16 @@ What shapes the design:
 
 **Decision.**
 - Put `builders.sodax.com` behind the same HAProxy edge as the API, so keys and limits are enforced in one place.
-- The server is a plain forwarder for keys. When the caller sends `x-api-key` (the HTTP header, or `SODAX_API_KEY` on stdio), it goes on every backend call. Without one, the server calls the backend keyless, and the backend's key policy decides what is allowed.
+- The swap tools need an API key: `x-api-key` on HTTP, or `SODAX_API_KEY` on stdio. A connection without one gets no swap tools. `?profile=swap` is refused with "API key required" and where to get one, and `all` serves only the builder tools.
+- The server only checks that a key is there. Whether it's valid is the backend's call.
+- Builder tools stay open without a key. When a key is sent, it goes on every backend call.
 - Drop the server's own inbound limit once the edge is in front, so only one counter applies. Behind a proxy it would only see the edge's IP anyway.
 - On a 429, wait out `Retry-After` instead of retrying at once, and tell the agent when to come back (`RATE_LIMITED` with `retryAfterSec`). A 401 or 403 becomes "API key required", with where to get one.
 
 **Consequences.**
-- A swap submitted with a key is attributed to that key and limited by its org.
-- Keyless callers are limited per IP. Until the edge can tell real clients apart behind this server, they share its IP budget (see [Open questions](#open-questions)).
+- Every swap is submitted with a key, attributed to that key and limited by its org.
+- Swap traffic doesn't share the server's IP budget. Keyless builder calls still do, until the edge can tell real clients apart behind this server (see [Open questions](#open-questions)).
+- A made-up key passes the server's check. Only the backend's key enforcement stops it.
 
 ### D3. Client layer: `@sodax/sdk` and `@sodax/types`
 
@@ -72,8 +75,8 @@ What shapes the design:
 - Pick one with `?profile=`, the `x-sodax-profile` header, or `--profile` / `MCP_PROFILE` on stdio. An unknown profile is an error, not a silent fallback.
 
 **Consequences.**
-- Existing connections get `all`, so they also see the swap tools. To keep today's exact list, connect with `?profile=builder`.
-- A swap agent connects to `/mcp?profile=swap` and sees five tools.
+- Existing connections get `all`. Without a key, that's today's tools, unchanged. With a key, the swap tools come too; to keep today's exact list, connect with `?profile=builder`.
+- A swap agent connects to `/mcp?profile=swap` with a key and sees five tools.
 
 ### D5. Chains
 
@@ -175,7 +178,6 @@ We follow the same pattern: look up tokens, quote with unsigned transactions, si
 - Edge setup for this server:
   - One tool call is one request into the server and several backend calls (a quote makes three to six). Should a key be counted on the way in, on the backend calls, or both?
   - The edge's per-IP write cap and jail apply to backend calls from this server's IP. Should the edge trust `X-Forwarded-For` from the server, or exempt its IP?
-  - Should the server require an API key, or keep allowing keyless callers?
 - Backend work. Phase 1 needs the first item; the rest would simplify the server:
   - a wallet balance endpoint;
   - `submit-tx` checking the source transaction on chain, which opens non-EVM sources and removes the server's own EVM check;

@@ -78,6 +78,18 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(out.error.code).toBe("DESTINATION_NOT_READY");
   });
 
+  it("builds native HBAR with Hedera's scaled value", async () => {
+    const { out } = await callQuote({
+      fromChain: "hedera",
+      fromToken: "native",
+      ...TO_BASE_USDC,
+      amount: "1000",
+      fromAddress: USER,
+    });
+    expect(out.status).toBe("ready");
+    expect(out.steps?.at(-1)?.tx.value).toBe(`0x${(1000n * 10n ** 18n).toString(16)}`);
+  });
+
   it("matches the SDK's packaged asset manager for every EVM spoke the live config names", async () => {
     const configs = (await getAllChainsConfigs()) as Record<
       string,
@@ -136,11 +148,6 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     [
       "a Solana source",
       { fromChain: "solana", fromToken: "native", ...TO_BASE_USDC, amount: "1" },
-      "UNSUPPORTED_SOURCE",
-    ],
-    [
-      "native HBAR from Hedera, until the SDK exports its value scaling",
-      { fromChain: "hedera", fromToken: "native", ...TO_BASE_USDC, amount: "1000", fromAddress: USER },
       "UNSUPPORTED_SOURCE",
     ],
   ])("refuses %s", async (_case, args, code) => {

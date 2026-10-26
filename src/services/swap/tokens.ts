@@ -42,7 +42,7 @@ const chainSchema = z
   .refine(chain => chain.type !== "EVM" || typeof chain.chainId === "number");
 
 export type SwapChain = z.infer<typeof chainSchema> & {
-  /** The contract a swap from this chain calls: a spoke's asset manager. Sonic, the hub, has none here. */
+  /** The spoke's asset manager per the live config; quotes pin it from the SDK and only check it agrees. */
   swapContract?: string;
 };
 
@@ -138,7 +138,7 @@ async function loadCatalog(): Promise<SwapCatalog> {
       // Without one, a chain can't be named by chain id and takes no 0xEeee placeholder.
       const unconfigured = Object.keys(catalog.tokens).filter(key => !catalog.chains[key]);
       if (unconfigured.length > 0) logger.warn({ chains: unconfigured }, "No valid chain config for these swap chains");
-      // Quotes need it; token lookups don't, so this is only logged.
+      // The quote pins asset managers from the SDK; none in the live config means it changed shape.
       if (!Object.values(catalog.chains).some(chain => chain.swapContract)) {
         logger.error("No EVM chain config names an asset manager");
       }

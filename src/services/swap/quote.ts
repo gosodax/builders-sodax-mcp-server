@@ -7,19 +7,19 @@
  */
 
 import { createHash } from "node:crypto";
-import { EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
-import { type LoadedSdk, getSdk } from "../sodax.js";
-import type { ChainInfo } from "../sodaxApi.js";
 import {
-  type HubCall,
-  type SignedIntent,
-  type SpokeSwap,
-  decodeApprove,
-  decodeCreateIntent,
-  decodeSpokeSwap,
-} from "./calldata.js";
+  type SwapTx,
+  approveCalldata,
+  encodeRecipient,
+  isHubChain,
+  rebuildSwapTx,
+  swapContractFor,
+  userHubWallet,
+} from "../sodax.js";
+import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { putQuote } from "./quoteCache.js";
@@ -153,21 +153,11 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     return { status: "price_only", ...summary, missing };
   }
 
-  const sdk = getSdk();
-  // A native HBAR deposit needs Hedera's msg.value scaling, which the SDK doesn't export yet: until it
-  // does, the built value can't be checked, so only a price is given.
-  if (from.chain.key === sdk.hederaChainKey && from.token.isNative) {
-    throw new ActionError(
-      "UNSUPPORTED_SOURCE",
-      `This server can only price swaps of native ${from.token.symbol} for now.`,
-      {
-        nextStep: `Tell the user a swap of native ${from.token.symbol} can be priced but not prepared here yet.`,
-      },
-    );
-  }
-  const hub = from.chain.key === sdk.hubChainKey;
-  const swapContract = pinnedSwapContract(from.chain.key, from.config.swapContract, hub);
-  if (!swapContract) {
+  // Pinned from the packaged config; the live chain config must agree with it.
+  const swapContract = swapContractFor(from.chain.key);
+  const live = from.config.swapContract;
+  if (!swapContract || (live && !same(live, swapContract))) {
+    logger.error({ chainKey: from.chain.key }, "The live chain config's swap contract differs from the SDK's");
     throw new ActionError(
       "UPSTREAM_UNAVAILABLE",
       "The SODAX config doesn't agree on the source chain's swap contract.",
@@ -194,12 +184,25 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     dstAddress: toAddress,
     partnerFee,
   };
-  // A native token needs no approval.
-  const [built, approved] = await Promise.all([buildIntent(request), from.token.isNative || checkAllowance(request)]);
+  // A native token needs no approval. The hub wallet is looked up to check the intent's creator.
+  const [built, approved, hubWallet] = await Promise.all([
+    buildIntent(request),
+    from.token.isNative || checkAllowance(request),
+    userHubWallet(from.chain.key, fromAddress).catch(() => {
+      throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
+    }),
+  ]);
   const approval = approved ? undefined : await buildApprove(request);
+  const expected = await rebuildSwapTx({
+    srcChainKey: request.srcChainKey,
+    srcAddress: fromAddress,
+    token: request.inputToken,
+    amount,
+    intent: built.intent,
+  });
   const mismatch = findMismatch(
     request,
-    { from: from.token, to: to.token, fee, swapContract, hub, intentsContract: sdk.intentsContract },
+    { from: from.token, to: to.token, fee, swapContract, hubWallet, expected },
     built,
     approval,
   );
@@ -252,80 +255,27 @@ function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }):
   return { chain, symbol: token.symbol, address: token.address };
 }
 
-/** The SDK encodes a recipient the way intents carry it, and refuses one that isn't valid for its chain (EIP-55 included). */
-function encodeAddress(chainKey: string, address: string): string | undefined {
-  try {
-    // Catalog chain keys are the SDK's chain keys; an unknown one throws like a bad address.
-    return getSdk().encodeAddress(chainKey as Parameters<LoadedSdk["encodeAddress"]>[0], address);
-  } catch {
-    return undefined;
-  }
-}
-
 // An all-zero address in any family (EVM `0x0…0`, Sui `0x0`, Solana's system program) burns what it receives.
 function checkAddress(address: string, chain: ChainInfo): string {
-  const encoded = encodeAddress(chain.key, address);
+  const encoded = encodeRecipient(chain.key, address);
   if (!encoded || /^0x0*$/.test(encoded)) {
     throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
   }
   return address;
 }
 
-/**
- * The contract a swap from this chain must call, from the SDK's packaged config: the hub intents
- * contract from the hub, else the spoke's asset manager. The live chain config must agree.
- */
-function pinnedSwapContract(chainKey: string, live: string | undefined, hub: boolean): string | undefined {
-  const { spokeChainConfig, intentsContract } = getSdk();
-  // Read loosely: the hub's entry has no asset manager, and the key comes from the catalog.
-  const addresses: unknown = (spokeChainConfig as Record<string, { addresses?: unknown } | undefined>)[chainKey]
-    ?.addresses;
-  const assetManager =
-    addresses && typeof addresses === "object" ? (addresses as { assetManager?: unknown }).assetManager : undefined;
-  const packaged = hub ? intentsContract : assetManager;
-  if (typeof packaged !== "string" || !EVM_ADDRESS_PATTERN.test(packaged)) return undefined;
-  if (live && !same(live, packaged)) {
-    logger.error({ chainKey }, "The live chain config's asset manager differs from the SDK's");
-    return undefined;
-  }
-  return packaged;
-}
-
-const HEX = /^0x[0-9a-fA-F]+$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** A value as a 32-byte ABI word (hex, no prefix). */
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
 
-const INTENT_FIELDS = [
-  "intentId",
-  "creator",
-  "inputToken",
-  "outputToken",
-  "inputAmount",
-  "minOutputAmount",
-  "deadline",
-  "allowPartialFill",
-  "srcChain",
-  "dstChain",
-  "srcAddress",
-  "dstAddress",
-  "solver",
-  "data",
-] as const;
-
 /**
  * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name the
  * first check that fails. The intent JSON must say what was asked (input net of the partner fee,
  * minimum, deadline, hub tokens, recipient as the SDK encodes it, sender, fee envelope, no partial
- * fill, any solver). The signed tx, decoded by ABI position, must carry exactly that, to the
- * contracts the SDK config pins:
- * - from a spoke, `transfer` on its asset manager of the source token and the gross amount to the
- *   intent's hub wallet, whose call list (the relay payload track submits) approves exactly the
- *   gross amount of the hub asset to the hub intents contract, then calls `createIntent` on it;
- * - from the hub, `createIntent` on the hub intents contract itself (the relay payload is the tx data);
- * and that `createIntent` must hold every field of the JSON intent. Any approval on the source chain
- * must be `approve(the swap contract, exact amount)`.
+ * fill, any solver) and be created by the user's own hub wallet. The swap tx must then be, byte for
+ * byte, the one the SDK builds for that intent (the relay payload included), and any approval
+ * `approve(the pinned swap contract, exact amount)` on the source token.
  */
 function findMismatch(
   request: IntentRequest,
@@ -333,57 +283,25 @@ function findMismatch(
     from: SwapsApiToken;
     to: SwapsApiToken;
     fee: bigint;
-    /** The contract the swap tx calls: the spoke's asset manager, or the intents contract from the hub. */
+    /** The contract the swap calls: the spoke's asset manager, or the intents contract from the hub. */
     swapContract: string;
-    hub: boolean;
-    intentsContract: string;
+    hubWallet: string;
+    /** The SDK's rebuild of the swap tx, if it could. */
+    expected?: SwapTx;
   },
   built: BuiltIntent,
   approval?: Approval,
 ): string | undefined {
   const { intent, tx, relayData } = built;
-  const { partnerFee } = request;
+  const { partnerFee, expected } = { ...request, ...want };
   // The fee envelope: `0x01`, the fee and the receiver, or `0x` without a fee.
   const feeData = partnerFee ? `0x01${word(want.fee)}${word(partnerFee.address)}` : "0x";
-  const recipient = encodeAddress(request.dstChainKey, request.dstAddress);
-
-  let spoke: SpokeSwap | undefined;
-  let signedIntent: SignedIntent | undefined;
-  try {
-    if (want.hub) {
-      signedIntent = decodeCreateIntent(tx.data);
-    } else {
-      spoke = decodeSpokeSwap(tx.data);
-      const last = spoke.calls.at(-1);
-      signedIntent = last && decodeCreateIntent(last.data);
-    }
-  } catch {
-    // Malformed calldata: the checks below fail on the missing values.
-  }
-  const hubCalls = spoke?.calls ?? [];
-  const hubApproves = (call: HubCall) => {
-    try {
-      const { spender, amount } = decodeApprove(call.data);
-      return same(call.to, intent.inputToken) && same(spender, want.intentsContract) && amount === request.inputAmount;
-    } catch {
-      return false;
-    }
-  };
-  const sourceApproves = (step: EvmTx, amount: bigint) => {
-    try {
-      const decoded = decodeApprove(step.data);
-      return (
-        same(step.from, request.srcAddress) &&
-        same(step.to, request.inputToken) &&
-        BigInt(step.value) === 0n &&
-        step.data.length === 138 &&
-        same(decoded.spender, want.swapContract) &&
-        decoded.amount === amount
-      );
-    } catch {
-      return false;
-    }
-  };
+  const recipient = encodeRecipient(request.dstChainKey, request.dstAddress);
+  const approves = (step: EvmTx, amount: bigint) =>
+    same(step.from, request.srcAddress) &&
+    same(step.to, request.inputToken) &&
+    BigInt(step.value) === 0n &&
+    same(step.data, approveCalldata(request.inputToken, want.swapContract, amount));
 
   const checks: [string, boolean][] = [
     ["inputAmount", intent.inputAmount === (request.inputAmount - want.fee).toString()],
@@ -396,34 +314,17 @@ function findMismatch(
     ["feeData", intent.data.toLowerCase() === feeData],
     ["allowPartialFill", intent.allowPartialFill === false],
     ["solver", ZERO_ADDRESS_PATTERN.test(intent.solver)],
+    ["creator", same(intent.creator, want.hubWallet) && same(relayData.address, intent.creator)],
     ["tx.from", same(tx.from, request.srcAddress)],
-    ["tx.to", same(tx.to, want.swapContract)],
-    ["tx.value", BigInt(tx.value) === (want.from.isNative ? request.inputAmount : 0n)],
-    ["tx.data", want.hub ? signedIntent !== undefined : spoke !== undefined],
-    ["transfer token", want.hub || (spoke !== undefined && same(spoke.token, request.inputToken))],
-    ["transfer amount", want.hub || spoke?.amount === request.inputAmount],
-    [
-      "hub wallet",
-      same(relayData.address, intent.creator) && (want.hub || (spoke !== undefined && same(spoke.to, intent.creator))),
-    ],
-    ["relay payload", same(want.hub ? tx.data : (spoke?.payload ?? ""), relayData.payload)],
-    [
-      "hub calls",
-      want.hub ||
-        (same(hubCalls.at(-1)?.to ?? "", want.intentsContract) &&
-          hubCalls.every(call => call.value === 0n) &&
-          hubCalls.slice(0, -1).every(hubApproves)),
-    ],
-    [
-      "signed intent",
-      signedIntent !== undefined &&
-        INTENT_FIELDS.every(field => String(signedIntent[field]).toLowerCase() === String(intent[field]).toLowerCase()),
-    ],
+    ["rebuild", expected !== undefined],
+    ["tx.to", same(tx.to, expected?.to ?? "")],
+    ["tx.value", BigInt(tx.value) === expected?.value],
+    ["tx.data", same(tx.data, expected?.data ?? "")],
+    ["relay payload", same(relayData.payload, expected?.payload ?? "")],
     [
       "approval",
       !approval ||
-        (sourceApproves(approval.tx, request.inputAmount) &&
-          (!approval.resetTx || sourceApproves(approval.resetTx, 0n))),
+        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
     ],
   ];
   return checks.find(([, ok]) => !ok)?.[0];

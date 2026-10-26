@@ -18,6 +18,18 @@
           "description": "SODAX API key. Optional for the builder tools; required for the swap tools once they are enabled. Forwarded on the server's data API and solver calls",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "x-sodax-partner-address",
+          "description": "EVM address that receives your partner fee on swap quotes. Set with x-sodax-partner-fee-bps",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "x-sodax-partner-fee-bps",
+          "description": "Partner fee on swap quotes, in basis points from 1 to 100. Set with x-sodax-partner-address",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

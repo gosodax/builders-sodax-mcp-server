@@ -26,6 +26,7 @@ import { notifyError, notifyServerStarted, notifyServerStopping } from "./servic
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import { partnerFeeFromEnv } from "./services/partnerFee.js";
 import {
   apiKeyStatus,
   describeProfiles,
@@ -33,7 +34,12 @@ import {
   profileFromArgs,
   selectToolsets,
 } from "./services/profiles.js";
-import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
+import {
+  type RequestContext,
+  parseApiKey,
+  runWithRequestContext,
+  setFallbackRequestContext,
+} from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
@@ -91,17 +97,18 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
-  // Before the docs warm-up, so a refused profile fails fast.
+  // Before the docs warm-up, so a refused profile or partner fee fails fast.
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
     apiKey: keyStatus,
     swapToolsEnabled,
   });
+  const partnerFee = partnerFeeFromEnv(process.env);
 
   // Warm SDK docs cache before creating server
   logger.info("Initializing SODAX docs proxy...");
   await warmDocsCache();
 
-  setFallbackRequestContext({ apiKey });
+  setFallbackRequestContext({ apiKey, partnerFee });
   const server = await createServer(toolsets);
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -116,6 +123,9 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   }
   if (process.env.SODAX_API_KEY) {
     logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
+  }
+  if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
+    logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
 
   // Warm SDK docs cache before starting HTTP server
@@ -258,11 +268,12 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     });
     res.on("close", () => transport.close());
     await requestServer.connect(transport);
-    await runWithRequestContext({ apiKey: connection.apiKey }, () => transport.handleRequest(req, res, req.body));
+    await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
   });
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
-  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
+  // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
+  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; context: RequestContext }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
     const connection = resolveConnection(req, res, swapToolsEnabled);
@@ -270,7 +281,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(connection.toolsets, clientId);
     const transport = new SSEServerTransport("/messages", res);
-    sseSessions.set(transport.sessionId, { transport, server: sseServer });
+    sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context });
 
     res.on("close", () => {
       sseSessions.delete(transport.sessionId);
@@ -289,9 +300,8 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
       return;
     }
     // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-    await runWithRequestContext({ apiKey: callerApiKey(req) }, () =>
-      session.transport.handlePostMessage(req, res, req.body),
-    );
+    const context = { ...session.context, apiKey: callerApiKey(req) };
+    await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
   });
 
   app.get("/api", async (_req: Request, res: Response) => {

@@ -34,40 +34,79 @@ function forwardedApiKey(url: string): string | undefined {
 }
 
 /**
- * Extract a human-readable message from an error response body so callers
- * see *why* a request failed, not just the status code. Handles the SODAX /
- * FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
- * `{ detail: [{ msg }] }`) plus `{ message }` / `{ error }`.
+ * A non-2xx response. The message is the one callers already show; the parts ride along for
+ * callers that map them. The raw body is not kept, so logging the error stays small.
  */
-function extractApiErrorMessage(rawBody: string): string | null {
-  const text = rawBody.trim();
-  if (!text) return null;
+export class HttpError extends Error {
+  readonly apiMessage?: string;
+  readonly apiCode?: unknown;
+  readonly retryAfterSec?: number;
 
+  constructor(
+    message: string,
+    readonly status: number,
+    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number } = {},
+  ) {
+    super(message);
+    this.name = "HttpError";
+    this.apiMessage = parts.apiMessage;
+    this.apiCode = parts.apiCode;
+    this.retryAfterSec = parts.retryAfterSec;
+  }
+}
+
+/** `Retry-After` as seconds from now: either delta-seconds or an HTTP date. */
+function retryAfterSeconds(value: string | null): number | undefined {
+  if (!value) return undefined;
+  if (/^\d+$/.test(value.trim())) return Number(value.trim());
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - Date.now()) / 1000));
+}
+
+/**
+ * Extract a human-readable message (and the API's error `code`, if any) from an error
+ * response body so callers see *why* a request failed, not just the status code. Handles
+ * the SODAX / FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
+ * `{ detail: [{ msg }] }`) plus `{ message }` (a string or NestJS's string list) / `{ error }`.
+ */
+function parseApiError(rawBody: string): { message?: string; code?: unknown } {
+  const text = rawBody.trim();
+  if (!text) return {};
+
+  let code: unknown;
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
-      const detail = obj.detail;
-
-      if (typeof detail === "string") return detail;
-      if (Array.isArray(detail)) {
-        const msgs = detail
-          .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
-          .filter((m): m is string => typeof m === "string");
-        if (msgs.length > 0) return msgs.join("; ");
-      } else if (detail && typeof detail === "object") {
-        const msg = (detail as Record<string, unknown>).message;
-        if (typeof msg === "string") return msg;
-      }
-
-      if (typeof obj.message === "string") return obj.message;
-      if (typeof obj.error === "string") return obj.error;
+      code = obj.code;
+      const message = extractApiErrorMessage(obj);
+      if (message) return { message, code };
     }
   } catch {
     // Body wasn't JSON; fall through to the raw-text snippet below.
   }
 
-  return text.length > 300 ? `${text.slice(0, 300)}...` : text;
+  return { message: text.length > 300 ? `${text.slice(0, 300)}...` : text, code };
+}
+
+function extractApiErrorMessage(obj: Record<string, unknown>): string | undefined {
+  const detail = obj.detail;
+
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
+      .filter((m): m is string => typeof m === "string");
+    if (msgs.length > 0) return msgs.join("; ");
+  } else if (detail && typeof detail === "object") {
+    const msg = (detail as Record<string, unknown>).message;
+    if (typeof msg === "string") return msg;
+  }
+
+  if (typeof obj.message === "string") return obj.message;
+  if (Array.isArray(obj.message) && obj.message.every(m => typeof m === "string")) return obj.message.join("; ");
+  if (typeof obj.error === "string") return obj.error;
+  return undefined;
 }
 
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
@@ -88,10 +127,14 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   }
 
   if (!response.ok) {
-    const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
+    const { message: apiMessage, code: apiCode } = parseApiError(await response.text().catch(() => ""));
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
-    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
+    throw new HttpError(apiMessage ? `${base} - ${apiMessage}` : base, response.status, {
+      apiMessage,
+      apiCode,
+      retryAfterSec: retryAfterSeconds(response.headers.get("Retry-After")),
+    });
   }
 
   // 204 No Content / empty body: response.json() would throw a cryptic

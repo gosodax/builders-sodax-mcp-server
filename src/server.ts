@@ -45,6 +45,8 @@ const BUILDER_INSTRUCTIONS = [
 const SWAP_INSTRUCTIONS = [
   "To prepare a swap, resolve each side with `sodax_resolve_token` (a chain plus a symbol, an address",
   'or "native"). When it returns ambiguous or not_found, ask the user; never guess a token or an address.',
+  "Then quote with `sodax_swap_quote`: a price without the user's address, the transactions for their wallet with it.",
+  "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
 ].join(" ");
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };

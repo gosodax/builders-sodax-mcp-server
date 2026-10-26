@@ -111,3 +111,7 @@ export const BRAND_COLORS = {
   espresso: "#1A1A1A",
   accent: "#FFD54F",
 } as const;
+
+export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
+
+export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;

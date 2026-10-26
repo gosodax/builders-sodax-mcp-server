@@ -6,7 +6,7 @@ import {
   SODAX_SOLVER_BASE_URL,
   SODAX_SWAPS_BASE_URL,
 } from "../constants.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { HttpError, fetchJson, fetchJsonOrNull } from "./http.js";
 import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -57,6 +57,58 @@ describe("fetchJson", () => {
   it("treats a whitespace-only body as empty (trims before checking)", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("\n  \t\n", { status: 200 }));
     await expect(fetchJson("http://example.com/x")).rejects.toThrow(/Empty response body/);
+  });
+});
+
+describe("HttpError", () => {
+  const failure = () =>
+    fetchJson("https://example.com/x").then(
+      () => expect.unreachable(),
+      (error: unknown) => error as HttpError,
+    );
+
+  it("carries the status, the API's message and code, and Retry-After in seconds, but not the raw body", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse('{"message":"slow down","code":-1}', { status: 429, headers: { "Retry-After": "7" } }),
+    );
+    const error = await failure();
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error).toMatchObject({ status: 429, apiMessage: "slow down", apiCode: -1, retryAfterSec: 7 });
+    expect(error).not.toHaveProperty("body");
+    expect(error.message).toBe("HTTP 429 for https://example.com/x - slow down");
+  });
+
+  it("reads an HTTP-date Retry-After as seconds from now, and leaves it unset when absent", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-26T12:00:00Z") });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse("", { status: 503, headers: { "Retry-After": "Mon, 26 Oct 2026 12:00:30 GMT" } }),
+    );
+    expect((await failure()).retryAfterSec).toBe(30);
+    fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 503 }));
+    expect((await failure()).retryAfterSec).toBeUndefined();
+  });
+});
+
+describe("error messages", () => {
+  it.each([
+    ['{"error":"Bad Request","code":7}', "Bad Request", 7],
+    ['{"detail":{"message":"no such pool"}}', "no such pool", undefined],
+    ['{"unexpected":true,"code":-1}', '{"unexpected":true,"code":-1}', -1],
+  ])("reads the message and code from %s", async (body, apiMessage, apiCode) => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse(body, { status: 400 }));
+    await expect(fetchJson("https://example.com/x")).rejects.toMatchObject({ apiMessage, apiCode });
+  });
+
+  it("joins a NestJS validation message list", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(
+        '{"message":["amount must be a number string","deadline must be a number string"],"error":"Bad Request"}',
+        { status: 400 },
+      ),
+    );
+    await expect(fetchJson("https://example.com/x")).rejects.toMatchObject({
+      apiMessage: "amount must be a number string; deadline must be a number string",
+    });
   });
 });
 

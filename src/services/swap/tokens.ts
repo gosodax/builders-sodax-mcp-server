@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { CACHE_DURATION_MS, SODAX_SWAPS_BASE_URL } from "../../constants.js";
+import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
 import { fetchJson } from "../http.js";
 import { logger } from "../logger.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
@@ -25,7 +25,7 @@ const tokenSchema = z.object({
   // EVM hex, base58, Sui coin types (`::`), NEAR/Stacks names, Injective denoms (`/`).
   address: z.string().regex(/^[A-Za-z0-9:_/.-]{1,128}$/),
   chainKey: z.string().regex(CHAIN_KEY_PATTERN),
-  hubAsset: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  hubAsset: z.string().regex(EVM_ADDRESS_PATTERN),
   access: z.enum(["withdrawOnly", "depositOnly"]).optional(),
   /** A tokenized stock, ETF or commodity. */
   isRwa: z.boolean().optional(),
@@ -47,6 +47,11 @@ export type SwapChain = z.infer<typeof chainSchema>;
 export interface SwapCatalog {
   tokens: Record<string, SwapsApiToken[]>;
   chains: Record<string, SwapChain>;
+}
+
+/** A swap deposits the token sent into its hub vault and withdraws the one received. */
+export function canUseAs(token: SwapsApiToken, side: "from" | "to"): boolean {
+  return token.access !== (side === "from" ? "withdrawOnly" : "depositOnly");
 }
 
 // Token lists change rarely, so a catalog this old is still served while a refresh runs.

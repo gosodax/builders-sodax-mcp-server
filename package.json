@@ -15,6 +15,7 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
     "prepare": "husky",
     "clean": "rm -rf dist"
   },

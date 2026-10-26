@@ -78,6 +78,13 @@ A connection picks which tools it gets with `?profile=<name>` on the URL or the 
 An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403. The swap tools are not enabled on
 the public server yet.
 
+### Partner fee
+
+A builder can take a fee on the swaps its agent quotes: `?partnerAddress=<EVM address>&partnerFeeBps=<1-100>` on the
+URL, or the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers (stdio: `SODAX_PARTNER_FEE_ADDRESS` and
+`SODAX_PARTNER_FEE_BPS`). Set both or neither; anything else is refused with HTTP 400. The fee is taken from the
+amount sent, is part of the quote, and is never a tool input.
+
 ## Tools
 
 ### Network Configuration (9 tools)
@@ -227,6 +234,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
 | `pnpm test` | Runs the Vitest suite (currently covers the drift-check logic in `src/services/apiDriftCheck.ts`). |
+| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. |
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -258,6 +266,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
+| `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |

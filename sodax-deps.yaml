@@ -1,6 +1,7 @@
 # SODAX services this server calls. Read by SODAX workspace tooling to check
 # that API changes in these repos are reflected here.
-#   sodax-backend   - backend data API (api.sodax.com/v1/be), src/services/sodaxApi.ts
+#   sodax-backend   - backend data API (api.sodax.com/v1/be), src/services/sodaxApi.ts;
+#                     Swaps API (api.sodax.com/v1/swaps), src/services/swap/tokens.ts
 #   sodax-solver-v2 - solver API (api.sodax.com/v1/intent), src/services/solver.ts
 #   intent-relay    - intent relay API, src/services/relay.ts
 depends_on: [sodax-backend, sodax-solver-v2, intent-relay]

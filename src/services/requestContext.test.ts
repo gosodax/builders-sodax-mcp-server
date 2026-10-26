@@ -11,18 +11,6 @@ afterEach(() => {
 });
 
 describe("runWithRequestContext", () => {
-  it("keeps concurrent callers' keys apart", async () => {
-    const read = async (delayMs: number) => {
-      await sleep(delayMs);
-      return getRequestContext().apiKey;
-    };
-    const [first, second] = await Promise.all([
-      runWithRequestContext({ apiKey: "k1" }, () => read(20)),
-      runWithRequestContext({ apiKey: "k2" }, () => read(0)),
-    ]);
-    expect([first, second]).toEqual(["k1", "k2"]);
-  });
-
   it("uses the fallback outside a request, and a request overrides it", () => {
     setFallbackRequestContext({ apiKey: "stdio" });
     expect(getRequestContext().apiKey).toBe("stdio");

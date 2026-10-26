@@ -126,10 +126,14 @@ describe("API key forwarding", () => {
   const sentKey = () => (sentInit().headers as Record<string, string>)["x-api-key"];
   const fetchWithKey = (url: string) => runWithRequestContext({ apiKey: "sodax_k1" }, () => fetchJson(url));
 
+  beforeEach(() => {
+    fetchSpy.mockImplementation(async () => jsonResponse("{}", { status: 200 }));
+  });
+
   it.each([dataUrl, `${SODAX_SOLVER_BASE_URL}/quote`])("sends the caller's key to %s", async url => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
     await fetchWithKey(url);
     expect(sentKey()).toBe("sodax_k1");
+    expect(sentInit().redirect).toBe("error");
   });
 
   it.each([
@@ -138,24 +142,13 @@ describe("API key forwarding", () => {
     `${SODAX_API_BASE_URL}/intent/tx/../../../sponsorships/x`,
     "https://docs.sodax.com/mcp",
   ])("never sends the key to %s", async url => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
     await fetchWithKey(url);
     expect(sentKey()).toBeUndefined();
   });
 
-  it("sends no key when the caller has none", async () => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse("{}", { status: 200 }));
+  it("sends no key and follows redirects when the caller has none", async () => {
     await fetchJson(dataUrl);
     expect(sentKey()).toBeUndefined();
-  });
-
-  it("refuses redirects only when a key is attached", async () => {
-    fetchSpy.mockImplementation(async () => jsonResponse("{}", { status: 200 }));
-    await fetchWithKey(dataUrl);
-    expect(sentInit().redirect).toBe("error");
-
-    fetchSpy.mockClear();
-    await fetchJson(dataUrl);
     expect(sentInit().redirect).toBe("follow");
   });
 });

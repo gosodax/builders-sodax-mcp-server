@@ -5,7 +5,7 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
-import { SODAX_API_ORIGIN } from "../constants.js";
+import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
 import { getRequestContext } from "./requestContext.js";
 
 interface FetchJsonOptions {
@@ -23,16 +23,14 @@ const DEFAULT_HEADERS: Record<string, string> = {
 
 // Routes that take the caller's key: the data API and the solver. Other routes on the
 // same host reach other origins; the relay, for one, must never get it.
-const KEYED_PATH_PREFIXES = ["/v1/be/", "/v1/intent/"];
+const KEYED_BASE_URLS = [SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL].map(base => `${base}/`);
 
-function carriesApiKey(url: string): boolean {
-  const { origin, pathname } = new URL(url); // `..` segments are resolved here
-  return origin === SODAX_API_ORIGIN && KEYED_PATH_PREFIXES.some(prefix => pathname.startsWith(prefix));
-}
-
-function apiKeyHeader(url: string): Record<string, string> {
+/** The caller's key, if `url` may carry it. `href` has `..` segments resolved. */
+function forwardedApiKey(url: string): string | undefined {
   const { apiKey } = getRequestContext();
-  return apiKey && carriesApiKey(url) ? { "x-api-key": apiKey } : {};
+  if (!apiKey) return undefined;
+  const { href } = new URL(url);
+  return KEYED_BASE_URLS.some(base => href.startsWith(base)) ? apiKey : undefined;
 }
 
 /**
@@ -75,13 +73,13 @@ function extractApiErrorMessage(rawBody: string): string | null {
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
-  const keyHeader = apiKeyHeader(url);
+  const apiKey = forwardedApiKey(url);
   const response = await fetch(url, {
     method,
-    headers: { ...DEFAULT_HEADERS, ...keyHeader, ...headers },
+    headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
     // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
-    redirect: "x-api-key" in keyHeader ? "error" : "follow",
+    redirect: apiKey ? "error" : "follow",
     signal: AbortSignal.timeout(timeout),
   });
 

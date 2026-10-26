@@ -21,7 +21,7 @@ describe("relay client", () => {
     fetchSpy.mockResolvedValueOnce(new Response('{"success":true,"message":"Transaction registered"}'));
     await runWithRequestContext({ apiKey: "sodax_k1" }, () => submitRelayTx(params));
     const [url, init] = fetchSpy.mock.calls[0] ?? [];
-    expect(url).toBe("https://api.sodax.com/v1/relay/");
+    expect(url).toBe("https://api.sodax.com/v1/relay/"); // literal on purpose: pins the public host
     expect((init as RequestInit).headers).not.toHaveProperty("x-api-key");
   });
 
@@ -35,10 +35,10 @@ describe("relay client", () => {
     });
   });
 
-  it("treats the edge's 429 as an error, not a relay answer", async () => {
+  it("treats a body that isn't a relay answer (the edge's 429) as an error", async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response('{"ok":false,"error":"rate_limited"}', { status: 429, headers: { "Retry-After": "10" } }),
     );
-    await expect(submitRelayTx(params)).rejects.toThrow("HTTP 429 rate limited, retry after 10s");
+    await expect(submitRelayTx(params)).rejects.toThrow("HTTP 429, retry after 10s");
   });
 });

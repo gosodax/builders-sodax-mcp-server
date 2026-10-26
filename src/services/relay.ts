@@ -43,8 +43,9 @@ const RELAY_TIMEOUT_MS = 30_000;
 /**
  * The relay returns a JSON body for every outcome, including 404 (used for
  * "packet not found" responses on get_packet / get_transaction_packets).
- * We parse the body regardless of status — only HTTP 5xx, a 429 and
- * unparseable responses are treated as errors.
+ * We parse the body regardless of status. HTTP 5xx is an error, and so is any
+ * body that isn't a relay answer (every relay answer has a boolean `success`),
+ * such as the SODAX API edge's own 429.
  *
  * Never send the caller's API key here: the relay takes none, and the gateway
  * passes this route on to an origin outside the SODAX API.
@@ -63,13 +64,13 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
   if (response.status >= 500) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
-  // The SODAX API edge rate-limits this route too; its 429 body is not a relay answer.
-  if (response.status === 429) {
-    const retryAfter = response.headers.get("Retry-After");
-    throw new Error(`HTTP 429 rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""}`);
-  }
 
-  return (await response.json()) as T;
+  const body = (await response.json().catch(() => undefined)) as { success?: unknown } | undefined;
+  if (typeof body?.success !== "boolean") {
+    const retryAfter = response.headers.get("Retry-After");
+    throw new Error(`HTTP ${response.status}${retryAfter ? `, retry after ${retryAfter}s` : ""}`);
+  }
+  return body as T;
 }
 
 /**

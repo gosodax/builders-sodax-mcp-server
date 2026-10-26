@@ -49,6 +49,7 @@ const SWAP_INSTRUCTIONS = [
   "token or an address. The quote doesn't check balances; `sodax_get_balance` reads a wallet's balance when the user",
   "isn't sure they hold enough.",
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
+  "Never pass private keys, seed phrases or API keys as tool inputs.",
   "After the user's wallet sends the swap, call `sodax_swap_track` with the quoteId and the swap's tx hash: it submits",
   "the swap, so call it at least once, and again after retryAfterSec seconds while the result has one; after an error,",
   "follow its nextStep. Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted",

@@ -10,7 +10,9 @@ import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/m
 import type { ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "../services/logger.js";
-import { ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
+import { alertOperator } from "../services/swap/alerts.js";
+import { ALERTED_CODES, ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
+import { screenSecrets } from "../services/swap/secrets.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 
 type ActionOutput = Record<string, unknown> & { status: string; nextStep: string };
@@ -29,11 +31,20 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
 ): void {
   const handler = async (args: ShapeOutput<Args>): Promise<CallToolResult> => {
     try {
+      // After the SDK's zod check, before the handler's own validation, an upstream call or a log.
+      screenSecrets(args);
       return toResult(await run(args));
     } catch (error) {
+      // The logger strips URLs from `err`: SDK and viem errors carry the RPC URL.
       if (!(error instanceof ActionError)) logger.error({ err: error, tool: name }, "Swap tool failed");
       const failure =
         error instanceof ActionError ? error : new ActionError("INTERNAL", "The tool failed unexpectedly.");
+      if (ALERTED_CODES.includes(failure.code)) {
+        // ActionError messages here are fixed text; an unexpected error is named by its class only.
+        const reason =
+          error instanceof ActionError ? error.message : error instanceof Error ? error.name : typeof error;
+        alertOperator("swap_error", { tool: name, code: failure.code, reason });
+      }
       const out = { error: { ...failure.details, code: failure.code, message: failure.message } };
       const nextStep =
         retryAdvice && RETRYABLE_CODES.includes(failure.code)

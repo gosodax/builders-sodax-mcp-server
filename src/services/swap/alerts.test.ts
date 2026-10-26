@@ -98,6 +98,26 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(7);
   });
 
+  it("counts tool errors toward the same hourly cap", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 20; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
+    expect(fetch).toHaveBeenCalledTimes(20);
+    expect(logger.error).toHaveBeenCalledTimes(21);
+  });
+
+  it("treats one stranded deposit as one alert whatever quoteId comes with it, and a tool error per tool and code", () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    alertOperator("unknown_quote", FIELDS);
+    alertOperator("unknown_quote", { ...FIELDS, quoteId: "q-2" });
+    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_track", code: "INTERNAL" });
+    expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(3);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("only logs without a webhook", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "");
     const fetch = vi.spyOn(globalThis, "fetch");

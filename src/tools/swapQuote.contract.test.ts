@@ -31,6 +31,9 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     const before = Date.now();
     const { out } = await callQuote({ ...ARB_USDC, ...TO_BASE_USDC, amount: "5", fromAddress: USER });
     expect(out.status).toBe("ready");
+    // The solver oracle prices the hub asset: 5 USDC is about $5. Canary's oracle can be down: then null.
+    if (out.usdValue !== null) expect(Math.abs(Number(out.usdValue) - 5)).toBeLessThan(0.5);
+    if (process.env.SODAX_ENV === "production") expect(out.usdValue).not.toBeNull();
     expect(out.steps?.map(step => [step.kind, step.chainId])).toEqual([
       ["approve", 42161],
       ["swap", 42161],
@@ -102,6 +105,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       amount: "1000",
       fromAddress: USER,
     });
+    expect(out.error ?? {}).toEqual({});
     expect(out.status).toBe("ready");
     expect(out.steps?.at(-1)?.tx.value).toBe(`0x${(1000n * 10n ** 18n).toString(16)}`);
   });

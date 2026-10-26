@@ -27,6 +27,23 @@ export const SODAX_ENV_ERROR = parsedSodaxEnv
 export const SODAX_ENV: SodaxEnv = parsedSodaxEnv ?? "production";
 export const SODAX_API_ORIGIN = SODAX_API_ORIGINS[SODAX_ENV];
 
+const DEFAULT_SWAP_USD_WARN = 10_000;
+
+/** `SODAX_SWAP_USD_WARN`: the USD value above which a quote warns. Unset means 10,000; undefined means invalid. */
+export function parseSwapUsdWarn(value: string | undefined): number | undefined {
+  const text = value?.trim();
+  if (!text) return DEFAULT_SWAP_USD_WARN;
+  const level = Number(text);
+  return /^\d+(?:\.\d+)?$/.test(text) && level > 0 ? level : undefined;
+}
+
+const parsedSwapUsdWarn = parseSwapUsdWarn(process.env.SODAX_SWAP_USD_WARN);
+// Checked in main(), like SODAX_ENV_ERROR.
+export const SWAP_USD_WARN_ERROR = parsedSwapUsdWarn
+  ? undefined
+  : `SODAX_SWAP_USD_WARN must be a positive number, got "${process.env.SODAX_SWAP_USD_WARN}"`;
+export const SWAP_USD_WARN = parsedSwapUsdWarn ?? DEFAULT_SWAP_USD_WARN;
+
 // SODAX API Base URL (Backend API)
 export const SODAX_API_BASE_URL = `${SODAX_API_ORIGIN}/v1/be`;
 
@@ -117,6 +134,8 @@ export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-k
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+// Live chain keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
+export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();

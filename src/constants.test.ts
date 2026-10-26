@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseSodaxEnv } from "./constants.js";
+import { parseSodaxEnv, parseSwapUsdWarn } from "./constants.js";
 
 describe("parseSodaxEnv", () => {
   it("defaults to production when unset or blank", () => {
@@ -38,5 +38,20 @@ describe("base URLs on SODAX_ENV=canary", () => {
       solver: "https://canary-api.sodax.com/v1/intent",
       relay: "https://api.sodax.com/v1/relay",
     });
+  });
+});
+
+describe("parseSwapUsdWarn", () => {
+  it.each([
+    [undefined, 10_000],
+    ["", 10_000],
+    [" 2500 ", 2_500],
+    ["0.5", 0.5],
+  ])("reads %j as %d", (value, level) => {
+    expect(parseSwapUsdWarn(value)).toBe(level);
+  });
+
+  it.each(["0", "-5", "1e6", "10,000", "abc"])("refuses %j", value => {
+    expect(parseSwapUsdWarn(value)).toBeUndefined();
   });
 });

@@ -1,8 +1,8 @@
 /**
- * Operator alerts for deposits on chain that this server can't move on its own: an operator can
- * relay or refund them by hand. Logged, and posted to Discord when configured, at most once a day
- * per kind and tx. They carry the chain, tx hash, quote id, deadline and a short hash of the
- * caller's key, never an address or the key.
+ * Operator alerts: deposits on chain this server can't move on its own (an operator can relay or
+ * refund them by hand), and swap tool errors that point at a bug or a broken upstream. Logged, and
+ * posted to Discord when configured, at most once a day per kind and fields. They carry enums, chain
+ * keys, hashes, ids and a short hash of the caller's key: never an address, the key or error text.
  */
 
 import { SODAX_ENV } from "../../constants.js";
@@ -17,7 +17,8 @@ export type AlertKind =
   | "quote_used"
   | "multiple_deposits"
   | "refund_relay_failed"
-  | "submit_rejected";
+  | "submit_rejected"
+  | "swap_error";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
@@ -28,6 +29,7 @@ const TITLES: Record<AlertKind, string> = {
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
+  swap_error: "Swap tool error: a bug, or the swap service built something other than asked",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
@@ -50,9 +52,21 @@ let summary: NodeJS.Timeout | undefined;
 
 export function alertOperator(
   kind: AlertKind,
-  fields: { chainKey: string; txHash: string; quoteId?: string; deadline?: string },
+  fields: {
+    chainKey?: string;
+    txHash?: string;
+    quoteId?: string;
+    deadline?: string;
+    tool?: string;
+    code?: string;
+    /** Which failure: a fixed message or an error class, never input or upstream text. */
+    reason?: string;
+  },
 ): void {
-  const key = `${kind}:${fields.chainKey}:${fields.txHash}`;
+  // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code and reason.
+  const key = JSON.stringify(
+    kind === "swap_error" ? [kind, fields.tool, fields.code, fields.reason] : [kind, fields.chainKey, fields.txHash],
+  );
   const now = Date.now();
   const last = sent.get(key);
   if (last !== undefined && now - last < DEDUPE_MS) return;

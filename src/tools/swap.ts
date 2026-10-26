@@ -6,21 +6,39 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
-import { EVM_TX_HASH_PATTERN } from "../constants.js";
+import { EVM_TX_HASH_PATTERN, SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
+import { findSecret } from "../services/swap/secrets.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwapWaiting } from "../services/swap/track.js";
 import { registerActionTool } from "./actionTool.js";
 
+/**
+ * A text input capped at `max`. Over the cap, zod refuses it before the handler's own secret screening
+ * runs, so a seed phrase or key too long for the field still gets told to the agent as exposed.
+ */
+function textArg(max: number, min = 0) {
+  return z
+    .string()
+    .trim()
+    .min(min)
+    .max(max)
+    .superRefine((value, ctx) => {
+      if (value.length > max && findSecret(value)) ctx.addIssue({ code: "custom", message: OVERSIZED_SECRET });
+    });
+}
+
+const OVERSIZED_SECRET =
+  "That looks like a private key, seed phrase or API key: tell the user to treat it as exposed and move their funds, and never to paste it into a chat.";
+
 // zod schemas are immutable, so each tool adds its own description to these.
-const chainArg = z.string().trim().min(1).max(64);
-const tokenArg = z.string().trim().min(1).max(128);
-const addressText = z.string().trim().max(128);
-const addressArg = addressText.optional();
+const chainArg = textArg(64, 1);
+const tokenArg = textArg(128, 1);
+const addressArg = textArg(128).optional();
 const txHashArg = z
   .string()
   .trim()
@@ -60,7 +78,7 @@ export function registerSwapTools(server: McpServer): void {
     "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_track rather than re-reading balances.",
     {
       chain: chainArg.describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
-      address: addressText.min(1).describe("The wallet's address on that chain."),
+      address: textArg(128, 1).describe("The wallet's address on that chain."),
       token: tokenArg
         .optional()
         .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
@@ -250,17 +268,27 @@ function shortAddress(address: string): string {
   return address.length > 16 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
 }
 
+const usd = (value: number) => `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+/** Warns, never refuses: an agent passing base units as token units shows up as a huge value. */
+function usdWarning(usdValue: string | null): string {
+  const value = Number(usdValue);
+  if (usdValue === null || value <= SWAP_USD_WARN) return "";
+  return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.`;
+}
+
 function quoteNextStep(quote: SwapQuote): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name} (at least ${to.minimumAmount})`;
+  const warning = usdWarning(quote.usdValue);
   if (quote.status === "price_only") {
     const needed = quote.missing.map(field =>
       field === "fromAddress"
         ? `fromAddress (their wallet on ${from.chain.name})`
         : `toAddress (their address on ${to.chain.name})`,
     );
-    return `${show}. To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
+    return `${show}.${warning} To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
   }
   // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
   const sameAddress =
@@ -268,7 +296,7 @@ function quoteNextStep(quote: SwapQuote): string {
       ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
       : "";
   return [
-    `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.`,
+    `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
     "Once they confirm, have their wallet send the steps in order, each confirmed before the next (or the batch), before it expires, then call sodax_swap_track with the quoteId and the swap transaction's hash.",

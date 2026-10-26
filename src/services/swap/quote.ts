@@ -41,6 +41,7 @@ import {
 } from "./swapsApi.js";
 import { type SwapCatalog, type SwapChain, type SwapsApiToken, canUseAs, getSwapCatalog } from "./tokens.js";
 import { formatUnits, parseUnits } from "./units.js";
+import { usdValue } from "./usd.js";
 
 export interface QuoteInput {
   fromChain: string;
@@ -65,6 +66,8 @@ interface QuoteSummary {
   to: Side & { expectedAmount: string; minimumAmount: string };
   slippageBps: number;
   partnerFee?: { bps: number; amount: string; symbol: string };
+  /** The amount sent in USD (2 decimals), or null when no recent price is known. */
+  usdValue: string | null;
 }
 
 export interface SwapStep {
@@ -114,14 +117,18 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const dstEvm = to.config.type === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
-  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain) : undefined;
+  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
   // An EVM recipient defaults to the sender.
-  const toAddress = input.toAddress ? checkAddress(input.toAddress, to.chain) : dstEvm ? fromAddress : undefined;
+  const toAddress = input.toAddress
+    ? checkAddress(input.toAddress, to.chain, "toAddress")
+    : dstEvm
+      ? fromAddress
+      : undefined;
   const ready = fromAddress !== undefined && toAddress !== undefined;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
-  const [quoted, deadline] = await Promise.all([
+  const [quoted, deadline, usd] = await Promise.all([
     getQuote({
       tokenSrc: from.token.address,
       tokenSrcChainKey: from.chain.key,
@@ -131,6 +138,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       partnerFee,
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
+    usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals)),
     // A dead source RPC fails the quote before any steps, not the track after the user has sent them.
     ready ? readBlockNumber(from.chain) : undefined,
   ]);
@@ -148,6 +156,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       minimumAmount: formatUnits(minOutput, to.token.decimals),
     },
     slippageBps: input.slippageBps,
+    usdValue: usd?.toFixed(2) ?? null,
     ...(partnerFee && {
       partnerFee: { bps: partnerFee.bps, amount: formatUnits(fee, from.token.decimals), symbol: from.token.symbol },
     }),
@@ -247,7 +256,7 @@ function resolveSide(
   token: string,
   side: "from" | "to",
 ): { chain: ChainInfo; token: SwapsApiToken; config: SwapChain } {
-  const resolution = resolveExactly(catalog, chain, token, { side });
+  const resolution = resolveExactly(catalog, chain, token, `${side}Token`, { side });
   if (!canUseAs(resolution.token, side)) {
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`);

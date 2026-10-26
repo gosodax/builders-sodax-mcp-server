@@ -6,10 +6,12 @@ import { logger } from "../services/logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
 import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { clearUsdBackoff } from "../services/swap/usd.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callQuote as quote } from "./__fixtures__/swapClient.js";
 
@@ -25,6 +27,11 @@ vi.mock("../services/sodax.js", async importOriginal => {
     rebuildSwapTx: vi.fn(actual.rebuildSwapTx),
   };
 });
+
+// No oracle unless a test gives one: the quote then has no USD value.
+vi.mock("../services/solver.js", () => ({
+  getSolverOracle: vi.fn(async () => Promise.reject(new Error("no oracle"))),
+}));
 
 // The stub builds with the real SDK; only the server's own calls go through the mocks above.
 const sdk = await vi.importActual<typeof import("../services/sodax.js")>("../services/sodax.js");
@@ -140,6 +147,7 @@ function stubSwaps(stub: SwapsStub = {}) {
 
 beforeEach(() => {
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+  clearUsdBackoff();
   clearSwapCatalogCache();
   clearCache();
   clearQuoteCache();
@@ -419,6 +427,36 @@ describe("sodax_swap_quote", () => {
     },
   );
 
+  it("shows the USD value, and warns above the server's level without refusing", async () => {
+    vi.mocked(getSolverOracle).mockResolvedValue([
+      {
+        address: "0xdb7bda65c3a1c51d64dc4444e418684677334109",
+        chainId: "146",
+        symbol: "USDC",
+        priceUsd: 1,
+        decimals: 6,
+        updatedAt: NOW,
+      },
+    ]);
+    stubSwaps();
+    const small = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(small.out).toMatchObject({ status: "price_only", usdValue: "5.00" });
+    expect(small.out.nextStep).not.toContain("warning level");
+
+    stubSwaps();
+    const large = await quote({ ...USDC_TO_SONIC, amount: "50000", fromAddress: USER });
+    expect(large.out).toMatchObject({ status: "ready", usdValue: "50000.00" });
+    expect(large.out.nextStep).toContain(
+      "This swap is worth about $50,000, above this server's warning level of $10,000: confirm the amount with the user before anything is signed.",
+    );
+  });
+
+  it("quotes without a USD value when the oracle has none", async () => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(out).toMatchObject({ status: "price_only", usdValue: null });
+  });
+
   it("asks for toAddress when the destination isn't EVM", async () => {
     stubSwaps();
     const { out } = await quote({
@@ -619,7 +657,7 @@ describe("sodax_swap_quote", () => {
     configs["0xa4b1.arbitrum"].addresses = { assetManager: `0x${"e".repeat(40)}` };
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.error.code).toBe("SWAP_MISMATCH");
     expect(calls.map(call => call.path)).not.toContain("/intents");
   });
 
@@ -630,7 +668,7 @@ describe("sodax_swap_quote", () => {
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error).toMatchObject({
-      code: "UPSTREAM_UNAVAILABLE",
+      code: "SWAP_MISMATCH",
       message: "The SODAX config doesn't agree with the SDK's.",
     });
     expect(calls).toEqual([]);
@@ -649,7 +687,7 @@ describe("sodax_swap_quote", () => {
       const calls = stubSwaps({ tokens: JSON.stringify(tokens) });
       const error = vi.spyOn(logger, "error");
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-      expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+      expect(out.error.code).toBe("SWAP_MISMATCH");
       expect(calls).toEqual([]);
       // Which token's packaged config is stale.
       expect(error).toHaveBeenCalledWith(expect.objectContaining({ chainKey, token: address }), expect.any(String));

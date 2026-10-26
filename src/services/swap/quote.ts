@@ -6,10 +6,19 @@
  * the steps, and the cached quote is what tracking later submits.
  */
 
-import { EVM_ADDRESS_PATTERN } from "../../constants.js";
+import { createHash } from "node:crypto";
+import { EVM_ADDRESS_PATTERN, HUB_CHAIN_KEY, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import type { ChainInfo } from "../sodaxApi.js";
+import {
+  type HubCall,
+  type SignedIntent,
+  type SpokeSwap,
+  decodeApprove,
+  decodeCreateIntent,
+  decodeSpokeSwap,
+} from "./calldata.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { putQuote } from "./quoteCache.js";
@@ -91,15 +100,16 @@ export type SwapQuote =
 
 // Other families (Solana, Sui, NEAR, …) are checked by the Swaps API; this only keeps junk out of the output.
 const ANY_ADDRESS = /^[A-Za-z0-9:._-]{1,128}$/;
+// Burn addresses in any family: all-zero hex (Sui `0x0`) and base58 all ones (Solana's system program).
+const NULL_ADDRESS = /^(0x0+|1+)$/i;
 
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
   const to = resolveSide(catalog, input.toChain, input.toToken, "to");
   // The catalog only keeps an EVM chain with a numeric id; the typeof narrows it for TypeScript.
-  // Without a known contract to send to (Sonic, for now) the built swap can't be checked, so it's refused.
-  const { chainId, swapContract } = from.config;
-  if (from.config.type !== "EVM" || typeof chainId !== "number" || !swapContract) {
+  const { chainId } = from.config;
+  if (from.config.type !== "EVM" || typeof chainId !== "number") {
     throw new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${from.chain.name} aren't supported here yet.`);
   }
   const dstEvm = to.config.type === "EVM";
@@ -151,6 +161,21 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     return { status: "price_only", ...summary, missing };
   }
 
+  // A swap from the hub goes to the hub intents contract, which only the SDK config names; until
+  // it is pinned the built swap can't be checked, so only a price is given.
+  if (from.chain.key === HUB_CHAIN_KEY) {
+    throw new ActionError("UNSUPPORTED_SOURCE", `This server can only price swaps from ${from.chain.name} for now.`, {
+      nextStep: `Tell the user a swap from ${from.chain.name} can be priced but not prepared here yet.`,
+    });
+  }
+  const { swapContract } = from.config;
+  if (!swapContract) {
+    throw new ActionError(
+      "UPSTREAM_UNAVAILABLE",
+      "The SODAX chain config doesn't name the source chain's swap contract.",
+    );
+  }
+
   const recipient = await checkRecipient(to.config.type);
   const request: IntentRequest = {
     srcChainKey: from.chain.key,
@@ -169,18 +194,19 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const approval = approved ? undefined : await buildApprove(request);
   const mismatch = findMismatch(
     request,
-    { ...expected(from.token, to.token, fee, partnerFee), swapContract },
+    { from: from.token, to: to.token, fee, swapContract, dstEvm },
     built,
     approval,
   );
   if (mismatch) {
+    // Possibly a compromised or broken upstream: enough to investigate, no user addresses.
+    const { srcChainKey, dstChainKey } = request;
+    const dataSha256 = createHash("sha256").update(built.tx.data.toLowerCase()).digest("hex");
     logger.error(
-      { mismatch, srcChainKey: request.srcChainKey },
+      { mismatch, srcChainKey, dstChainKey, txTo: built.tx.to, dataSha256 },
       "The Swaps API built a swap that doesn't match the quote",
     );
-    throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service built a different swap than the one quoted.", {
-      nextStep: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
-    });
+    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.");
   }
 
   const { quoteId } = putQuote({ ...request, intent: built.intent, relayData: built.relayData });
@@ -222,103 +248,132 @@ function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }):
 }
 
 function checkAddress(address: string, evm: boolean, chain: ChainInfo): string {
-  const valid = evm ? EVM_ADDRESS_PATTERN.test(address) && !ZERO_ADDRESS.test(address) : ANY_ADDRESS.test(address);
+  const valid = evm
+    ? EVM_ADDRESS_PATTERN.test(address) && !ZERO_ADDRESS_PATTERN.test(address)
+    : ANY_ADDRESS.test(address) && !NULL_ADDRESS.test(address);
   if (!valid) {
     throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
   }
   return address;
 }
 
-const APPROVE_SELECTOR = "0x095ea7b3";
-const ZERO_ADDRESS = /^0x0{40}$/;
 const HEX = /^0x[0-9a-fA-F]+$/;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** A value as a 32-byte ABI word (hex, no prefix). */
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
 
-interface Expected {
-  /** Hub assets of the tokens sent and received. */
-  inputHubAsset: string;
-  outputHubAsset: string;
-  isNative: boolean;
-  fee: bigint;
-  /** The intent's fee envelope: `0x01`, the fee and the receiver, or `0x` without a fee. */
-  feeData: string;
-  swapContract: string;
-}
-
-function expected(from: SwapsApiToken, to: SwapsApiToken, fee: bigint, partnerFee?: PartnerFee) {
-  return {
-    inputHubAsset: from.hubAsset,
-    outputHubAsset: to.hubAsset,
-    isNative: from.isNative,
-    fee,
-    feeData: partnerFee ? `0x01${word(fee)}${word(partnerFee.address)}` : "0x",
-  };
-}
+const INTENT_FIELDS = [
+  "intentId",
+  "creator",
+  "inputToken",
+  "outputToken",
+  "inputAmount",
+  "minOutputAmount",
+  "deadline",
+  "allowPartialFill",
+  "srcChain",
+  "dstChain",
+  "srcAddress",
+  "dstAddress",
+  "solver",
+  "data",
+] as const;
 
 /**
- * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name
- * the first check that fails. The intent JSON must say what was asked (input net of the partner
- * fee, minimum, deadline, hub tokens, recipient, sender, fee envelope, no partial fill, any
- * solver), and the signed tx must carry it: sent to the chain's known contract, with the right
- * value, and its data holding the relay payload track submits and each of those fields as an ABI
- * word. That ties the JSON to the bytes without a full decode. An approval must be
- * `approve(that contract, exact amount)` on the source token. A non-hex recipient (base58,
- * names) is encoded per chain, so only a hex one is compared with what was asked.
+ * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name the
+ * first check that fails. The intent JSON must say what was asked (input net of the partner fee,
+ * minimum, deadline, hub tokens, recipient, sender, fee envelope, no partial fill, any solver). The
+ * signed tx, decoded by ABI position, must carry exactly that: `transfer` of the source token and
+ * the gross amount from the user to the intent's hub wallet on the chain's known contract, whose
+ * call list is the relay payload track submits, approving the hub asset for exactly the gross
+ * amount to the contract that then gets `createIntent` with every field of the JSON intent. Any
+ * approval on the source chain must be `approve(that known contract, exact amount)`.
+ *
+ * Not pinned yet: the hub intents contract `createIntent` goes to (only the SDK config names it).
+ * A non-hex recipient (base58, names) is encoded per chain, so only a hex one is compared with
+ * what was asked: exactly for EVM, as a number elsewhere (a short Sui address comes back padded).
  */
 function findMismatch(
   request: IntentRequest,
-  want: Expected,
+  want: { from: SwapsApiToken; to: SwapsApiToken; fee: bigint; swapContract: string; dstEvm: boolean },
   built: BuiltIntent,
   approval?: Approval,
 ): string | undefined {
   const { intent, tx, relayData } = built;
-  const data = tx.data.toLowerCase();
-  const carries = (value: string) => HEX.test(value) && data.includes(value.slice(2).toLowerCase());
-  const approves = (step: EvmTx, amount: bigint) =>
-    same(step.from, request.srcAddress) &&
-    same(step.to, request.inputToken) &&
-    BigInt(step.value) === 0n &&
-    step.data.length === 138 &&
-    step.data.slice(0, 10) === APPROVE_SELECTOR &&
-    step.data.slice(10, 74).toLowerCase() === word(want.swapContract) &&
-    BigInt(`0x${step.data.slice(74)}`) === amount;
+  const { partnerFee } = request;
+  // The fee envelope: `0x01`, the fee and the receiver, or `0x` without a fee.
+  const feeData = partnerFee ? `0x01${word(want.fee)}${word(partnerFee.address)}` : "0x";
+  const asked = request.dstAddress;
+  const recipient = want.dstEvm
+    ? same(intent.dstAddress, asked)
+    : HEX.test(intent.dstAddress) && (!HEX.test(asked) || BigInt(intent.dstAddress) === BigInt(asked));
+
+  let signed: SpokeSwap | undefined;
+  let signedIntent: SignedIntent | undefined;
+  try {
+    signed = decodeSpokeSwap(tx.data);
+    const last = signed.calls.at(-1);
+    signedIntent = last && decodeCreateIntent(last.data);
+  } catch {
+    // Malformed calldata: the checks below fail on the missing values.
+  }
+  const hubCalls = signed?.calls ?? [];
+  const intentsContract = hubCalls.at(-1)?.to ?? "";
+  const hubApproves = (call: HubCall) => {
+    try {
+      const { spender, amount } = decodeApprove(call.data);
+      return same(call.to, intent.inputToken) && same(spender, intentsContract) && amount === request.inputAmount;
+    } catch {
+      return false;
+    }
+  };
+  const sourceApproves = (step: EvmTx, amount: bigint) => {
+    try {
+      const decoded = decodeApprove(step.data);
+      return (
+        same(step.from, request.srcAddress) &&
+        same(step.to, request.inputToken) &&
+        BigInt(step.value) === 0n &&
+        step.data.length === 138 &&
+        same(decoded.spender, want.swapContract) &&
+        decoded.amount === amount
+      );
+    } catch {
+      return false;
+    }
+  };
+
   const checks: [string, boolean][] = [
     ["inputAmount", intent.inputAmount === (request.inputAmount - want.fee).toString()],
     ["minOutputAmount", intent.minOutputAmount === request.minOutputAmount.toString()],
     ["deadline", intent.deadline === request.deadline],
-    ["inputToken", same(intent.inputToken, want.inputHubAsset)],
-    ["outputToken", same(intent.outputToken, want.outputHubAsset)],
-    // Compared as numbers: a short Sui address comes back padded to 32 bytes.
-    [
-      "dstAddress",
-      HEX.test(intent.dstAddress) &&
-        (!HEX.test(request.dstAddress) || BigInt(intent.dstAddress) === BigInt(request.dstAddress)),
-    ],
+    ["inputToken", same(intent.inputToken, want.from.hubAsset)],
+    ["outputToken", same(intent.outputToken, want.to.hubAsset)],
+    ["dstAddress", recipient],
     ["srcAddress", same(intent.srcAddress, request.srcAddress)],
-    ["feeData", intent.data.toLowerCase() === want.feeData],
+    ["feeData", intent.data.toLowerCase() === feeData],
     ["allowPartialFill", intent.allowPartialFill === false],
-    ["solver", ZERO_ADDRESS.test(intent.solver)],
+    ["solver", ZERO_ADDRESS_PATTERN.test(intent.solver)],
     ["tx.from", same(tx.from, request.srcAddress)],
     ["tx.to", same(tx.to, want.swapContract)],
-    ["tx.value", BigInt(tx.value) === (want.isNative ? request.inputAmount : 0n)],
-    ["tx.data payload", carries(relayData.payload)],
+    ["tx.value", BigInt(tx.value) === (want.from.isNative ? request.inputAmount : 0n)],
+    ["tx.data", signed !== undefined],
+    ["transfer token", signed !== undefined && same(signed.token, request.inputToken)],
+    ["transfer amount", signed?.amount === request.inputAmount],
+    ["hub wallet", signed !== undefined && same(signed.to, intent.creator) && same(relayData.address, intent.creator)],
+    ["relay payload", signed !== undefined && same(signed.payload, relayData.payload)],
+    ["hub calls", hubCalls.every(call => call.value === 0n) && hubCalls.slice(0, -1).every(hubApproves)],
     [
-      "tx.data fields",
-      [
-        word(BigInt(intent.inputAmount)),
-        word(request.minOutputAmount),
-        word(BigInt(request.deadline)),
-        word(intent.inputToken),
-        word(intent.outputToken),
-      ].every(field => data.includes(field)) && carries(intent.dstAddress),
+      "signed intent",
+      signedIntent !== undefined &&
+        INTENT_FIELDS.every(field => String(signedIntent[field]).toLowerCase() === String(intent[field]).toLowerCase()),
     ],
     [
       "approval",
       !approval ||
-        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
+        (sourceApproves(approval.tx, request.inputAmount) &&
+          (!approval.resetTx || sourceApproves(approval.resetTx, 0n))),
     ],
   ];
   return checks.find(([, ok]) => !ok)?.[0];

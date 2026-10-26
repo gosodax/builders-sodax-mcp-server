@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
 import { clearCache } from "../services/sodaxApi.js";
+import {
+  encodeApprove,
+  encodeCalls,
+  encodeCreateIntent,
+  encodeTransfer,
+  word,
+} from "../services/swap/__fixtures__/calldata.js";
 import { catalogFetch, fixtureCatalog, fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import type { SignedIntent } from "../services/swap/calldata.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache, findToken } from "../services/swap/tokens.js";
@@ -16,10 +25,10 @@ const DEADLINE = "1793001289";
 const NOW = (Number(DEADLINE) - 900) * 1000;
 const ASSET_MANAGER = "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3";
 const ZERO = `0x${"0".repeat(40)}`;
-const PAYLOAD = "0xfeedface";
-const word = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
-const approveData = (spender: string, amount: bigint | string) =>
-  `0x095ea7b3${word(spender)}${word(BigInt(amount).toString(16))}`;
+// The user's hub wallet (the intent's creator) and the hub intents contract, as the stub builds them.
+const HUB_WALLET = `0x${"c".repeat(40)}`;
+const INTENTS = `0x${"d".repeat(40)}`;
+const approveData = (spender: string, amount: bigint | string) => encodeApprove(spender, BigInt(amount));
 const catalog = fixtureCatalog();
 
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
@@ -31,8 +40,18 @@ interface SwapsStub {
   deadline?: string;
   valid?: boolean;
   resetTx?: boolean;
-  /** Overrides on what the stub builds, to play an upstream that builds the wrong thing. */
-  intent?: Record<string, unknown>;
+  /** Overrides on what the stub builds, to play an upstream that builds the wrong thing: */
+  /** the intent JSON (also signed), */
+  intent?: Partial<SignedIntent>;
+  /** only the intent inside the signed bytes, */
+  signedIntent?: Partial<SignedIntent>;
+  /** the outer transfer, the hub calls, the relay payload, */
+  transferToken?: string;
+  transferAmount?: bigint;
+  hubWallet?: string;
+  hubApprove?: string;
+  relayPayload?: string;
+  /** and the tx itself. */
   swapTo?: string;
   swapValue?: string;
   swapData?: string;
@@ -61,33 +80,42 @@ function stubSwaps(stub: SwapsStub = {}) {
       });
     }
     if (path === "/intents") {
-      // Like the live API: the intent's input is net of the partner fee, and its tokens are hub assets.
-      const fee = body.partnerFee ? (BigInt(body.inputAmount) * BigInt(body.partnerFee.percentage)) / 10_000n : 0n;
+      // Like the live API: the intent's input is net of the partner fee, its tokens are hub assets, and the
+      // tx transfers the gross amount to the hub wallet with the call list that approves and creates the intent.
+      const gross = BigInt(body.inputAmount);
+      const fee = body.partnerFee ? (gross * BigInt(body.partnerFee.percentage)) / 10_000n : 0n;
       const src = findToken(catalog, body.srcChainKey, body.inputToken);
       const dst = findToken(catalog, body.dstChainKey, body.outputToken);
-      const intent = {
+      const intent: SignedIntent = {
+        intentId: "1",
+        creator: HUB_WALLET,
         inputToken: String(src?.hubAsset),
         outputToken: String(dst?.hubAsset),
-        inputAmount: String(BigInt(body.inputAmount) - fee),
+        inputAmount: String(gross - fee),
         minOutputAmount: body.minOutputAmount,
         deadline: body.deadline,
         allowPartialFill: false,
+        srcChain: "23",
+        dstChain: "146",
         srcAddress: body.srcAddress,
         dstAddress: body.dstAddress,
         solver: ZERO,
-        data: body.partnerFee ? `0x01${word(fee.toString(16))}${word(body.partnerFee.address)}` : "0x",
-        intentId: "1",
+        data: body.partnerFee ? `0x01${word(fee)}${word(body.partnerFee.address)}` : "0x",
         ...stub.intent,
       };
-      // The signed data carries each intent field as an ABI word, the raw recipient and the relay payload.
-      const data = `0xc6b4180b${[intent.inputAmount, intent.minOutputAmount, intent.deadline]
-        .map(value => word(BigInt(value).toString(16)))
-        .join(
-          "",
-        )}${word(intent.inputToken)}${word(intent.outputToken)}${String(intent.dstAddress).slice(2)}${PAYLOAD.slice(2)}`;
+      const payload = encodeCalls([
+        { to: intent.inputToken, value: 0n, data: stub.hubApprove ?? encodeApprove(INTENTS, gross) },
+        { to: INTENTS, value: 0n, data: encodeCreateIntent({ ...intent, ...stub.signedIntent }) },
+      ]);
+      const data = encodeTransfer(
+        stub.transferToken ?? body.inputToken,
+        stub.hubWallet ?? HUB_WALLET,
+        stub.transferAmount ?? gross,
+        payload,
+      );
       const value = stub.swapValue ?? (src?.isNative ? body.inputAmount : "0");
       const tx = { from: USER, to: stub.swapTo ?? ASSET_MANAGER, value, data: stub.swapData ?? data };
-      return Response.json({ tx, intent, relayData: { address: USER, payload: PAYLOAD } });
+      return Response.json({ tx, intent, relayData: { address: HUB_WALLET, payload: stub.relayPayload ?? payload } });
     }
     throw new Error(`unexpected Swaps API call ${path}`);
   });
@@ -169,7 +197,7 @@ describe("sodax_swap_quote", () => {
     expect(calls.find(call => call.path.startsWith("/deadline"))?.path).toBe("/deadline?offsetSeconds=900");
     expect(getCachedQuote(String(out.quoteId))).toMatchObject({
       minOutputAmount: 4941968n,
-      relayData: { payload: PAYLOAD },
+      relayData: { address: HUB_WALLET },
     });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
@@ -193,32 +221,65 @@ describe("sodax_swap_quote", () => {
     expect(out.batch?.replaces).toEqual(["approve", "swap"]);
   });
 
-  it.each<[string, SwapsStub]>([
-    ["a lower minimum", { intent: { minOutputAmount: "1" } }],
-    ["another recipient", { intent: { dstAddress: `0x${"1".repeat(40)}` } }],
-    ["another output token", { intent: { outputToken: `0x${"2".repeat(40)}` } }],
-    ["a bigger input", { intent: { inputAmount: "5000001" } }],
-    ["value on a token swap", { swapValue: "1" }],
-    ["an approval for another spender", { approveData: approveData(`0x${"3".repeat(40)}`, 5000000n) }],
-    ["an unlimited approval", { approveData: approveData(ASSET_MANAGER, 2n ** 256n - 1n) }],
-    ["a reset that isn't to zero", { resetTx: true, resetData: approveData(ASSET_MANAGER, 1n) }],
-    ["another contract", { swapTo: `0x${"5".repeat(40)}` }],
-    ["signed data without the relay payload", { swapData: "0xc6b4180b" }],
-    ["a partial fill", { intent: { allowPartialFill: true } }],
-    ["a chosen solver", { intent: { solver: `0x${"6".repeat(40)}` } }],
-    ["another sender in the intent", { intent: { srcAddress: `0x${"7".repeat(40)}` } }],
-    ["a fee envelope nobody asked for", { intent: { data: `0x01${"0".repeat(128)}` } }],
-  ])("refuses a built swap with %s", async (_case, stub) => {
+  it.each<[string, SwapsStub, string]>([
+    ["a lower minimum", { intent: { minOutputAmount: "1" } }, "minOutputAmount"],
+    ["another recipient", { intent: { dstAddress: `0x${"1".repeat(40)}` } }, "dstAddress"],
+    ["another output token", { intent: { outputToken: `0x${"2".repeat(40)}` } }, "outputToken"],
+    ["a bigger input", { intent: { inputAmount: "5000001" } }, "inputAmount"],
+    ["value on a token swap", { swapValue: "1" }, "tx.value"],
+    ["an approval for another spender", { approveData: approveData(`0x${"3".repeat(40)}`, 5000000n) }, "approval"],
+    ["an unlimited approval", { approveData: approveData(ASSET_MANAGER, 2n ** 256n - 1n) }, "approval"],
+    ["a reset that isn't to zero", { resetTx: true, resetData: approveData(ASSET_MANAGER, 1n) }, "approval"],
+    ["another contract", { swapTo: `0x${"5".repeat(40)}` }, "tx.to"],
+    ["calldata that isn't a transfer", { swapData: "0xc6b4180b" }, "tx.data"],
+    ["a partial fill", { intent: { allowPartialFill: true } }, "allowPartialFill"],
+    ["a chosen solver", { intent: { solver: `0x${"6".repeat(40)}` } }, "solver"],
+    ["another sender in the intent", { intent: { srcAddress: `0x${"7".repeat(40)}` } }, "srcAddress"],
+    ["a fee envelope nobody asked for", { intent: { data: `0x01${"0".repeat(128)}` } }, "feeData"],
+    // The JSON is right; only the bytes the user signs differ.
+    ["a transfer of another token", { transferToken: `0x${"b".repeat(40)}` }, "transfer token"],
+    ["a bigger transfer than quoted", { transferAmount: 5000001n }, "transfer amount"],
+    ["a deposit to another hub wallet", { hubWallet: `0x${"9".repeat(40)}` }, "hub wallet"],
+    ["a relay payload that isn't what's signed", { relayPayload: encodeCalls([]) }, "relay payload"],
+    ["a hub approve for another spender", { hubApprove: encodeApprove(`0x${"a".repeat(40)}`, 5000000n) }, "hub calls"],
+    ["a hub approve for more", { hubApprove: encodeApprove(INTENTS, 5000001n) }, "hub calls"],
+    ["a hub call that isn't an approve", { hubApprove: "0xa9059cbb" }, "hub calls"],
+    ["a source approve that isn't one", { approveData: "0xa9059cbb" }, "approval"],
+    [
+      "another recipient in the signed intent",
+      { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } },
+      "signed intent",
+    ],
+    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "signed intent"],
+    [
+      "another fee receiver in the signed intent",
+      { signedIntent: { data: `0x01${"0".repeat(128)}` } },
+      "signed intent",
+    ],
+  ])("refuses a built swap with %s, naming the check", async (_case, stub, mismatch) => {
     stubSwaps(stub);
+    const error = vi.spyOn(logger, "error");
     const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(isError).toBe(true);
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(out.nextStep).toContain("don't retry");
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ mismatch, srcChainKey: "0xa4b1.arbitrum", dataSha256: expect.any(String) }),
+      expect.any(String),
+    );
+  });
+
+  it("compares an EVM recipient exactly, not as a number", async () => {
+    const recipient = `0x00${"a".repeat(38)}`;
+    stubSwaps({ intent: { dstAddress: `0x${"a".repeat(38)}` } });
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, toAddress: recipient });
+    expect(out.error.code).toBe("SWAP_MISMATCH");
   });
 
   it("refuses a native swap that sends less than the amount", async () => {
     stubSwaps({ valid: true, swapValue: "1" });
     const { out } = await quote({ ...USDC_TO_SONIC, fromToken: "native", amount: "0.01", fromAddress: USER });
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.error.code).toBe("SWAP_MISMATCH");
   });
 
   it("sends to an explicit recipient and names it to the user", async () => {
@@ -281,9 +342,9 @@ describe("sodax_swap_quote", () => {
     ["the zero address as recipient", { fromAddress: USER, toAddress: ZERO }, "INVALID_ADDRESS"],
     ["the zero address as sender", { fromAddress: ZERO }, "INVALID_ADDRESS"],
     [
-      "a Sonic source until its contract is known",
-      { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC },
-      "UNSUPPORTED_SOURCE",
+      "a burn address as recipient",
+      { toChain: "sui", toToken: "native", fromAddress: USER, toAddress: `0x${"0".repeat(64)}` },
+      "INVALID_ADDRESS",
     ],
     [
       "a recipient that isn't an address",
@@ -336,6 +397,12 @@ describe("sodax_swap_quote", () => {
     ],
     [() => new Response("", { status: 502 }), { code: "UPSTREAM_UNAVAILABLE" }],
     [() => new Response("", { status: 404 }), { code: "UPSTREAM_UNAVAILABLE" }],
+    [
+      (): Response => {
+        throw new TypeError("fetch failed");
+      },
+      { code: "UPSTREAM_UNAVAILABLE" },
+    ],
     [() => Response.json({ quotedAmount: 5 }), { code: "UPSTREAM_UNAVAILABLE" }],
     [() => Response.json({ quotedAmount: "0" }), { code: "AMOUNT_TOO_LOW" }],
   ])("maps a quote response to an error the agent can act on (%#)", async (response, error) => {
@@ -355,20 +422,64 @@ describe("sodax_swap_quote", () => {
 
   it("refuses a different fee receiver than the connection's", async () => {
     setFallbackRequestContext({ partnerFee: { address: USER, bps: 25 } });
-    stubSwaps({ intent: { data: `0x01${word(12500n.toString(16))}${word(`0x${"8".repeat(40)}`)}` } });
+    stubSwaps({ intent: { data: `0x01${word(12500n)}${word(`0x${"8".repeat(40)}`)}` } });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.error.code).toBe("SWAP_MISMATCH");
     expect(out.nextStep).toContain("don't retry");
   });
 
   it.each([
-    [-61, "UPSTREAM_UNAVAILABLE"],
-    [-59, undefined],
-    [301, "UPSTREAM_UNAVAILABLE"],
-  ])("checks the deadline against the clock: %is off", async (offBy, code) => {
-    stubSwaps({ deadline: String(Number(DEADLINE) + offBy) });
-    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    [15, -301, "UPSTREAM_UNAVAILABLE"],
+    [15, -299, undefined],
+    [15, 301, "UPSTREAM_UNAVAILABLE"],
+    // Within the skew, but under two minutes left to send.
+    [5, -181, "UPSTREAM_UNAVAILABLE"],
+    [5, -179, undefined],
+  ])("checks a %i-minute deadline against the clock: %is off", async (minutes, offBy, code) => {
+    // The stub serves DEADLINE, which is 15 minutes from NOW.
+    stubSwaps({ deadline: String(Number(DEADLINE) - (15 - minutes) * 60 + offBy) });
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: minutes });
     expect(out.error?.code).toBe(code);
+  });
+
+  it("prices a swap from Sonic, but won't build one until its contract is pinned", async () => {
+    const sonic = {
+      fromChain: "sonic",
+      fromToken: SONIC_USDC,
+      toChain: "0xa4b1.arbitrum",
+      toToken: ARB_USDC,
+      amount: "5",
+    };
+    stubSwaps();
+    expect((await quote(sonic)).out.status).toBe("price_only");
+    const calls = stubSwaps();
+    const { out } = await quote({ ...sonic, fromAddress: USER });
+    expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
+    expect(calls.map(call => call.path)).not.toContain("/intents");
+  });
+
+  it("reports a source chain whose config names no swap contract as unavailable, not unsupported", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    delete configs["0xa4b1.arbitrum"].addresses;
+    stubSwaps({ configs: JSON.stringify(configs) });
+    expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+  });
+
+  it("warns about a defaulted recipient only across chains", async () => {
+    stubSwaps();
+    const arbitrumWbtc = { toChain: "0xa4b1.arbitrum", toToken: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f" };
+    const { out } = await quote({ ...USDC_TO_SONIC, ...arbitrumWbtc, amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(out.nextStep).not.toContain("make sure they control it");
+  });
+
+  it("logs only a short upstream error code", async () => {
+    stubSwaps({ quote: () => Response.json({ message: "no", code: "x".repeat(65) }, { status: 400 }) });
+    const warn = vi.spyOn(logger, "warn");
+    await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ status: 400, apiCode: undefined }), expect.any(String));
   });
 });
 

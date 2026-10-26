@@ -86,6 +86,16 @@ describe("getSwapCatalog", () => {
     expect(warn).toHaveBeenCalledWith({ chains: ["hyper", "sui"] }, "No valid chain config for these swap chains");
   });
 
+  it("still serves a catalog whose config names no asset manager, and logs it", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    for (const config of Object.values<{ addresses?: unknown }>(configs)) delete config.addresses;
+    fetchSpy.mockImplementation(catalogFetch(undefined, JSON.stringify(configs)));
+    const error = vi.spyOn(logger, "error");
+    const catalog = await getSwapCatalog();
+    expect(catalog.tokens.hyper.length).toBeGreaterThan(0);
+    expect(error).toHaveBeenCalledWith("No EVM chain config names an asset manager");
+  });
+
   it("serves the last catalog at once while a refresh fails, for up to 30 minutes", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(0);
     const fresh = await getSwapCatalog();

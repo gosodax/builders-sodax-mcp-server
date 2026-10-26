@@ -115,3 +115,7 @@ export const BRAND_COLORS = {
 export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/;
+
+/** The SODAX hub chain. A swap from it goes to the hub intents contract, not to an asset manager. */
+export const HUB_CHAIN_KEY = "sonic";

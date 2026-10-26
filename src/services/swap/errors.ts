@@ -12,6 +12,7 @@ export type ActionErrorCode =
   | "AMOUNT_TOO_LOW"
   | "DESTINATION_NOT_READY"
   | "SWAP_REJECTED"
+  | "SWAP_MISMATCH"
   | "API_KEY_REQUIRED"
   | "RATE_LIMITED"
   | "UPSTREAM_UNAVAILABLE"
@@ -32,6 +33,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
+  SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
   API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header: ${API_KEYS_DOCS_URL}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
   UPSTREAM_UNAVAILABLE: RETRY_LATER,

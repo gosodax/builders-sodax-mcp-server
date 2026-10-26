@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
+import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { fetchJson } from "../http.js";
 import { logger } from "../logger.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
@@ -138,6 +138,10 @@ async function loadCatalog(): Promise<SwapCatalog> {
       // Without one, a chain can't be named by chain id and takes no 0xEeee placeholder.
       const unconfigured = Object.keys(catalog.tokens).filter(key => !catalog.chains[key]);
       if (unconfigured.length > 0) logger.warn({ chains: unconfigured }, "No valid chain config for these swap chains");
+      // Quotes need it; token lookups don't, so this is only logged.
+      if (!Object.values(catalog.chains).some(chain => chain.swapContract)) {
+        logger.error("No EVM chain config names an asset manager");
+      }
       return catalog;
     }
   } catch (error) {
@@ -163,7 +167,8 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
       catalog.chains[chainKey] = {
         ...chain.data,
         ...(typeof assetManager === "string" &&
-          EVM_ADDRESS_PATTERN.test(assetManager) && { swapContract: assetManager }),
+          EVM_ADDRESS_PATTERN.test(assetManager) &&
+          !ZERO_ADDRESS_PATTERN.test(assetManager) && { swapContract: assetManager }),
       };
     }
     const nativeAddress = typeof config.nativeToken === "string" ? canonicalAddress(config.nativeToken) : undefined;

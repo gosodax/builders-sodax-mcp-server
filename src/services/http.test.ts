@@ -91,6 +91,8 @@ describe("HttpError", () => {
   it.each([
     ["7.5", undefined],
     ["soon", undefined],
+    ["Sun, 06 Foo 1994 08:49:37 GMT", undefined],
+    ["0", 1],
     ["99999999", 3600],
   ])("ignores a malformed Retry-After and caps a long one: %j", async (header, expected) => {
     fetchSpy.mockResolvedValueOnce(jsonResponse("", { status: 429, headers: { "Retry-After": header } }));
@@ -99,6 +101,11 @@ describe("HttpError", () => {
 });
 
 describe("error messages", () => {
+  it("caps a long message from a JSON body like a raw one", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse(JSON.stringify({ message: "x".repeat(1000) }), { status: 400 }));
+    await expect(fetchJson("https://example.com/x")).rejects.toMatchObject({ apiMessage: `${"x".repeat(300)}...` });
+  });
+
   it.each([
     ['{"error":"Bad Request","code":7}', "Bad Request", 7],
     ['{"detail":{"message":"no such pool"}}', "no such pool", undefined],

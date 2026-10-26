@@ -13,34 +13,41 @@ import { ActionError } from "./errors.js";
 
 const TIMEOUT_MS = 15_000;
 const UINT = /^\d+$/;
+const HEX_DATA = /^0x[0-9a-fA-F]*$/;
+const evmAddress = z.string().regex(EVM_ADDRESS_PATTERN);
 
 const evmTxSchema = z.object({
-  from: z.string().regex(EVM_ADDRESS_PATTERN),
-  to: z.string().regex(EVM_ADDRESS_PATTERN),
+  from: evmAddress,
+  to: evmAddress,
   value: z.string().regex(UINT),
-  data: z.string().regex(/^0x[0-9a-fA-F]*$/),
+  data: z.string().regex(HEX_DATA),
 });
 export type EvmTx = z.infer<typeof evmTxSchema>;
 
+// The 14 intent fields `createIntent` takes, and nothing else: track submits the intent back, and
+// the backend refuses unknown keys.
+const intentSchema = z.object({
+  intentId: z.string().regex(UINT),
+  creator: evmAddress,
+  inputToken: evmAddress,
+  outputToken: evmAddress,
+  inputAmount: z.string().regex(UINT),
+  minOutputAmount: z.string().regex(UINT),
+  deadline: z.string().regex(UINT),
+  allowPartialFill: z.boolean(),
+  srcChain: z.string().regex(UINT),
+  dstChain: z.string().regex(UINT),
+  srcAddress: z.string().regex(HEX_DATA),
+  dstAddress: z.string().regex(HEX_DATA),
+  solver: evmAddress,
+  /** The fee envelope: `0x` without a partner fee. */
+  data: z.string().regex(HEX_DATA),
+});
+
 const builtIntentSchema = z.object({
   tx: evmTxSchema,
-  // Kept whole: track submits it back verbatim.
-  intent: z
-    .object({
-      inputToken: z.string(),
-      outputToken: z.string(),
-      inputAmount: z.string().regex(UINT),
-      minOutputAmount: z.string().regex(UINT),
-      deadline: z.string().regex(UINT),
-      allowPartialFill: z.boolean(),
-      srcAddress: z.string(),
-      dstAddress: z.string(),
-      solver: z.string(),
-      /** The fee envelope: `0x` without a partner fee. */
-      data: z.string(),
-    })
-    .passthrough(),
-  relayData: z.object({ address: z.string(), payload: z.string() }),
+  intent: intentSchema,
+  relayData: z.object({ address: evmAddress, payload: z.string().regex(HEX_DATA) }),
 });
 export type BuiltIntent = z.infer<typeof builtIntentSchema>;
 
@@ -77,8 +84,8 @@ export async function getQuote(request: QuoteRequest): Promise<bigint> {
 
 // The hub clock may run a little off ours; anything further off is not a deadline we asked for.
 const MAX_CLOCK_SKEW_SEC = 300;
-// Never earlier than asked by more than this: a deadline that is already near would expire in flight.
-const MAX_EARLY_SEC = 60;
+// However the clocks differ, the user needs at least this long to sign and send.
+const MIN_TIME_TO_SEND_SEC = 120;
 
 /** A deadline `offsetSeconds` from now on the hub clock (unix seconds). */
 export async function getDeadline(offsetSeconds: number): Promise<string> {
@@ -86,9 +93,9 @@ export async function getDeadline(offsetSeconds: number): Promise<string> {
     z.object({ deadline: z.string().regex(UINT) }),
     `/deadline?offsetSeconds=${offsetSeconds}`,
   );
-  const expected = Math.floor(Date.now() / 1000) + offsetSeconds;
-  const offBy = Number(deadline) - expected;
-  if (offBy < -MAX_EARLY_SEC || offBy > MAX_CLOCK_SKEW_SEC) {
+  const now = Math.floor(Date.now() / 1000);
+  const offBy = Number(deadline) - (now + offsetSeconds);
+  if (Math.abs(offBy) > MAX_CLOCK_SKEW_SEC || Number(deadline) - now < MIN_TIME_TO_SEND_SEC) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service returned an unusable deadline.");
   }
   return deadline;
@@ -130,6 +137,7 @@ function wirePartnerFee(partnerFee?: PartnerFee): { partnerFee?: { address: stri
 }
 
 async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Promise<T> {
+  const route = path.split("?")[0];
   let raw: unknown;
   try {
     raw = await fetchJson<unknown>(`${SODAX_SWAPS_BASE_URL}${path}`, {
@@ -138,41 +146,41 @@ async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Prom
       timeout: TIMEOUT_MS,
     });
   } catch (error) {
-    throw toActionError(error, path.split("?")[0]);
+    throw toActionError(error, route);
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    logger.error({ path: path.split("?")[0] }, "Unexpected Swaps API response");
+    logger.error({ route }, "Unexpected Swaps API response");
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
   }
   return parsed.data;
 }
 
-function toActionError(error: unknown, path: string): ActionError {
-  if (error instanceof HttpError) {
-    // The status, code and reason go to the log, not to the agent: upstream text isn't ours to pass on.
-    if (error.status < 500) {
-      const { status, apiCode, apiMessage } = error;
-      logger.warn({ path, status, apiCode, apiMessage: apiMessage?.slice(0, 300) }, "Swaps API refused a request");
-    }
-    if (error.status === 401 || error.status === 403) {
-      return new ActionError("API_KEY_REQUIRED", "The swap service needs a valid SODAX API key.");
-    }
-    if (error.status === 429) {
-      return new ActionError("RATE_LIMITED", "The swap service is rate-limiting these requests.", {
-        details: { retryAfterSec: error.retryAfterSec ?? 60 },
-      });
-    }
-    if (error.status === 422 && error.apiCode === -23) {
-      return new ActionError("AMOUNT_TOO_LOW", "The amount is too small for the swap service to quote.");
-    }
-    // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
-    if (error.status === 400 || error.status === 422) {
-      return new ActionError("SWAP_REJECTED", "The swap service refused this swap.", {
-        details: { status: error.status },
-      });
-    }
+function toActionError(error: unknown, route: string): ActionError {
+  if (!(error instanceof HttpError)) {
+    logger.warn({ err: error, route }, "Swaps API call failed");
+    return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
   }
-  logger.warn({ err: error, path }, "Swaps API call failed");
+  // The status, code and reason go to the log, not to the agent: upstream text isn't ours to pass on.
+  const { status, apiCode, apiMessage } = error;
+  // The code is upstream data of any shape; only a short scalar is worth a log field.
+  const code =
+    typeof apiCode === "number" || (typeof apiCode === "string" && apiCode.length <= 64) ? apiCode : undefined;
+  logger.warn({ route, status, apiCode: code, apiMessage }, "Swaps API call failed");
+  if (status === 401 || status === 403) {
+    return new ActionError("API_KEY_REQUIRED", "The swap service needs a valid SODAX API key.");
+  }
+  if (status === 429) {
+    return new ActionError("RATE_LIMITED", "The swap service is rate-limiting these requests.", {
+      details: { retryAfterSec: error.retryAfterSec ?? 60 },
+    });
+  }
+  if (status === 422 && apiCode === -23) {
+    return new ActionError("AMOUNT_TOO_LOW", "The amount is too small for the swap service to quote.");
+  }
+  // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
+  if (status === 400 || status === 422) {
+    return new ActionError("SWAP_REJECTED", "The swap service refused this swap.", { details: { status } });
+  }
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
 }

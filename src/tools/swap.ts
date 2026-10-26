@@ -153,7 +153,7 @@ function quoteNextStep(quote: SwapQuote): string {
   }
   // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
   const sameAddress =
-    quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
+    from.chain.key !== to.chain.key && quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
       ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
       : "";
   // Until sodax_swap_track lands, nothing submits the deposit to the solver, so nothing may be sent.

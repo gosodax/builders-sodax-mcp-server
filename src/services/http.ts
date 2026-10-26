@@ -59,14 +59,16 @@ const MAX_RETRY_AFTER_SEC = 3600;
 // IMF-fixdate, the HTTP-date form servers send: "Sun, 06 Nov 1994 08:49:37 GMT".
 const HTTP_DATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
-/** `Retry-After` as seconds from now (delta-seconds or an HTTP date), at most an hour; anything else is ignored. */
+/** `Retry-After` as seconds from now (delta-seconds or an HTTP date), 1 s to an hour; anything else is ignored. */
 function retryAfterSeconds(value: string | null): number | undefined {
   const text = value?.trim() ?? "";
   let seconds: number;
-  if (/^\d{1,10}$/.test(text)) seconds = Number(text);
+  if (/^\d+$/.test(text)) seconds = Number(text);
   else if (HTTP_DATE.test(text)) seconds = Math.ceil((Date.parse(text) - Date.now()) / 1000);
   else return undefined;
-  return Math.min(Math.max(seconds, 0), MAX_RETRY_AFTER_SEC);
+  // An unparseable date ("Feb 30") is ignored; anything shorter than a second still means wait.
+  if (Number.isNaN(seconds)) return undefined;
+  return Math.min(Math.max(seconds, 1), MAX_RETRY_AFTER_SEC);
 }
 
 /**
@@ -86,14 +88,16 @@ function parseApiError(rawBody: string): { message?: string; code?: unknown } {
       const obj = parsed as Record<string, unknown>;
       code = obj.code;
       const message = extractApiErrorMessage(obj);
-      if (message) return { message, code };
+      if (message) return { message: snippet(message), code };
     }
   } catch {
     // Body wasn't JSON; fall through to the raw-text snippet below.
   }
 
-  return { message: text.length > 300 ? `${text.slice(0, 300)}...` : text, code };
+  return { message: snippet(text), code };
 }
+
+const snippet = (text: string) => (text.length > 300 ? `${text.slice(0, 300)}...` : text);
 
 function extractApiErrorMessage(obj: Record<string, unknown>): string | undefined {
   const detail = obj.detail;

@@ -17,6 +17,10 @@ function quoteDue(minutes: number) {
     minOutputAmount: 4941968n,
     deadline,
     intent: {
+      intentId: "1",
+      creator: `0x${"c".repeat(40)}`,
+      srcChain: "23",
+      dstChain: "146",
       inputToken: "0xdB7BdA65c3a1C51D64dC4444e418684677334109",
       outputToken: "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
       inputAmount: "5000000",

@@ -41,6 +41,19 @@ const SERVER_INSTRUCTIONS = [
   ].join(" "),
 ].join("\n\n");
 
+// The static tools of each toolset, in registration order. createServer registers them on a real
+// server and seedToolRegistry records them for the counts, so the two can't drift.
+const STATIC_REGISTRARS: Record<keyof Toolsets, ((server: McpServer) => void)[]> = {
+  builder: [registerSodaxApiTools, registerSolverRelayTools],
+  swap: [],
+};
+
+function enabledRegistrars(toolsets: Toolsets): ((server: McpServer) => void)[] {
+  return (Object.keys(STATIC_REGISTRARS) as (keyof Toolsets)[])
+    .filter(toolset => toolsets[toolset])
+    .flatMap(toolset => STATIC_REGISTRARS[toolset]);
+}
+
 /**
  * Creates a McpServer with the given toolsets.
  * Used per-request in HTTP mode to avoid transport conflicts
@@ -59,12 +72,27 @@ export async function createServer(toolsets: Toolsets, clientId?: string): Promi
   // ⚠️  Must be called BEFORE registering any tools
   withAnalytics(server, clientId);
 
-  if (toolsets.builder) {
-    registerSodaxApiTools(server);
-    registerSolverRelayTools(server);
-    await registerDocsProxyTools(server);
-  }
-  // Swap tools, once they exist, register here under `toolsets.swap`.
+  for (const register of enabledRegistrars(toolsets)) register(server);
+  // The SDK docs proxy tools are dynamic (fetched from the docs MCP), so they're never seeded.
+  if (toolsets.builder) await registerDocsProxyTools(server);
 
   return server;
+}
+
+/**
+ * Seed the module-level tool registry that `/health`, `/api`, and the landing
+ * page read their counts from, without touching the docs MCP. Only the static
+ * tools feed those counts — `getStaticToolCounts()` and `getToolNamesByModule()`
+ * skip the `sdkDocs` module, whose live total comes from `getDocsToolNames()`.
+ *
+ * `registerAppTool()` records `{name, module, description}` in the registry as a
+ * side effect, so a no-op recording server (whose `tool()` does nothing) is
+ * enough — no real `McpServer` is built and no MCP registration runs here; that
+ * only happens on the per-request servers. This also skips
+ * `registerDocsProxyTools()`, whose blocking SDK docs fetch (up to 30s) would otherwise delay HTTP boot when
+ * the docs MCP is unavailable and `warmDocsCache()` left the cache empty.
+ */
+export function seedToolRegistry(toolsets: Toolsets): void {
+  const recordingServer = { tool: () => ({}) } as unknown as McpServer;
+  for (const register of enabledRegistrars(toolsets)) register(recordingServer);
 }

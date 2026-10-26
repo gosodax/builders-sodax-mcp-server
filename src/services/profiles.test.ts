@@ -23,7 +23,7 @@ function refusal(requested: unknown, opts: { hasApiKey: boolean; swapToolsEnable
 }
 
 describe("selectToolsets", () => {
-  it.each([undefined, "", "all", " ALL "])("serves both to a keyed default connection (%j)", profile => {
+  it.each([undefined, "all", " ALL "])("serves both to a keyed default connection (%j)", profile => {
     expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true });
   });
 
@@ -33,6 +33,10 @@ describe("selectToolsets", () => {
 
   it("keeps the swap tools out of every profile while the switch is off", () => {
     expect(selectToolsets("all", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
+    expect(selectToolsets("builder", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
+  });
+
+  it("never gives a builder connection the swap tools", () => {
     expect(selectToolsets("builder", { ...keyed, ...on })).toEqual({ builder: true, swap: false });
   });
 
@@ -68,6 +72,11 @@ describe("profileFromRequest", () => {
     expect(profileFromRequest(req({}, "builder"))).toBe("builder");
     expect(profileFromRequest(req({}))).toBeUndefined();
   });
+
+  it("treats a blank query as unset, so it can't override the header", () => {
+    expect(profileFromRequest(req({ profile: "" }, "builder"))).toBe("builder");
+    expect(profileFromRequest(req({ profile: " " }, "builder"))).toBe("builder");
+  });
 });
 
 describe("profileFromArgs", () => {
@@ -76,6 +85,10 @@ describe("profileFromArgs", () => {
     expect(profileFromArgs(["--profile=builder", "--verbose", "x"], { MCP_PROFILE: "swap" })).toBe("builder");
     expect(profileFromArgs(["--verbose"], { MCP_PROFILE: "swap" })).toBe("swap");
     expect(profileFromArgs([], {})).toBeUndefined();
+  });
+
+  it("treats a blank --profile as unset", () => {
+    expect(profileFromArgs(["--profile="], { MCP_PROFILE: "builder" })).toBe("builder");
   });
 });
 

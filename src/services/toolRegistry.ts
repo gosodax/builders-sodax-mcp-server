@@ -113,22 +113,25 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
 }
 
 /**
- * Static per-group counts for `/health`: `relay` is the intent-relay tools,
- * `swap` the swap profile's tools, `api` every other static module (config,
- * intents, amm, moneyMarket, partnersAndToken). docs_* meta-tools (module "sdkDocs") are excluded — the
- * sdkDocs total is counted at runtime from the live SDK docs tool list. Deriving
- * `api` as "not relay, not sdkDocs" keeps it consistent with analytics'
- * resolveToolGroup and means a newly added module is counted automatically
+ * The group a module reports under, in `/health` and in analytics: `relay`,
+ * `swap` and `sdkDocs` stand alone; every other module is `api`. Deriving `api`
+ * as "everything else" means a newly added module is counted automatically
  * rather than silently dropped by an allowlist.
  */
-export function getStaticToolCounts(): { api: number; relay: number; swap: number } {
-  let api = 0;
-  let relay = 0;
-  let swap = 0;
+export function toolGroup(module: ToolModule): "api" | "relay" | "swap" | "sdkDocs" {
+  return module === "relay" || module === "swap" || module === "sdkDocs" ? module : "api";
+}
+
+/**
+ * Static per-group counts for `/health` and the landing page. docs_* meta-tools
+ * (module "sdkDocs") are excluded — the sdkDocs total is counted at runtime from
+ * the live SDK docs tool list, so callers add it to `total`.
+ */
+export function getStaticToolCounts(): { api: number; relay: number; swap: number; total: number } {
+  const counts = { api: 0, relay: 0, swap: 0 };
   for (const tool of registry) {
-    if (tool.module === "relay") relay++;
-    else if (tool.module === "swap") swap++;
-    else if (tool.module !== "sdkDocs") api++;
+    const group = toolGroup(tool.module);
+    if (group !== "sdkDocs") counts[group]++;
   }
-  return { api, relay, swap };
+  return { ...counts, total: counts.api + counts.relay + counts.swap };
 }

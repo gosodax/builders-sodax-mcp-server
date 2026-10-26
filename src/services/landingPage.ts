@@ -17,8 +17,6 @@ export interface LandingPageData {
   networks: number | null;
   /** Runtime count of docs_* tools (SDK docs proxies + meta-tools). */
   sdkDocsToolCount: number;
-  /** The rollout switch: when off, the Swaps card is hidden. */
-  swapToolsEnabled: boolean;
 }
 
 /** Evergreen floor used when the live network count is unavailable. */
@@ -33,8 +31,7 @@ export function formatNetworkCount(networks: number | null): string {
 /** Substitute every {{PLACEHOLDER}} in the landing-page template. */
 export function renderLandingPage(template: string, data: LandingPageData): string {
   const moduleCounts = getToolCountsByModule();
-  const staticCounts = getStaticToolCounts();
-  const totalTools = staticCounts.api + staticCounts.relay + staticCounts.swap + data.sdkDocsToolCount;
+  const totalTools = getStaticToolCounts().total + data.sdkDocsToolCount;
 
   const values: Record<string, string> = {
     NETWORK_COUNT: formatNetworkCount(data.networks),
@@ -46,7 +43,8 @@ export function renderLandingPage(template: string, data: LandingPageData): stri
     MONEY_MARKET_TOOLS: String(moduleCounts.moneyMarket),
     PARTNERS_TOOLS: String(moduleCounts.partnersAndToken),
     SWAP_TOOLS: String(moduleCounts.swap),
-    SWAP_CARD_HIDDEN: data.swapToolsEnabled ? "" : "hidden",
+    // Swap tools are only registered while the rollout switch is on, so no swap tools = no card.
+    SWAP_CARD_HIDDEN: moduleCounts.swap > 0 ? "" : "hidden",
     SDK_DOCS_TOOLS: String(data.sdkDocsToolCount),
   };
 

@@ -10,7 +10,7 @@
 
 import { parseArgs } from "node:util";
 
-export const PROFILES = ["builder", "swap", "all"] as const;
+const PROFILES = ["builder", "swap", "all"] as const;
 type Profile = (typeof PROFILES)[number];
 
 export interface Toolsets {
@@ -18,15 +18,20 @@ export interface Toolsets {
   swap: boolean;
 }
 
-/** A connection setting the server refuses. Sent as a JSON-RPC error before any server is built. */
+/**
+ * A connection setting the server refuses. Sent as a JSON-RPC error before any server is built:
+ * 400 is invalid params (-32602), 403 the generic server error (-32000) the MCP SDK uses for its own 403s.
+ */
 export class ConnectionError extends Error {
+  readonly rpcCode: -32602 | -32000;
+
   constructor(
     readonly httpStatus: 400 | 403,
-    readonly rpcCode: -32602 | -32000,
     message: string,
   ) {
     super(message);
     this.name = "ConnectionError";
+    this.rpcCode = httpStatus === 400 ? -32602 : -32000;
   }
 }
 
@@ -42,21 +47,20 @@ export function parseSwapToolsEnabled(value: string | undefined): boolean {
 function parseProfile(requested: unknown): Profile | undefined {
   if (requested === undefined) return "all";
   if (typeof requested !== "string") return undefined; // e.g. a repeated ?profile=
-  const profile = requested.trim().toLowerCase() || "all";
+  const profile = requested.trim().toLowerCase();
   return PROFILES.find(known => known === profile);
 }
 
 export function selectToolsets(requested: unknown, opts: { hasApiKey: boolean; swapToolsEnabled: boolean }): Toolsets {
   const profile = parseProfile(requested);
   // The requested value isn't echoed back: it's caller input of any size.
-  if (!profile) throw new ConnectionError(400, -32602, `Unknown profile. Use ${PROFILES.join(", ")}.`);
+  if (!profile) throw new ConnectionError(400, `Unknown profile. Use ${PROFILES.join(", ")}.`);
   if (profile === "swap" && !opts.swapToolsEnabled) {
-    throw new ConnectionError(400, -32602, "The swap profile is not enabled on this server yet. Use builder or all.");
+    throw new ConnectionError(400, "The swap profile is not enabled on this server yet. Use builder or all.");
   }
   if (profile === "swap" && !opts.hasApiKey) {
     throw new ConnectionError(
       403,
-      -32000,
       `API key required for the swap profile. Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`,
     );
   }
@@ -66,12 +70,17 @@ export function selectToolsets(requested: unknown, opts: { hasApiKey: boolean; s
   };
 }
 
+/** The first value that is set. A blank string counts as unset, so `?profile=` can't override the header. */
+function firstSet(...values: unknown[]): unknown {
+  return values.find(value => (typeof value === "string" ? value.trim() !== "" : value !== undefined));
+}
+
 /** HTTP: `?profile=` wins over the `x-sodax-profile` header, since URL-only clients can only set the query. */
 export function profileFromRequest(req: {
   query: { profile?: unknown };
   get(header: string): string | undefined;
 }): unknown {
-  return req.query.profile ?? req.get("x-sodax-profile");
+  return firstSet(req.query.profile, req.get("x-sodax-profile"));
 }
 
 /** stdio: `--profile` wins over `MCP_PROFILE`. Other arguments are ignored, never fatal. */
@@ -82,5 +91,5 @@ export function profileFromArgs(argv: string[], env: NodeJS.ProcessEnv): unknown
     strict: false,
     allowPositionals: true,
   });
-  return values.profile ?? env.MCP_PROFILE;
+  return firstSet(values.profile, env.MCP_PROFILE);
 }

@@ -214,6 +214,29 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   }, RPC_CALL_TIMEOUT_MS);
 }
 
+// What the SDK throws when an account doesn't exist yet (an unfunded Stellar or NEAR account),
+// told apart by name: the messages carry the RPC URL.
+const MISSING_ACCOUNT_ERRORS = ["NotFoundError", "AccountDoesNotExistError"];
+
+/**
+ * A wallet's balance of a catalog token in base units, the native coin included (Hedera's scaled by the
+ * SDK), or `null` when the account doesn't exist on the chain yet. A failed read fails as a bare error:
+ * never reported as 0. One read per token: the SDK's batch read reports a failed token as 0.
+ */
+export function walletBalance(chainKey: string, address: string, token: { address: string }): Promise<bigint | null> {
+  return bounded(async () => {
+    const result = await sdk().sodax.spoke.getWalletBalance({
+      srcChainKey: chainKey as SpokeChainKey,
+      srcAddress: address as never,
+      // Only the address is read, to tell the native coin from a token contract.
+      token: token as never,
+    });
+    if (result.ok) return result.value;
+    if (result.error instanceof Error && MISSING_ACCOUNT_ERRORS.includes(result.error.name)) return null;
+    throw new Error("balance read failed");
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
 /** Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. */
 export function recipientReady(
   chainType: "NEAR" | "STELLAR",

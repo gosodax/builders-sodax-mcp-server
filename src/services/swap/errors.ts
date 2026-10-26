@@ -37,7 +37,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
   UNSUPPORTED_SOURCE:
     "Swaps can only start from an EVM spoke chain such as Arbitrum or Base for now, not from Sonic or non-EVM chains; ask the user to send from one.",
-  UNKNOWN_TOKEN: "Call sodax_resolve_token for that side (error.side) and follow its nextStep.",
+  UNKNOWN_TOKEN:
+    "Call sodax_resolve_token for that token (error.side says which, when there are two) and follow its nextStep.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",

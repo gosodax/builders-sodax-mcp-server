@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { EvmHubProvider, NearSpokeService, StellarSpokeService } from "@sodax/sdk";
+import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
@@ -19,6 +19,7 @@ import {
   sdkLogger,
   swapContractFor,
   userHubWallet,
+  walletBalance,
 } from "./sodax.js";
 
 const USER = "0x000000000000000000000000000000000000dEaD";
@@ -176,6 +177,34 @@ describe("SDK calls", () => {
   it("pass a result through", async () => {
     vi.spyOn(EvmHubProvider.prototype, "getUserHubWalletAddress").mockResolvedValue(`0x${"c".repeat(40)}`);
     await expect(userHubWallet("0xa4b1.arbitrum", USER)).resolves.toBe(`0x${"c".repeat(40)}`);
+  });
+});
+
+describe("walletBalance", () => {
+  const USDC = { address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" };
+
+  it("reads the token for the address on the chain, and passes the base units through", async () => {
+    const read = vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValue({ ok: true, value: 5n });
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).resolves.toBe(5n);
+    expect(read).toHaveBeenCalledWith({ srcChainKey: "0xa4b1.arbitrum", srcAddress: USER, token: USDC });
+  });
+
+  it("fails a read the SDK reports as failed, or that throws, without its text: never 0", async () => {
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValueOnce({
+      ok: false,
+      error: new Error("URL: https://rpc/key123"),
+    } as never);
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow(/^SDK call failed$/);
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockRejectedValueOnce(new Error("URL: https://rpc/key123"));
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow(/^SDK call failed$/);
+  });
+
+  it("gives up after 8 seconds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockReturnValue(new Promise(() => {}));
+    const pending = expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow("SDK call failed");
+    await vi.advanceTimersByTimeAsync(8_000);
+    await pending;
   });
 });
 

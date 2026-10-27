@@ -45,7 +45,9 @@ const swapArgs = {
     "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
   quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_quote."),
-  chain: chainArg().optional().describe("Source chain name or key; needed only without quoteId."),
+  chain: chainArg()
+    .optional()
+    .describe('Source chain name, key or EVM chain id ("42161"); needed only without quoteId.'),
 };
 const swapActionHints = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
@@ -55,7 +57,9 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_resolve_token",
     "Look up a token on a chain: its address, decimals and hub asset. The other swap tools take symbols themselves; use this when one returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
     {
-      chain: chainArg().describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      chain: chainArg().describe(
+        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
       query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -70,7 +74,9 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_get_balance",
     "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_track rather than re-reading balances.",
     {
-      chain: chainArg().describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      chain: chainArg().describe(
+        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
       address: textArg(128, 1).describe("The wallet's address on that chain."),
       token: tokenArg()
         .optional()
@@ -88,9 +94,11 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_swap_quote",
     "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
-      fromChain: chainArg().describe('Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      fromChain: chainArg().describe(
+        'Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
       fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
-      toChain: chainArg().describe("Destination chain name, ticker or key."),
+      toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
       toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
       amount: textArg(96, 1).describe(
         'Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".',

@@ -77,8 +77,11 @@ export function selectToolsets(
   opts: { apiKey: ApiKeyStatus; swapToolsEnabled: boolean },
 ): ToolSelection {
   const profile = parseProfile(requested);
-  // The requested value isn't echoed back: it's caller input of any size.
-  if (!profile) throw new ConnectionError(400, `Unknown profile. Use ${PROFILES.join(", ")}.`);
+  if (!profile) {
+    const enabled = PROFILES.filter(known => known !== "swap" || opts.swapToolsEnabled);
+    // The requested value isn't echoed back: it's caller input of any size.
+    throw new ConnectionError(400, `Unknown profile. Use ${enabled.join(", ")}.`);
+  }
   if (profile === "swap" && !opts.swapToolsEnabled) {
     throw new ConnectionError(400, "The swap profile is not enabled on this server yet. Use builder or all.");
   }

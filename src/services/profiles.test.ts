@@ -68,6 +68,10 @@ describe("selectToolsets", () => {
     expect(error.message).toBe("Unknown profile. Use builder, swap, all.");
   });
 
+  it("lists only the enabled profiles while the switch is off", () => {
+    expect(refusal("bogus", { ...keyed, ...off }).message).toBe("Unknown profile. Use builder, all.");
+  });
+
   it("refuses swap while the switch is off, before asking for a key", () => {
     const error = refusal("swap", { ...keyless, ...off });
     expect([error.httpStatus, error.rpcCode]).toEqual([400, -32602]);

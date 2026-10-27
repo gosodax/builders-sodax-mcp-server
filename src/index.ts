@@ -104,6 +104,9 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
 }
 
 async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
+  if (process.env.MCP_PROFILE) {
+    logger.warn("MCP_PROFILE is ignored over HTTP: each client picks its profile with ?profile= or x-sodax-profile");
+  }
   if (process.env.SODAX_API_KEY) {
     logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
   }

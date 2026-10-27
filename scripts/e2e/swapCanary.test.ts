@@ -1,8 +1,10 @@
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { spokeChainConfig } from "@sodax/types";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SwapStep } from "../../src/services/swap/quote.js";
-import { sendSteps, wallets } from "./swapCanary.js";
+import { sendSteps, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.
 const ACCOUNT = privateKeyToAccount(`0x${"1".repeat(64)}`);
@@ -142,5 +144,48 @@ describe("sendSteps", () => {
     await expect(sent).rejects.toThrow(/reverted/);
     expect(methods.filter(method => method === "eth_estimateGas")).toHaveLength(3);
     expect(methods).not.toContain("eth_sendRawTransaction");
+  });
+});
+
+describe("track", () => {
+  const ENV = {} as never;
+  const quote = (expiresInMs: number) =>
+    ({
+      expiresAt: new Date(Date.now() + expiresInMs).toISOString(),
+      afterSend: { tool: "sodax_swap_track", args: { quoteId: "q-1" }, needs: "txHash" },
+    }) as never;
+  const reply = (out: object, isError = false) => ({ isError, out: out as never });
+
+  it("retries a call that throws (client timeout, rate limit), printing no error message", async () => {
+    const call = vi
+      .fn()
+      .mockRejectedValueOnce(new McpError(ErrorCode.RequestTimeout, "Request timed out https://rpc.example/key"))
+      .mockRejectedValueOnce(new StreamableHTTPError(429, "Too many requests from 10.0.0.1"))
+      .mockResolvedValueOnce(reply({ status: "queued", retryAfterSec: 5 }))
+      .mockResolvedValueOnce(reply({ status: "solved" }));
+    const tracked = track(ENV, quote(60_000), "0xabc", call);
+    await settle(tracked);
+    await expect(tracked).resolves.toBeUndefined();
+    expect(call).toHaveBeenCalledTimes(4);
+    expect(call).toHaveBeenCalledWith(ENV, "sodax_swap_track", { quoteId: "q-1", txHash: "0xabc" });
+    expect(logs).toEqual(expect.arrayContaining(["[setup] McpError -32001, retrying", "[setup] Error 429, retrying"]));
+    expect(logs.join("\n")).not.toMatch(/rpc\.example|10\.0\.0\.1/);
+  });
+
+  it("still fails on a tool error that isn't retryable", async () => {
+    const call = vi.fn().mockResolvedValue(reply({ error: { code: "INTERNAL" } }, true));
+    const tracked = track(ENV, quote(60_000), "0xabc", call);
+    await settle(tracked);
+    await expect(tracked).rejects.toThrow("error INTERNAL");
+  });
+
+  it("waits no longer than the deadline, whatever retryAfterSec says", async () => {
+    const call = vi.fn().mockResolvedValue(reply({ status: "in_progress", stage: "solving", retryAfterSec: 3_600 }));
+    // The deadline is 5 minutes past the expiry: 20 s from now.
+    const tracked = track(ENV, quote(20_000 - 5 * 60_000), "0xabc", call);
+    const elapsed = await settle(tracked);
+    await expect(tracked).rejects.toThrow("not solved by 5 minutes past the quote's expiry");
+    expect(elapsed).toBeLessThanOrEqual(21_000);
+    expect(call).toHaveBeenCalledTimes(1);
   });
 });

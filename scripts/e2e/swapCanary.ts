@@ -117,10 +117,10 @@ const usdcOf = (wallet: Wallet) =>
 /** One tool call on a fresh connection: the server is stateless per request, and no stream stays open. */
 async function callTool<Out>({ mcpUrl, apiKey }: Env, name: string, args: Record<string, unknown>) {
   const client = new Client({ name: "sodax-canary-e2e", version: "1.0.0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers: { "x-api-key": apiKey } } }),
-  );
   try {
+    await client.connect(
+      new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers: { "x-api-key": apiKey } } }),
+    );
     const result = await client.callTool({ name, arguments: args });
     return { isError: result.isError === true, out: (result.structuredContent ?? {}) as Out & ToolError };
   } finally {
@@ -227,13 +227,19 @@ async function sendSwap(client: Wallet["client"], serializedTransaction: Hex, ha
 }
 
 /** Calls track through the quote's afterSend until it says solved, up to 5 minutes past the quote's expiry. */
-async function track(env: Env, quote: ReadyQuote, txHash: Hex): Promise<void> {
+export async function track(env: Env, quote: ReadyQuote, txHash: Hex, call = callTool<TrackResult>): Promise<void> {
   const deadline = Date.parse(quote.expiresAt) + 5 * 60_000;
+  const wait = (sec: number) => sleep(Math.min(sec * 1000, deadline - Date.now()));
   while (Date.now() < deadline) {
-    const { isError, out } = await callTool<TrackResult>(env, quote.afterSend.tool, {
-      ...quote.afterSend.args,
-      txHash,
+    const reply = await call(env, quote.afterSend.tool, { ...quote.afterSend.args, txHash }).catch((error: unknown) => {
+      // The client's 60 s request timeout, the server's rate limiter, a dropped connection: ask again.
+      log(`${describe(error)}, retrying`);
     });
+    if (!reply) {
+      await wait(DEFAULT_RETRY_SEC);
+      continue;
+    }
+    const { isError, out } = reply;
     if (isError) {
       if (!out.error || !RETRYABLE.includes(out.error.code))
         throw new Failure(`error ${out.error?.code ?? "without a code"}`);
@@ -246,7 +252,7 @@ async function track(env: Env, quote: ReadyQuote, txHash: Hex): Promise<void> {
     }
     const retryAfterSec =
       "retryAfterSec" in out ? Number(out.retryAfterSec) : (out.error?.retryAfterSec ?? DEFAULT_RETRY_SEC);
-    await sleep(retryAfterSec * 1000);
+    await wait(retryAfterSec);
   }
   throw new Failure("not solved by 5 minutes past the quote's expiry");
 }
@@ -291,10 +297,14 @@ async function run(): Promise<void> {
   await checkArrival(dst, before, quote.to.minimumAmount);
 }
 
-/** viem errors by name and short message (no URL or request body); anything else by name only. */
+/**
+ * viem errors by name and short message (no URL or request body); anything else by name, and its code if
+ * numeric (an MCP error code or an HTTP status).
+ */
 function describe(error: unknown): string {
   if (error instanceof BaseError) return `${error.name}: ${error.shortMessage}`;
-  return error instanceof Error ? error.name : typeof error;
+  if (!(error instanceof Error)) return typeof error;
+  return "code" in error && typeof error.code === "number" ? `${error.name} ${error.code}` : error.name;
 }
 
 function fail(error: unknown): void {

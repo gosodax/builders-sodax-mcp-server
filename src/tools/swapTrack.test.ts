@@ -20,6 +20,7 @@ import {
   callTool,
   stubBackend,
 } from "./__fixtures__/swapBackend.js";
+import { swapClient } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach a chain: receipts are scripted per test.
 vi.mock("../services/sodax.js", async importOriginal => {
@@ -102,8 +103,8 @@ describe("sodax_swap_track", () => {
   });
 
   it.each([
-    [true, ""],
-    [false, "not a batch id"],
+    [true, "isn't confirmed on Arbitrum yet"],
+    [false, "Arbitrum hasn't seen this transaction. Check that the user's wallet really broadcast it"],
   ])("waits for an unmined tx (seen: %s)", async (seen, hint) => {
     const calls = stubBackend();
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
@@ -111,7 +112,8 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: 15 });
     expect(out.nextStep).toContain("don't resend it");
-    if (hint) expect(out.nextStep).toContain(hint);
+    expect(out.nextStep).toContain(hint);
+    expect(out.nextStep.includes("if it was never sent, stop tracking it")).toBe(!seen);
     expect(submits(calls)).toEqual([]);
   });
 
@@ -166,7 +168,8 @@ describe("sodax_swap_track", () => {
     const { quoteId } = cacheQuote();
     vi.setSystemTime(Number(DEADLINE) * 1000);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true });
+    expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
+    expect(out.nextStep).toContain("To retry the refund, call sodax_swap_track again in about 60 seconds");
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
       expect.any(String),
@@ -299,7 +302,29 @@ describe("sodax_swap_track", () => {
     claimDeposit(quoteId, TX);
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.minimumReceived).toEqual({ amount: "4.941968", symbol: "USDC", chainName: "Sonic" });
-    expect(out.nextStep).toContain("received at least 4.941968 USDC on Sonic");
+    expect(out.delivery).toBe("complete");
+    expect(out.nextStep).toBe("The swap is complete on Sonic: the user received at least 4.941968 USDC.");
+  });
+
+  it("calls a solved swap without its quote filled on the hub, not delivered", async () => {
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } } });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out.delivery).toBeUndefined();
+    expect(out.nextStep).toBe(
+      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.",
+    );
+  });
+
+  it("calls a solved swap to another chain filled, its tokens one cross-chain hop away", async () => {
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+    const minimumReceived = { amount: "4.9", symbol: "USDC", chainName: "Base" };
+    const { quoteId } = cacheQuote({ dstChainKey: "0x2105.base", minimumReceived });
+    claimDeposit(quoteId, TX);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.delivery).toBe("in_transit");
+    expect(out.nextStep).toBe(
+      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop. Don't send it again.",
+    );
   });
 
   it("doesn't report another swap's backend record as the quote's", async () => {
@@ -355,11 +380,14 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep.includes("sodax_swap_cancel")).toBe(canCancel);
   });
 
-  it("can't offer a cancel before the swap reached the hub", async () => {
+  it("can't offer a cancel before the swap reached the hub, and says the deposit is safe", async () => {
     stubBackend({ row: { status: "failed", failedAtStep: "made-up" } });
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
     expect(out).toMatchObject({ status: "failed", outcome: "unknown", canCancel: false });
     expect(out.failedAtStep).toBeUndefined();
+    expect(out.nextStep).toBe(
+      "The swap failed. The deposit is safe on chain and SODAX operators will recover it; the user must not send it again.",
+    );
   });
 
   it("refuses another key's quote before reading anything", async () => {
@@ -428,10 +456,16 @@ describe("sodax_swap_track", () => {
     expect(out.error.code).toBe("API_KEY_REQUIRED");
   });
 
-  it("refuses a hash that isn't a tx hash", async () => {
+  it("refuses a hash that isn't a tx hash, saying what one looks like", async () => {
     const calls = stubBackend();
-    const { isError } = await track({ txHash: "0x1234", chain: ARBITRUM });
-    expect(isError).toBe(true);
+    const client = await swapClient();
+    const result = await client.callTool({
+      name: "sodax_swap_track",
+      arguments: { txHash: "0x1234", chain: ARBITRUM },
+    });
+    await client.close();
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
     expect(calls).toEqual([]);
   });
 });

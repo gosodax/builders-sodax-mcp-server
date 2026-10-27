@@ -8,6 +8,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
+import { isHubChain } from "../sodax.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, claimDeposit, markRelayedForRefund, markSubmitted } from "./quoteCache.js";
@@ -31,6 +32,8 @@ const STATUSES: readonly string[] = ["pending", ...STAGES, "solved", "failed"];
 export const DEPOSIT_SAFE =
   "tell the user the deposit is on chain and safe, SODAX has been alerted to recover it, and they must not send it again";
 
+// A refund relay that failed is tried again on the next call, not sooner.
+const REFUND_RETRY_SEC = 60;
 // How far ahead of ours the backend's clock may be when it refuses a deposit as past its deadline.
 const DEADLINE_SKEW_SEC = 60;
 
@@ -43,10 +46,17 @@ export type TrackState =
   | { status: "not_submitted"; reason: "not_a_deposit" | "deposit_mismatch" | "quote_used" }
   | { status: "not_submitted_unknown_quote"; alerted: boolean }
   | { status: "expired_refunding" }
-  | { status: "expired_unsubmitted"; alerted: true }
+  | { status: "expired_unsubmitted"; alerted: true; retryAfterSec: number }
   | { status: "queued"; retryAfterSec: number }
   | { status: "in_progress"; stage: string; hubTxHash?: string; retryAfterSec: number }
-  | { status: "solved"; hubTxHash?: string; fillTxHash?: string; minimumReceived?: CachedQuote["minimumReceived"] }
+  | {
+      status: "solved";
+      hubTxHash?: string;
+      fillTxHash?: string;
+      minimumReceived?: CachedQuote["minimumReceived"];
+      /** With the quote: `complete` to a hub recipient, else `in_transit` (one more cross-chain hop). */
+      delivery?: "complete" | "in_transit";
+    }
   | { status: "failed"; failedAtStep?: string; outcome: TrackOutcome; canCancel: boolean };
 
 export type TrackResult = SwapRef & TrackState;
@@ -170,7 +180,7 @@ async function relayForRefund(base: SwapRef, quote: CachedQuote): Promise<TrackR
     quoteId: quote.quoteId,
     deadline: quote.intent.deadline,
   });
-  return { ...base, status: "expired_unsubmitted", alerted: true };
+  return { ...base, status: "expired_unsubmitted", alerted: true, retryAfterSec: REFUND_RETRY_SEC };
 }
 
 /** The backend's record in our words: enums and hashes checked at the API boundary, never its text. */
@@ -185,7 +195,10 @@ function fromStatus(row: SubmitTxStatus, quote?: CachedQuote): TrackState {
         status: "solved",
         ...(hubTxHash && { hubTxHash }),
         ...(fillTxHash && { fillTxHash }),
-        ...(quote && { minimumReceived: quote.minimumReceived }),
+        ...(quote && {
+          minimumReceived: quote.minimumReceived,
+          delivery: isHubChain(quote.dstChainKey) ? "complete" : "in_transit",
+        }),
       };
     case "failed": {
       // The same rule sodax_swap_cancel applies, so track never offers a cancel that cancel refuses.

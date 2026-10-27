@@ -521,6 +521,7 @@ describe("sodax_swap_quote", () => {
     const sonic = { fromChain: "sonic", fromToken, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
     const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
     expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
+    expect(out.nextStep).toContain("not from Sonic or non-EVM chains");
     expect(calls).toEqual([]);
   });
 

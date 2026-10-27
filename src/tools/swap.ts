@@ -18,12 +18,15 @@ import { registerActionTool } from "./actionTool.js";
 const chainArg = z.string().trim().min(1).max(64);
 const tokenArg = z.string().trim().min(1).max(128);
 const addressArg = z.string().trim().max(128).optional();
-const txHashArg = z.string().trim().regex(EVM_TX_HASH_PATTERN);
+const txHashArg = z
+  .string()
+  .trim()
+  .regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters.");
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
   txHash: txHashArg.describe(
-    "Hash of the swap step's transaction, not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
+    "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
   quoteId: z.string().trim().uuid().optional().describe("The quoteId from sodax_swap_quote."),
   chain: chainArg.optional().describe("Source chain name or key; needed only without quoteId."),
@@ -99,7 +102,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_track",
-    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending, then again until it reports solved or failed; repeated calls never resubmit. It checks the transaction on chain before submitting. Use the same API key as the quote. This server never signs or moves funds.",
+    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending; while the result has retryAfterSec, call again after that many seconds. A result without retryAfterSec is final. Repeated calls never resubmit. It checks the transaction on chain before submitting. Use the same API key as the quote. This server never signs or moves funds.",
     swapArgs,
     swapActionHints,
     async args => {
@@ -117,7 +120,9 @@ export function registerSwapTools(server: McpServer): void {
       ...swapArgs,
       cancelTxHash: txHashArg
         .optional()
-        .describe("Hash of the cancel transaction, once the user's wallet has sent the cancel step."),
+        .describe(
+          "Hash of the cancel transaction (0x and 64 hex characters), once the user's wallet has sent the cancel step.",
+        ),
     },
     swapActionHints,
     async args => {
@@ -244,12 +249,10 @@ const OUTCOME: Record<TrackOutcome, string> = {
 export function trackNextStep(result: TrackResult): string {
   const chain = result.chain.name;
   switch (result.status) {
-    case "awaiting_source_confirmation": {
-      const unseen = result.seenOnChain
-        ? ""
-        : " If this keeps up, check the chain and that it's a transaction hash, not a batch id.";
-      return `The swap transaction isn't confirmed on ${chain} yet; ${again(result.retryAfterSec)}, and don't resend it.${unseen}`;
-    }
+    case "awaiting_source_confirmation":
+      return result.seenOnChain
+        ? `The swap transaction isn't confirmed on ${chain} yet; ${again(result.retryAfterSec)}, and don't resend it.`
+        : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise ${again(result.retryAfterSec)}, and don't resend it.`;
     case "source_failed":
       return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
     case "not_submitted":
@@ -261,25 +264,32 @@ export function trackNextStep(result: TrackResult): string {
     case "expired_refunding":
       return "The swap reached SODAX after its quote expired, so it won't be filled and is being refunded to the user; they must not send it again.";
     case "expired_unsubmitted":
-      return `The swap reached SODAX after its quote expired: ${DEPOSIT_SAFE}. Call sodax_swap_track again later.`;
+      return `The swap reached SODAX after its quote expired and its refund couldn't start: ${DEPOSIT_SAFE}. To retry the refund, ${again(result.retryAfterSec)}.`;
     case "queued":
       return `The swap is queued for processing; ${again(result.retryAfterSec)}.`;
     case "in_progress":
       return `The swap is being processed (${result.stage}); ${again(result.retryAfterSec)}.`;
     case "solved": {
-      const received = result.minimumReceived
-        ? `: the user received at least ${result.minimumReceived.amount} ${result.minimumReceived.symbol} on ${result.minimumReceived.chainName}`
-        : "";
+      // Solved is the fill on the hub; another destination gets the tokens one cross-chain hop later.
       const fill = result.fillTxHash ? ` (fill tx ${result.fillTxHash})` : "";
-      return `The swap is complete${received}${fill}.`;
+      const promised = result.minimumReceived;
+      if (!promised) {
+        return `The swap is filled on the SODAX hub${fill}; to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.`;
+      }
+      const atLeast = `at least ${promised.amount} ${promised.symbol}`;
+      return result.delivery === "complete"
+        ? `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`
+        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop. Don't send it again.`;
     }
     case "failed":
-      return `${OUTCOME[result.outcome]} ${
-        result.canCancel
-          ? "The user can cancel it with sodax_swap_cancel to get the funds back."
-          : "There's nothing to do here."
-      }`;
+      return `${OUTCOME[result.outcome]} ${failedNextStep(result)}`;
   }
+}
+
+function failedNextStep({ canCancel, outcome }: Extract<TrackResult, { status: "failed" }>): string {
+  if (canCancel) return "The user can cancel it with sodax_swap_cancel to get the funds back.";
+  if (outcome === "cancelled" || outcome === "refunding") return "There's nothing to do here.";
+  return "The deposit is safe on chain and SODAX operators will recover it; the user must not send it again.";
 }
 
 const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" }>["reason"], string> = {

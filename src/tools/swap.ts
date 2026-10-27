@@ -102,7 +102,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_track",
-    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending; while the result has retryAfterSec, call again after that many seconds. A result without retryAfterSec is final. Repeated calls never resubmit. It checks the transaction on chain before submitting. Use the same API key as the quote. This server never signs or moves funds.",
+    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending; while the result has retryAfterSec, call again after that many seconds. A successful result without retryAfterSec is final; after an error, follow its nextStep. Repeated calls never resubmit. It checks the transaction on chain before submitting. Use the same API key as the quote. This server never signs or moves funds.",
     swapArgs,
     swapActionHints,
     async args => {
@@ -253,6 +253,8 @@ export function trackNextStep(result: TrackResult): string {
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; ${again(result.retryAfterSec)}, and don't resend it.`
         : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise ${again(result.retryAfterSec)}, and don't resend it.`;
+    case "source_not_found":
+      return `${chain} hasn't seen this transaction, and no quote here is still waiting for it. Check that this is the swap transaction's hash on ${chain}, not a batch id; if it is, the wallet never sent it and nothing was swapped. Stop tracking it, and quote again if the user still wants to swap.`;
     case "source_failed":
       return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
     case "not_submitted":

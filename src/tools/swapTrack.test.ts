@@ -117,6 +117,37 @@ describe("sodax_swap_track", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it.each([
+    ["without a quote", () => ({ chain: ARBITRUM })],
+    ["whose quote is gone", () => ({ quoteId: randomUUID(), chain: ARBITRUM })],
+    [
+      "over 5 minutes past its quote's deadline",
+      () => {
+        const { quoteId } = cacheQuote();
+        vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
+        return { quoteId };
+      },
+    ],
+  ])("stops waiting for a tx the chain hasn't seen %s", async (_case, args) => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { out } = await track({ txHash: TX, ...args() });
+    expect(out.status).toBe("source_not_found");
+    expect(out).not.toHaveProperty("retryAfterSec");
+    expect(out.nextStep).toContain("the wallet never sent it and nothing was swapped. Stop tracking it");
+  });
+
+  it("keeps waiting for an unseen tx until 5 minutes past its quote's deadline", async () => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000 - 1);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, retryAfterSec: 15 });
+  });
+
   it("reports a reverted tx as failed at the source", async () => {
     stubBackend();
     vi.mocked(getEvmReceipt).mockResolvedValue({ ...DEPOSIT_RECEIPT, reverted: true });
@@ -473,6 +504,15 @@ describe("sodax_swap_track", () => {
     stubBackend({ submit: () => new Response("", { status: 401 }) });
     const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out.error.code).toBe("API_KEY_REQUIRED");
+  });
+
+  it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
+    const client = await swapClient();
+    const { tools } = await client.listTools();
+    await client.close();
+    expect(tools.find(tool => tool.name === "sodax_swap_track")?.description).toContain(
+      "A successful result without retryAfterSec is final; after an error, follow its nextStep.",
+    );
   });
 
   it("refuses a hash that isn't a tx hash, saying what one looks like", async () => {

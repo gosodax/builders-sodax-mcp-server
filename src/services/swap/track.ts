@@ -37,6 +37,8 @@ const REFUND_RETRY_SEC = 60;
 // The backend takes a new row until 120 s past the deadline, so a refusal before it isn't the
 // deadline; but refused in its last minute, no fix by hand lands in time.
 const LAST_MINUTE_SEC = 60;
+// A tx sent just before the deadline may reach this chain's node a little later.
+const UNSEEN_AFTER_DEADLINE_SEC = 5 * 60;
 
 export type TrackOutcome = "cancelled" | "refunding" | "abandoned" | "cancel_to_recover" | "unknown";
 
@@ -44,6 +46,7 @@ export type TrackOutcome = "cancelled" | "refunding" | "abandoned" | "cancel_to_
 export type TrackState =
   | { status: "awaiting_source_confirmation"; seenOnChain: boolean; retryAfterSec: number }
   | { status: "source_failed" }
+  | { status: "source_not_found" }
   | { status: "not_submitted"; reason: "not_a_deposit" | "deposit_mismatch" | "quote_used" }
   | { status: "not_submitted_unknown_quote"; isDeposit: boolean; alerted: boolean }
   | { status: "expired_refunding" }
@@ -95,12 +98,11 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
 
   const receipt = await readReceipt(chain, txHash);
   if (!receipt) {
-    return {
-      ...base,
-      status: "awaiting_source_confirmation",
-      seenOnChain: await seenOnChain(chain, txHash),
-      retryAfterSec: RETRY_AFTER_SEC,
-    };
+    const seen = await seenOnChain(chain, txHash);
+    // An unseen tx is worth waiting for only while its quote can still be sent.
+    const sendable = quote && Date.now() < (Number(quote.intent.deadline) + UNSEEN_AFTER_DEADLINE_SEC) * 1000;
+    if (!seen && !sendable) return { ...base, status: "source_not_found" };
+    return { ...base, status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: RETRY_AFTER_SEC };
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };
   if (!quote) {

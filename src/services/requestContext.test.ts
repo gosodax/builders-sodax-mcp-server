@@ -2,7 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { getRequestContext, parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./requestContext.js";
+import {
+  getRequestContext,
+  parseApiKey,
+  runWithRequestContext,
+  setFallbackRequestContext,
+  sseMessageApiKey,
+} from "./requestContext.js";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -32,6 +38,19 @@ describe("parseApiKey", () => {
   const malformed = ["sk-live-abc123", "sodax_a, sodax_b", "Bearer sodax_a", '"sodax_a"', "sodax_a\nsodax_b"];
   it.each([undefined, "", ...malformed])("drops %j", value => {
     expect(parseApiKey(value)).toBeUndefined();
+  });
+});
+
+describe("sseMessageApiKey", () => {
+  const get = { clientId: "ip-a", apiKey: "sodax_get" };
+
+  it("gives a keyless POST the GET's key only from the same client", () => {
+    expect(sseMessageApiKey(get, { clientId: "ip-a" })).toBe("sodax_get");
+    expect(sseMessageApiKey(get, { clientId: "ip-b" })).toBeUndefined();
+  });
+
+  it("uses the POST's own key from any client", () => {
+    expect(sseMessageApiKey(get, { clientId: "ip-b", apiKey: "sodax_post" })).toBe("sodax_post");
   });
 });
 

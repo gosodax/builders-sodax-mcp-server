@@ -6,7 +6,7 @@ import type { Request, Response } from "express";
 import { logger } from "./services/logger.js";
 import {
   ConnectionError,
-  type Toolsets,
+  type ToolSelection,
   apiKeyStatus,
   profileFromRequest,
   selectToolsets,
@@ -23,7 +23,7 @@ export function resolveConnection(
   req: Request,
   res: Response,
   swapToolsEnabled: boolean,
-): { apiKey?: string; toolsets: Toolsets } | undefined {
+): { apiKey?: string; toolsets: ToolSelection } | undefined {
   const apiKey = callerApiKey(req);
   const keyStatus = apiKeyStatus(req.get("x-api-key"));
   try {

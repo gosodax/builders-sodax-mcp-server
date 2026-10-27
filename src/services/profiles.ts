@@ -19,6 +19,11 @@ export interface Toolsets {
   swap: boolean;
 }
 
+/** The toolsets a connection gets, plus a line for the agent when the swap tools only wait for a usable key. */
+export interface ToolSelection extends Toolsets {
+  swapKeyHint?: string;
+}
+
 /** The caller's key as the swap gate sees it: a SODAX key, a value that isn't one, or none (blank counts as none). */
 export type ApiKeyStatus = "valid" | "malformed" | "missing";
 
@@ -70,7 +75,7 @@ function parseProfile(requested: unknown): Profile | undefined {
 export function selectToolsets(
   requested: unknown,
   opts: { apiKey: ApiKeyStatus; swapToolsEnabled: boolean },
-): Toolsets {
+): ToolSelection {
   const profile = parseProfile(requested);
   // The requested value isn't echoed back: it's caller input of any size.
   if (!profile) throw new ConnectionError(400, `Unknown profile. Use ${PROFILES.join(", ")}.`);
@@ -80,10 +85,18 @@ export function selectToolsets(
   if (profile === "swap" && opts.apiKey !== "valid") {
     throw new ConnectionError(403, `API key required for the swap profile. ${keyFix(opts.apiKey)}`);
   }
-  return {
+  const toolsets = {
     builder: profile !== "swap",
     swap: profile !== "builder" && opts.swapToolsEnabled && opts.apiKey === "valid",
   };
+  // Otherwise a keyless `all` connection can't tell the swap tools exist.
+  if (profile === "all" && opts.swapToolsEnabled && opts.apiKey !== "valid") {
+    return {
+      ...toolsets,
+      swapKeyHint: `This connection has no swap tools: they need a SODAX API key. ${keyFix(opts.apiKey)}`,
+    };
+  }
+  return toolsets;
 }
 
 /** The first value that is set. A blank string counts as unset, so `?profile=` can't override the header. */

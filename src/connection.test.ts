@@ -65,6 +65,7 @@ describe("resolveConnection", () => {
     const { connection, res } = resolve(fakeReq({}, { "x-api-key": `Bearer ${KEY}` }));
     expect(connection?.apiKey).toBeUndefined();
     expect([connection?.toolsets.builder, connection?.toolsets.swap]).toEqual([true, false]);
+    expect(connection?.toolsets.swapKeyHint).toContain("isn't a SODAX API key");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(KEY);
     expect(res.status).not.toHaveBeenCalled();

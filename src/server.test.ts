@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./server.js";
-import type { Toolsets } from "./services/profiles.js";
+import { type ToolSelection, type Toolsets, selectToolsets } from "./services/profiles.js";
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
 beforeEach(() => {
@@ -36,5 +36,25 @@ describe("builder tools", () => {
     const builder = (await toolList({ builder: true, swap: false })).map(tool => tool.name);
     const swapOnly = (await toolList({ builder: false, swap: true })).map(tool => tool.name);
     expect(swapOnly.filter(name => builder.includes(name))).toEqual([]);
+  });
+});
+
+describe("instructions", () => {
+  async function instructions(toolsets: ToolSelection): Promise<string> {
+    const server = await createServer(toolsets);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const text = client.getInstructions() ?? "";
+    await client.close();
+    return text;
+  }
+
+  it("tell a keyless default connection, last, that the swap tools need a key", async () => {
+    const builder = await instructions({ builder: true, swap: false });
+    const keyless = selectToolsets(undefined, { apiKey: "missing", swapToolsEnabled: true });
+    expect(builder).not.toContain("x-api-key");
+    expect(await instructions(keyless)).toBe(`${builder}\n\n${keyless.swapKeyHint}`);
   });
 });

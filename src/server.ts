@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { withAnalytics } from "./services/analytics.js";
-import type { Toolsets } from "./services/profiles.js";
+import type { ToolSelection, Toolsets } from "./services/profiles.js";
 import { registerDocsProxyTools } from "./tools/docsProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
@@ -59,13 +59,13 @@ function enabledRegistrars(toolsets: Toolsets): ((server: McpServer) => void)[] 
  * Used per-request in HTTP mode to avoid transport conflicts
  * when handling parallel requests.
  */
-export async function createServer(toolsets: Toolsets, clientId?: string): Promise<McpServer> {
+export async function createServer(toolsets: ToolSelection, clientId?: string): Promise<McpServer> {
   const server = new McpServer(
     {
       name: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
     },
-    { instructions: SERVER_INSTRUCTIONS },
+    { instructions: [SERVER_INSTRUCTIONS, toolsets.swapKeyHint].filter(Boolean).join("\n\n") },
   );
 
   // Wrap server.tool() so every tool call is tracked in PostHog

@@ -30,8 +30,23 @@ describe("selectToolsets", () => {
     expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true });
   });
 
-  it.each([keyless, malformed])("gives a default connection without a SODAX key the builder tools only (%j)", key => {
-    expect(selectToolsets(undefined, { ...key, ...on })).toEqual({ builder: true, swap: false });
+  it("gives a keyless default connection the builder tools only, and says the swap tools need a key", () => {
+    const selection = selectToolsets(undefined, { ...keyless, ...on });
+    expect(selection).toEqual({ builder: true, swap: false, swapKeyHint: expect.any(String) });
+    expect(selection.swapKeyHint).toContain("x-api-key header");
+    expect(selection.swapKeyHint).toContain(DOCS_URL);
+  });
+
+  it("tells a default connection with a malformed key that the value isn't a SODAX key", () => {
+    const selection = selectToolsets("all", { ...malformed, ...on });
+    expect([selection.builder, selection.swap]).toEqual([true, false]);
+    expect(selection.swapKeyHint).toContain("isn't a SODAX API key (expected sodax_… alone)");
+  });
+
+  it("adds no key hint where a key wouldn't bring the swap tools", () => {
+    expect(selectToolsets("all", { ...keyed, ...on }).swapKeyHint).toBeUndefined();
+    expect(selectToolsets("builder", { ...keyless, ...on }).swapKeyHint).toBeUndefined();
+    expect(selectToolsets("all", { ...keyless, ...off }).swapKeyHint).toBeUndefined();
   });
 
   it("keeps the swap tools out of every profile while the switch is off", () => {

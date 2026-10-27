@@ -34,8 +34,9 @@ export const DEPOSIT_SAFE =
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
-// How far ahead of ours the backend's clock may be when it refuses a deposit as past its deadline.
-const DEADLINE_SKEW_SEC = 60;
+// The backend takes a new row until 120 s past the deadline, so a refusal before it isn't the
+// deadline; but refused in its last minute, no fix by hand lands in time.
+const LAST_MINUTE_SEC = 60;
 
 export type TrackOutcome = "cancelled" | "refunding" | "abandoned" | "cancel_to_recover" | "unknown";
 
@@ -44,7 +45,7 @@ export type TrackState =
   | { status: "awaiting_source_confirmation"; seenOnChain: boolean; retryAfterSec: number }
   | { status: "source_failed" }
   | { status: "not_submitted"; reason: "not_a_deposit" | "deposit_mismatch" | "quote_used" }
-  | { status: "not_submitted_unknown_quote"; alerted: boolean }
+  | { status: "not_submitted_unknown_quote"; isDeposit: boolean; alerted: boolean }
   | { status: "expired_refunding" }
   | { status: "expired_unsubmitted"; alerted: true; retryAfterSec: number }
   | { status: "queued"; retryAfterSec: number }
@@ -103,10 +104,12 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };
   if (!quote) {
-    // No quote here (a restart, its grace period over, or never passed): a deposit may be stranded.
-    const alerted = depositMessages(receipt, source.connection, source.assetManager).length > 0;
+    // No quote here (a restart, or its grace period over): a deposit may be stranded. Only a named
+    // quoteId alerts, or any public deposit could page an operator.
+    const isDeposit = depositMessages(receipt, source.connection, source.assetManager).length > 0;
+    const alerted = isDeposit && quoteId !== undefined;
     if (alerted) alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
-    return { ...base, status: "not_submitted_unknown_quote", alerted };
+    return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
   }
   const deposit = checkDeposit(receipt, {
     connection: source.connection,
@@ -124,8 +127,8 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "not_submitted", reason: "quote_used" };
   }
   if (row) return { ...base, ...fromStatus(row, quote) };
-  // The backend refuses a new row past the deadline; relaying creates the hub intent, which its
-  // canceller then refunds (as the backend does for its own expired rows).
+  // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
+  // backend's canceller, as its own expired rows are.
   const deadlineMs = Number(quote.intent.deadline) * 1000;
   if (Date.now() >= deadlineMs) return relayForRefund(base, quote);
 
@@ -140,15 +143,14 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   } catch (error) {
     // Anything else may have reached the backend, so the claim stays and a repeat submits again.
     if (!(error instanceof ActionError && error.code === "SWAP_REJECTED")) throw error;
-    // At the deadline the backend's clock may already be past it: the deposit still goes to the
-    // hub, so the user is filled or refunded, never left waiting.
-    if (Date.now() >= deadlineMs - DEADLINE_SKEW_SEC * 1000) return relayForRefund(base, quote);
     alertOperator("submit_rejected", {
       chainKey: chain.key,
       txHash,
       quoteId: quote.quoteId,
       deadline: quote.intent.deadline,
     });
+    // The deposit still goes to the hub, so the user is refunded rather than left waiting.
+    if (Date.now() >= deadlineMs - LAST_MINUTE_SEC * 1000) return relayForRefund(base, quote);
     throw new ActionError("SWAP_REJECTED", "The swap service refused this checked deposit.", {
       details: error.details,
       nextStep: `The swap service refused this deposit: ${DEPOSIT_SAFE}.`,

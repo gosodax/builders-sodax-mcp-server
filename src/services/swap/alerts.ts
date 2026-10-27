@@ -21,15 +21,18 @@ const TITLES: Record<AlertKind, string> = {
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
-// Any key can make public deposits look stranded, so past this many posts an hour the rest are
-// only logged, and one post at the end of the hour counts them.
-const POSTS_PER_HOUR = 20;
+// Past this many posts an hour the rest are only logged, and one post at the end of the hour counts
+// them. Any key can name a made-up quoteId for a public deposit, so unknown_quote has its own small
+// budget and can't crowd out the alerts on deposits this server checked.
+const POSTS_PER_HOUR = { unknown_quote: 5, checked: 20 };
 const HOUR_MS = 60 * 60 * 1000;
+
+type Budget = keyof typeof POSTS_PER_HOUR;
 
 // Insertion order is age order; a repeat moves to the end.
 const sent = new Map<string, number>();
 let hourStart = Number.NEGATIVE_INFINITY;
-let postsThisHour = 0;
+let postsThisHour: Record<Budget, number> = { unknown_quote: 0, checked: 0 };
 let suppressed = 0;
 let summary: NodeJS.Timeout | undefined;
 
@@ -41,27 +44,28 @@ export function alertOperator(
   const now = Date.now();
   const last = sent.get(key);
   if (last !== undefined && now - last < DEDUPE_MS) return;
-  sent.delete(key);
-  if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
-  sent.set(key, now);
 
   // Enough to tell callers apart, not to look a key up.
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   logger.error({ alert: kind, ...tagged }, TITLES[kind]);
-  if (!withinBudget(now)) return;
+  // Only a posted alert is deduped, so one held back by the budget is posted on a later call.
+  if (!withinBudget(kind === "unknown_quote" ? "unknown_quote" : "checked", now)) return;
+  sent.delete(key);
+  if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
+  sent.set(key, now);
   const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
     .filter(([, value]) => value !== undefined)
     .map(([name, value]) => ({ name, value: String(value), inline: name !== "txHash" }));
   post(`🚨 ${TITLES[kind]}`, embedFields);
 }
 
-function withinBudget(now: number): boolean {
+function withinBudget(budget: Budget, now: number): boolean {
   if (now - hourStart >= HOUR_MS) {
     hourStart = now;
-    postsThisHour = 0;
+    postsThisHour = { unknown_quote: 0, checked: 0 };
   }
-  if (postsThisHour < POSTS_PER_HOUR) {
-    postsThisHour++;
+  if (postsThisHour[budget] < POSTS_PER_HOUR[budget]) {
+    postsThisHour[budget]++;
     return true;
   }
   suppressed++;
@@ -87,6 +91,6 @@ export function clearAlerts(): void {
   clearTimeout(summary);
   summary = undefined;
   hourStart = Number.NEGATIVE_INFINITY;
-  postsThisHour = 0;
+  postsThisHour = { unknown_quote: 0, checked: 0 };
   suppressed = 0;
 }

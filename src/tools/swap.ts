@@ -258,8 +258,9 @@ export function trackNextStep(result: TrackResult): string {
     case "not_submitted":
       return NOT_SUBMITTED[result.reason];
     case "not_submitted_unknown_quote":
-      return result.alerted
-        ? `This server has no quote for that deposit: ${DEPOSIT_SAFE}.`
+      if (result.alerted) return `This server has no quote for that deposit: ${DEPOSIT_SAFE}.`;
+      return result.isDeposit
+        ? "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again."
         : `That transaction isn't a SODAX swap deposit on ${chain}; ask for the swap transaction's hash.`;
     case "expired_refunding":
       return "The swap reached SODAX after its quote expired, so it won't be filled and is being refunded to the user; they must not send it again.";

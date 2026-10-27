@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../requestContext.js";
-import { alertOperator, clearAlerts } from "./alerts.js";
+import { type AlertKind, alertOperator, clearAlerts } from "./alerts.js";
 
 const TX = `0x${"a".repeat(64)}`;
 const FIELDS = { chainKey: "0xa4b1.arbitrum", txHash: TX, quoteId: "q-1" };
@@ -50,24 +50,42 @@ describe("alertOperator", () => {
     expect(body).not.toContain("sodax_secret_key");
   });
 
-  it("posts at most 20 alerts an hour, logs the rest, and counts them in one post when the hour ends", async () => {
+  it("posts at most 20 alerts an hour, and 5 more for lost quotes, logs the rest, and counts them when the hour ends", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
-    const flood = (from: number, count: number) => {
-      for (let i = from; i < from + count; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    const flood = (kind: AlertKind, from: number, count: number) => {
+      for (let i = from; i < from + count; i++) alertOperator(kind, { ...FIELDS, txHash: `0x${i}` });
     };
 
-    flood(0, 25);
-    expect(fetch).toHaveBeenCalledTimes(20);
-    expect(logger.error).toHaveBeenCalledTimes(25);
+    // Made-up quoteIds can't hold back the alerts on checked deposits.
+    flood("unknown_quote", 0, 25);
+    expect(fetch).toHaveBeenCalledTimes(5);
+    flood("quote_used", 0, 25);
+    expect(fetch).toHaveBeenCalledTimes(25);
+    expect(logger.error).toHaveBeenCalledTimes(50);
 
     vi.advanceTimersByTime(60 * 60 * 1000);
-    expect(fetch).toHaveBeenCalledTimes(21);
-    expect(String(fetch.mock.calls[20][1]?.body)).toContain("5 more swap alerts in the last hour");
+    expect(fetch).toHaveBeenCalledTimes(26);
+    expect(String(fetch.mock.calls[25][1]?.body)).toContain("25 more swap alerts in the last hour");
 
-    flood(100, 1);
-    expect(fetch).toHaveBeenCalledTimes(22);
+    flood("unknown_quote", 100, 1);
+    expect(fetch).toHaveBeenCalledTimes(27);
+  });
+
+  it("posts an alert the budget held back when it comes again, instead of muting it for a day", async () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 6; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    expect(fetch).toHaveBeenCalledTimes(5);
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    alertOperator("unknown_quote", { ...FIELDS, txHash: "0x5" });
+    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(String(fetch.mock.calls[6][1]?.body)).toContain("0x5");
+    alertOperator("unknown_quote", { ...FIELDS, txHash: "0x5" });
+    expect(fetch).toHaveBeenCalledTimes(7);
   });
 
   it("only logs without a webhook", () => {

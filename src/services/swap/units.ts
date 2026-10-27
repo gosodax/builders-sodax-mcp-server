@@ -5,13 +5,13 @@
 
 import { ActionError } from "./errors.js";
 
-const AMOUNT = /^\d+(\.\d+)?$/;
+export const AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
 const MAX_UINT256 = 2n ** 256n - 1n;
 
 export function parseUnits(amount: string, decimals: number): bigint {
   const text = amount.trim();
   const [whole, fraction = ""] = text.split(".");
-  if (!AMOUNT.test(text) || fraction.length > decimals) {
+  if (!AMOUNT_PATTERN.test(text) || fraction.length > decimals) {
     throw new ActionError(
       "INVALID_AMOUNT",
       `Give the amount as a plain decimal, with no commas or units and at most ${decimals} digits after the point.`,

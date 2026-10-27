@@ -12,45 +12,48 @@ import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
-import { findSecret } from "../services/swap/secrets.js";
+import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwapWaiting } from "../services/swap/track.js";
+import { AMOUNT_PATTERN } from "../services/swap/units.js";
 import { registerActionTool } from "./actionTool.js";
 
 /**
- * A text input capped at `max`. Over the cap, zod refuses it before the handler's own secret screening
- * runs, so a seed phrase or key too long for the field still gets told to the agent as exposed.
+ * `schema`, plus the SECRET_REJECTED refusal for a value that fails `valid` (by default `schema` itself)
+ * and looks like a secret: the handler's own screening never sees a value zod rejects.
  */
-function textArg(max: number, min = 0) {
-  return z
-    .string()
-    .trim()
-    .min(min)
-    .max(max)
-    .superRefine((value, ctx) => {
-      if (value.length > max && findSecret(value)) ctx.addIssue({ code: "custom", message: OVERSIZED_SECRET });
-    });
+function screened(
+  schema: z.ZodString,
+  field: SecretField = {},
+  valid = (value: string) => schema.safeParse(value).success,
+) {
+  return schema.superRefine((value, ctx) => {
+    const refusal = valid(value) ? undefined : secretRefusalText(value, field);
+    if (refusal) ctx.addIssue({ code: "custom", message: refusal });
+  });
 }
 
-const OVERSIZED_SECRET =
-  "That looks like a private key, seed phrase or API key: tell the user to treat it as exposed and move their funds, and never to paste it into a chat.";
-
-// zod schemas are immutable, so each tool adds its own description to these.
-const chainArg = textArg(64, 1);
-const tokenArg = textArg(128, 1);
-const addressArg = textArg(128).optional();
-const txHashArg = z
-  .string()
-  .trim()
-  .regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters.");
+// Functions, so each field gets its own schema: one reused within a tool becomes a `$ref` in its JSON schema.
+const textArg = (max: number, min = 0) => screened(z.string().trim().min(min).max(max));
+const chainArg = () => textArg(64, 1);
+const tokenArg = () => textArg(128, 1);
+const addressArg = () => textArg(128).optional();
+const txHashArg = () =>
+  screened(z.string().trim().regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters."), {
+    txHash: true,
+  });
+const quoteIdArg = () => screened(z.string().trim().uuid(), { notHex64: "a quoteId" });
+// The handler checks an amount only after resolving the token; a secret that isn't a decimal is refused first.
+const amountArg = () =>
+  screened(z.string().trim().min(1).max(96), { notHex64: "an amount" }, value => AMOUNT_PATTERN.test(value));
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
-  txHash: txHashArg.describe(
+  txHash: txHashArg().describe(
     "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
-  quoteId: z.string().trim().uuid().optional().describe("The quoteId from sodax_swap_quote."),
-  chain: chainArg.optional().describe("Source chain name or key; needed only without quoteId."),
+  quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_quote."),
+  chain: chainArg().optional().describe("Source chain name or key; needed only without quoteId."),
 };
 const swapActionHints = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
@@ -60,10 +63,8 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_resolve_token",
     "Look up a token on a chain: its address, decimals and hub asset. The other swap tools take symbols themselves; use this when one returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
     {
-      chain: chainArg.describe(
-        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
-      ),
-      query: tokenArg.describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
+      chain: chainArg().describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async ({ chain, query }) => {
@@ -77,9 +78,9 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_get_balance",
     "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_track rather than re-reading balances.",
     {
-      chain: chainArg.describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      chain: chainArg().describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
       address: textArg(128, 1).describe("The wallet's address on that chain."),
-      token: tokenArg
+      token: tokenArg()
         .optional()
         .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
     },
@@ -95,20 +96,17 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_swap_quote",
     "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
-      fromChain: chainArg.describe('Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
-      fromToken: tokenArg.describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
-      toChain: chainArg.describe("Destination chain name, ticker or key."),
-      toToken: tokenArg.describe('Token the user receives: symbol, contract address, or "native".'),
-      amount: z
-        .string()
-        .trim()
-        .min(1)
-        .max(96)
-        .describe('Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".'),
-      fromAddress: addressArg.describe(
+      fromChain: chainArg().describe('Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
+      toChain: chainArg().describe("Destination chain name, ticker or key."),
+      toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
+      amount: amountArg().describe(
+        'Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".',
+      ),
+      fromAddress: addressArg().describe(
         "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
       ),
-      toAddress: addressArg.describe(
+      toAddress: addressArg().describe(
         "Recipient on the destination chain. Defaults to fromAddress when the destination is EVM.",
       ),
       slippageBps: z
@@ -157,7 +155,7 @@ export function registerSwapTools(server: McpServer): void {
     "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it. This server never signs or moves funds.",
     {
       ...swapArgs,
-      cancelTxHash: txHashArg
+      cancelTxHash: txHashArg()
         .optional()
         .describe(
           "Hash of the cancel transaction (0x and 64 hex characters), once the user's wallet has sent the cancel step.",

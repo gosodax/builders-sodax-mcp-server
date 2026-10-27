@@ -47,7 +47,46 @@ describe("swap tool safety", () => {
     expect(JSON.stringify(out)).not.toMatch(/abandon|Ab3-/);
   });
 
+  it("tells the agent to rotate a pasted SODAX API key", async () => {
+    const { out } = await callTool("sodax_get_balance", { chain: "arb", address: API_KEY });
+    expect(out.nextStep).toBe(
+      "Tell the user to rotate that SODAX API key and send keys only as the x-api-key header, never as a tool input.",
+    );
+  });
+
+  // zod checks these fields before the handler, so the refusal comes back as the validation error's text.
   it.each([
+    ["sodax_swap_quote", { ...QUOTE, amount: PHRASE }, "amount", "seed phrase"],
+    ["sodax_swap_quote", { ...QUOTE, amount: TX }, "amount", "64-hex value, not an amount"],
+    ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
+    ["sodax_swap_track", { txHash: PHRASE }, "txHash", "seed phrase"],
+    ["sodax_swap_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
+    ["sodax_swap_cancel", { txHash: TX, cancelTxHash: PHRASE }, "cancelTxHash", "seed phrase"],
+    ["sodax_swap_track", { txHash: TX, quoteId: PHRASE }, "quoteId", "seed phrase"],
+    ["sodax_swap_track", { txHash: TX, quoteId: TX }, "quoteId", "64-hex value, not a quoteId"],
+  ])("%s refuses a secret in a field zod checks first (%#)", async (tool, args, field, says) => {
+    const client = await swapClient();
+    const result = await client.callTool({ name: tool, arguments: args });
+    await client.close();
+    expect(result.isError).toBe(true);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("SECRET_REJECTED");
+    expect(text).toContain(says);
+    expect(text).toContain(`\\"${field}\\"`);
+    expect(text).not.toMatch(/abandon|Ab3-|abab/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("gives a plain validation error for a malformed value that isn't a secret", async () => {
+    const client = await swapClient();
+    const result = await client.callTool({ name: "sodax_swap_track", arguments: { txHash: "0x1234", quoteId: "q-1" } });
+    await client.close();
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).not.toContain("SECRET_REJECTED");
+  });
+
+  it.each([
+    ["sodax_swap_quote", { ...QUOTE, fromAddress: TX }],
     ["sodax_swap_quote", { ...QUOTE, fromAddress: USER, toAddress: TX }],
     ["sodax_resolve_token", { chain: "arb", query: TX }],
     ["sodax_get_balance", { chain: "arb", address: TX }],
@@ -61,6 +100,15 @@ describe("swap tool safety", () => {
     vi.mocked(walletBalance).mockResolvedValue(0n);
     const { out } = await callTool("sodax_get_balance", { chain: "sui", address: TX });
     expect(out.status).toBe("ok");
+  });
+
+  // Some MCP clients don't resolve `$ref`.
+  it("gives every field its own input schema, with no $ref", async () => {
+    const client = await swapClient();
+    const { tools } = await client.listTools();
+    await client.close();
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) expect(JSON.stringify(tool.inputSchema)).not.toContain("$ref");
   });
 
   it("takes no RPC URL and no partner fee as a tool input", async () => {
@@ -95,6 +143,7 @@ describe("swap tool safety", () => {
     await client.close();
     expect(result.isError).toBe(true);
     const text = JSON.stringify(result.content);
+    expect(text).toContain("SECRET_REJECTED");
     expect(text).toContain("treat it as exposed");
     expect(text).not.toContain("abandon");
     expect(fetchSpy).not.toHaveBeenCalled();

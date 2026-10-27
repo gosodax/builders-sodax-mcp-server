@@ -93,6 +93,16 @@ describe("resolveToken", () => {
     });
   });
 
+  // NEAR's USDC is a 64-hex account: it must match before a 64-hex query is refused as a possible key.
+  it("resolves a NEAR token given by its 64-hex address", () => {
+    const address = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+    const near = parseCatalog({ near: [{ ...catalog.tokens.hyper[0], chainKey: "near", address }] }, {});
+    expect(resolveToken(near, "near", address)).toMatchObject({ status: "resolved", matchedBy: "address" });
+    expect(() => resolveToken(near, "near", "ab".repeat(32))).toThrow(
+      expect.objectContaining({ code: "SECRET_REJECTED" }),
+    );
+  });
+
   it("reports a chain whose tokens all failed validation as unavailable, not as unknown tokens", () => {
     const broken = parseCatalog({ hyper: [{ symbol: "bad\n" }] }, {});
     expect(() => resolveToken(broken, "hyper", "HYPE")).toThrow(

@@ -14,3 +14,4 @@ dist/
 # Internal dev notes (not for public repo)
 HEALTH-TOPBAR.md
 mcp-registry-listing-instructions.md
+bin/

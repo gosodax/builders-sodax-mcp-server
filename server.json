@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.gosodax/builders-mcp",
   "title": "SODAX Builders MCP",
-  "description": "Cross-network DeFi API data, AMM analytics, and SDK docs for 17+ networks.",
+  "description": "Cross-network DeFi API data, AMM analytics, relay tools, and SODAX SDK docs.",
   "version": "1.6.0",
   "repository": {
     "url": "https://github.com/gosodax/builders-sodax-mcp-server",
@@ -126,6 +126,34 @@
     {
       "name": "sodax_refresh_cache",
       "description": "Clear cached data to get fresh results"
+    },
+    {
+      "name": "sodax_check_chain_support",
+      "description": "Check whether SODAX supports a blockchain, given its name, ticker, or chain key"
+    },
+    {
+      "name": "sodax_get_volume_stats",
+      "description": "Get aggregate solver volume stats (approximate count of filled-intent records)"
+    },
+    {
+      "name": "sodax_get_solver_oracle",
+      "description": "Get the solver's oracle USD prices per chain and token"
+    },
+    {
+      "name": "sodax_get_solver_quote",
+      "description": "Get a swap quote from the SODAX solver for hub-chain (Sonic) assets"
+    },
+    {
+      "name": "sodax_relay_submit_tx",
+      "description": "Submit a finalized spoke-chain transaction to the SODAX intent relay for delivery"
+    },
+    {
+      "name": "sodax_relay_get_transaction_packets",
+      "description": "List the cross-network relay packets emitted by a source transaction"
+    },
+    {
+      "name": "sodax_relay_get_packet",
+      "description": "Fetch a single relay packet by its connection serial number (conn_sn)"
     },
     {
       "name": "docs_health",

@@ -46,6 +46,13 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # server.json is what the MCP Registry publishes; validate it against the
+      # registry schema on every PR so a release can't ship an unpublishable manifest.
+      - name: Validate server.json (MCP Registry)
+        run: |
+          .github/scripts/install-mcp-publisher.sh
+          ./bin/mcp-publisher validate
+
   docker-build:
     name: Docker build
     timeout-minutes: 10

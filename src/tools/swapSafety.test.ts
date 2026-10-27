@@ -38,13 +38,15 @@ describe("swap tool safety", () => {
     ["sodax_resolve_token", { chain: "arb", query: PHRASE }, "query"],
     ["sodax_get_balance", { chain: "arb", address: API_KEY }, "address"],
     ["sodax_swap_quote", { ...QUOTE, toAddress: PHRASE }, "toAddress"],
+    ["sodax_swap_quote", { ...QUOTE, amount: PHRASE }, "amount"],
+    ["sodax_swap_quote", { ...QUOTE, amount: TX }, "amount"],
     ["sodax_swap_track", { txHash: TX, chain: API_KEY }, "chain"],
     ["sodax_swap_cancel", { txHash: TX, chain: API_KEY }, "chain"],
   ])("%s refuses a pasted secret before any call, and never repeats it", async (tool, args, field) => {
     const { out } = await callTool(tool, args);
     expect(out.error).toMatchObject({ code: "SECRET_REJECTED", field });
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(JSON.stringify(out)).not.toMatch(/abandon|Ab3-/);
+    expect(JSON.stringify(out)).not.toMatch(/abandon|Ab3-|abab/);
   });
 
   it("tells the agent to rotate a pasted SODAX API key", async () => {
@@ -56,8 +58,6 @@ describe("swap tool safety", () => {
 
   // zod checks these fields before the handler, so the refusal comes back as the validation error's text.
   it.each([
-    ["sodax_swap_quote", { ...QUOTE, amount: PHRASE }, "amount", "seed phrase"],
-    ["sodax_swap_quote", { ...QUOTE, amount: TX }, "amount", "64-hex value, not an amount"],
     ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
     ["sodax_swap_track", { txHash: PHRASE }, "txHash", "seed phrase"],
     ["sodax_swap_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
@@ -157,5 +157,10 @@ describe("swap tool safety", () => {
     });
     const address = await callTool("sodax_get_balance", { chain: "arb", address: TX });
     expect(address.out.error).toMatchObject({ message: "That's a 64-hex value, not an address on Arbitrum." });
+  });
+
+  it("calls a 64-hex amount not an amount", async () => {
+    const { out } = await callTool("sodax_swap_quote", { ...QUOTE, amount: TX });
+    expect(out.error).toMatchObject({ message: "That's a 64-hex value, not an amount.", field: "amount" });
   });
 });

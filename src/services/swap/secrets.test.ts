@@ -87,6 +87,15 @@ describe("screenSecrets", () => {
     expect(JSON.stringify(refusal({ query: ABANDON }))).not.toContain("abandon");
   });
 
+  it("refuses a 64-hex amount, but not a 64-digit decimal or a 64-hex value in a field that takes one", () => {
+    const hex64 = "ab".repeat(32);
+    expect(() => screenSecrets({ amount: hex64 })).toThrow(
+      expect.objectContaining({ code: "SECRET_REJECTED", details: { field: "amount" } }),
+    );
+    expect(() => screenSecrets({ amount: "1".repeat(64) })).not.toThrow();
+    expect(() => screenSecrets({ address: hex64 })).not.toThrow();
+  });
+
   it("skips tx-hash fields: a value that passed their check is a tx hash", () => {
     expect(() => screenSecrets({ txHash: base58(88), cancelTxHash: base58(87) })).not.toThrow();
     expect(() => screenSecrets({ chain: base58(88) })).toThrow(expect.objectContaining({ code: "SECRET_REJECTED" }));

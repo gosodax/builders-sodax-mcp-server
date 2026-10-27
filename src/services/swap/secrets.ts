@@ -1,11 +1,13 @@
 /**
  * Secrets pasted into a swap tool's inputs. Only shapes that are never a legitimate input are
  * matched here, so no chain is needed to judge them. A bare 64-hex value can be an EVM private key
- * or a valid Sui/NEAR value, so it's judged where the chain is known (`rejectHex64`).
+ * or a valid Sui/NEAR value, so it's judged where the chain is known (`rejectHex64`), or by a field
+ * that never takes one.
  */
 
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { ActionError } from "./errors.js";
+import { AMOUNT_PATTERN } from "./units.js";
 
 type SecretKind = "api_key" | "seed_phrase" | "private_key";
 
@@ -74,12 +76,18 @@ function hex64Refusal(notA: string, field?: string): ActionError {
 
 // A value that passed a tx-hash field's own check is a tx hash, which the ADR exempts.
 const TX_HASH_FIELDS = new Set(["txHash", "cancelTxHash"]);
+// Fields whose zod check lets a bare 64-hex value through, though they never take one.
+const NOT_HEX64_FIELDS = new Map([["amount", "an amount"]]);
 
 /** Refuses the first string argument that looks like a secret, naming the field, never the value. */
 export function screenSecrets(args: Record<string, unknown>): void {
   for (const [field, value] of Object.entries(args)) {
-    const kind = typeof value === "string" && !TX_HASH_FIELDS.has(field) ? findSecret(value) : undefined;
+    if (typeof value !== "string" || TX_HASH_FIELDS.has(field)) continue;
+    const kind = findSecret(value);
     if (kind) throw secretRefusal(kind, field);
+    const notA = NOT_HEX64_FIELDS.get(field);
+    // 64 decimal digits are an amount, if a huge one.
+    if (notA && HEX64.test(value) && !AMOUNT_PATTERN.test(value)) throw hex64Refusal(notA, field);
   }
 }
 
@@ -92,7 +100,7 @@ export function rejectHex64(value: string, field: string, chainName: string, exp
   throw hex64Refusal(`${expected === "address" ? "an address" : "a token"} on ${chainName}`, field);
 }
 
-/** `notHex64` names what a field that never holds a bare 64-hex value takes instead ("an amount"). */
+/** `notHex64` names what a field that never holds a bare 64-hex value takes instead ("a quoteId"). */
 export interface SecretField {
   txHash?: boolean;
   notHex64?: string;

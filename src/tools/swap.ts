@@ -15,20 +15,15 @@ import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwapWaiting } from "../services/swap/track.js";
-import { AMOUNT_PATTERN } from "../services/swap/units.js";
 import { registerActionTool } from "./actionTool.js";
 
 /**
- * `schema`, plus the SECRET_REJECTED refusal for a value that fails `valid` (by default `schema` itself)
- * and looks like a secret: the handler's own screening never sees a value zod rejects.
+ * `schema`, plus the SECRET_REJECTED refusal for a value that fails it and looks like a secret: the
+ * handler's own screening never sees a value zod rejects.
  */
-function screened(
-  schema: z.ZodString,
-  field: SecretField = {},
-  valid = (value: string) => schema.safeParse(value).success,
-) {
+function screened(schema: z.ZodString, field: SecretField = {}) {
   return schema.superRefine((value, ctx) => {
-    const refusal = valid(value) ? undefined : secretRefusalText(value, field);
+    const refusal = schema.safeParse(value).success ? undefined : secretRefusalText(value, field);
     if (refusal) ctx.addIssue({ code: "custom", message: refusal });
   });
 }
@@ -43,9 +38,6 @@ const txHashArg = () =>
     txHash: true,
   });
 const quoteIdArg = () => screened(z.string().trim().uuid(), { notHex64: "a quoteId" });
-// The handler checks an amount only after resolving the token; a secret that isn't a decimal is refused first.
-const amountArg = () =>
-  screened(z.string().trim().min(1).max(96), { notHex64: "an amount" }, value => AMOUNT_PATTERN.test(value));
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
@@ -100,7 +92,7 @@ export function registerSwapTools(server: McpServer): void {
       fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
       toChain: chainArg().describe("Destination chain name, ticker or key."),
       toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
-      amount: amountArg().describe(
+      amount: textArg(96, 1).describe(
         'Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".',
       ),
       fromAddress: addressArg().describe(

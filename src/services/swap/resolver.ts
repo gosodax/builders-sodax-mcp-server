@@ -18,6 +18,8 @@ export type Resolution =
 
 const MAX_CANDIDATES = 10;
 const MAX_SUGGESTIONS = 5;
+// What many wallets and aggregators pass for an EVM chain's gas token.
+const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string): Resolution {
   const key = findChainKey(catalog, chainQuery);
@@ -44,7 +46,8 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
   const byAddress = findToken(catalog, key, q);
   if (byAddress) return { status: "resolved", chain, matchedBy: "address", token: byAddress };
 
-  if (q.toLowerCase() === "native") {
+  const isEvm = catalog.chains[key]?.type === "EVM";
+  if (q.toLowerCase() === "native" || (isEvm && q.toLowerCase() === EVM_NATIVE_PLACEHOLDER)) {
     const native = tokens.find(token => token.isNative);
     return native ? { status: "resolved", chain, matchedBy: "native", token: native } : notFound([]);
   }

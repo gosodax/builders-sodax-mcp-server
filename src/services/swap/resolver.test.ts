@@ -122,6 +122,22 @@ describe("resolveToken", () => {
     );
   });
 
+  it.each(["0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"])(
+    "resolves the native placeholder %s to an EVM chain's native token",
+    placeholder => {
+      expect(resolve("Arbitrum", placeholder)).toMatchObject({
+        status: "resolved",
+        matchedBy: "native",
+        token: { symbol: "ETH", isNative: true },
+      });
+      expect(resolve("sonic", placeholder)).toMatchObject({ status: "resolved", token: { symbol: "S" } });
+    },
+  );
+
+  it("doesn't take the EVM native placeholder on a chain that isn't EVM", () => {
+    expect(resolve("sui", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")).toMatchObject({ status: "not_found" });
+  });
+
   it("finds no native token on a chain the config doesn't describe", () => {
     const partial = parseCatalog({ newchain: [{ ...catalog.tokens.hyper[0], chainKey: "newchain" }] }, {});
     expect(resolveToken(partial, "newchain", "native")).toMatchObject({ status: "not_found" });

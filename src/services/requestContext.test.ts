@@ -23,7 +23,14 @@ describe("parseApiKey", () => {
     expect(parseApiKey(" sodax_test-key_1 ")).toBe("sodax_test-key_1");
   });
 
-  it.each([undefined, "", "sk-live-abc123", "sodax_a, sodax_b", "Bearer sodax_a"])("drops %j", value => {
+  it("accepts up to 128 chars and drops longer", () => {
+    const longest = `sodax_${"a".repeat(122)}`;
+    expect(parseApiKey(longest)).toBe(longest);
+    expect(parseApiKey(`${longest}a`)).toBeUndefined();
+  });
+
+  const malformed = ["sk-live-abc123", "sodax_a, sodax_b", "Bearer sodax_a", '"sodax_a"', "sodax_a\nsodax_b"];
+  it.each([undefined, "", ...malformed])("drops %j", value => {
     expect(parseApiKey(value)).toBeUndefined();
   });
 });

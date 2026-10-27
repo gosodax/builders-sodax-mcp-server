@@ -32,7 +32,8 @@ export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote }
 /**
  * A chain a swap can start from: an EVM spoke whose `connection` log proves the deposit. The hub
  * has none, so nothing could prove or submit a swap from it yet. All three are pinned from the SDK
- * config; five EVM chains share one asset manager, so the live chain id must agree too.
+ * config, so a deposit already sent is checked whatever the live config says; the quote refuses a
+ * live chain id that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
   const live = catalog.chains[chain.key];
@@ -42,7 +43,6 @@ export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceCh
   if (live?.type !== "EVM" || chainId === undefined || !connection || !assetManager) {
     throw new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`);
   }
-  if (live.chainId !== chainId) throw configDisagrees(chain.key, "chainId");
   return { chainId, connection, assetManager };
 }
 

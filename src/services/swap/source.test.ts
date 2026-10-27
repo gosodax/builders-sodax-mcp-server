@@ -16,18 +16,12 @@ describe("sourceChainFor", () => {
     expect(sourceChainFor(fixtureCatalog(), ARBITRUM)).toMatchObject({ chainId: 42161 });
   });
 
-  it("refuses a live chain id that differs from the SDK config's", () => {
-    // Base shares Arbitrum's asset manager, so only the chain id tells them apart.
+  it("keeps the SDK config's chain id when the live one differs, which only the quote refuses", () => {
     const catalog = fixtureCatalog();
     catalog.chains[ARBITRUM.key] = { ...catalog.chains[ARBITRUM.key], chainId: 8453 };
     const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
-    expect(() => sourceChainFor(catalog, ARBITRUM)).toThrow(
-      expect.objectContaining({
-        code: "UPSTREAM_UNAVAILABLE",
-        message: "The SODAX config doesn't agree with the SDK's.",
-      }),
-    );
-    expect(error).toHaveBeenCalledWith(expect.objectContaining({ field: "chainId" }), expect.any(String));
+    expect(sourceChainFor(catalog, ARBITRUM)).toMatchObject({ chainId: 42161 });
+    expect(error).not.toHaveBeenCalled();
   });
 
   it.each(["sonic", "sui"])("refuses %s, which track can't check a deposit on", key => {

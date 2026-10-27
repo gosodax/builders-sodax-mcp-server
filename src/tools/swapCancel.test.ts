@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { cancelPayload, getEvmReceipt, initSodax } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { abiEncode } from "../services/swap/__fixtures__/encode.js";
 import { claimDeposit, clearQuoteCache, markRelayedForRefund } from "../services/swap/quoteCache.js";
 import { SEND_MESSAGE_SELECTOR } from "../services/swap/sourceTx.js";
@@ -81,6 +82,14 @@ describe("sodax_swap_cancel", () => {
       srcChainKey: ARBITRUM,
       intent: INTENT,
     });
+  });
+
+  it("builds the cancel for the SDK config's chain id though the live one differs", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs[ARBITRUM].chain.chainId = 8453;
+    stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT, configs: JSON.stringify(configs) });
+    const { out } = await cancel({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "ready", steps: [{ kind: "cancel", chainId: 42161 }] });
   });
 
   it.each([

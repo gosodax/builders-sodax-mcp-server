@@ -4,6 +4,7 @@ import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
 import { getEvmReceipt, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -68,6 +69,16 @@ describe("sodax_swap_track", () => {
       relayData: expect.stringMatching(/^0x[0-9a-f]+$/),
     });
     expect(Object.keys(submit.body?.intent ?? {})).toHaveLength(14);
+  });
+
+  it("submits a deposit already sent though the live config's chain id now differs from the SDK's", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs[ARBITRUM].chain.chainId = 8453;
+    const calls = stubBackend({ configs: JSON.stringify(configs) });
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("queued");
+    expect(getEvmReceipt).toHaveBeenCalledWith(ARBITRUM, TX);
+    expect(submits(calls)).toHaveLength(1);
   });
 
   it("submits once over five calls, and once for two at the same time", async () => {

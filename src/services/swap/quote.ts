@@ -109,6 +109,8 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   // Only a chain track can prove the deposit on: nothing else would submit the swap. The chain id
   // and swap contract are pinned from the SDK config.
   const { chainId, assetManager: swapContract } = sourceChainFor(catalog, from.chain);
+  // Five EVM chains share one asset manager, so the live chain id must agree with the pinned one.
+  if (from.config.chainId !== chainId) throw configDisagrees(from.chain.key, "chainId");
   const dstEvm = to.config.type === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);

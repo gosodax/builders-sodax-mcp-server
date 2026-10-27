@@ -67,6 +67,8 @@ export function cancelReceipt(payload: string, from = USER): EvmReceipt {
 }
 
 export interface Backend {
+  /** Replaces the recorded chain config. */
+  configs?: string;
   /** The submit-tx row, or `null` for a 404; after a submit the stub reports `pending` unless set. */
   row?: Record<string, unknown> | null;
   status?: () => Response;
@@ -80,7 +82,7 @@ export interface Backend {
 export function stubBackend(backend: Backend = {}) {
   const calls: { path: string; body?: Record<string, unknown> }[] = [];
   let submitted = false;
-  const serveCatalog = catalogFetch();
+  const serveCatalog = catalogFetch(undefined, backend.configs);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (!url.startsWith(`${SODAX_SWAPS_BASE_URL}/`) || url.endsWith("/tokens")) return serveCatalog(input, init);

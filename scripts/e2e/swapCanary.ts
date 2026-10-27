@@ -22,9 +22,9 @@ import { spokeChainConfig } from "@sodax/types";
 import {
   http,
   BaseError,
+  EstimateGasExecutionError,
+  ExecutionRevertedError,
   type Hex,
-  RpcError,
-  RpcRequestError,
   createWalletClient,
   erc20Abi,
   formatEther,
@@ -57,6 +57,11 @@ const GAS_FLOOR = parseEther("0.0002");
 // `solved` is the fill on the hub; delivery to the destination is one more relay hop (the SDK waits 120 s).
 const ARRIVAL_TIMEOUT_MS = 180_000;
 const DEFAULT_RETRY_SEC = 15;
+// A failed swap send is looked up for 30 s: a gateway error or a timeout may come after the node took it.
+const LOOKUP_TRIES = 7;
+const LOOKUP_INTERVAL_MS = 5_000;
+const PREPARE_TRIES = 3;
+const PREPARE_INTERVAL_MS = 5_000;
 // The server's retryable codes, but INTERNAL: a bug should fail the canary, not be waited out.
 const RETRYABLE: readonly ActionErrorCode[] = RETRYABLE_CODES.filter(code => code !== "INTERNAL");
 const PENDING: readonly TrackResult["status"][] = ["awaiting_source_confirmation", "queued", "in_progress"];
@@ -88,7 +93,7 @@ function readEnv() {
 type Env = ReturnType<typeof readEnv>;
 
 /** A signer that also reads, per side, on the side's RPC override or viem's default. USDC from the SDK config. */
-function wallets(account: Env["account"]) {
+export function wallets(account: Env["account"]) {
   return SIDES.map(({ key, chain }) => ({
     key,
     usdc: spokeChainConfig[key].supportedTokens.USDC,
@@ -155,13 +160,13 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
  * Sends the quote's steps in order, each mined before the next. The swap is signed and its hash logged
  * before it's sent, so a send that errors after the node took it is still tracked.
  */
-async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<Hex> {
+export async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<Hex> {
   // Counted here, not asked per step: a load-balanced public RPC can answer from a node that hasn't
   // seen the approve yet.
   let nonce = await client.getTransactionCount({ address: client.account.address, blockTag: "pending" });
   for (const step of quote.steps) {
     if (step.chainId !== client.chain.id) throw new Failure(`a step on chain ${step.chainId}`);
-    const request = await client.prepareTransactionRequest({
+    const request = await prepare(client, {
       to: step.tx.to as Hex,
       data: step.tx.data as Hex,
       value: BigInt(step.tx.value),
@@ -171,24 +176,54 @@ async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<Hex> {
     const serialized = await client.signTransaction(request as never);
     const hash = keccak256(serialized);
     log(`${step.kind}: ${hash}`);
-    const sent = client.sendRawTransaction({ serializedTransaction: serialized });
     if (step.kind === "swap") {
-      try {
-        await sent;
-      } catch (error) {
-        // The node answered no (nonce, funds, price): nothing was sent. Anything else may have landed.
-        if (error instanceof RpcError || error instanceof RpcRequestError) {
-          throw new Failure(`the node refused the swap (RPC code ${error.code})`);
-        }
-        log(`send reported ${describe(error)}; tracking anyway`);
-      }
+      await sendSwap(client, serialized, hash);
       return hash;
     }
-    await sent;
+    await client.sendRawTransaction({ serializedTransaction: serialized });
     const receipt = await client.waitForTransactionReceipt({ hash, timeout: 120_000 });
     if (receipt.status !== "success") throw new Failure(`${step.kind} reverted`);
   }
   throw new Failure("the quote had no swap step");
+}
+
+/** Fills gas and fees, again when the estimate reverts: the node may not have seen the step before it yet. */
+async function prepare(client: Wallet["client"], tx: { to: Hex; data: Hex; value: bigint; nonce: number }) {
+  for (let tries = 1; ; tries++) {
+    try {
+      return await client.prepareTransactionRequest(tx);
+    } catch (error) {
+      // viem estimates the gas, or has the node fill the tx (a revert then surfaces as the fill's error).
+      const reverted =
+        error instanceof BaseError &&
+        error.walk(cause => cause instanceof EstimateGasExecutionError || cause instanceof ExecutionRevertedError);
+      if (!reverted || tries === PREPARE_TRIES) throw error;
+      log(`${describe(error)}; preparing again`);
+      await sleep(PREPARE_INTERVAL_MS);
+    }
+  }
+}
+
+/**
+ * Sends the swap. A send that errors may still have reached the pool (a gateway 5xx with a JSON-RPC
+ * body, "already known", a timeout), whatever the error says: then the swap is tracked if a node has it.
+ */
+async function sendSwap(client: Wallet["client"], serializedTransaction: Hex, hash: Hex): Promise<void> {
+  try {
+    await client.sendRawTransaction({ serializedTransaction });
+    return;
+  } catch (error) {
+    log(`send reported ${describe(error)}; looking the swap up`);
+  }
+  for (let tries = 1; tries <= LOOKUP_TRIES; tries++) {
+    if (tries > 1) await sleep(LOOKUP_INTERVAL_MS);
+    const found = await client.getTransaction({ hash }).then(
+      () => true,
+      () => false,
+    );
+    if (found) return log("a node has the swap; tracking it");
+  }
+  throw new Failure("the swap's send failed and 30 s of lookups didn't find it");
 }
 
 /** Calls track through the quote's afterSend until it says solved, up to 5 minutes past the quote's expiry. */
@@ -267,12 +302,13 @@ function fail(error: unknown): void {
   process.exitCode = 1;
 }
 
-// Node's default handlers would print the message, which may carry a URL.
-const crash = (error: unknown) => {
-  fail(error);
-  process.exit(1);
-};
-process.on("unhandledRejection", crash);
-process.on("uncaughtException", crash);
-
-run().catch(fail);
+// Imported by its test; run otherwise. Node's default handlers would print the message, which may carry a URL.
+if (!process.env.VITEST) {
+  const crash = (error: unknown) => {
+    fail(error);
+    process.exit(1);
+  };
+  process.on("unhandledRejection", crash);
+  process.on("uncaughtException", crash);
+  run().catch(fail);
+}

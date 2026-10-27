@@ -1,3 +1,8 @@
+import { wordlist as czech } from "@scure/bip39/wordlists/czech";
+import { wordlist as french } from "@scure/bip39/wordlists/french";
+import { wordlist as italian } from "@scure/bip39/wordlists/italian";
+import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
+import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
 import { describe, expect, it } from "vitest";
 import { findSecret, screenSecrets, secretRefusalText } from "./secrets.js";
 
@@ -28,6 +33,7 @@ describe("findSecret", () => {
     ["11 BIP39 words", `${"abandon ".repeat(10)}about`],
     ["12 short words not in the BIP39 list", "foo bar baz qux quux corge grault garply waldo fred plugh xyzzy"],
     ["12 BIP39 words broken by one that isn't", `${"abandon ".repeat(6)}xyzzy ${"abandon ".repeat(5)}about`],
+    ["12 BIP39 words no one list holds", `${"abandon ".repeat(6)}${"ábaco ".repeat(6)}`],
     ["a token name", "USD Coin"],
     ["an EVM address", "0x000000000000000000000000000000000000dEaD"],
     ["a tx hash (judged where the chain is known)", `0x${"ab".repeat(32)}`],
@@ -57,6 +63,25 @@ describe("findSecret", () => {
       Array.from({ length: 12 }, (_, i) => `${i + 1}.${i === 11 ? "about" : "abandon"}`).join("\n"),
     ],
   ])("finds a seed phrase written %s", (_case, value) => {
+    expect(findSecret(value)).toBe("seed_phrase");
+  });
+
+  it.each([
+    ["Czech", czech],
+    ["French", french],
+    ["Italian", italian],
+    ["Portuguese", portuguese],
+    ["Spanish", spanish],
+  ])("finds a seed phrase in %s", (_language, list) => {
+    expect(findSecret(list.slice(-12).join(" "))).toBe("seed_phrase");
+  });
+
+  it.each([
+    ["as typed", "ácido acné aéreo afición ágil agonía águila alacrán álbum algodón almíbar ámbar"],
+    ["decomposed", "ácido acné aéreo afición ágil agonía águila alacrán álbum algodón almíbar ámbar".normalize("NFD")],
+    ["without its accents", "acido acne aereo aficion agil agonia aguila alacran album algodon almibar ambar"],
+    ["uppercase", "ACADÉMIE ACQUÉRIR ADÉQUAT ADHÉSIF AÉRER AÉRONEF AGRÉABLE ALGÈBRE ALIÉNER ALLÉGER ALVÉOLE AMÉNAGER"],
+  ])("finds an accented seed phrase written %s", (_case, value) => {
     expect(findSecret(value)).toBe("seed_phrase");
   });
 

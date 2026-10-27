@@ -5,7 +5,12 @@
  * that never takes one.
  */
 
-import { wordlist } from "@scure/bip39/wordlists/english";
+import { wordlist as czech } from "@scure/bip39/wordlists/czech";
+import { wordlist as english } from "@scure/bip39/wordlists/english";
+import { wordlist as french } from "@scure/bip39/wordlists/french";
+import { wordlist as italian } from "@scure/bip39/wordlists/italian";
+import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
+import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
 import { ActionError } from "./errors.js";
 import { AMOUNT_PATTERN } from "./units.js";
 
@@ -15,16 +20,21 @@ const BASE58 = "1-9A-HJ-NP-Za-km-z";
 // 64 bytes in base58: a Solana secret key, or just as well a Solana tx signature.
 const BASE58_64_BYTES = new RegExp(`^[${BASE58}]{86,88}$`);
 const HEX64 = /^(?:0x)?[0-9a-fA-F]{64}$/;
-const BIP39_WORDS = new Set(wordlist);
 const SEED_PHRASE_MIN_WORDS = 12;
 
-/** A run of 12 or more BIP39 English words, however they're cased, joined, numbered or prefixed. */
+/** Lowercase with accents dropped ("Ábaco" → "abaco"): every Latin-script BIP39 word is then a-z only. */
+const fold = (text: string) => text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+const BIP39_LISTS = [english, spanish, french, italian, portuguese, czech].map(list => new Set(list.map(fold)));
+
+/** A run of 12 or more words from one BIP39 list, however they're cased, accented, joined, numbered or prefixed. */
 function hasSeedPhrase(text: string): boolean {
-  let run = 0;
-  for (const word of text.toLowerCase().split(/[^a-z]+/)) {
+  const runs = BIP39_LISTS.map(() => 0);
+  for (const word of fold(text).split(/[^a-z]+/)) {
     if (!word) continue;
-    run = BIP39_WORDS.has(word) ? run + 1 : 0;
-    if (run >= SEED_PHRASE_MIN_WORDS) return true;
+    for (const [i, list] of BIP39_LISTS.entries()) {
+      runs[i] = list.has(word) ? runs[i] + 1 : 0;
+      if (runs[i] >= SEED_PHRASE_MIN_WORDS) return true;
+    }
   }
   return false;
 }

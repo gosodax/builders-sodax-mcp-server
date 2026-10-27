@@ -83,10 +83,10 @@ What shapes the design:
 **Context.** The Swaps API builds source transactions for many chain families, and each has its own quirks. Checking a source transaction on chain needs a reader per family.
 
 **Decision.**
-- Sources in phase 1: the EVM chains and Sonic. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
+- Sources in phase 1: the EVM spoke chains. Sonic, the hub, is not a source yet: it has no `connection` contract, so nothing on chain proves a deposit from it. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
 - When those sources open, Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
 - Before building a swap to NEAR or Stellar, check with the SDK that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
-- No `rpcUrl` input. Operators set RPC URLs per chain through env. The server reads chains only through the SDK: source transactions on EVM source chains, recipients on NEAR and Stellar, and wallet balances and allowances.
+- No `rpcUrl` input. Operators set RPC URLs per chain through env; without one, the SDK's packaged default is used. The server reads chains only through the SDK: source transactions on EVM source chains, the user's hub wallet on Sonic, recipients on NEAR and Stellar, and wallet balances. Whether an approve is needed comes from the backend's allowance check.
 
 **Consequences.**
 - Phase 1 covers the swaps most agents start with, without a reader for every chain family.
@@ -99,12 +99,12 @@ What shapes the design:
 **Decision.**
 - Five tools: `sodax_resolve_token`, `sodax_get_balance`, `sodax_swap_quote`, `sodax_swap_track` and `sodax_swap_cancel`.
 - They share one template, `registerActionTool`. It screens inputs for secrets, validates them, turns failures into an error with a code and a next step, returns structured output ending in one `nextStep` sentence, and records analytics.
-- Balances and allowances come from the server's own reads through the SDK, on the env RPCs. No backend balance endpoint exists; one may replace these reads later.
+- Balances come from the server's own reads through the SDK, on the env RPCs, in `sodax_get_balance` only. No backend balance endpoint exists; one may replace these reads later.
 
 **Consequences.**
 - Phase 2 tools reuse the template.
 - Builder tools stay as they are.
-- `sodax_get_balance` and the quote's balance check depend on the SDK and the env RPCs. SDK shortcomings are fixed in the SDK, not worked around in the server.
+- `sodax_get_balance` depends on the SDK and the env RPCs. SDK shortcomings are fixed in the SDK, not worked around in the server.
 
 ## How the swap tools behave
 
@@ -119,7 +119,7 @@ What shapes the design:
   - or `SODAX_PARTNER_FEE_ADDRESS` and `SODAX_PARTNER_FEE_BPS` on stdio.
 
   The address must be a valid EVM address and the fee 1 to 100 bps. Anything else is rejected when connecting. The same fee goes to the quote and the intent, and is cached with them. Without it, there is no partner fee.
-- With `fromAddress`, the quote checks the balance and the destination, then lists the steps to sign in order: a reset approve if needed, an approve if needed, then the swap.
+- With `fromAddress`, the quote checks the destination, then lists the steps to sign in order: a reset approve if needed, an approve if needed, then the swap. It doesn't check the balance: `sodax_get_balance` does, and the wallet refuses a swap it can't pay for.
 - Without `fromAddress`, it's a price quote only.
 - The intent is cached under a `quoteId`, so the model never retypes bigint fields.
 
@@ -129,18 +129,19 @@ What shapes the design:
 - Otherwise it checks that this transaction is the quoted deposit before calling `submit-tx`. Without the check, a wrong hash, such as the approve's, is queued and later abandoned.
 - The right place for the check is `submit-tx` itself, so every client gets it. Until the backend does it, the server checks EVM sources through the env RPCs: the receipt succeeded and holds the message log from the chain's SODAX `connection` contract, carrying the relay payload cached with the quote.
 - Matching the transaction input isn't enough. The same bytes can be sent to a different contract, and a smart-wallet batch can succeed while the inner call fails. The message log only exists if the deposit happened.
-- Then it calls `submit-tx` once and reports progress in plain words until `solved` or `failed`.
+- Then it calls `submit-tx` once and reports progress in plain words until a final state. `solved` means the solver filled the intent on the hub; to any chain but Sonic, the output arrives one cross-chain hop later.
 
 ### Cancel
 
 - The first call checks the status. If the swap is already solved, it says so. Otherwise it returns the unsigned cancel transaction.
 - The second call, with `cancelTxHash`, checks the receipt and relays it through `/swaps/intents/submit`, because the cancel endpoint only builds the transaction.
 - The intent comes from the hub or the quote cache, never from model input.
+- The cancel the backend builds is checked before it is returned: its message payload must equal the SDK's own cancel for that intent, so the user's hub wallet runs nothing else.
 - Once Solana and Bitcoin sources open, cancel isn't offered for them: relaying needs relay data the cancel endpoint doesn't return. The answer there is to wait for the deadline, after which the backend refunds.
 
 ### Quote cache
 
-- It lives in memory. An entry is kept until the intent deadline plus 30 minutes, with at most 10,000 entries. The Bound token is never cached.
+- It lives in memory. An entry is kept until the intent deadline plus 30 minutes, with at most 10,000 entries and 1,000 open quotes per API key; a key over its cap is refused, so no one's live quote is pushed out. The Bound token is never cached.
 - If the server restarts after the user broadcasts but before `track` submits, the entry is lost and the swap sits on chain, unsubmitted.
 - The server can't see this on its own. It finds out only when `track` is called again for that transaction and finds neither the quote nor a backend record. It then returns `not_submitted_unknown_quote`, tells the user the swap is on chain but not submitted yet, and alerts the operator with the source chain, tx hash and quote id so they can find the deposit and relay it.
 - If nobody calls `track` again, no alert fires.

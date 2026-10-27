@@ -22,7 +22,6 @@ import { spokeChainConfig } from "@sodax/types";
 import {
   http,
   BaseError,
-  EstimateGasExecutionError,
   ExecutionRevertedError,
   type Hex,
   RpcRequestError,
@@ -242,16 +241,15 @@ export async function sendSteps(wallet: Wallet, quote: ReadyQuote): Promise<Hex>
   throw new Failure("the quote had no swap step");
 }
 
-/** Fills gas and fees, again when the estimate reverts: the node may not have seen the step before it yet. */
+/** Fills gas and fees, again when that reverts: the node may not have seen the step before it yet. */
 async function prepare(client: Wallet["client"], tx: { to: Hex; data: Hex; value: bigint; nonce: number }) {
   for (let tries = 1; ; tries++) {
     try {
       return await client.prepareTransactionRequest(tx);
     } catch (error) {
-      // viem estimates the gas, or has the node fill the tx (a revert then surfaces as the fill's error).
-      const reverted =
-        error instanceof BaseError &&
-        error.walk(cause => cause instanceof EstimateGasExecutionError || cause instanceof ExecutionRevertedError);
+      // viem estimates the gas or has the node fill the tx: a revert in either is in the cause chain.
+      // Only that is prepared again; viem has already retried a timeout.
+      const reverted = error instanceof BaseError && error.walk(cause => cause instanceof ExecutionRevertedError);
       if (!reverted || tries === PREPARE_TRIES) throw error;
       log(`${describe(error)}; preparing again`);
       await sleep(PREPARE_INTERVAL_MS);

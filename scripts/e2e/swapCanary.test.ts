@@ -165,6 +165,18 @@ describe("sendSteps", () => {
     expect(methods).toContain("eth_sendRawTransaction");
   });
 
+  it.each<[string, Answer]>([
+    ["times out", "hang"],
+    ["fails without a revert", { error: { code: -32000, message: "header not found" } }],
+  ])("doesn't prepare the swap again when its gas estimate %s", async (_case, answer) => {
+    const methods = fakeRpc({ ...CHAIN, eth_estimateGas: [answer] });
+    const sent = sendSteps(ARBITRUM(), QUOTE);
+    await settle(sent);
+    await expect(sent).rejects.toThrow();
+    expect(logs.join("\n")).not.toContain("preparing again");
+    expect(methods).not.toContain("eth_sendRawTransaction");
+  });
+
   it("gives up after 3 reverted estimates, having sent nothing", async () => {
     const methods = fakeRpc({ ...CHAIN, eth_estimateGas: [REVERTED] });
     const sent = sendSteps(ARBITRUM(), QUOTE);

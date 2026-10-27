@@ -77,22 +77,28 @@ describe("postToDiscord", () => {
 });
 
 describe("notifyServerStarted", () => {
-  it("posts a green 'Server started' embed with version/env/transport/port", async () => {
+  it("posts a green 'Server started' embed with version/env/SODAX_ENV/transport/port", async () => {
     process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
     const fetchSpy = stubFetch();
-    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production", port: 3000 });
+    await notifyServerStarted({
+      version: "1.2.3",
+      transport: "http",
+      env: "production",
+      sodaxEnv: "canary",
+      port: 3000,
+    });
     const payload = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
     const embed = payload.embeds[0];
     expect(embed.title).toContain("Server started");
     expect(embed.color).toBe(0x2ecc71);
     const fieldValues = embed.fields.map((f: { value: string }) => f.value);
-    expect(fieldValues).toEqual(expect.arrayContaining(["1.2.3", "production", "http", "3000"]));
+    expect(fieldValues).toEqual(expect.arrayContaining(["1.2.3", "production", "canary", "http", "3000"]));
   });
 
   it("is silent when no webhook is configured", async () => {
     delete process.env.DISCORD_WEBHOOK_URL;
     const fetchSpy = stubFetch();
-    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production" });
+    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production", sodaxEnv: "production" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

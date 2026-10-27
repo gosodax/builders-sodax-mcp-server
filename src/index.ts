@@ -412,6 +412,7 @@ async function runHTTP(): Promise<void> {
       transport: "http",
       port,
       env: process.env.NODE_ENV || "unset",
+      sodaxEnv: SODAX_ENV,
     });
     // Non-blocking: compare live OpenAPI spec against registered MCP tools.
     // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.

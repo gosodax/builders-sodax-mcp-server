@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  cancelPayload,
   checksumValid,
   connectionFor,
   encodeRecipient,
@@ -76,6 +77,23 @@ describe("rebuildSwapTx", () => {
         intent: broken,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("cancelPayload", () => {
+  it("is one cancelIntent call on the pinned intents contract, for exactly this intent", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    const payload = cancelPayload(intent) ?? "";
+    expect(payload).toContain(solverConfig.intentsContract.slice(2).toLowerCase());
+    expect(payload).toContain(BigInt(intent.intentId).toString(16));
+    expect(cancelPayload(intent)).toBe(payload);
+    expect(cancelPayload({ ...intent, minOutputAmount: "2" })).not.toBe(payload);
+  });
+
+  it("gives up quietly on an intent the SDK can't encode", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    expect(cancelPayload({ ...intent, srcChain: "999" })).toBeUndefined();
+    expect(cancelPayload({ ...intent, intentId: "not a number" })).toBeUndefined();
   });
 });
 

@@ -254,16 +254,7 @@ export async function rebuildSwapTx(params: {
   try {
     const { sdk: lib, sodax } = sdk();
     const hub = isHubChain(srcChainKey);
-    // The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned.
-    const sdkIntent = {
-      ...intent,
-      intentId: BigInt(intent.intentId),
-      inputAmount: BigInt(intent.inputAmount),
-      minOutputAmount: BigInt(intent.minOutputAmount),
-      deadline: BigInt(intent.deadline),
-      srcChain: BigInt(intent.srcChain),
-      dstChain: BigInt(intent.dstChain),
-    } as unknown as Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
+    const sdkIntent = toSdkIntent(intent);
     const payload = lib.EvmSolverService.reconstructCreateIntentData(sdkIntent, solverConfig.intentsContract, hub);
     if (hub) {
       // As the SDK's Sonic path does: value only when the hub asset is the hub's native token.
@@ -283,6 +274,34 @@ export async function rebuildSwapTx(params: {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * What a cancel sends the user's hub wallet: one `cancelIntent(intent)` call on the intents contract,
+ * as the SDK builds it for its own cancels. `undefined` if the SDK can't.
+ */
+export function cancelPayload(intent: IntentJson): string | undefined {
+  try {
+    const result = sdk().sodax.swaps.getCancelIntentRelayData(toSdkIntent(intent));
+    return result.ok ? result.value.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type SdkIntent = Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
+
+/** The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned. */
+function toSdkIntent(intent: IntentJson): SdkIntent {
+  return {
+    ...intent,
+    intentId: BigInt(intent.intentId),
+    inputAmount: BigInt(intent.inputAmount),
+    minOutputAmount: BigInt(intent.minOutputAmount),
+    deadline: BigInt(intent.deadline),
+    srcChain: BigInt(intent.srcChain),
+    dstChain: BigInt(intent.dstChain),
+  } as unknown as SdkIntent;
 }
 
 /** `approve(spender, amount)` calldata on an ERC-20, as the SDK encodes it. */

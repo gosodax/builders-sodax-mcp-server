@@ -6,6 +6,7 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
+import { cancelPayload } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { toStepTx } from "./quote.js";
 import {
@@ -38,22 +39,31 @@ export async function cancelSwap(input: {
 }): Promise<CancelResult> {
   const txHash = input.txHash.toLowerCase();
   const source = await resolveSource(input);
+  const { quote } = source;
   const base: SwapRef = { txHash, chain: source.chain, ...(input.quoteId && { quoteId: input.quoteId }) };
 
-  // Until the sent cancel is mined, nothing upstream is worth asking.
+  // The swap first: a sent cancel is only worth waiting for if there's something to cancel.
+  const row = await getSubmitTxStatus(txHash, source.chain.key);
+  // A deposit this server relayed for refund has no backend row; its quote is the record.
+  if (!row && quote?.relayedForRefund && quote.submittedTxHash === txHash) {
+    return { ...base, status: "not_cancellable", reason: "refunding" };
+  }
+  const hubTxHash = row?.result?.dstIntentTxHash;
+  const reason = whyNotCancellable(row);
+  if (reason || !hubTxHash) return { ...base, status: "not_cancellable", reason: reason ?? "not_on_hub_yet" };
+
   const cancelTxHash = input.cancelTxHash?.toLowerCase();
   const receipt = cancelTxHash ? await readReceipt(source.chain, cancelTxHash) : undefined;
   if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
   if (receipt?.reverted) return { ...base, status: "cancel_failed" };
 
-  const row = await getSubmitTxStatus(txHash, source.chain.key);
-  const hubTxHash = row?.result?.dstIntentTxHash;
-  const reason = whyNotCancellable(row);
-  if (reason || !hubTxHash) return { ...base, status: "not_cancellable", reason: reason ?? "not_on_hub_yet" };
-
   const intent = await getHubIntent(hubTxHash);
-  if (source.quote && source.quote.intent.intentId !== intent.intentId) {
-    logger.error({ chainKey: source.chain.key, quoteId: source.quote.quoteId }, "The hub intent isn't the quoted one");
+  const differs = quote ? differingFields(quote.intent, intent) : [];
+  if (differs.length > 0) {
+    logger.error(
+      { chainKey: source.chain.key, quoteId: quote?.quoteId, fields: differs },
+      "The hub intent isn't the quoted one",
+    );
     throw new ActionError("SWAP_MISMATCH", "The swap service returned a different intent than the one quoted.");
   }
   // The build is deterministic, so on the second call it gives the payload the sent cancel must carry.
@@ -76,20 +86,29 @@ export async function cancelSwap(input: {
   return { ...base, status: "cancel_relayed" };
 }
 
+/** The intent fields that differ; hex in any case is the same value. */
+function differingFields(quoted: Intent, hub: Intent): (keyof Intent)[] {
+  return (Object.keys(quoted) as (keyof Intent)[]).filter(field => !same(String(quoted[field]), String(hub[field])));
+}
+
 /**
  * The cancel the backend builds, checked before anyone signs it: from the intent's source address,
- * to the chain's `connection`, no value, sending a message to the user's hub wallet.
+ * to the chain's `connection`, no value, sending the user's hub wallet exactly the SDK's
+ * `cancelIntent(intent)` call. The payload is what that wallet runs, so nothing else may pass.
  */
 async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{ tx: EvmTx; payload: string }> {
   const tx = await buildCancel(source.chain.key, intent);
   const message = decodeSendMessage(tx.data);
+  const payload = cancelPayload(intent);
   if (
     !message ||
+    !payload ||
     !same(tx.from, intent.srcAddress) ||
     !same(tx.to, source.connection) ||
     BigInt(tx.value) !== 0n ||
     message.dstChainId !== HUB_RELAY_ID ||
-    !same(message.dstAddress, intent.creator)
+    !same(message.dstAddress, intent.creator) ||
+    !same(message.payload, payload)
   ) {
     logger.error(
       { chainKey: source.chain.key, txTo: tx.to },
@@ -97,5 +116,5 @@ async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service built a different cancel than expected.");
   }
-  return { tx, payload: message.payload };
+  return { tx, payload };
 }

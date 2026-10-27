@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
-import { getEvmReceipt } from "../services/sodax.js";
+import { cancelPayload, getEvmReceipt, initSodax } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { abiEncode } from "../services/swap/__fixtures__/encode.js";
-import { clearQuoteCache } from "../services/swap/quoteCache.js";
+import { clearQuoteCache, markRelayedForRefund } from "../services/swap/quoteCache.js";
 import { SEND_MESSAGE_SELECTOR } from "../services/swap/sourceTx.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import {
@@ -27,7 +27,9 @@ vi.mock("../services/sodax.js", async importOriginal => {
 
 const HUB_TX = `0x${"b".repeat(64)}`;
 const CANCEL_TX = `0x${"d".repeat(64)}`;
-const PAYLOAD = `0x${"ef".repeat(48)}`;
+// What the user's hub wallet runs: the SDK's cancelIntent(INTENT), the only payload a cancel may carry.
+await initSodax();
+const PAYLOAD = cancelPayload(INTENT) ?? "";
 const OPEN = { status: "failed", result: { dstIntentTxHash: HUB_TX } };
 /** The cancel the backend builds for INTENT: the user's `sendMessage` to their hub wallet. */
 const CANCEL_TX_BUILT = {
@@ -86,6 +88,16 @@ describe("sodax_swap_cancel", () => {
     ["another sender", { from: CREATOR }],
     ["a value", { value: "1" }],
     ["a message to someone else", { data: `${SEND_MESSAGE_SELECTOR}${abiEncode([146n, USER, PAYLOAD]).slice(2)}` }],
+    [
+      "other calls for the hub wallet",
+      { data: `${SEND_MESSAGE_SELECTOR}${abiEncode([146n, CREATOR, `${PAYLOAD}00`]).slice(2)}` },
+    ],
+    [
+      "another intent's cancel",
+      {
+        data: `${SEND_MESSAGE_SELECTOR}${abiEncode([146n, CREATOR, cancelPayload({ ...INTENT, intentId: "8" }) ?? ""]).slice(2)}`,
+      },
+    ],
     ["another function", { data: `0xa9059cbb${abiEncode([146n, CREATOR, PAYLOAD]).slice(2)}` }],
   ])("refuses a built cancel with %s", async (_case, change) => {
     stubBackend({ row: OPEN, cancelTx: { ...CANCEL_TX_BUILT, ...change } });
@@ -93,10 +105,36 @@ describe("sodax_swap_cancel", () => {
     expect(out.error.code).toBe("SWAP_MISMATCH");
   });
 
-  it("refuses a hub intent that isn't the quoted one", async () => {
-    stubBackend({ row: OPEN, hubIntent: { ...INTENT, intentId: "8" }, cancelTx: CANCEL_TX_BUILT });
+  it.each([
+    { intentId: "8" },
+    { minOutputAmount: "1" },
+    { dstAddress: CREATOR },
+    { deadline: "1" },
+    { allowPartialFill: true },
+  ])("refuses a hub intent that isn't the quoted one (%o)", async change => {
+    const calls = stubBackend({ row: OPEN, hubIntent: { ...INTENT, ...change }, cancelTx: CANCEL_TX_BUILT });
     const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
+  });
+
+  it("takes the hub's copy of the quoted intent in another hex case", async () => {
+    stubBackend({
+      row: OPEN,
+      hubIntent: { ...INTENT, inputToken: INTENT.inputToken.toLowerCase() },
+      cancelTx: CANCEL_TX_BUILT,
+    });
+    const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("ready");
+  });
+
+  it("calls a deposit this server relayed for refund already refunding, though the backend has no row", async () => {
+    stubBackend({ row: null });
+    const { quoteId } = cacheQuote();
+    markRelayedForRefund(quoteId, TX);
+    const { out } = await cancel({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "refunding" });
+    expect(out.nextStep).toContain("already being refunded");
   });
 
   it("relays the user's sent cancel once it's on chain", async () => {
@@ -120,12 +158,20 @@ describe("sodax_swap_cancel", () => {
     expect(calls.some(call => call.path === "/intents/submit")).toBe(false);
   });
 
-  it("asks the backend nothing until the cancel is mined", async () => {
+  it("asks the backend only for the swap's status until the cancel is mined", async () => {
     const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
     const { out } = await cancel({ txHash: TX, chain: ARBITRUM, cancelTxHash: CANCEL_TX });
     expect(out.status).toBe("cancel_awaiting_confirmation");
-    expect(calls).toEqual([]);
+    expect(calls.map(call => call.path.split("?")[0])).toEqual(["/submit-tx/status"]);
+  });
+
+  it("says a never-submitted swap has nothing to cancel, without waiting for the sent cancel", async () => {
+    stubBackend({ row: null });
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    const { out } = await cancel({ txHash: TX, chain: ARBITRUM, cancelTxHash: CANCEL_TX });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "not_submitted" });
+    expect(getEvmReceipt).not.toHaveBeenCalled();
   });
 
   it("asks for a retry when the relay doesn't take the cancel", async () => {

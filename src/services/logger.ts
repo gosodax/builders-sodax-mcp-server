@@ -21,7 +21,8 @@ import pino, { type Logger, type LoggerOptions } from "pino";
  */
 export function withoutUrls(text: string): string {
   // Any scheme (https, wss, …); stops at quotes and backslashes too, so it can run over serialized JSON.
-  return text.replace(/\b[a-z][a-z0-9+-]*:\/\/[^\s"'\\<>]+/gi, "<url>");
+  // The scheme is bounded so a long run without "://" (from a hostile RPC's body) stays linear.
+  return text.replace(/[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'\\<>]+/gi, "<url>");
 }
 
 /** JSON that can't throw: bigints as strings, cycles cut. */

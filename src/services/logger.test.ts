@@ -28,6 +28,19 @@ describe("errWithoutUrls", () => {
     },
   );
 
+  it("removes a URL glued to a word or a digit", () => {
+    expect(withoutUrls("key_https://rpc.example/KEY")).toBe("key_<url>");
+    expect(withoutUrls("1https://rpc.example/KEY")).toBe("1<url>");
+  });
+
+  // A hostile RPC's response body reaches error messages; it must not stall the event loop.
+  it("stays fast on a megabyte of scheme-like text with no URL", () => {
+    const text = "a-".repeat(512 * 1024);
+    const start = performance.now();
+    expect(withoutUrls(text)).toBe(text);
+    expect(performance.now() - start).toBeLessThan(200);
+  });
+
   it("is the logger's serializer for err", () => {
     const serializers = (logger as unknown as Record<symbol, Record<string, unknown>>)[pino.symbols.serializersSym];
     expect(serializers.err).toBe(errWithoutUrls);

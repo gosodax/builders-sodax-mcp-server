@@ -22,6 +22,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML_PATH = join(__dirname, "..", "public", "index.html");
+const README_PATH = join(__dirname, "..", "..", "README.md");
 
 beforeAll(() => {
   seedToolRegistry();
@@ -71,6 +72,20 @@ describe("landing page template", () => {
     // added; every displayed number must come from a {{PLACEHOLDER}}.
     const literalCount = /\d+\+?\s+(tools|networks)\b/i.exec(template);
     expect(literalCount, `hardcoded count "${literalCount?.[0]}" found in index.html`).toBeNull();
+  });
+
+  it("names every registered tool, and no other sodax_ tool, as the README does", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const registered = getRegisteredTools().map(t => t.name);
+    for (const name of registered) {
+      expect(template, `${name} missing from index.html`).toContain(`<code>${name}</code>`);
+      expect(readme, `${name} missing from README.md`).toContain(`| \`${name}\` |`);
+    }
+    const listed = [
+      ...template.matchAll(/<code>(sodax_\w+)<\/code>/g),
+      ...readme.matchAll(/^\| `(sodax_\w+)` \|/gm),
+    ].map(match => match[1]);
+    expect(listed.filter(name => !registered.includes(name))).toEqual([]);
   });
 
   it("contains the expected placeholders", () => {

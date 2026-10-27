@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.gosodax/builders-mcp",
   "title": "SODAX Builders MCP",
-  "description": "Cross-network DeFi API data, AMM analytics, and SDK docs for 17+ networks.",
+  "description": "Cross-network DeFi data, SDK docs, and swap tools that quote and track swaps the user's wallet signs",
   "version": "1.6.0",
   "repository": {
     "url": "https://github.com/gosodax/builders-sodax-mcp-server",
@@ -15,9 +15,16 @@
       "headers": [
         {
           "name": "x-api-key",
-          "description": "SODAX API key. Optional for the builder tools; required for the swap tools once they are enabled. Forwarded on the server's data API and solver calls",
+          "description": "SODAX API key. Optional for the builder tools; required for the swap tools. Forwarded on the server's data API, solver and Swaps API calls",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "x-sodax-profile",
+          "description": "Tools to serve: all (default: builder tools, plus swap tools with an API key), builder, or swap (needs x-api-key)",
+          "isRequired": false,
+          "isSecret": false,
+          "choices": ["all", "builder", "swap"]
         },
         {
           "name": "x-sodax-partner-address",
@@ -40,8 +47,48 @@
       "description": "List all blockchain networks supported by SODAX for cross-chain swaps and DeFi operations"
     },
     {
+      "name": "sodax_check_chain_support",
+      "description": "Check whether SODAX supports a chain by name, ticker, or key"
+    },
+    {
       "name": "sodax_get_swap_tokens",
       "description": "Get available tokens for swapping on SODAX, optionally filtered by chain"
+    },
+    {
+      "name": "sodax_get_transaction",
+      "description": "Look up a specific transaction by its hash to see status, amounts, and details"
+    },
+    {
+      "name": "sodax_get_user_transactions",
+      "description": "Get intent/transaction history for a specific wallet address"
+    },
+    {
+      "name": "sodax_get_volume",
+      "description": "Get solver volume data (filled intents) with filtering and pagination"
+    },
+    {
+      "name": "sodax_get_volume_stats",
+      "description": "Get aggregated solver volume statistics"
+    },
+    {
+      "name": "sodax_get_orderbook",
+      "description": "Get current orderbook entries from solver"
+    },
+    {
+      "name": "sodax_get_money_market_assets",
+      "description": "List all lending/borrowing assets in money market"
+    },
+    {
+      "name": "sodax_get_user_position",
+      "description": "Get user's money market lending/borrowing position"
+    },
+    {
+      "name": "sodax_get_partners",
+      "description": "List SODAX integration partners"
+    },
+    {
+      "name": "sodax_get_token_supply",
+      "description": "Get SODA token supply info (total, circulating, burned)"
     },
     {
       "name": "sodax_get_all_config",
@@ -68,30 +115,6 @@
       "description": "Get money market reserve assets used as collateral backing"
     },
     {
-      "name": "sodax_get_transaction",
-      "description": "Look up a specific transaction by its hash to see status, amounts, and details"
-    },
-    {
-      "name": "sodax_get_intent",
-      "description": "Look up a specific intent by its intent hash"
-    },
-    {
-      "name": "sodax_get_user_transactions",
-      "description": "Get intent/transaction history for a specific wallet address"
-    },
-    {
-      "name": "sodax_get_volume",
-      "description": "Get solver volume data (filled intents) with filtering and pagination"
-    },
-    {
-      "name": "sodax_get_orderbook",
-      "description": "Get current orderbook entries from solver"
-    },
-    {
-      "name": "sodax_get_solver_intent",
-      "description": "Get solver-side details for an intent including fill history"
-    },
-    {
       "name": "sodax_get_amm_positions",
       "description": "Get AMM liquidity provider NFT positions"
     },
@@ -100,16 +123,16 @@
       "description": "Get OHLCV candlestick chart data for an AMM pool"
     },
     {
-      "name": "sodax_get_money_market_assets",
-      "description": "List all lending/borrowing assets in money market"
+      "name": "sodax_get_intent",
+      "description": "Look up a specific intent by its intent hash"
+    },
+    {
+      "name": "sodax_get_solver_intent",
+      "description": "Get solver-side details for an intent including fill history"
     },
     {
       "name": "sodax_get_money_market_asset",
       "description": "Get detailed info for a specific money market asset by reserve address"
-    },
-    {
-      "name": "sodax_get_user_position",
-      "description": "Get user's money market lending/borrowing position"
     },
     {
       "name": "sodax_get_asset_borrowers",
@@ -124,16 +147,8 @@
       "description": "Get all borrowers across all money market assets"
     },
     {
-      "name": "sodax_get_partners",
-      "description": "List SODAX integration partners"
-    },
-    {
       "name": "sodax_get_partner_summary",
       "description": "Get volume and activity summary for a specific integration partner"
-    },
-    {
-      "name": "sodax_get_token_supply",
-      "description": "Get SODA token supply info (total, circulating, burned)"
     },
     {
       "name": "sodax_get_total_supply",
@@ -146,6 +161,46 @@
     {
       "name": "sodax_refresh_cache",
       "description": "Clear cached data to get fresh results"
+    },
+    {
+      "name": "sodax_get_solver_oracle",
+      "description": "Get the solver's oracle prices for every supported chain and token"
+    },
+    {
+      "name": "sodax_get_solver_quote",
+      "description": "Get a swap quote from the solver (exact input or exact output)"
+    },
+    {
+      "name": "sodax_relay_submit_tx",
+      "description": "Submit a confirmed spoke-chain transaction to the intent relay for cross-chain delivery"
+    },
+    {
+      "name": "sodax_relay_get_transaction_packets",
+      "description": "List every cross-chain packet emitted by a source transaction"
+    },
+    {
+      "name": "sodax_relay_get_packet",
+      "description": "Fetch a single relay packet by connection serial number"
+    },
+    {
+      "name": "sodax_resolve_token",
+      "description": "Look up a token on a chain: address, decimals and hub asset (swap tools)"
+    },
+    {
+      "name": "sodax_get_balance",
+      "description": "Read a wallet's native balance on a chain and, optionally, one token's (swap tools)"
+    },
+    {
+      "name": "sodax_swap_quote",
+      "description": "Quote a cross-chain swap; with the user's address, the transactions their wallet signs (swap tools)"
+    },
+    {
+      "name": "sodax_swap_track",
+      "description": "Submit and track a swap once the user's wallet has sent it (swap tools)"
+    },
+    {
+      "name": "sodax_swap_cancel",
+      "description": "Cancel a submitted swap that hasn't been filled (swap tools)"
     },
     {
       "name": "docs_health",

@@ -114,6 +114,12 @@ describe("addresses and contracts", () => {
     expect(encodeRecipient("nowhere", USER)).toBeUndefined();
   });
 
+  it("refuses a Stacks testnet principal, which the SDK would encode for mainnet", () => {
+    expect(encodeRecipient("stacks", "SP3031RGK734636C8KGW2Y76TEQBTVX59Q472EQH0")).toMatch(/^0x0516/);
+    expect(encodeRecipient("stacks", "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4")).toMatch(/^0x0514/);
+    expect(encodeRecipient("stacks", "ST000000000000000000002AMW42H")).toBeUndefined();
+  });
+
   it("pins the swap contract: a spoke's asset manager, the hub intents contract", () => {
     expect(swapContractFor("0xa4b1.arbitrum")).toBe("0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3");
     expect(swapContractFor("sonic")).toBe(solverConfig.intentsContract);

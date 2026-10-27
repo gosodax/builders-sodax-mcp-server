@@ -24,12 +24,7 @@ import { notifyError, notifyServerStarted, notifyServerStopping } from "./servic
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
-import {
-  parseApiKey,
-  runWithRequestContext,
-  setFallbackRequestContext,
-  sseMessageApiKey,
-} from "./services/requestContext.js";
+import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames, registerDocsProxyTools } from "./tools/docsProxy.js";
@@ -330,17 +325,13 @@ async function runHTTP(): Promise<void> {
   });
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
-  // clientId and apiKey: from GET /sse (see sseMessageApiKey).
-  const sseSessions = new Map<
-    string,
-    { transport: SSEServerTransport; server: McpServer; clientId: string; apiKey?: string }
-  >();
+  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(clientId);
     const transport = new SSEServerTransport("/messages", res);
-    sseSessions.set(transport.sessionId, { transport, server: sseServer, clientId, apiKey: callerApiKey(req) });
+    sseSessions.set(transport.sessionId, { transport, server: sseServer });
 
     res.on("close", () => {
       sseSessions.delete(transport.sessionId);
@@ -358,8 +349,8 @@ async function runHTTP(): Promise<void> {
       res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
       return;
     }
-    const post = { clientId: hashClientIp(req.ip || "unknown"), apiKey: callerApiKey(req) };
-    await runWithRequestContext({ apiKey: sseMessageApiKey(session, post) }, () =>
+    // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
+    await runWithRequestContext({ apiKey: callerApiKey(req) }, () =>
       session.transport.handlePostMessage(req, res, req.body),
     );
   });

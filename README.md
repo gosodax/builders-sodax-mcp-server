@@ -49,6 +49,9 @@ Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in 
 forwards it on its calls to the SODAX data API and solver, and nowhere else (not to the relay either). Over stdio,
 set `SODAX_API_KEY` instead. A value that isn't a SODAX key (`sodax_…`) is ignored.
 
+SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
+carries. The MCP SDKs' SSE clients already send their headers on both.
+
 ```json
 {
   "mcpServers": {

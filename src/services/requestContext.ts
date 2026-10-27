@@ -28,19 +28,6 @@ export function setFallbackRequestContext(context: RequestContext): void {
   fallback = context;
 }
 
-interface SseCaller {
-  clientId: string;
-  apiKey?: string;
-}
-
-/**
- * The key a legacy SSE `POST /messages` runs under. Without its own, it gets the one its
- * `GET /sse` sent only from that same client: the sessionId is in the URL, so it is no bearer.
- */
-export function sseMessageApiKey(get: SseCaller, post: SseCaller): string | undefined {
-  return post.apiKey ?? (post.clientId === get.clientId ? get.apiKey : undefined);
-}
-
 // SODAX keys are `sodax_` + base64url, 49 chars. Anything else (another service's secret,
 // two x-api-key headers joined with ", ", an oversized value) is dropped rather than forwarded.
 const SODAX_API_KEY_PATTERN = /^sodax_[A-Za-z0-9_-]+$/;

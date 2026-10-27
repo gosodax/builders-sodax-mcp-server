@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -23,6 +24,9 @@ import {
 } from "./sodax.js";
 
 const USER = "0x000000000000000000000000000000000000dEaD";
+
+// Not a dependency here: the copy the SDK runs on, so its errors are the ones the SDK sees.
+const stellar = createRequire(createRequire(import.meta.url).resolve("@sodax/sdk"))("@stellar/stellar-sdk");
 
 /** A live `POST /v1/swaps/intents` response (2026-10-26, nothing signed). */
 function recorded(name: "built-intent-usdc-fee.json" | "built-intent-eth.json" | "built-intent-sonic.json") {
@@ -205,6 +209,61 @@ describe("walletBalance", () => {
     const pending = expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow("SDK call failed");
     await vi.advanceTimersByTimeAsync(8_000);
     await pending;
+  });
+
+  describe("an account that doesn't exist yet", () => {
+    const XLM = { address: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA" };
+
+    // NEAR's RPC answer for an account that doesn't exist (live, 2026-10-27), which the SDK's client turns
+    // into its own error.
+    const nearUnknownAccount: typeof fetch = async (_url, init) => {
+      const { id, params } = JSON.parse(String(init?.body));
+      return Response.json({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          name: "HANDLER_ERROR",
+          cause: {
+            name: "UNKNOWN_ACCOUNT",
+            info: { requested_account_id: params.account_id, block_hash: "EK7bepCQ", block_height: 221773366 },
+          },
+          code: -32000,
+          message: "Server error",
+          data: `account ${params.account_id} does not exist while viewing`,
+        },
+      });
+    };
+
+    it('reads as null on Stellar by Horizon\'s 404, though stellar-sdk names its NotFoundError "Error"', async () => {
+      const notFound = new stellar.NotFoundError("Not Found", { title: "Resource Missing", status: 404 });
+      expect(notFound.name).toBe("Error");
+      const load = vi.spyOn(stellar.Horizon.Server.prototype, "loadAccount").mockRejectedValueOnce(notFound);
+      await expect(walletBalance("stellar", stellar.Keypair.random().publicKey(), XLM)).resolves.toBeNull();
+      load.mockRejectedValueOnce(new stellar.NetworkError("Internal Server Error", { status: 500 }));
+      await expect(walletBalance("stellar", stellar.Keypair.random().publicKey(), XLM)).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
+
+    it("reads as null on NEAR by the SDK's AccountDoesNotExistError", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(nearUnknownAccount);
+      await expect(walletBalance("near", "nobody.near", { address: "NEAR" })).resolves.toBeNull();
+    });
+
+    it("is never read from a token: a NEAR token contract that doesn't exist fails the same way", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(nearUnknownAccount);
+      await expect(walletBalance("near", "alice.near", { address: "no-such-token.near" })).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
+
+    it("is never read on another family, whatever the error looks like", async () => {
+      const lookalike = Object.assign(new Error("x"), { name: "AccountDoesNotExistError", response: { status: 404 } });
+      vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValue({ ok: false, error: lookalike } as never);
+      await expect(walletBalance("0xa4b1.arbitrum", USER, { address: `0x${"0".repeat(40)}` })).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
   });
 });
 

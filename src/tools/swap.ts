@@ -171,13 +171,19 @@ const ASKING_TOOL = "the tool that asked for this token (sodax_swap_quote if non
 const USE_RESOLVED = `Pass chain.key and token.address to ${ASKING_TOOL}; amounts stay in token units.`;
 
 /** Built from catalog symbols, chain names and formatted amounts only. */
-function balanceNextStep({ chain, native, token, accountExists }: BalanceResult): string {
+function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
   if (accountExists === false) {
     return `The wallet has no account on ${chain.name} yet, so it holds nothing there; it needs ${native.symbol} sent to it first.`;
   }
   const held = token ? ` and ${token.amount} ${token.symbol}` : "";
-  const noGas = native.baseUnits === "0" ? ` With no ${native.symbol} it likely can't pay gas there.` : "";
-  return `The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${held}.${noGas}`;
+  const sentences = [`The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${held}.`];
+  if (token && trustline === false) {
+    sentences.push(
+      `It has no ${token.symbol} trustline; the wallet must add one before it can receive ${token.symbol}.`,
+    );
+  }
+  if (native.baseUnits === "0") sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
+  return sentences.join(" ");
 }
 
 /**

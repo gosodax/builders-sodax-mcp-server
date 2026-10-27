@@ -12,6 +12,7 @@ import {
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
+  isNativeToken,
   isSuiChainKey,
   solverConfig,
   spokeChainConfig,
@@ -214,13 +215,24 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   }, RPC_CALL_TIMEOUT_MS);
 }
 
-// What the SDK throws when an account doesn't exist yet (an unfunded Stellar or NEAR account),
-// told apart by name: the messages carry the RPC URL.
-const MISSING_ACCOUNT_ERRORS = ["NotFoundError", "AccountDoesNotExistError"];
+// Whether a failed native read says the account doesn't exist yet (unfunded), per family; told apart
+// without the messages, which carry the RPC URL.
+function isMissingAccount(chainKey: string, error: unknown): boolean {
+  switch (chainConfigs[chainKey]?.chain?.type) {
+    case "STELLAR":
+      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+      return (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+    case "NEAR":
+      return error instanceof Error && error.name === "AccountDoesNotExistError";
+    default:
+      return false;
+  }
+}
 
 /**
  * A wallet's balance of a catalog token in base units, the native coin included (Hedera's scaled by the
- * SDK), or `null` when the account doesn't exist on the chain yet. A failed read fails as a bare error:
+ * SDK). `null` only from a native read on Stellar or NEAR whose account doesn't exist yet: a NEAR token
+ * read fails the same way for a token contract that doesn't exist. A failed read fails as a bare error:
  * never reported as 0. One read per token: the SDK's batch read reports a failed token as 0.
  */
 export function walletBalance(chainKey: string, address: string, token: { address: string }): Promise<bigint | null> {
@@ -232,7 +244,8 @@ export function walletBalance(chainKey: string, address: string, token: { addres
       token: token as never,
     });
     if (result.ok) return result.value;
-    if (result.error instanceof Error && MISSING_ACCOUNT_ERRORS.includes(result.error.name)) return null;
+    if (isNativeToken(chainKey as SpokeChainKey, token.address) && isMissingAccount(chainKey, result.error))
+      return null;
     throw new Error("balance read failed");
   }, RPC_CALL_TIMEOUT_MS);
 }

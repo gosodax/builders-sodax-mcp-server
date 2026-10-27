@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
-import { walletBalance } from "../services/sodax.js";
+import { recipientReady, walletBalance } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -9,17 +9,36 @@ import { callTool } from "./__fixtures__/swapClient.js";
 // Unit tests don't reach a chain: balances are scripted per test, by token address.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, walletBalance: vi.fn() };
+  return { ...actual, walletBalance: vi.fn(), recipientReady: vi.fn() };
 });
 
 const USER = "0x000000000000000000000000000000000000dEaD";
 const ARB_ETH = "0x0000000000000000000000000000000000000000";
 const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+const XLM = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
+const STELLAR_USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+const STELLAR_USER = "GDYUTHY75A7WUZJQDPOP66FB32BOYGZRXHWTWO4Q6LQTANT5X3V5HNFA";
 const balance = (args: Record<string, unknown>) => callTool("sodax_get_balance", args);
 const holding = (balances: Record<string, bigint | null>) =>
   vi
     .mocked(walletBalance)
     .mockImplementation(async (_chain, _address, token) => (token.address in balances ? balances[token.address] : 0n));
+
+/** The recorded catalog plus Stellar, with XLM and USDC as the live list has them. */
+function withStellar() {
+  const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+  const configs = JSON.parse(fixtureText("chain-configs.json"));
+  const token = { decimals: 7, chainKey: "stellar", hubAsset: ARB_USDC };
+  tokens.stellar = [
+    { ...token, symbol: "XLM", name: "Stellar Lumens", address: XLM },
+    { ...token, symbol: "USDC", name: "USD Coin", address: STELLAR_USDC },
+  ];
+  configs.stellar = {
+    chain: { id: "stellar", chainId: "stellar", name: "Stellar", type: "STELLAR" },
+    nativeToken: XLM,
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch(JSON.stringify(tokens), JSON.stringify(configs)));
+}
 
 beforeEach(() => {
   clearSwapCatalogCache();
@@ -30,6 +49,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(walletBalance).mockReset();
+  vi.mocked(recipientReady).mockReset();
 });
 
 describe("sodax_get_balance", () => {
@@ -97,26 +117,64 @@ describe("sodax_get_balance", () => {
   });
 
   it("says an account that doesn't exist yet holds nothing, even when its token read fails", async () => {
+    withStellar();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
-      if (token.address === ARB_ETH) return null;
+      if (token.address === XLM) return null;
       throw new Error("account not found");
     });
-    const { isError, out } = await balance({ chain: "arb", address: USER, token: "USDC" });
+    const { isError, out } = await balance({ chain: "stellar", address: STELLAR_USER, token: "USDC" });
     expect(isError).toBeFalsy();
     expect(out).toMatchObject({ accountExists: false, native: { baseUnits: "0" }, token: { baseUnits: "0" } });
     expect(out.nextStep).toBe(
-      "The wallet has no account on Arbitrum yet, so it holds nothing there; it needs ETH sent to it first.",
+      "The wallet has no account on Stellar yet, so it holds nothing there; it needs XLM sent to it first.",
+    );
+    expect(recipientReady).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["fails", () => Promise.reject(new Error("rpc down"))],
+    ["says the account is missing", () => Promise.resolve(null)],
+  ])("fails a token read that %s when the account exists", async (_case, tokenRead) => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) =>
+      token.address === ARB_ETH ? 1n : tokenRead(),
+    );
+    const { out } = await balance({ chain: "arb", address: USER, token: "USDC" });
+    expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
+    expect(recipientReady).not.toHaveBeenCalled();
+  });
+
+  it("reads 0 and trustline false for a Stellar token the account has no trustline for", async () => {
+    withStellar();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
+      if (token.address === XLM) return 25_000_000n;
+      throw new Error("simulation failed");
+    });
+    vi.mocked(recipientReady).mockResolvedValue(false);
+    const { isError, out } = await balance({ chain: "stellar", address: STELLAR_USER, token: "USDC" });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({ trustline: false, token: { symbol: "USDC", amount: "0", baseUnits: "0" } });
+    expect(recipientReady).toHaveBeenCalledWith("STELLAR", STELLAR_USDC, STELLAR_USER, 0n);
+    expect(out.nextStep).toBe(
+      "The wallet's balance on Stellar: 2.5 XLM and 0 USDC. It has no USDC trustline; the wallet must add one before it can receive USDC.",
     );
   });
 
-  it("still fails a token read when the account exists", async () => {
+  it("fails a Stellar token read the account has a trustline for, or whose trustline can't be read", async () => {
+    withStellar();
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
-      if (token.address === ARB_ETH) return 1n;
+      if (token.address === XLM) return 1n;
       throw new Error("rpc down");
     });
-    const { out } = await balance({ chain: "arb", address: USER, token: "USDC" });
-    expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
+    vi.mocked(recipientReady).mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("horizon down"));
+    for (let call = 0; call < 2; call++) {
+      const { out } = await balance({ chain: "stellar", address: STELLAR_USER, token: "USDC" });
+      expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
+      expect(out.trustline).toBeUndefined();
+    }
   });
 
   it("reads only BTC on Bitcoin, where the SDK would report any other token as 0", async () => {

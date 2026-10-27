@@ -32,7 +32,7 @@ const STATUSES: readonly string[] = ["pending", ...STAGES, "solved", "failed"];
 export const DEPOSIT_SAFE =
   "tell the user the deposit is on chain and safe, SODAX has been alerted to recover it, and they must not send it again";
 
-// A refund relay that failed is tried again on the next call, not sooner.
+// A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
 // How far ahead of ours the backend's clock may be when it refuses a deposit as past its deadline.
 const DEADLINE_SKEW_SEC = 60;

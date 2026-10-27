@@ -79,8 +79,8 @@ export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | 
 }
 
 /**
- * Claims the quote for a checked deposit, before any await so a second tx tracked at the same time
- * sees it. Whether `txHash` holds the claim: false if another deposit took it first.
+ * Claims the quote for a checked deposit. Synchronous, so a second tx tracked at the same time sees
+ * the claim. Whether `txHash` holds it: false if another deposit took it first.
  */
 export function claimDeposit(quoteId: string, txHash: string): boolean {
   const quote = quotes.get(quoteId);

@@ -163,16 +163,33 @@ async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Prom
   return parsed.data;
 }
 
+interface Refusal {
+  code: ActionErrorCode;
+  message: string;
+  nextStep?: string;
+}
+
+/** A refusal a smaller amount or another token may get past. */
+const tryOther = (message: string, reason: string): Refusal => ({
+  code: "SWAP_REJECTED",
+  message,
+  nextStep: `Tell the user ${reason}; ask whether to try a smaller amount or another token.`,
+});
+const NO_ROUTE = tryOther("No route was found for this pair at this amount.", "no route was found");
+const NO_LIQUIDITY = tryOther(
+  "There isn't enough liquidity for this pair at this amount.",
+  "there isn't enough liquidity",
+);
+
 // Upstream codes with a reason the agent can act on: the solver's (the SDK's SolverIntentErrorCode), and -23.
-const REFUSALS = new Map<number, { code: ActionErrorCode; message: string; nextStep?: string }>([
-  [
-    -4,
-    {
-      code: "SWAP_REJECTED",
-      message: "No route was found for this pair at this amount.",
-      nextStep: "Tell the user no route was found; ask whether to try a smaller amount or another token.",
-    },
-  ],
+const REFUSALS = new Map<number, Refusal>([
+  // What the live solver answers for "no path", which the SDK names -4.
+  [-1, NO_ROUTE],
+  [-4, NO_ROUTE],
+  [-5, NO_LIQUIDITY],
+  // Also the SDK's QUOTE_NOT_FOUND, but only the solver's execute returns that, and nothing here calls it.
+  [-8, NO_LIQUIDITY],
+  [-14, tryOther("The amount is too large for the swap service to quote.", "the amount is too large")],
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
 ]);
 

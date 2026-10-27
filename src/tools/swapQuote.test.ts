@@ -445,12 +445,17 @@ describe("sodax_swap_quote", () => {
     expect(out.error.status).toBeUndefined();
   });
 
-  it("says no route was found, and what to try instead", async () => {
-    stubSwaps({ quote: () => Response.json({ message: "No path was found", code: -4 }, { status: 422 }) });
+  it.each([
+    [-1, "No route was found for this pair at this amount.", "no route was found"],
+    [-4, "No route was found for this pair at this amount.", "no route was found"],
+    [-5, "There isn't enough liquidity for this pair at this amount.", "there isn't enough liquidity"],
+    [-8, "There isn't enough liquidity for this pair at this amount.", "there isn't enough liquidity"],
+    [-14, "The amount is too large for the swap service to quote.", "the amount is too large"],
+  ])("says why the solver refused with %i, and what to try instead", async (code, message, reason) => {
+    stubSwaps({ quote: () => Response.json({ message: "getQuote failed", code }, { status: 422 }) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(out.nextStep).toBe(
-      "Tell the user no route was found; ask whether to try a smaller amount or another token.",
-    );
+    expect(out.error).toEqual({ code: "SWAP_REJECTED", message });
+    expect(out.nextStep).toBe(`Tell the user ${reason}; ask whether to try a smaller amount or another token.`);
   });
 
   it("never passes upstream text on to the agent", async () => {

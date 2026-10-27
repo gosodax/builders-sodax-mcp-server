@@ -44,7 +44,10 @@ const RESTRICTED = {
 
 const USE_RESOLVED = "Use chain.key and token.address for this side of the swap; amounts stay in human units.";
 
-/** Built from catalog symbols, names and chain names only, never from the caller's query. */
+/**
+ * Built from catalog symbols, address prefixes and chain names only, never from the caller's
+ * query or a token's free-text name.
+ */
 export function resolveNextStep(resolution: Resolution): string {
   const chain = resolution.chain.name;
   switch (resolution.status) {
@@ -57,16 +60,18 @@ export function resolveNextStep(resolution: Resolution): string {
       return `${found}${restricted}${USE_RESOLVED}`;
     }
     case "ambiguous": {
-      // Two candidates can share a symbol (bridged and native USDC); the name tells them apart.
+      // Two candidates can share a symbol (bridged and native USDC); the address tells them apart.
       const symbols = resolution.candidates.map(token => token.symbol);
-      const labels = resolution.candidates
-        .map(token =>
-          symbols.indexOf(token.symbol) !== symbols.lastIndexOf(token.symbol)
-            ? `${token.symbol} (${token.name})`
-            : token.symbol,
-        )
-        .join(", ");
-      return `Ask the user which of ${labels} on ${chain} they mean, then call sodax_resolve_token again with its address.`;
+      const labels = resolution.candidates.map(token =>
+        symbols.indexOf(token.symbol) !== symbols.lastIndexOf(token.symbol)
+          ? `${token.symbol} (${shortAddress(token.address)})`
+          : token.symbol,
+      );
+      const ask =
+        labels.length === 1
+          ? `whether they mean ${labels[0]} on ${chain}`
+          : `which of ${labels.join(", ")} on ${chain} they mean`;
+      return `Ask the user ${ask}, then call sodax_resolve_token again with its address.`;
     }
     case "not_found": {
       if (resolution.otherChains) {
@@ -79,4 +84,8 @@ export function resolveNextStep(resolution: Resolution): string {
       return `No swap token matches on ${chain}; ask the user whether they mean ${first.symbol}${native} or another suggestion.`;
     }
   }
+}
+
+function shortAddress(address: string): string {
+  return address.length > 10 ? `${address.slice(0, 10)}…` : address;
 }

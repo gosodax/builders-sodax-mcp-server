@@ -164,6 +164,13 @@ describe("resolveToken", () => {
     expect(resolve("Arbitrum", "WETH")).not.toHaveProperty("otherChains");
   });
 
+  it.each(["USDC\u200B", "\u200BUSDC", "US\u200BDC", "ＵＳＤＣ", "UЅDC"])(
+    "never resolves the lookalike %j as an exact match",
+    query => {
+      expect(resolve("sonic", query).status).not.toBe("resolved");
+    },
+  );
+
   it("finds no native token on a chain the config doesn't describe", () => {
     const partial = parseCatalog({ newchain: [{ ...catalog.tokens.hyper[0], chainKey: "newchain" }] }, {});
     expect(resolveToken(partial, "newchain", "native")).toMatchObject({ status: "not_found" });

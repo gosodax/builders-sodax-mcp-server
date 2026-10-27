@@ -3,6 +3,7 @@ import { logger } from "../services/logger.js";
 import { recipientReady, walletBalance } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { clearBalanceCache } from "../services/swap/balance.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { callTool } from "./__fixtures__/swapClient.js";
 
@@ -43,6 +44,7 @@ function withStellar() {
 beforeEach(() => {
   clearSwapCatalogCache();
   clearCache();
+  clearBalanceCache();
   vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch());
 });
 
@@ -175,6 +177,28 @@ describe("sodax_get_balance", () => {
       expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
       expect(out.trustline).toBeUndefined();
     }
+  });
+
+  it("keeps a balance a few seconds per chain, wallet and token, and never a failed read", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-27T12:00:00Z"));
+    holding({ [ARB_ETH]: 1n, [ARB_USDC]: 2n });
+    await balance({ chain: "arb", address: USER, token: "USDC" });
+    const { out } = await balance({ chain: "arb", address: USER, token: "USDC" });
+    expect(out.token).toMatchObject({ baseUnits: "2" });
+    expect(walletBalance).toHaveBeenCalledTimes(2);
+
+    await balance({ chain: "arb", address: "0x000000000000000000000000000000000000bEEF", token: "USDC" });
+    expect(walletBalance).toHaveBeenCalledTimes(4);
+
+    now.mockReturnValue(Date.parse("2026-10-27T12:00:05.001Z"));
+    await balance({ chain: "arb", address: USER });
+    expect(walletBalance).toHaveBeenCalledTimes(5);
+
+    vi.mocked(walletBalance).mockRejectedValueOnce(new Error("rpc down"));
+    await balance({ chain: "hedera", address: USER });
+    await balance({ chain: "hedera", address: USER });
+    expect(walletBalance).toHaveBeenCalledTimes(7);
   });
 
   it("reads only BTC on Bitcoin, where the SDK would report any other token as 0", async () => {

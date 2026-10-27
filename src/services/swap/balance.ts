@@ -2,6 +2,7 @@
 
 import { recipientReady, walletBalance } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
+import { TtlCache } from "../ttlCache.js";
 import { ActionError } from "./errors.js";
 import { checkAddress, resolveExactly, resolveSwapChain } from "./resolver.js";
 import { chainRead } from "./source.js";
@@ -28,6 +29,14 @@ export interface BalanceResult {
   trustline?: false;
 }
 
+// A few seconds: an agent polling one wallet reads the chain once, and a top-up still shows soon.
+// Bounded, since every address a caller passes is a new key.
+const balances = new TtlCache(5_000, 10_000);
+
+export function clearBalanceCache(): void {
+  balances.clear();
+}
+
 export async function readBalances(input: { chain: string; address: string; token?: string }): Promise<BalanceResult> {
   const catalog = await getSwapCatalog();
   const chain = resolveSwapChain(catalog, input.chain);
@@ -49,14 +58,14 @@ export async function readBalances(input: { chain: string; address: string; toke
   const tokenUnits =
     token &&
     chainRead(chain, "balance", async () => {
-      const units = await walletBalance(chain.key, address, token);
+      const units = await cachedBalance(chain.key, address, token);
       // Only a native read may say the account is missing.
       if (units === null) throw new Error("no balance for the token");
       return units;
     });
   // Settled together: a failed token read counts only once the account is known to exist.
   const [nativeRead] = await Promise.allSettled([
-    chainRead(chain, "balance", () => walletBalance(chain.key, address, native)),
+    chainRead(chain, "balance", () => cachedBalance(chain.key, address, native)),
     tokenUnits,
   ]);
   if (nativeRead.status === "rejected") throw nativeRead.reason;
@@ -77,6 +86,17 @@ export async function readBalances(input: { chain: string; address: string; toke
     if (!noTrustline) throw error;
     return { ...base, native: held, token: holding(token, 0n), trustline: false };
   }
+}
+
+/** `walletBalance`, kept a few seconds per chain, wallet and token. */
+async function cachedBalance(chainKey: string, address: string, token: SwapsApiToken): Promise<bigint | null> {
+  const key = JSON.stringify([chainKey, address, token.address]);
+  // Boxed, so a cached `null` (a missing account) isn't a miss.
+  const cached = balances.get<{ units: bigint | null }>(key);
+  if (cached) return cached.units;
+  const units = await walletBalance(chainKey, address, token);
+  balances.set(key, { units });
+  return units;
 }
 
 function holding(token: SwapsApiToken, baseUnits: bigint): Holding {

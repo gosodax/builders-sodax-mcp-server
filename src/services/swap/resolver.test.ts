@@ -164,6 +164,27 @@ describe("resolveToken", () => {
     expect(resolve("Arbitrum", "WETH")).not.toHaveProperty("otherChains");
   });
 
+  it("never names another chain's native token for an address this chain doesn't list", () => {
+    const result = resolve("ICON", `0x${"0".repeat(40)}`);
+    expect(result.status).toBe("not_found");
+    expect(result).not.toHaveProperty("otherChains");
+  });
+
+  it("names every other chain that lists the address", () => {
+    const address = `0x${"ab".repeat(20)}`;
+    const keys = ["sonic", "hyper", "0xa4b1.arbitrum", "0xa86a.avax", "0xa.optimism", "0x38.bsc", "0x2105.base"];
+    const token = catalog.tokens.sonic[1];
+    const shared = parseCatalog(
+      {
+        sui: catalog.tokens.sui,
+        ...Object.fromEntries(keys.map(chainKey => [chainKey, [{ ...token, address, chainKey }]])),
+      },
+      {},
+    );
+    const result = resolveToken(shared, "sui", address);
+    expect(result.status === "not_found" && result.otherChains?.map(other => other.chain.key)).toEqual(keys);
+  });
+
   it.each(["USDC\u200B", "\u200BUSDC", "US\u200BDC", "ＵＳＤＣ", "UЅDC"])(
     "never resolves the lookalike %j as an exact match",
     query => {

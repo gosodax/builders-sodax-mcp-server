@@ -86,7 +86,7 @@ describe("resolveNextStep", () => {
 
   it("says which chains list an address this chain doesn't", () => {
     expect(nextStep("Avalanche", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBe(
-      "No swap token on Avalanche matches that; it is USDC on Arbitrum. Confirm the chain with the user, then call sodax_resolve_token again with that chain.",
+      "No swap token on Avalanche matches that; it is USDC on Arbitrum. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.",
     );
   });
 

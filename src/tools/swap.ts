@@ -76,7 +76,7 @@ export function resolveNextStep(resolution: Resolution): string {
     case "not_found": {
       if (resolution.otherChains) {
         const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
-        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with that chain.`;
+        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
       }
       const [first] = resolution.suggestions;
       if (!first) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;

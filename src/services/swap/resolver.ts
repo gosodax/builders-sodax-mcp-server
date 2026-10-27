@@ -3,7 +3,7 @@
  *
  * First rule that matches wins: contract address → `native` or an exact symbol →
  * a fuzzy match (always `ambiguous`: USDT0 is not USDT) → `not_found` with suggestions,
- * and any other chains that list the query as a token address.
+ * and any other chains that list the query as a non-native token address.
  * Returns structure only; each tool words its own next step.
  */
 
@@ -73,13 +73,13 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
     if (fuzzy.length > 0) return { status: "ambiguous", chain, query: q, candidates: fuzzy.slice(0, MAX_CANDIDATES) };
   }
 
+  // At most one per chain, never a native token: the zero address is each chain's own gas token, not one token.
   const otherChains = Object.keys(catalog.tokens)
     .filter(other => other !== key)
     .flatMap(other => {
       const token = findToken(catalog, other, q);
-      return token ? [{ chain: toChain(other), token }] : [];
-    })
-    .slice(0, MAX_SUGGESTIONS);
+      return token && !token.isNative ? [{ chain: toChain(other), token }] : [];
+    });
   return { ...notFound(suggest(tokens, needle)), ...(otherChains.length > 0 && { otherChains }) };
 }
 

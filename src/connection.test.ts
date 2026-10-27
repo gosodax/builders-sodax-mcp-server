@@ -9,11 +9,11 @@ function fakeReq(query: Record<string, unknown>, headers: Record<string, string>
   return { query, get: (name: string) => headers[name.toLowerCase()] } as unknown as Request;
 }
 
-/** Resolves a connection, by default with the switch on; `res` records what a refusal sent. */
-function resolve(req: Request, swapToolsEnabled = true) {
+/** Resolves a connection; `res` records what a refusal sent. */
+function resolve(req: Request) {
   const res = { status: vi.fn(), json: vi.fn() };
   res.status.mockReturnValue(res);
-  return { connection: resolveConnection(req, res as unknown as Response, swapToolsEnabled), res };
+  return { connection: resolveConnection(req, res as unknown as Response), res };
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -27,9 +27,12 @@ afterEach(() => {
 });
 
 describe("resolveConnection", () => {
-  it("forwards a SODAX key and serves its profile", () => {
-    const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }));
-    expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: false, swap: true } });
+  it.each([
+    [{ profile: "swap" }, { builder: false, swap: true }],
+    [{}, { builder: true, swap: true }],
+  ])("forwards a SODAX key and serves its profile (%j)", (query, toolsets) => {
+    const { connection, res } = resolve(fakeReq(query, { "x-api-key": KEY }));
+    expect(connection).toEqual({ context: { apiKey: KEY }, toolsets });
     expect(res.status).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -82,39 +85,11 @@ describe("resolveConnection", () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [{ profile: "builder" }, true],
-    [{}, false],
-  ])("tells a %j connection (switch on: %j) its malformed key is dropped", (query, swapToolsEnabled) => {
-    const { connection } = resolve(fakeReq(query, { "x-api-key": `Bearer ${KEY}` }), swapToolsEnabled);
-    expect(connection?.apiKey).toBeUndefined();
-    expect(connection?.toolsets.keyHint).toMatch(/^The x-api-key value .* so calls go out without one: /);
-  });
-
   it("doesn't log about a connection that sent no key", () => {
     const { connection } = resolve(fakeReq({}));
     expect(connection?.toolsets.keyHint).not.toContain("isn't a SODAX API key");
     expect(warn).not.toHaveBeenCalled();
     expect(debug).not.toHaveBeenCalled();
-  });
-
-  describe("with the switch off", () => {
-    it("refuses the swap profile with 400, even with a SODAX key", () => {
-      const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }), false);
-      expect(connection).toBeUndefined();
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({
-        jsonrpc: "2.0",
-        error: { code: -32602, message: "The swap profile is not enabled on this server yet. Use builder or all." },
-        id: null,
-      });
-    });
-
-    it("serves a keyed default connection the builder tools only, forwarding its key", () => {
-      const { connection, res } = resolve(fakeReq({}, { "x-api-key": KEY }), false);
-      expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: true, swap: false } });
-      expect(res.status).not.toHaveBeenCalled();
-    });
   });
 
   it("carries the connection's partner fee", () => {

@@ -7,7 +7,7 @@ import { initSodax } from "../../services/sodax.js";
 import type { SwapQuote } from "../../services/swap/quote.js";
 
 export async function swapClient(): Promise<Client> {
-  // The swap tools need the SDK, which the server loads at boot when they are on.
+  // The swap tools need the SDK, which the server loads at boot.
   await initSodax();
   const server = await createServer({ builder: false, swap: true });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

@@ -24,8 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML_PATH = join(__dirname, "..", "public", "index.html");
 
 beforeAll(() => {
-  // Every static toolset, the way the HTTP server seeds the registry.
-  seedToolRegistry({ builder: true, swap: true });
+  seedToolRegistry();
 });
 
 describe("tool registry", () => {
@@ -85,7 +84,6 @@ describe("landing page template", () => {
       "MONEY_MARKET_TOOLS",
       "PARTNERS_TOOLS",
       "SWAP_TOOLS",
-      "SWAP_CARD_HIDDEN",
       "SDK_DOCS_TOOLS",
     ]) {
       expect(template, `missing {{${key}}} in index.html`).toContain(`{{${key}}}`);
@@ -109,11 +107,5 @@ describe("landing page template", () => {
     expect(total).toBe(api + relay + swap);
     const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5 });
     expect(html).toBe(String(total + 5));
-  });
-
-  it("shows the Swaps card once the registry has swap tools", () => {
-    expect(getStaticToolCounts().swap).toBeGreaterThan(0);
-    const html = renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0 });
-    expect(html).toBe("<details >");
   });
 });

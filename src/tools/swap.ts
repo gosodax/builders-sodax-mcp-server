@@ -1,6 +1,6 @@
 /**
- * Swap tools: the `swap` profile. Registered only while the rollout switch is
- * on and the connection sent an API key (see services/profiles.ts).
+ * Swap tools: the `swap` profile. Registered only when the connection sent an
+ * API key (see services/profiles.ts).
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

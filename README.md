@@ -75,8 +75,7 @@ A connection picks which tools it gets with `?profile=<name>` on the URL or the 
 | `builder` | The data, relay and SDK docs tools |
 | `swap` | The swap tools only. Needs an API key |
 
-An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403. The swap tools are not enabled on
-the public server yet.
+An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403.
 
 ### Partner fee
 
@@ -256,7 +255,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 
 The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
-To run it locally, start a server with `pnpm build && SODAX_ENV=canary SODAX_SWAP_TOOLS_ENABLED=true node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
+To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -287,7 +286,6 @@ Coolify injects these directly into the process environment.
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
-| `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`). `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |

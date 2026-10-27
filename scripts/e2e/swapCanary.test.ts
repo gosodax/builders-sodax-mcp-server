@@ -54,6 +54,17 @@ const CHAIN: Record<string, Answer[]> = {
 const REVERTED: Answer = { error: { code: 3, message: "execution reverted: ERC20: insufficient allowance" } };
 const FOUND: Answer = { result: { hash: `0x${"cd".repeat(32)}` } };
 const NOT_FOUND: Answer = { result: null };
+const REFUSED: Answer = { error: { code: -32000, message: "insufficient funds for gas * price + value" } };
+// Each of these can come after the node took the swap, so none of them may stop it being tracked.
+const OUTCOME_UNKNOWN: [string, Answer][] = [
+  ["a JSON-RPC error with HTTP 200", { error: { code: -32603, message: "internal error" } }],
+  ["a JSON-RPC error inside a 503", { error: { code: -32603, message: "upstream timed out" }, status: 503 }],
+  ['"already known"', { error: { code: -32000, message: "already known" } }],
+  ['"nonce too low"', { error: { code: -32000, message: "nonce too low" } }],
+  ["a timeout", "hang"],
+  ["a plain-text 502", { text: "Bad Gateway", status: 502 }],
+];
+const SEND_ERRORS: [string, Answer][] = [...OUTCOME_UNKNOWN, ["a refusal", REFUSED]];
 
 const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId = 42161): SwapStep => ({
   kind,
@@ -100,14 +111,7 @@ describe("sendSteps", () => {
     expect(methods).not.toContain("eth_getTransactionByHash");
   });
 
-  // Each of these can come after the node took the swap, so none of them may stop it being tracked.
-  it.each<[string, Answer]>([
-    ["a JSON-RPC error with HTTP 200", { error: { code: -32603, message: "internal error" } }],
-    ["a JSON-RPC error inside a 503", { error: { code: -32603, message: "upstream timed out" }, status: 503 }],
-    ['"already known"', { error: { code: -32000, message: "already known" } }],
-    ["a timeout", "hang"],
-    ["a plain-text 502", { text: "Bad Gateway", status: 502 }],
-  ])("after %s, tracks the swap a node has", async (_case, answer) => {
+  it.each(SEND_ERRORS)("after %s, tracks the swap a node has", async (_case, answer) => {
     const methods = fakeRpc({
       ...CHAIN,
       eth_sendRawTransaction: [answer],
@@ -120,17 +124,26 @@ describe("sendSteps", () => {
     expect(methods.filter(method => method === "eth_getTransactionByHash")).toHaveLength(2);
   });
 
-  it("fails when no node has the swap 30 s after its send failed", async () => {
-    const methods = fakeRpc({
-      ...CHAIN,
-      eth_sendRawTransaction: [{ error: { code: -32000, message: "nonce too low" } }],
-      eth_getTransactionByHash: [NOT_FOUND],
-    });
+  it.each(OUTCOME_UNKNOWN)("after %s, tracks the swap even when no node has it", async (_case, answer) => {
+    const methods = fakeRpc({ ...CHAIN, eth_sendRawTransaction: [answer], eth_getTransactionByHash: [NOT_FOUND] });
+    const sent = sendSteps(ARBITRUM(), QUOTE);
+    await settle(sent);
+    await expect(sent).resolves.toMatch(/^0x[0-9a-f]{64}$/);
+    expect(methods.filter(method => method === "eth_getTransactionByHash")).toHaveLength(7);
+    expect(logs).toContain("[setup] send outcome unknown; tracking anyway");
+  });
+
+  it.each<[string, Answer, number]>([
+    ["answered at once", NOT_FOUND, 30_000],
+    // 7 tries of 4 s each, none retried, and the 6 waits between them.
+    ["that time out", "hang", 58_000],
+  ])("fails after a refusal when lookups %s don't find the swap", async (_case, lookup, time) => {
+    const methods = fakeRpc({ ...CHAIN, eth_sendRawTransaction: [REFUSED], eth_getTransactionByHash: [lookup] });
     const sent = sendSteps(ARBITRUM(), QUOTE);
     const elapsed = await settle(sent);
-    await expect(sent).rejects.toThrow("the swap's send failed and 30 s of lookups didn't find it");
+    await expect(sent).rejects.toThrow("the node refused the swap and no node had it");
     expect(methods.filter(method => method === "eth_getTransactionByHash")).toHaveLength(7);
-    expect(elapsed).toBe(30_000);
+    expect(elapsed).toBe(time);
   });
 
   it.each<[string, Record<string, Answer[]>]>([

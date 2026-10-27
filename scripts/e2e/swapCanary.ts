@@ -25,6 +25,8 @@ import {
   EstimateGasExecutionError,
   ExecutionRevertedError,
   type Hex,
+  RpcRequestError,
+  createPublicClient,
   createWalletClient,
   encodeFunctionData,
   erc20Abi,
@@ -59,9 +61,14 @@ const GAS_FLOOR = parseEther("0.0002");
 // `solved` is the fill on the hub; delivery to the destination is one more relay hop (the SDK waits 120 s).
 const ARRIVAL_TIMEOUT_MS = 180_000;
 const DEFAULT_RETRY_SEC = 15;
-// A failed swap send is looked up for 30 s: a gateway error or a timeout may come after the node took it.
+// A failed swap send is looked up 7 times, 5 s apart, 4 s each: a gateway error or a timeout may come
+// after the node took it.
 const LOOKUP_TRIES = 7;
 const LOOKUP_INTERVAL_MS = 5_000;
+const LOOKUP_TIMEOUT_MS = 4_000;
+// A node's own message when it refuses a tx outright. Any other send error may come after a node took it.
+const REFUSED =
+  /insufficient funds|intrinsic gas too low|exceeds block gas limit|less than block base fee|underpriced|exceeds the configured cap|invalid sender/i;
 const PREPARE_TRIES = 3;
 const PREPARE_INTERVAL_MS = 5_000;
 // The server's retryable codes, but INTERNAL: a bug should fail the canary, not be waited out.
@@ -94,17 +101,20 @@ function readEnv() {
 }
 type Env = ReturnType<typeof readEnv>;
 
-/** A signer that also reads, per side, on the side's RPC override or viem's default. USDC from the SDK config. */
+/**
+ * A signer that also reads, per side, on the side's RPC override or viem's default, and a reader for the
+ * swap lookups that tries each once, for 4 s (not viem's 10 s and 3 retries). USDC from the SDK config.
+ */
 export function wallets(account: Env["account"]) {
-  return SIDES.map(({ key, chain }) => ({
-    key,
-    usdc: spokeChainConfig[key].supportedTokens.USDC,
-    client: createWalletClient({
-      account,
-      chain,
-      transport: http(process.env[`SODAX_RPC_URL_${chain.id}`] || undefined),
-    }).extend(publicActions),
-  }));
+  return SIDES.map(({ key, chain }) => {
+    const url = process.env[`SODAX_RPC_URL_${chain.id}`] || undefined;
+    return {
+      key,
+      usdc: spokeChainConfig[key].supportedTokens.USDC,
+      client: createWalletClient({ account, chain, transport: http(url) }).extend(publicActions),
+      lookup: createPublicClient({ chain, transport: http(url, { retryCount: 0, timeout: LOOKUP_TIMEOUT_MS }) }),
+    };
+  });
 }
 type Wallet = ReturnType<typeof wallets>[number];
 
@@ -189,7 +199,8 @@ export function stepMismatch(steps: SwapStep[], src: Wallet, amount: bigint): st
  * Sends the quote's steps in order, each mined before the next. The swap is signed and its hash logged
  * before it's sent, so a send that errors after the node took it is still tracked.
  */
-export async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<Hex> {
+export async function sendSteps(wallet: Wallet, quote: ReadyQuote): Promise<Hex> {
+  const { client } = wallet;
   // Counted here, not asked per step: a load-balanced public RPC can answer from a node that hasn't
   // seen the approve yet.
   let nonce = await client.getTransactionCount({ address: client.account.address, blockTag: "pending" });
@@ -205,7 +216,7 @@ export async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<
     const hash = keccak256(serialized);
     log(`${step.kind}: ${hash}`);
     if (step.kind === "swap") {
-      await sendSwap(client, serialized, hash);
+      await sendSwap(wallet, serialized, hash);
       return hash;
     }
     await client.sendRawTransaction({ serializedTransaction: serialized });
@@ -233,25 +244,31 @@ async function prepare(client: Wallet["client"], tx: { to: Hex; data: Hex; value
 }
 
 /**
- * Sends the swap. A send that errors may still have reached the pool (a gateway 5xx with a JSON-RPC
- * body, "already known", a timeout), whatever the error says: then the swap is tracked if a node has it.
+ * Sends the swap. A send that errors may still have reached the pool (a gateway 5xx, "already known",
+ * a timeout), whatever the error says: the swap is tracked unless the node refused it and no node has it.
+ * Tracking a swap that never lands is harmless: the server submits it only after its own receipt check.
  */
-async function sendSwap(client: Wallet["client"], serializedTransaction: Hex, hash: Hex): Promise<void> {
+async function sendSwap({ client, lookup }: Wallet, serializedTransaction: Hex, hash: Hex): Promise<void> {
+  let refused = false;
   try {
     await client.sendRawTransaction({ serializedTransaction });
     return;
   } catch (error) {
+    refused =
+      error instanceof BaseError &&
+      error.walk(cause => cause instanceof RpcRequestError && REFUSED.test(cause.details)) !== null;
     log(`send reported ${describe(error)}; looking the swap up`);
   }
   for (let tries = 1; tries <= LOOKUP_TRIES; tries++) {
     if (tries > 1) await sleep(LOOKUP_INTERVAL_MS);
-    const found = await client.getTransaction({ hash }).then(
+    const found = await lookup.getTransaction({ hash }).then(
       () => true,
       () => false,
     );
     if (found) return log("a node has the swap; tracking it");
   }
-  throw new Failure("the swap's send failed and 30 s of lookups didn't find it");
+  if (!refused) return log("send outcome unknown; tracking anyway");
+  throw new Failure("the node refused the swap and no node had it");
 }
 
 /** Calls track through the quote's afterSend until it says solved, up to 5 minutes past the quote's expiry. */

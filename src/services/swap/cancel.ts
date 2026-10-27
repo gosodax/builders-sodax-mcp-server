@@ -41,6 +41,12 @@ export async function cancelSwap(input: {
   const source = await resolveSource(input);
   const { quote } = source;
   const base: SwapRef = { txHash, chain: source.chain, ...(input.quoteId && { quoteId: input.quoteId }) };
+  // The caller mixed up two swaps: this quote's deposit is another tx.
+  if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) {
+    throw new ActionError("QUOTE_MISMATCH", "That quote was used by another transaction.", {
+      nextStep: "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
+    });
+  }
 
   // The swap first: a sent cancel is only worth waiting for if there's something to cancel.
   const row = await getSubmitTxStatus(txHash, source.chain.key);
@@ -66,11 +72,13 @@ export async function cancelSwap(input: {
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service returned a different intent than the one quoted.");
   }
-  // The build is deterministic, so on the second call it gives the payload the sent cancel must carry.
-  const { tx, payload } = await buildCheckedCancel(source, intent);
   if (!receipt || !cancelTxHash) {
+    const { tx } = await buildCheckedCancel(source, intent);
     return { ...base, status: "ready", steps: [{ kind: "cancel", chainId: source.chainId, tx: toStepTx(tx) }] };
   }
+  // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
+  const payload = cancelPayload(intent);
+  if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
 
   const isCancel = holdsCancel(receipt, {
     connection: source.connection,

@@ -139,12 +139,27 @@ describe("sodax_swap_cancel", () => {
     expect(out.nextStep).toContain("already being refunded");
   });
 
-  it("relays the user's sent cancel once it's on chain", async () => {
-    const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
+  it("relays the user's sent cancel once it's on chain, without asking the cancel endpoint again", async () => {
+    // No cancelTx: the stub's cancel endpoint answers with nothing usable.
+    const calls = stubBackend({ row: OPEN });
     const { out } = await cancel({ txHash: TX, chain: ARBITRUM, cancelTxHash: CANCEL_TX });
     expect(out.status).toBe("cancel_relayed");
     expect(getEvmReceipt).toHaveBeenCalledWith(ARBITRUM, CANCEL_TX);
     expect(calls.find(call => call.path === "/intents/submit")?.body).toEqual({ chainId: "23", txHash: CANCEL_TX });
+    expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
+  });
+
+  it("calls a quote whose deposit is another tx a mismatch, before reading anything, without an error log", async () => {
+    const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, `0x${"e".repeat(64)}`);
+    const { out } = await cancel({ txHash: TX, quoteId });
+    expect(out.error.code).toBe("QUOTE_MISMATCH");
+    expect(out.nextStep).toBe(
+      "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
+    );
+    expect(calls).toEqual([]);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it.each([

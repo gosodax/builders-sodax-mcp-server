@@ -26,7 +26,13 @@ import { notifyError, notifyServerStarted, notifyServerStopping } from "./servic
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
-import { apiKeyStatus, parseSwapToolsEnabled, profileFromArgs, selectToolsets } from "./services/profiles.js";
+import {
+  apiKeyStatus,
+  describeProfiles,
+  parseSwapToolsEnabled,
+  profileFromArgs,
+  selectToolsets,
+} from "./services/profiles.js";
 import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
@@ -311,9 +317,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
       profiles: {
         default: "all",
         select: "?profile=<name> or the x-sodax-profile header",
-        builder: "Data, relay and SDK docs tools",
-        swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Not enabled on this server yet",
-        all: "Both; the swap tools only with an x-api-key header",
+        ...describeProfiles(swapToolsEnabled),
       },
       // Tool lists derived from the tool registry; sdkDocs reflects the live
       // SDK docs proxy list.

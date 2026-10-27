@@ -1,9 +1,5 @@
 /**
- * Tool profiles: which toolsets a connection gets.
- *
- * - `builder`: the data, relay and docs tools.
- * - `swap`: the swap tools. Needs an API key, and the server's rollout switch.
- * - `all` (default): both; without a key, only the builder tools.
+ * Tool profiles: which toolsets a connection gets (see `describeProfiles`).
  *
  * Pure: callers read the request, argv and env and pass the values in.
  */
@@ -22,6 +18,15 @@ export interface Toolsets {
 /** The toolsets a connection gets, plus a line for the agent when the swap tools only wait for a usable key. */
 export interface ToolSelection extends Toolsets {
   swapKeyHint?: string;
+}
+
+/** What each profile serves. `swapToolsEnabled` is the server's rollout switch. */
+export function describeProfiles(swapToolsEnabled: boolean): Record<Profile, string> {
+  return {
+    builder: "Data, relay and SDK docs tools",
+    swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Not enabled on this server yet",
+    all: "Both; the swap tools only with an x-api-key header",
+  };
 }
 
 /** The caller's key as the swap gate sees it: a SODAX key, a value that isn't one, or none (blank counts as none). */

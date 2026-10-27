@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ConnectionError,
   apiKeyStatus,
+  describeProfiles,
   parseSwapToolsEnabled,
   profileFromArgs,
   profileFromRequest,
@@ -107,6 +108,13 @@ describe("apiKeyStatus", () => {
     ["  ", "missing"],
   ])("%j → %s", (value, expected) => {
     expect(apiKeyStatus(value)).toBe(expected);
+  });
+});
+
+describe("describeProfiles", () => {
+  it("describes swap as off while the switch is off", () => {
+    expect(describeProfiles(false).swap).toBe("Not enabled on this server yet");
+    expect(describeProfiles(true).swap).toContain("x-api-key");
   });
 });
 

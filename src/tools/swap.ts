@@ -6,7 +6,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
-import { getSwapCatalog } from "../services/swap/tokens.js";
+import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { registerActionTool } from "./actionTool.js";
 
 export function registerSwapTools(server: McpServer): void {
@@ -45,7 +45,7 @@ const RESTRICTED = {
 const USE_RESOLVED = "Use chain.key and token.address for this side of the swap; amounts stay in human units.";
 
 /**
- * Built from catalog symbols, address prefixes and chain names only, never from the caller's
+ * Built from catalog symbols, addresses and chain names only, never from the caller's
  * query or a token's free-text name.
  */
 export function resolveNextStep(resolution: Resolution): string {
@@ -60,13 +60,12 @@ export function resolveNextStep(resolution: Resolution): string {
       return `${found}${restricted}${USE_RESOLVED}`;
     }
     case "ambiguous": {
-      // Two candidates can share a symbol (bridged and native USDC); the address tells them apart.
-      const symbols = resolution.candidates.map(token => token.symbol);
-      const labels = resolution.candidates.map(token =>
-        symbols.indexOf(token.symbol) !== symbols.lastIndexOf(token.symbol)
-          ? `${token.symbol} (${shortAddress(token.address)})`
-          : token.symbol,
-      );
+      // Two candidates can share a symbol in any case (bridged and native USDC); the address tells them apart.
+      const { candidates } = resolution;
+      const labels = candidates.map(token => {
+        const twins = candidates.filter(other => other.symbol.toLowerCase() === token.symbol.toLowerCase());
+        return twins.length > 1 ? `${token.symbol} (${twinAddress(token, twins)})` : token.symbol;
+      });
       const ask =
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
@@ -86,6 +85,12 @@ export function resolveNextStep(resolution: Resolution): string {
   }
 }
 
+/** Head and tail, as a prefix alone repeats (every Hedera address starts `0x00000000`); in full when those collide. */
+function twinAddress(token: SwapsApiToken, twins: SwapsApiToken[]): string {
+  const short = shortAddress(token.address);
+  return twins.some(other => other !== token && shortAddress(other.address) === short) ? token.address : short;
+}
+
 function shortAddress(address: string): string {
-  return address.length > 10 ? `${address.slice(0, 10)}…` : address;
+  return address.length > 16 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
 }

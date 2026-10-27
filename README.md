@@ -9,9 +9,9 @@
   <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_Builders_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
 </p>
 
-SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 20+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow.
+SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 20+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow. With a SODAX API key, it also quotes and tracks swaps that the user's own wallet signs.
 
-**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 20+ networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.
+**One-liner:** SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for 20+ networks. Query swaps, lending, solver volume, and intent history, and make swaps the user's wallet signs, from your AI coding assistant.
 
 ## Quick Start
 
@@ -83,6 +83,30 @@ A builder can take a fee on the swaps its agent quotes: `?partnerAddress=<EVM ad
 URL, or the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers (stdio: `SODAX_PARTNER_FEE_ADDRESS` and
 `SODAX_PARTNER_FEE_BPS`). Set both or neither; anything else is refused with HTTP 400. The fee is taken from the
 amount sent, is part of the quote, and is never a tool input.
+
+### Swapping
+
+With the `swap` profile, or `all` with a key, an agent swaps for a user like this. The user's wallet signs and sends
+every transaction; the server never signs.
+
+1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
+   destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
+   needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId` and
+   `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
+2. The user's wallet signs and sends each step in order, each confirmed before the next. A wallet that supports
+   EIP-5792 can send the quote's `batch` in place of the steps its `replaces` lists; a `reset_approve` still goes
+   first.
+3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
+   `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
+   submits the swap to SODAX until this call, and a first call after `expiresAt` refunds the deposit instead. While
+   the result has `retryAfterSec`, call it again after that many seconds.
+4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
+   then call it again with `cancelTxHash`.
+
+`sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
+`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on an EVM spoke
+chain for now (not Sonic, the hub); the destination can be any SODAX swap chain. Every result the tools return carries
+a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 
 ### Safety
 
@@ -163,6 +187,18 @@ The swap tools never sign or move funds. They also:
 | `sodax_get_circulating_supply` | Get SODA circulating supply as a plain number |
 | `sodax_refresh_cache` | Clear cached data to get fresh results |
 
+### Swaps (need an API key)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_swap_quote` | Quote a cross-chain swap; with `fromAddress`, the transactions for the user's wallet to sign |
+| `sodax_swap_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
+| `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay |
+| `sodax_get_balance` | A wallet's native balance on a chain and, optionally, one token's |
+| `sodax_resolve_token` | Look up a token on a chain: address, decimals and hub asset |
+
+See [Swapping](#swapping) for the order they're called in.
+
 ### Cross-Chain SDK Documentation (dynamic)
 
 Tools prefixed with `docs_` are automatically proxied from the SODAX docs MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
@@ -183,6 +219,12 @@ Once connected, try asking your AI coding assistant:
 - *"What networks does SODAX support for cross-chain swaps?"*
 - *"Get available swap tokens across chains on Base"*
 - *"How do I integrate cross-chain swaps with the SODAX SDK?"*
+
+### Swaps (with an API key)
+- *"Swap 10 USDC on Arbitrum for ETH on Base from 0x..."*
+- *"How much USDC does 0x... hold on Polygon?"*
+- *"Is my swap done? The tx hash is 0x..."*
+- *"Cancel that swap"*
 
 ### Solver Volume & Intent History
 - *"Show me cross-network solver volume for today"*
@@ -232,7 +274,7 @@ pnpm build
 # Start production server
 pnpm start
 
-# Run the test suite (unit tests for drift-check logic)
+# Run the unit tests
 pnpm test
 ```
 
@@ -245,7 +287,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm checkTs` | Type-checks the project, and the scripts under `scripts/`, with `tsc --noEmit` (no build output). |
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
-| `pnpm test` | Runs the Vitest suite (currently covers the drift-check logic in `src/services/apiDriftCheck.ts`). |
+| `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
 | `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
 
@@ -284,7 +326,7 @@ Coolify injects these directly into the process environment.
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
-| `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
+| `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API, solver and Swaps API calls; the swap tools need it. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`). `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |

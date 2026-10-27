@@ -26,7 +26,7 @@ function parsePartnerFee(address: unknown, bps: unknown): PartnerFee | undefined
   ) {
     throw new ConnectionError(
       400,
-      "A partner fee needs both an EVM partner address and a whole number of basis points from 1 to 100.",
+      "A partner fee needs both an EVM partner address (EIP-55 checksummed or all lowercase) and a whole number of basis points from 1 to 100.",
     );
   }
   return { address: addressText, bps: fee };

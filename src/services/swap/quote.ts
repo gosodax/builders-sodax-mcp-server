@@ -257,14 +257,14 @@ function resolveSide(
   const { decimals, hubAsset, address } = resolution.token;
   const packaged = packagedToken(resolution.chain.key, address);
   if (packaged && (packaged.decimals !== decimals || !same(packaged.hubAsset, hubAsset))) {
-    throw configDisagrees(resolution.chain.key, `${side}Token`);
+    throw configDisagrees(resolution.chain.key, `${side}Token`, address);
   }
   return { ...resolution, config };
 }
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
-function configDisagrees(chainKey: string, field: string): ActionError {
-  logger.error({ chainKey, field }, "The live SODAX config differs from the SDK's");
+function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
+  logger.error({ chainKey, field, token }, "The live SODAX config differs from the SDK's");
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX config doesn't agree with the SDK's.");
 }
 

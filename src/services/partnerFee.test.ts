@@ -66,9 +66,9 @@ describe("with the swap tools on", () => {
   // A typo there would send the fees to an address nobody holds.
   it("refuses a mixed-case address with a bad EIP-55 checksum", () => {
     const typo = "0x000000000000000000000000000000000000DEad";
-    expect(() => partnerFeeFromRequest(request({ partnerAddress: typo, partnerFeeBps: "10" }))).toThrow(
-      ConnectionError,
-    );
+    const refuse = () => partnerFeeFromRequest(request({ partnerAddress: typo, partnerFeeBps: "10" }));
+    expect(refuse).toThrow(ConnectionError);
+    expect(refuse).toThrow("EIP-55 checksummed or all lowercase");
     for (const address of [ADDRESS, ADDRESS.toLowerCase(), OTHER]) {
       expect(partnerFeeFromRequest(request({ partnerAddress: address, partnerFeeBps: "10" }))).toEqual({
         address,

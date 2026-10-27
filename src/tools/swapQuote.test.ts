@@ -622,9 +622,12 @@ describe("sodax_swap_quote", () => {
       const token = tokens[chainKey].find((entry: { address: string }) => entry.address === address);
       Object.assign(token, change);
       const calls = stubSwaps({ tokens: JSON.stringify(tokens) });
+      const error = vi.spyOn(logger, "error");
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
       expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
       expect(calls).toEqual([]);
+      // Which token's packaged config is stale.
+      expect(error).toHaveBeenCalledWith(expect.objectContaining({ chainKey, token: address }), expect.any(String));
     },
   );
 

@@ -23,7 +23,9 @@ describe("getSwapCatalog", () => {
     const [first, second] = await Promise.all([getSwapCatalog(), getSwapCatalog()]);
     expect(first).toBe(second);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(first.hyper.filter(token => token.isNative).map(token => token.symbol)).toEqual(["HYPE"]);
+    expect(first.tokens.hyper.filter(token => token.isNative).map(token => token.symbol)).toEqual(["HYPE"]);
+    expect(first.chains["0xa4b1.arbitrum"]).toEqual({ type: "EVM", chainId: 42161 });
+    expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
   });
 
   it("sends the caller's key on the Swaps API call", async () => {

@@ -59,7 +59,7 @@ describe("sodax_resolve_token", () => {
     expect(result.structuredContent).toMatchObject({
       status: "error",
       error: { code: "UNSUPPORTED_CHAIN" },
-      nextStep: "Ask the user which supported chain they mean and pass its key.",
+      nextStep: "Ask the user which chain in error.supportedChains they mean and pass its key.",
     });
   });
 });
@@ -80,9 +80,12 @@ describe("resolveNextStep", () => {
 
   it("lists the candidates to ask about, with names when symbols repeat", () => {
     expect(nextStep("hyper", "USDT")).toContain("which of USDT0 on HyperEVM");
-    const usdc = catalog.sonic.find(token => token.symbol === "USDC");
+    const usdc = catalog.tokens.sonic.find(token => token.symbol === "USDC");
     if (!usdc) throw new Error("fixture lacks Sonic USDC");
-    const twins = { sonic: [usdc, { ...usdc, name: "Bridged USDC", address: `0x${"1".repeat(40)}` }] };
+    const twins = {
+      tokens: { sonic: [usdc, { ...usdc, name: "Bridged USDC", address: `0x${"1".repeat(40)}` }] },
+      chains: {},
+    };
     expect(resolveNextStep(resolveToken(twins, "sonic", "USDC"))).toContain("USDC (USD Coin), USDC (Bridged USDC)");
   });
 

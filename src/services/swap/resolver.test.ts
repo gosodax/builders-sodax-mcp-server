@@ -82,7 +82,7 @@ describe("resolveToken", () => {
 
   it("matches an Injective peggy denom whatever its case", () => {
     const token = {
-      ...catalog.hyper[0],
+      ...catalog.tokens.hyper[0],
       chainKey: "injective-1",
       address: "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
     };
@@ -100,21 +100,30 @@ describe("resolveToken", () => {
     );
   });
 
-  it.each(["arb", "Arbitrum One", "ARBITRUM"])("resolves the chain %j", chain => {
+  it.each(["arb", "Arbitrum One", "ARBITRUM", "42161", "0xa4b1", "0xA4B1"])("resolves the chain %j", chain => {
     expect(resolve(chain, "USDC").chain.key).toBe("0xa4b1.arbitrum");
   });
 
-  it("refuses an unsupported chain with the supported list", () => {
-    expect(() => resolve("Fantom", "USDC")).toThrow(
+  it.each([
+    ["146", "sonic"],
+    ["0x3e7", "hyper"],
+  ])("resolves the EVM chain id %j from the chain config, not the key", (chain, key) => {
+    expect(resolve(chain, "USDC").chain.key).toBe(key);
+  });
+
+  // 250 / 0xfa is Fantom; 1 is Ethereum, absent here, and must not match the "0x1." of ICON's key.
+  it.each(["Fantom", "250", "0xfa", "1", "0x1"])("refuses an unknown chain %j with the supported list", chain => {
+    expect(() => resolve(chain, "USDC")).toThrow(
       expect.objectContaining({
         code: "UNSUPPORTED_CHAIN",
+        message: "No SODAX swap chain matches that name, key or chain id.",
         details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "HyperEVM" }]) },
       }),
     );
   });
 
   it("finds no native token on a chain the config doesn't describe", () => {
-    const partial = parseCatalog({ newchain: [{ ...catalog.hyper[0], chainKey: "newchain" }] }, {});
+    const partial = parseCatalog({ newchain: [{ ...catalog.tokens.hyper[0], chainKey: "newchain" }] }, {});
     expect(resolveToken(partial, "newchain", "native")).toMatchObject({ status: "not_found" });
   });
 });
@@ -122,14 +131,29 @@ describe("resolveToken", () => {
 describe("parseCatalog", () => {
   it("drops chains whose key isn't a chain key, __proto__ included", () => {
     const parsed = parseCatalog(JSON.parse('{"__proto__":[],"bad key":[],"hyper":[]}'), {});
-    expect(Object.keys(parsed)).toEqual(["hyper"]);
-    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(Object.keys(parsed.tokens)).toEqual(["hyper"]);
+    expect(Object.getPrototypeOf(parsed.tokens)).toBe(Object.prototype);
+  });
+
+  it.each([
+    ["a malformed family", { type: "evm\n", chainId: 999 }],
+    ["an EVM chain without a numeric id", { type: "EVM", chainId: "hyper" }],
+    ["no id", { type: "EVM" }],
+  ])("leaves out a chain whose config has %s, keeping its tokens", (_case, chain) => {
+    const parsed = parseCatalog({ hyper: [catalog.tokens.hyper[0]] }, { hyper: { chain } });
+    expect(parsed.chains).toEqual({});
+    expect(parsed.tokens.hyper).toHaveLength(1);
+  });
+
+  it("keeps a non-EVM chain's string id", () => {
+    const parsed = parseCatalog({ sui: [] }, { sui: { chain: { type: "SUI", chainId: "sui" } } });
+    expect(parsed.chains).toEqual({ sui: { type: "SUI", chainId: "sui" } });
   });
 
   it("drops entries that don't look like a token and keeps real names with symbols like •", () => {
-    const arbitrum = catalog["0xa4b1.arbitrum"];
+    const arbitrum = catalog.tokens["0xa4b1.arbitrum"];
     expect(arbitrum).toHaveLength(20);
     expect(arbitrum.some(token => token.symbol.includes("\n"))).toBe(false);
-    expect(catalog.sonic.some(token => token.name.includes("•"))).toBe(true);
+    expect(catalog.tokens.sonic.some(token => token.name.includes("•"))).toBe(true);
   });
 });

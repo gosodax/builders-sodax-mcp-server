@@ -1,6 +1,6 @@
 /**
  * The swap catalog: the Swaps API's token list, with each chain's native token
- * marked from the live chain config. Fetched together and cached.
+ * marked and its family and id taken from the live chain config. Fetched together and cached.
  *
  * Every string here ends up in what the agent reads, so a chain or token that
  * doesn't look like one is dropped rather than passed on.
@@ -33,8 +33,21 @@ const tokenSchema = z.object({
 
 export type SwapsApiToken = z.infer<typeof tokenSchema> & { isNative: boolean };
 
-/** Tokens by chain key. */
-export type SwapCatalog = Record<string, SwapsApiToken[]>;
+// `type` is the chain family ("EVM" covers Sonic); an EVM chain without a numeric id is dropped.
+const chainSchema = z
+  .object({
+    type: z.string().regex(/^[A-Z]{1,16}$/),
+    chainId: z.union([z.number().int().positive(), z.string().regex(CHAIN_KEY_PATTERN)]),
+  })
+  .refine(chain => chain.type !== "EVM" || typeof chain.chainId === "number");
+
+export type SwapChain = z.infer<typeof chainSchema>;
+
+/** Tokens by chain key, and each chain's family and id when its config gives them. */
+export interface SwapCatalog {
+  tokens: Record<string, SwapsApiToken[]>;
+  chains: Record<string, SwapChain>;
+}
 
 // Token lists change rarely, so a catalog this old is still served while a refresh runs.
 const STALE_LIMIT_MS = 30 * 60 * 1000;
@@ -107,7 +120,7 @@ async function loadCatalog(): Promise<SwapCatalog> {
       getAllChainsConfigs(),
     ]);
     const catalog = parseCatalog(rawTokens, rawConfigs);
-    const chains = Object.values(catalog);
+    const chains = Object.values(catalog.tokens);
     if (!chains.some(tokens => tokens.length > 0)) logger.error("The swap token list has no usable tokens");
     // Every live chain has one; none at all means the chain config changed shape.
     else if (!chains.some(tokens => tokens.some(token => token.isNative))) logger.error("No native token is marked");
@@ -120,7 +133,7 @@ async function loadCatalog(): Promise<SwapCatalog> {
 
 export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatalog {
   const configs = asRecord(rawConfigs);
-  const catalog: SwapCatalog = {};
+  const catalog: SwapCatalog = { tokens: {}, chains: {} };
   let dropped = 0;
   for (const [chainKey, list] of Object.entries(asRecord(rawTokens))) {
     const entries = Array.isArray(list) ? list : [];
@@ -128,9 +141,11 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
       dropped += entries.length;
       continue;
     }
-    const native = asRecord(configs[chainKey]).nativeToken;
-    const nativeAddress = typeof native === "string" ? canonicalAddress(native) : undefined;
-    catalog[chainKey] = entries.flatMap(entry => {
+    const config = asRecord(configs[chainKey]);
+    const chain = chainSchema.safeParse(config.chain);
+    if (chain.success) catalog.chains[chainKey] = chain.data;
+    const nativeAddress = typeof config.nativeToken === "string" ? canonicalAddress(config.nativeToken) : undefined;
+    catalog.tokens[chainKey] = entries.flatMap(entry => {
       const parsed = tokenSchema.safeParse(entry);
       if (!parsed.success) {
         dropped++;
@@ -146,7 +161,7 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
 /** The token at `address` on `chainKey`, if the catalog lists it, however the address is spelled. */
 export function findToken(catalog: SwapCatalog, chainKey: string, address: string): SwapsApiToken | undefined {
   const wanted = canonicalAddress(address);
-  return catalog[chainKey]?.find(token => canonicalAddress(token.address) === wanted);
+  return catalog.tokens[chainKey]?.find(token => canonicalAddress(token.address) === wanted);
 }
 
 /**

@@ -20,16 +20,15 @@ const MAX_CANDIDATES = 10;
 const MAX_SUGGESTIONS = 5;
 
 export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string): Resolution {
-  const chainKeys = Object.keys(catalog);
-  const { key } = resolveChainKey(chainQuery, chainKeys);
+  const key = findChainKey(catalog, chainQuery);
   if (!key) {
-    throw new ActionError("UNSUPPORTED_CHAIN", "SODAX swaps don't support that chain.", {
-      details: { supportedChains: chainKeys.map(toChain) },
+    throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
+      details: { supportedChains: Object.keys(catalog.tokens).map(toChain) },
     });
   }
 
   const chain = toChain(key);
-  const tokens = catalog[key];
+  const tokens = catalog.tokens[key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", `The swap token list for ${chain.name} is unavailable.`);
@@ -65,6 +64,20 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
   }
 
   return notFound(suggest(tokens, needle));
+}
+
+/**
+ * By name, ticker or key, then by EVM chain id ("42161" or "0xa4b1"). The id is matched against
+ * the chain config, never a key prefix: "0x1.icon" is ICON, not chain id 1.
+ */
+function findChainKey(catalog: SwapCatalog, query: string): string | undefined {
+  const keys = Object.keys(catalog.tokens);
+  const { key } = resolveChainKey(query, keys);
+  if (key) return key;
+  const q = query.trim();
+  if (!/^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q)) return undefined;
+  const id = Number(q);
+  return keys.find(other => catalog.chains[other]?.type === "EVM" && catalog.chains[other].chainId === id);
 }
 
 /** The native token first for a wrapped-native guess (WETH on a chain whose gas token is ETH), then near misses. */

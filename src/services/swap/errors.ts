@@ -4,7 +4,7 @@ export type ActionErrorCode = "UNSUPPORTED_CHAIN" | "UPSTREAM_UNAVAILABLE" | "IN
 const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SODAX swap service is unavailable.";
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
-  UNSUPPORTED_CHAIN: "Ask the user which supported chain they mean and pass its key.",
+  UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
   UPSTREAM_UNAVAILABLE: RETRY_LATER,
   INTERNAL: RETRY_LATER,
 };

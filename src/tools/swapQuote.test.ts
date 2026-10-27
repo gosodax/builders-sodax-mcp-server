@@ -52,6 +52,8 @@ interface SwapsStub {
   configs?: string;
   quote?: () => Response;
   deadline?: string;
+  /** Seconds the `/intents` build takes. */
+  buildSec?: number;
   valid?: boolean;
   resetTx?: boolean;
   /** Overrides on what the stub builds, to play an upstream that builds the wrong thing: */
@@ -121,6 +123,7 @@ function stubSwaps(stub: SwapsStub = {}) {
     if (path === "/intents") {
       // Like the live API, the SDK builds both: the intent for the body, and the tx for the intent (the
       // live builds match it byte for byte, see sodax.test.ts).
+      if (stub.buildSec) vi.setSystemTime(Date.now() + stub.buildSec * 1000);
       const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
       const signed = await sdk.rebuildSwapTx({
         srcChainKey: body.srcChainKey,
@@ -478,6 +481,17 @@ describe("sodax_swap_quote", () => {
     stubSwaps({ deadline: String(Number(DEADLINE) - (15 - minutes) * 60 + offBy) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: minutes });
     expect(out.error?.code).toBe(code);
+  });
+
+  it.each([
+    [181, "UPSTREAM_UNAVAILABLE"],
+    [179, undefined],
+  ])("checks a 5-minute deadline again after a %is build", async (buildSec, code) => {
+    // 300 s left when the deadline is fetched; the floor is 120 s.
+    stubSwaps({ deadline: String(Number(DEADLINE) - 600), buildSec });
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: 5 });
+    expect(out.error?.code).toBe(code);
+    if (code) expect(out.nextStep).toBe("Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.");
   });
 
   it("reports a failed hub wallet lookup as unavailable", async () => {

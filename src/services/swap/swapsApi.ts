@@ -93,12 +93,16 @@ export async function getDeadline(offsetSeconds: number): Promise<string> {
     z.object({ deadline: z.string().regex(UINT) }),
     `/deadline?offsetSeconds=${offsetSeconds}`,
   );
-  const now = Math.floor(Date.now() / 1000);
-  const offBy = Number(deadline) - (now + offsetSeconds);
-  if (Math.abs(offBy) > MAX_CLOCK_SKEW_SEC || Number(deadline) - now < MIN_TIME_TO_SEND_SEC) {
+  const offBy = Number(deadline) - (Math.floor(Date.now() / 1000) + offsetSeconds);
+  if (Math.abs(offBy) > MAX_CLOCK_SKEW_SEC || !leavesTimeToSend(deadline)) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service returned an unusable deadline.");
   }
   return deadline;
+}
+
+/** Whether a deadline (unix seconds) still leaves the user time to sign and send. */
+export function leavesTimeToSend(deadline: string): boolean {
+  return Number(deadline) - Math.floor(Date.now() / 1000) >= MIN_TIME_TO_SEND_SEC;
 }
 
 export async function buildIntent(request: IntentRequest): Promise<BuiltIntent> {

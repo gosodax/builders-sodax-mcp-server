@@ -37,6 +37,7 @@ import {
   checkAllowance,
   getDeadline,
   getQuote,
+  leavesTimeToSend,
 } from "./swapsApi.js";
 import { type SwapCatalog, type SwapChain, type SwapsApiToken, canUseAs, getSwapCatalog } from "./tokens.js";
 import { formatUnits, parseUnits } from "./units.js";
@@ -215,6 +216,12 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       "The Swaps API built a swap that doesn't match the quote",
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.");
+  }
+  // The builds above can take most of a minute, which a short deadline can't spare.
+  if (!leavesTimeToSend(deadline)) {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "Preparing the swap left too little time to send it.", {
+      nextStep: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
+    });
   }
 
   const { quoteId } = putQuote({ ...request, intent: built.intent, relayData: built.relayData });

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../logger.js";
 import { runWithRequestContext } from "../requestContext.js";
 import { clearCache } from "../sodaxApi.js";
-import { catalogFetch } from "./__fixtures__/catalog.js";
+import { catalogFetch, fixtureText } from "./__fixtures__/catalog.js";
 import { clearSwapCatalogCache, expireSwapCatalog, getSwapCatalog } from "./tokens.js";
 
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -49,6 +50,20 @@ describe("getSwapCatalog", () => {
     const serve = catalogFetch();
     fetchSpy.mockImplementation(async (input, init) => (isConfigCall(input) ? config() : serve(input, init)));
     await expect(getSwapCatalog()).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+  });
+
+  it("serves a catalog where some chains have no native mark, and names them in a warning", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    delete configs.hyper.nativeToken;
+    configs.sui.nativeToken = "0x2::sui::NOT_SUI";
+    const serve = catalogFetch();
+    fetchSpy.mockImplementation(async (input, init) =>
+      isConfigCall(input) ? new Response(JSON.stringify(configs)) : serve(input, init),
+    );
+    const warn = vi.spyOn(logger, "warn");
+    const catalog = await getSwapCatalog();
+    expect(catalog.tokens.hyper.length).toBeGreaterThan(0);
+    expect(warn).toHaveBeenCalledWith({ chains: ["hyper", "sui"] }, "No native token is marked on these swap chains");
   });
 
   it("serves the last catalog at once while a refresh fails, for up to 30 minutes", async () => {

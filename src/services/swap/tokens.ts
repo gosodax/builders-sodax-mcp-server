@@ -124,7 +124,11 @@ async function loadCatalog(): Promise<SwapCatalog> {
     if (!chains.some(tokens => tokens.length > 0)) logger.error("The swap token list has no usable tokens");
     // Every live chain has one; none at all means the chain config changed shape.
     else if (!chains.some(tokens => tokens.some(token => token.isNative))) logger.error("No native token is marked");
-    else return catalog;
+    else {
+      const unmarked = Object.keys(catalog.tokens).filter(key => !catalog.tokens[key].some(token => token.isNative));
+      if (unmarked.length > 0) logger.warn({ chains: unmarked }, "No native token is marked on these swap chains");
+      return catalog;
+    }
   } catch (error) {
     logger.error({ err: error }, "Failed to load the swap token catalog");
   }

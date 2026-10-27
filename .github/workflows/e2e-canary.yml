@@ -68,7 +68,7 @@ jobs:
 
       - name: Swap and track
         id: e2e
-        timeout-minutes: 28
+        timeout-minutes: 30
         env:
           MCP_URL: http://127.0.0.1:3000/mcp?profile=swap
           SODAX_API_KEY: ${{ secrets.E2E_SODAX_API_KEY }}

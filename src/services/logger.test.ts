@@ -1,5 +1,6 @@
+import pino from "pino";
 import { describe, expect, it } from "vitest";
-import { errWithoutUrls, withoutUrls } from "./logger.js";
+import { errWithoutUrls, logger, withoutUrls } from "./logger.js";
 
 describe("errWithoutUrls", () => {
   it("removes URLs from every field of an error, its own properties and cause included", () => {
@@ -16,7 +17,20 @@ describe("errWithoutUrls", () => {
 
   it("leaves text without a URL alone, and stops at quotes", () => {
     expect(withoutUrls("no url here")).toBe("no url here");
+    expect(withoutUrls("ratio 1:2 // a: b, see note.")).toBe("ratio 1:2 // a: b, see note.");
     expect(withoutUrls('{"u":"https://a.example/x","n":1}')).toBe('{"u":"<url>","n":1}');
+  });
+
+  it.each(["ws://rpc.example/KEY", "wss://rpc.example/KEY", "HTTPS://rpc.example/KEY", "rpc+wss://rpc.example/KEY"])(
+    "removes a URL of any scheme (%s)",
+    url => {
+      expect(withoutUrls(`socket to ${url} closed`)).toBe("socket to <url> closed");
+    },
+  );
+
+  it("is the logger's serializer for err", () => {
+    const serializers = (logger as unknown as Record<symbol, Record<string, unknown>>)[pino.symbols.serializersSym];
+    expect(serializers.err).toBe(errWithoutUrls);
   });
 
   it("never throws: bigints, cycles, thrown strings and plain objects all come out without URLs", () => {

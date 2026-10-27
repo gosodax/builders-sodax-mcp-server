@@ -10,9 +10,9 @@
  * Env: MCP_URL, SODAX_API_KEY, E2E_WALLET_PRIVATE_KEY; optional AMOUNT (default 5), SODAX_RPC_URL_42161,
  * SODAX_RPC_URL_8453, E2E_DRY_RUN=1 (quote only: nothing is signed, no balance needed).
  *
- * From `src/` it imports types and the retryable error codes (errors.ts loads only constants.ts, which
- * loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the server,
- * though: on the runner the server runs as the same user and could read this process's environment.
+ * From `src/` it imports types, `sameHex` and the retryable error codes (errors.ts loads only constants.ts,
+ * which loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the
+ * server, though: on the runner the server runs as the same user and could read this process's environment.
  */
 
 import { appendFileSync } from "node:fs";
@@ -26,6 +26,7 @@ import {
   ExecutionRevertedError,
   type Hex,
   createWalletClient,
+  encodeFunctionData,
   erc20Abi,
   formatEther,
   formatUnits,
@@ -36,8 +37,9 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum, base } from "viem/chains";
+import { sameHex } from "../../src/constants.js";
 import { type ActionErrorCode, RETRYABLE_CODES } from "../../src/services/swap/errors.js";
-import type { SwapQuote } from "../../src/services/swap/quote.js";
+import type { SwapQuote, SwapStep } from "../../src/services/swap/quote.js";
 import type { TrackResult } from "../../src/services/swap/track.js";
 import type { AfterSend } from "../../src/tools/swap.js";
 
@@ -152,8 +154,35 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
   });
   if (isError || out.status !== "ready") throw new Failure(`not ready: ${out.error?.code ?? out.status}`);
   if (!out.afterSend) throw new Failure("a ready quote without afterSend");
+  const mismatch = stepMismatch(out.steps, src, parseUnits(env.amount, src.usdc.decimals));
+  if (mismatch) throw new Failure(`unexpected ${mismatch}`);
   log(`quoteId ${out.quoteId}, at least ${out.to.minimumAmount} USDC, ${out.steps.length} steps`);
   return out as ReadyQuote;
+}
+
+/**
+ * The server builds what this key signs, so check the shape this route needs first: all on the source
+ * chain with no ETH, a USDC approve of exactly the amount to the asset manager (a reset to 0 before it is
+ * allowed), and one swap into the asset manager, last. Names the first field that differs.
+ */
+export function stepMismatch(steps: SwapStep[], src: Wallet, amount: bigint): string | undefined {
+  const { assetManager } = spokeChainConfig[src.key].addresses;
+  if (steps.findIndex(step => step.kind === "swap") !== steps.length - 1) return "steps: one swap, last";
+  for (const [i, { kind, chainId, tx }] of steps.entries()) {
+    const spend = kind === "approve" ? amount : 0n;
+    const checks: [string, boolean][] = [
+      ["chainId", chainId === src.client.chain.id],
+      ["tx.value", BigInt(tx.value) === 0n],
+      ["tx.to", sameHex(tx.to, kind === "swap" ? assetManager : src.usdc.address)],
+      [
+        `tx.data: not approve(asset manager, ${spend})`,
+        kind === "swap" ||
+          sameHex(tx.data, encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [assetManager, spend] })),
+      ],
+    ];
+    const field = checks.find(([, ok]) => !ok)?.[0];
+    if (field) return `step ${i + 1} (${kind}) ${field}`;
+  }
 }
 
 /**
@@ -165,7 +194,6 @@ export async function sendSteps({ client }: Wallet, quote: ReadyQuote): Promise<
   // seen the approve yet.
   let nonce = await client.getTransactionCount({ address: client.account.address, blockTag: "pending" });
   for (const step of quote.steps) {
-    if (step.chainId !== client.chain.id) throw new Failure(`a step on chain ${step.chainId}`);
     const request = await prepare(client, {
       to: step.tx.to as Hex,
       data: step.tx.data as Hex,

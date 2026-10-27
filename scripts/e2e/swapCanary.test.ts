@@ -1,15 +1,18 @@
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { spokeChainConfig } from "@sodax/types";
+import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SwapStep } from "../../src/services/swap/quote.js";
-import { sendSteps, track, wallets } from "./swapCanary.js";
+import { sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.
 const ACCOUNT = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const ARBITRUM = () => wallets(ACCOUNT)[0];
 const { assetManager: ASSET_MANAGER } = spokeChainConfig["0xa4b1.arbitrum"].addresses;
+const USDC = spokeChainConfig["0xa4b1.arbitrum"].supportedTokens.USDC.address;
+const AMOUNT = 5_000_000n;
 
 type Answer =
   | { result: unknown }
@@ -58,6 +61,10 @@ const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId 
   tx: { from: ACCOUNT.address, to: ASSET_MANAGER, data: "0x1234", value: "0x0", ...tx },
 });
 const swap = (tx: Partial<SwapStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
+const approveData = (spender: Hex = ASSET_MANAGER, amount = AMOUNT) =>
+  encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] });
+const approve = (tx: Partial<SwapStep["tx"]> = {}, kind: SwapStep["kind"] = "approve") =>
+  step(kind, { to: USDC, data: approveData(), ...tx });
 const QUOTE = { steps: [swap()] } as never;
 
 /** Runs fake time until the promise settles; returns how much passed. */
@@ -144,6 +151,47 @@ describe("sendSteps", () => {
     await expect(sent).rejects.toThrow(/reverted/);
     expect(methods.filter(method => method === "eth_estimateGas")).toHaveLength(3);
     expect(methods).not.toContain("eth_sendRawTransaction");
+  });
+});
+
+describe("stepMismatch", () => {
+  it.each<[string, SwapStep[]]>([
+    ["the swap alone", [swap()]],
+    ["an approve, then the swap", [approve(), swap()]],
+    [
+      "a reset to 0, an approve, then the swap",
+      [approve({ data: approveData(ASSET_MANAGER, 0n) }, "reset_approve"), approve(), swap()],
+    ],
+  ])("accepts %s", (_case, steps) => {
+    expect(stepMismatch(steps, ARBITRUM(), AMOUNT)).toBeUndefined();
+  });
+
+  it.each<[string, SwapStep[], string]>([
+    ["no swap", [approve()], "steps: one swap, last"],
+    ["a step after the swap", [swap(), approve()], "steps: one swap, last"],
+    ["two swaps", [swap(), swap()], "steps: one swap, last"],
+    ["a step on Base", [swap({}, 8453)], "step 1 (swap) chainId"],
+    ["ETH sent with the swap", [swap({ value: "0x1" })], "step 1 (swap) tx.value"],
+    ["ETH sent with the approve", [approve({ value: "0x1" }), swap()], "step 1 (approve) tx.value"],
+    ["a swap into another contract", [swap({ to: USDC })], "step 1 (swap) tx.to"],
+    ["an approve on another token", [approve({ to: ASSET_MANAGER }), swap()], "step 1 (approve) tx.to"],
+    [
+      "another spender",
+      [approve({ data: approveData(ACCOUNT.address) }), swap()],
+      "step 1 (approve) tx.data: not approve(asset manager, 5000000)",
+    ],
+    [
+      "more than the amount",
+      [approve({ data: approveData(ASSET_MANAGER, AMOUNT + 1n) }), swap()],
+      "step 1 (approve) tx.data: not approve(asset manager, 5000000)",
+    ],
+    [
+      "a reset that isn't to 0",
+      [approve({}, "reset_approve"), approve(), swap()],
+      "step 1 (reset_approve) tx.data: not approve(asset manager, 0)",
+    ],
+  ])("names the field for %s", (_case, steps, field) => {
+    expect(stepMismatch(steps, ARBITRUM(), AMOUNT)).toBe(field);
   });
 });
 

@@ -10,12 +10,13 @@ import { COLOR, postToDiscord } from "../discord.js";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 
-export type AlertKind = "unknown_quote" | "quote_used" | "refund_relay_failed";
+export type AlertKind = "unknown_quote" | "quote_used" | "refund_relay_failed" | "submit_rejected";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
+  submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;

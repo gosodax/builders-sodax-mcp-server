@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  claimDeposit,
   clearQuoteCache,
   getCachedQuote,
   markRelayedForRefund,
   markSubmitted,
   putQuote,
-  releaseSubmitted,
 } from "./quoteCache.js";
 
 const NOW = Date.parse("2026-10-26T12:00:00Z");
@@ -70,28 +70,24 @@ describe("quoteCache", () => {
     expect(getCachedQuote(quoteId, KEY)).toMatchObject({ quoteId });
   });
 
-  it("records the deposit submitted for a quote, and a refund relay", () => {
+  it("gives a quote to its first checked deposit for good, and records how it was handed over", () => {
     const { quoteId } = quoteDue(15);
-    markSubmitted(quoteId, "0x01");
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ submittedTxHash: "0x01" });
-    markRelayedForRefund(quoteId, "0x02");
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ submittedTxHash: "0x02", relayedForRefund: true });
+    expect(claimDeposit(quoteId, "0x01")).toBe(true);
+    expect(claimDeposit(quoteId, "0x02")).toBe(false);
+    expect(claimDeposit(quoteId, "0x01")).toBe(true);
+    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01" });
+    expect(getCachedQuote(quoteId, KEY)).not.toHaveProperty("handedOver");
+    markSubmitted(quoteId);
+    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01", handedOver: "submitted" });
+    expect(claimDeposit("not-a-quote", "0x01")).toBe(false);
   });
 
-  it("keeps a relayed quote for a day, its only record of the refund, and lets a failed hand-over go", () => {
-    const relayed = quoteDue(15);
-    markRelayedForRefund(relayed.quoteId, "0xaa");
+  it("keeps a relayed quote for a day, its only record of the refund", () => {
+    const { quoteId } = quoteDue(15);
+    claimDeposit(quoteId, "0xaa");
+    markRelayedForRefund(quoteId);
     vi.setSystemTime(NOW + 23 * 60 * 60 * 1000);
-    expect(getCachedQuote(relayed.quoteId, KEY)).toMatchObject({ relayedForRefund: true, submittedTxHash: "0xaa" });
-    releaseSubmitted(relayed.quoteId, "0xaa");
-    expect(getCachedQuote(relayed.quoteId, KEY)).toMatchObject({ submittedTxHash: "0xaa" });
-
-    const failed = quoteDue(60 * 24);
-    markSubmitted(failed.quoteId, "0xbb");
-    releaseSubmitted(failed.quoteId, "0xcc");
-    expect(getCachedQuote(failed.quoteId, KEY)).toMatchObject({ submittedTxHash: "0xbb" });
-    releaseSubmitted(failed.quoteId, "0xbb");
-    expect(getCachedQuote(failed.quoteId, KEY)).toMatchObject({ submittedTxHash: undefined });
+    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0xaa", handedOver: "relayed_for_refund" });
   });
 
   it("returns nothing for an unknown id", () => {

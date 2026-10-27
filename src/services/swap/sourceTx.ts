@@ -44,12 +44,19 @@ export type DepositCheck = "match" | "not_a_deposit" | "mismatch";
 
 /**
  * Whether the receipt holds this quote's deposit: a message from the asset manager to the hub
- * whose RLP payload `[token, from, to, amount, data]` sends to the intent's creator and carries
- * the cached relay payload. Amounts aren't compared: the payload's `createIntent` binds them.
+ * whose RLP payload `[token, from, to, amount, data]` comes from the quoted sender, goes to the
+ * intent's creator and carries the cached relay payload. Amounts aren't compared: the payload's
+ * `createIntent` binds them.
  */
 export function checkDeposit(
   receipt: EvmReceipt,
-  want: { connection: string; assetManager: string; srcChain: string; relayData: { address: string; payload: string } },
+  want: {
+    connection: string;
+    assetManager: string;
+    srcChain: string;
+    srcAddress: string;
+    relayData: { address: string; payload: string };
+  },
 ): DepositCheck {
   const deposits = depositMessages(receipt, want.connection, want.assetManager);
   if (deposits.length === 0) return "not_a_deposit";
@@ -59,6 +66,7 @@ export function checkDeposit(
       message.srcChainId === BigInt(want.srcChain) &&
       message.dstChainId === HUB_RELAY_ID &&
       items?.length === 5 &&
+      same(items[1], want.srcAddress) &&
       same(items[2], want.relayData.address) &&
       same(items[4], want.relayData.payload)
     );

@@ -45,7 +45,7 @@ export async function cancelSwap(input: {
   // The swap first: a sent cancel is only worth waiting for if there's something to cancel.
   const row = await getSubmitTxStatus(txHash, source.chain.key);
   // A deposit this server relayed for refund has no backend row; its quote is the record.
-  if (!row && quote?.relayedForRefund && quote.submittedTxHash === txHash) {
+  if (!row && quote?.handedOver === "relayed_for_refund" && quote.depositTxHash === txHash) {
     return { ...base, status: "not_cancellable", reason: "refunding" };
   }
   const hubTxHash = row?.result?.dstIntentTxHash;

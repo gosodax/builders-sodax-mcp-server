@@ -21,10 +21,10 @@ export type CachedQuote = IntentRequest & {
   minimumReceived: { amount: string; symbol: string; chainName: string };
   /** Epoch ms: the deadline plus a grace period, so a tx signed near expiry can still be tracked. */
   expiresAt: number;
-  /** The deposit submitted for this quote; one intent can only come from one deposit. */
-  submittedTxHash?: string;
-  /** Set once an expired deposit was relayed so the backend refunds it. */
-  relayedForRefund?: boolean;
+  /** The deposit checked as this quote's. One intent can only come from one deposit, so the claim stays. */
+  depositTxHash?: string;
+  /** How that deposit left this server: submitted to the backend, or relayed after its deadline for a refund. */
+  handedOver?: "submitted" | "relayed_for_refund";
 };
 
 const MAX_QUOTES = 10_000;
@@ -68,28 +68,30 @@ export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | 
   return quote.keyHash === keyHash ? quote : "key_mismatch";
 }
 
-export function markSubmitted(quoteId: string, txHash: string): void {
+/**
+ * Claims the quote for a checked deposit, before any await so a second tx tracked at the same time
+ * sees it. Whether `txHash` holds the claim: false if another deposit took it first.
+ */
+export function claimDeposit(quoteId: string, txHash: string): boolean {
   const quote = quotes.get(quoteId);
-  if (quote) quote.submittedTxHash = txHash;
+  if (!quote) return false;
+  quote.depositTxHash ??= txHash;
+  return quote.depositTxHash === txHash;
 }
 
-/** Undoes `markSubmitted` when handing the deposit over failed, so the next call tries again. */
-export function releaseSubmitted(quoteId: string, txHash: string): void {
+export function markSubmitted(quoteId: string): void {
   const quote = quotes.get(quoteId);
-  if (quote?.submittedTxHash === txHash && !quote.relayedForRefund) quote.submittedTxHash = undefined;
+  if (quote) quote.handedOver = "submitted";
 }
 
 // A relayed deposit has no backend row, so its quote is the only record that it's being refunded.
 const RELAYED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-export function markRelayedForRefund(quoteId: string, txHash: string): void {
+export function markRelayedForRefund(quoteId: string): void {
   const quote = quotes.get(quoteId);
   if (!quote) return;
-  Object.assign(quote, {
-    submittedTxHash: txHash,
-    relayedForRefund: true,
-    expiresAt: Math.max(quote.expiresAt, Date.now() + RELAYED_RETENTION_MS),
-  });
+  quote.handedOver = "relayed_for_refund";
+  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + RELAYED_RETENTION_MS);
 }
 
 export function clearQuoteCache(): void {

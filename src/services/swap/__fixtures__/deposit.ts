@@ -10,7 +10,8 @@ import { abiEncode } from "./encode.js";
 
 export const CONNECTION = "0x4555aC13D7338D9E671584C1D118c06B2a3C88eD";
 export const ASSET_MANAGER = "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3";
-export const USER = "0x000000000000000000000000000000000000dead";
+/** The user: the recorded deposit's sender. */
+export const USER = "0x67efb0c797e5586e6d5ff80714c1dd64ba84be0b";
 export const CREATOR = `0x${"c".repeat(40)}`;
 
 const raw = JSON.parse(readFileSync(new URL("./arbitrum-deposit-receipt.json", import.meta.url), "utf8")) as {

@@ -3,7 +3,7 @@ import { logger } from "../services/logger.js";
 import { cancelPayload, getEvmReceipt, initSodax } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { abiEncode } from "../services/swap/__fixtures__/encode.js";
-import { clearQuoteCache, markRelayedForRefund } from "../services/swap/quoteCache.js";
+import { claimDeposit, clearQuoteCache, markRelayedForRefund } from "../services/swap/quoteCache.js";
 import { SEND_MESSAGE_SELECTOR } from "../services/swap/sourceTx.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import {
@@ -131,7 +131,8 @@ describe("sodax_swap_cancel", () => {
   it("calls a deposit this server relayed for refund already refunding, though the backend has no row", async () => {
     stubBackend({ row: null });
     const { quoteId } = cacheQuote();
-    markRelayedForRefund(quoteId, TX);
+    claimDeposit(quoteId, TX);
+    markRelayedForRefund(quoteId);
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "refunding" });
     expect(out.nextStep).toContain("already being refunded");

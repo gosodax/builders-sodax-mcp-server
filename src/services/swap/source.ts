@@ -68,10 +68,11 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
     chain = named;
   }
   if (!chain) {
-    throw new ActionError(
-      "QUOTE_NOT_FOUND",
-      input.quoteId ? "That quote has expired or isn't known here." : "Pass the quoteId or the source chain.",
-    );
+    if (!input.quoteId) throw new ActionError("QUOTE_NOT_FOUND", "Pass the quoteId or the source chain.");
+    // With the chain the tx is still checked, and a stranded deposit reported.
+    throw new ActionError("QUOTE_NOT_FOUND", "That quote has expired or isn't known here.", {
+      nextStep: "Call again with the same arguments plus chain set to the swap's source chain key.",
+    });
   }
   return { chain, ...sourceChainFor(catalog, chain), ...(cached && { quote: cached }) };
 }

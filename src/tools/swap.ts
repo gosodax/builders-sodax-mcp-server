@@ -11,7 +11,7 @@ import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
-import { type TrackOutcome, type TrackResult, trackSwap } from "../services/swap/track.js";
+import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwap } from "../services/swap/track.js";
 import { registerActionTool } from "./actionTool.js";
 
 // zod schemas are immutable, so each tool adds its own description to these.
@@ -222,8 +222,6 @@ function quoteNextStep(quote: SwapQuote): string {
   ].join(" ");
 }
 
-const DEPOSIT_SAFE =
-  "tell the user the deposit is on chain and safe, SODAX has been alerted to recover it, and they must not send it again";
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
 
 const NOT_SUBMITTED: Record<Extract<TrackResult, { status: "not_submitted" }>["reason"], string> = {
@@ -257,10 +255,9 @@ export function trackNextStep(result: TrackResult): string {
     case "not_submitted":
       return NOT_SUBMITTED[result.reason];
     case "not_submitted_unknown_quote":
-      if (result.alerted) return `This server no longer has that quote: ${DEPOSIT_SAFE}.`;
-      return result.quoteId
-        ? "This server has no record of that quote, and the transaction isn't a SODAX deposit; ask for the swap transaction's hash."
-        : "SODAX has no record of this swap. If it came from sodax_swap_quote, call again with its quoteId; swaps made elsewhere are tracked where they were made.";
+      return result.alerted
+        ? `This server has no quote for that deposit: ${DEPOSIT_SAFE}.`
+        : `That transaction isn't a SODAX swap deposit on ${chain}; ask for the swap transaction's hash.`;
     case "expired_refunding":
       return "The swap reached SODAX after its quote expired, so it won't be filled and is being refunded to the user; they must not send it again.";
     case "expired_unsubmitted":

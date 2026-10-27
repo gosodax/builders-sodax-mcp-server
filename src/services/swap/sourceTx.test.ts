@@ -19,7 +19,13 @@ import {
   holdsCancel,
 } from "./sourceTx.js";
 
-const WANT = { connection: CONNECTION, assetManager: ASSET_MANAGER, srcChain: "23", relayData: RELAY_DATA };
+const WANT = {
+  connection: CONNECTION,
+  assetManager: ASSET_MANAGER,
+  srcChain: "23",
+  srcAddress: USER,
+  relayData: RELAY_DATA,
+};
 
 describe("decodeMessage", () => {
   it("decodes the live deposit: from Arbitrum's asset manager to the hub, with an RLP payload of 5 items", () => {
@@ -61,9 +67,10 @@ describe("checkDeposit", () => {
     expect(checkDeposit(RECEIPT, WANT)).toBe("match");
   });
 
-  it("calls a different payload, recipient, source chain or destination a mismatch", () => {
+  it("calls a different payload, sender, recipient, source chain or destination a mismatch", () => {
     const flipped = `${RELAY_DATA.payload.slice(0, -2)}${RELAY_DATA.payload.endsWith("00") ? "01" : "00"}`;
     expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, payload: flipped } })).toBe("mismatch");
+    expect(checkDeposit(RECEIPT, { ...WANT, srcAddress: CREATOR })).toBe("mismatch");
     expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, address: CREATOR } })).toBe("mismatch");
     expect(checkDeposit(RECEIPT, { ...WANT, srcChain: "30" })).toBe("mismatch");
     const toAnotherHub = receiptWith({ dstChainId: 147n, payload: MESSAGE?.payload ?? "0x" });

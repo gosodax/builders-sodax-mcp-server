@@ -10,8 +10,9 @@
  * Env: MCP_URL, SODAX_API_KEY, E2E_WALLET_PRIVATE_KEY; optional AMOUNT (default 5), SODAX_RPC_URL_42161,
  * SODAX_RPC_URL_8453, E2E_DRY_RUN=1 (quote only: nothing is signed, no balance needed).
  *
- * From `src/` it imports types, and the retryable error codes (errors.ts loads nothing else): this process
- * holds the key and never loads the SDK.
+ * From `src/` it imports types and the retryable error codes (errors.ts loads only constants.ts, which
+ * loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the server,
+ * though: on the runner the server runs as the same user and could read this process's environment.
  */
 
 import { appendFileSync } from "node:fs";
@@ -266,9 +267,12 @@ function fail(error: unknown): void {
   process.exitCode = 1;
 }
 
-process.on("unhandledRejection", error => {
+// Node's default handlers would print the message, which may carry a URL.
+const crash = (error: unknown) => {
   fail(error);
   process.exit(1);
-});
+};
+process.on("unhandledRejection", crash);
+process.on("uncaughtException", crash);
 
 run().catch(fail);

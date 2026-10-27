@@ -65,6 +65,11 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(out.status).toBe("ready");
   });
 
+  it("says when no route takes the amount", async () => {
+    const { out } = await callQuote({ ...ARB_USDC, ...TO_BASE_USDC, amount: "5000000000000000" });
+    expect(out.error).toEqual({ code: "SWAP_REJECTED", message: "No route was found for this pair at this amount." });
+  });
+
   it.each([
     [
       "NEAR",

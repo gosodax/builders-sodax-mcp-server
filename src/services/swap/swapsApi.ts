@@ -9,7 +9,7 @@ import { EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
 import { HttpError, fetchJson } from "../http.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type ActionErrorCode } from "./errors.js";
 
 const TIMEOUT_MS = 15_000;
 const UINT = /^\d+$/;
@@ -156,6 +156,19 @@ async function call<T>(schema: z.ZodType<T>, path: string, body?: unknown): Prom
   return parsed.data;
 }
 
+// Upstream codes with a reason the agent can act on: the solver's (the SDK's SolverIntentErrorCode), and -23.
+const REFUSALS = new Map<number, { code: ActionErrorCode; message: string; nextStep?: string }>([
+  [
+    -4,
+    {
+      code: "SWAP_REJECTED",
+      message: "No route was found for this pair at this amount.",
+      nextStep: "Tell the user no route was found; ask whether to try a smaller amount or another token.",
+    },
+  ],
+  [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
+]);
+
 function toActionError(error: unknown, route: string): ActionError {
   if (!(error instanceof HttpError)) {
     logger.warn({ err: error, route }, "Swaps API call failed");
@@ -175,12 +188,11 @@ function toActionError(error: unknown, route: string): ActionError {
       details: { retryAfterSec: error.retryAfterSec ?? 60 },
     });
   }
-  if (status === 422 && apiCode === -23) {
-    return new ActionError("AMOUNT_TOO_LOW", "The amount is too small for the swap service to quote.");
-  }
   // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
   if (status === 400 || status === 422) {
-    return new ActionError("SWAP_REJECTED", "The swap service refused this swap.", { details: { status } });
+    const refusal = typeof code === "number" ? REFUSALS.get(code) : undefined;
+    if (refusal) return new ActionError(refusal.code, refusal.message, { nextStep: refusal.nextStep });
+    return new ActionError("SWAP_REJECTED", "The swap service refused this swap.");
   }
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
 }

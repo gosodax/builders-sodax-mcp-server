@@ -270,8 +270,11 @@ const usd = (value: number) => `$${value.toLocaleString("en-US", { maximumFracti
 
 /** Warns, never refuses: an agent passing base units as token units shows up as a huge value. */
 function usdWarning(usdValue: string | null): string {
+  if (usdValue === null) {
+    return " Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.";
+  }
   const value = Number(usdValue);
-  if (usdValue === null || value <= SWAP_USD_WARN) return "";
+  if (value <= SWAP_USD_WARN) return "";
   return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.`;
 }
 

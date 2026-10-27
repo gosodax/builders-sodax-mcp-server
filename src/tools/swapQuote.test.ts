@@ -452,10 +452,13 @@ describe("sodax_swap_quote", () => {
     );
   });
 
-  it("quotes without a USD value when the oracle has none", async () => {
+  it("quotes without a USD value when the oracle has none, and says so", async () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(out).toMatchObject({ status: "price_only", usdValue: null });
+    expect(out.nextStep).toContain(
+      "Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.",
+    );
   });
 
   it("asks for toAddress when the destination isn't EVM", async () => {

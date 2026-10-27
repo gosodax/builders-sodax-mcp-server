@@ -236,7 +236,9 @@ describe("sodax_swap_quote", () => {
     expect(out.nextStep).toContain(
       "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
     );
-    expect(out.nextStep).toContain("then call sodax_swap_track with the quoteId");
+    expect(out.nextStep).toContain(
+      "then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.",
+    );
     expect(out.nextStep).not.toContain("don't send");
   });
 
@@ -255,6 +257,7 @@ describe("sodax_swap_quote", () => {
     expect(out.steps?.map(step => step.kind)).toEqual(["swap"]);
     expect(out.steps?.[0].tx.value).toBe("0x2386f26fc10000");
     expect(out.batch).toBeUndefined();
+    expect(out.nextStep).not.toContain("batch");
     expect(calls.map(call => call.path)).not.toContain("/approve");
   });
 
@@ -263,6 +266,7 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.steps?.map(step => step.kind)).toEqual(["reset_approve", "approve", "swap"]);
     expect(out.batch?.replaces).toEqual(["approve", "swap"]);
+    expect(out.nextStep).toContain("(or the batch for the steps it replaces)");
   });
 
   it.each<[string, SwapsStub, string]>([

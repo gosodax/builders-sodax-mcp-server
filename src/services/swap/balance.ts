@@ -22,7 +22,7 @@ export interface BalanceResult {
   status: "ok";
   chain: ChainInfo;
   address: string;
-  /** On Stellar, the spendable XLM: the balance less the reserve the account must keep. */
+  /** On Stellar, the spendable XLM: the balance less the minimum reserve and what open offers sell. */
   native: Holding;
   /** The token asked for; the native coin's holding when that's the one. */
   token?: Holding;

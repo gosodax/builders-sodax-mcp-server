@@ -172,7 +172,7 @@ describe("sodax_get_balance", () => {
     expect(out).toMatchObject({ trustline: false, token: { symbol: "USDC", amount: "0", baseUnits: "0" } });
     expect(recipientReady).toHaveBeenCalledWith("STELLAR", STELLAR_USDC, STELLAR_USER, 0n);
     expect(out.nextStep).toBe(
-      "The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve) and 0 USDC. It has no USDC trustline; the wallet must add one before it can receive USDC.",
+      "The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve and open offers) and 0 USDC. It has no USDC trustline; the wallet must add one before it can receive USDC.",
     );
   });
 
@@ -195,7 +195,9 @@ describe("sodax_get_balance", () => {
     withStellar();
     vi.mocked(walletBalance).mockResolvedValue(25_000_000n);
     const { out } = await balance({ chain: "stellar", address: STELLAR_USER });
-    expect(out.nextStep).toBe("The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve).");
+    expect(out.nextStep).toBe(
+      "The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve and open offers).",
+    );
   });
 
   it("keeps a balance a few seconds per chain, wallet and token, and never a failed read", async () => {

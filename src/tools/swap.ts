@@ -167,9 +167,9 @@ const RESTRICTED = {
   depositOnly: "is deposit-only: use it only as the token the user sends",
 } as const;
 
-// The agent knows which tool returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
-const ASKING_TOOL = "the tool that asked for this token (sodax_swap_quote if none did)";
-const USE_RESOLVED = `Pass chain.key and token.address to ${ASKING_TOOL}; amounts stay in token units.`;
+// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
+const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_quote if there was none)";
+const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL}; a quote's amount stays in token units.`;
 
 /** Built from catalog symbols, chain names and formatted amounts only. */
 function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
@@ -177,8 +177,9 @@ function balanceNextStep({ chain, native, token, accountExists, trustline }: Bal
     return `The wallet has no account on ${chain.name} yet, so it holds nothing there; it needs ${native.symbol} sent to it first.`;
   }
   const isNative = token?.address === native.address;
-  // The SDK reads Stellar's native balance less the reserve the account must keep.
-  const spendable = chain.key === ChainKeys.STELLAR_MAINNET ? " spendable (after the account's reserve)" : "";
+  // The SDK reads Stellar's native balance less the minimum reserve and selling liabilities.
+  const spendable =
+    chain.key === ChainKeys.STELLAR_MAINNET ? " spendable (after the account's reserve and open offers)" : "";
   const held = token && !isNative ? ` and ${token.amount} ${token.symbol}` : "";
   const sentences = [`The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${spendable}${held}.`];
   if (token && trustline === false) {
@@ -220,7 +221,7 @@ export function resolveNextStep(resolution: Resolution): string {
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
           : `which of ${labels.join(", ")} on ${chain} they mean`;
-      return `Ask the user ${ask}, then pass its address to ${ASKING_TOOL}.`;
+      return `Ask the user ${ask}, then pass its address to ${UNKNOWN_TOKEN_CALL}.`;
     }
     case "not_found": {
       const [first] = resolution.suggestions;

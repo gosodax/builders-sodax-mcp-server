@@ -10,6 +10,7 @@ export type ActionErrorCode =
   | "INVALID_AMOUNT"
   | "INVALID_ADDRESS"
   | "AMOUNT_TOO_LOW"
+  | "DEADLINE_TOO_SHORT"
   | "DESTINATION_NOT_READY"
   | "SWAP_REJECTED"
   | "SWAP_MISMATCH"
@@ -29,6 +30,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",
   AMOUNT_TOO_LOW: "Ask the user for a larger amount.",
+  DEADLINE_TOO_SHORT: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",

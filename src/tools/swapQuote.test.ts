@@ -473,18 +473,23 @@ describe("sodax_swap_quote", () => {
     [15, -301, "UPSTREAM_UNAVAILABLE"],
     [15, -299, undefined],
     [15, 301, "UPSTREAM_UNAVAILABLE"],
-    // Within the skew, but under two minutes left to send.
-    [5, -181, "UPSTREAM_UNAVAILABLE"],
+    // Within the skew, but under two minutes left to send: a longer deadline fixes that.
+    [5, -181, "DEADLINE_TOO_SHORT"],
     [5, -179, undefined],
+    // Past the skew, however little time is left.
+    [5, -301, "UPSTREAM_UNAVAILABLE"],
   ])("checks a %i-minute deadline against the clock: %is off", async (minutes, offBy, code) => {
     // The stub serves DEADLINE, which is 15 minutes from NOW.
     stubSwaps({ deadline: String(Number(DEADLINE) - (15 - minutes) * 60 + offBy) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: minutes });
     expect(out.error?.code).toBe(code);
+    if (code === "DEADLINE_TOO_SHORT") {
+      expect(out.nextStep).toBe("Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.");
+    }
   });
 
   it.each([
-    [181, "UPSTREAM_UNAVAILABLE"],
+    [181, "DEADLINE_TOO_SHORT"],
     [179, undefined],
   ])("checks a 5-minute deadline again after a %is build", async (buildSec, code) => {
     // 300 s left when the deadline is fetched; the floor is 120 s.

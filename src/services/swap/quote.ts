@@ -219,9 +219,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   }
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {
-    throw new ActionError("UPSTREAM_UNAVAILABLE", "Preparing the swap left too little time to send it.", {
-      nextStep: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
-    });
+    throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
   }
 
   const { quoteId } = putQuote({ ...request, intent: built.intent, relayData: built.relayData });

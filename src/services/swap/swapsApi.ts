@@ -94,8 +94,11 @@ export async function getDeadline(offsetSeconds: number): Promise<string> {
     `/deadline?offsetSeconds=${offsetSeconds}`,
   );
   const offBy = Number(deadline) - (Math.floor(Date.now() / 1000) + offsetSeconds);
-  if (Math.abs(offBy) > MAX_CLOCK_SKEW_SEC || !leavesTimeToSend(deadline)) {
+  if (Math.abs(offBy) > MAX_CLOCK_SKEW_SEC) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The swap service returned an unusable deadline.");
+  }
+  if (!leavesTimeToSend(deadline)) {
+    throw new ActionError("DEADLINE_TOO_SHORT", "That deadline leaves too little time to send the swap.");
   }
   return deadline;
 }

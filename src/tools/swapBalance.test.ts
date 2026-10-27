@@ -81,23 +81,35 @@ describe("sodax_get_balance", () => {
     expect(out.nextStep).toBe(nextStep);
   });
 
-  it("returns token units and base units, both at once", async () => {
+  it("returns each token's address and decimals, with token units and base units", async () => {
     holding({ [ARB_ETH]: 10n ** 18n, [ARB_USDC]: 12_340_000n });
     const { out } = await balance({ chain: "arb", address: USER, token: "USDC" });
     expect(out).toMatchObject({
-      native: { symbol: "ETH", amount: "1", baseUnits: "1000000000000000000" },
-      token: { symbol: "USDC", amount: "12.34", baseUnits: "12340000" },
+      native: { symbol: "ETH", address: ARB_ETH, decimals: 18, amount: "1", baseUnits: "1000000000000000000" },
+      token: { symbol: "USDC", address: ARB_USDC, decimals: 6, amount: "12.34", baseUnits: "12340000" },
     });
     expect(walletBalance).toHaveBeenCalledTimes(2);
   });
 
-  it("reads the native coin once, and returns no token, when it's the token asked for", async () => {
-    holding({ [ARB_ETH]: 10n ** 18n });
-    const { out } = await balance({ chain: "arb", address: USER, token: "native" });
-    expect(out.native).toMatchObject({ symbol: "ETH", amount: "1" });
-    expect(out.token).toBeUndefined();
-    expect(walletBalance).toHaveBeenCalledTimes(1);
-  });
+  it.each(["native", "ETH"])(
+    "reads the native coin once, and returns it as the token, when it's the one asked for (%s)",
+    async token => {
+      holding({ [ARB_ETH]: 10n ** 18n });
+      const { out } = await balance({ chain: "arb", address: USER, token });
+      expect(out.token).toEqual({
+        symbol: "ETH",
+        address: ARB_ETH,
+        decimals: 18,
+        amount: "1",
+        baseUnits: `${10n ** 18n}`,
+      });
+      expect(out.native).toEqual(out.token);
+      expect(out.nextStep).toBe(
+        "The wallet's balance on Arbitrum: 1 ETH. Swapping ETH also takes ETH for gas on top of the amount.",
+      );
+      expect(walletBalance).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("keeps the chain's decimals as the SDK returns them (Hedera native has 8)", async () => {
     vi.mocked(walletBalance).mockResolvedValue(123_456_789n);
@@ -160,7 +172,7 @@ describe("sodax_get_balance", () => {
     expect(out).toMatchObject({ trustline: false, token: { symbol: "USDC", amount: "0", baseUnits: "0" } });
     expect(recipientReady).toHaveBeenCalledWith("STELLAR", STELLAR_USDC, STELLAR_USER, 0n);
     expect(out.nextStep).toBe(
-      "The wallet's balance on Stellar: 2.5 XLM and 0 USDC. It has no USDC trustline; the wallet must add one before it can receive USDC.",
+      "The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve) and 0 USDC. It has no USDC trustline; the wallet must add one before it can receive USDC.",
     );
   });
 
@@ -177,6 +189,13 @@ describe("sodax_get_balance", () => {
       expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
       expect(out.trustline).toBeUndefined();
     }
+  });
+
+  it("says Stellar's native figure is what's spendable", async () => {
+    withStellar();
+    vi.mocked(walletBalance).mockResolvedValue(25_000_000n);
+    const { out } = await balance({ chain: "stellar", address: STELLAR_USER });
+    expect(out.nextStep).toBe("The wallet's balance on Stellar: 2.5 XLM spendable (after the account's reserve).");
   });
 
   it("keeps a balance a few seconds per chain, wallet and token, and never a failed read", async () => {

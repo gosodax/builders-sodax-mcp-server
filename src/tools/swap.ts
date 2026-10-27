@@ -4,6 +4,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
 import { EVM_TX_HASH_PATTERN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
@@ -175,14 +176,21 @@ function balanceNextStep({ chain, native, token, accountExists, trustline }: Bal
   if (accountExists === false) {
     return `The wallet has no account on ${chain.name} yet, so it holds nothing there; it needs ${native.symbol} sent to it first.`;
   }
-  const held = token ? ` and ${token.amount} ${token.symbol}` : "";
-  const sentences = [`The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${held}.`];
+  const isNative = token?.address === native.address;
+  // The SDK reads Stellar's native balance less the reserve the account must keep.
+  const spendable = chain.key === ChainKeys.STELLAR_MAINNET ? " spendable (after the account's reserve)" : "";
+  const held = token && !isNative ? ` and ${token.amount} ${token.symbol}` : "";
+  const sentences = [`The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${spendable}${held}.`];
   if (token && trustline === false) {
     sentences.push(
       `It has no ${token.symbol} trustline; the wallet must add one before it can receive ${token.symbol}.`,
     );
   }
-  if (native.baseUnits === "0") sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
+  if (native.baseUnits === "0") {
+    sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
+  } else if (isNative) {
+    sentences.push(`Swapping ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
+  }
   return sentences.join(" ");
 }
 

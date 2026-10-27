@@ -11,6 +11,8 @@ import { formatUnits } from "./units.js";
 
 export interface Holding {
   symbol: string;
+  address: string;
+  decimals: number;
   /** In token units, as a plain decimal. */
   amount: string;
   baseUnits: string;
@@ -20,8 +22,9 @@ export interface BalanceResult {
   status: "ok";
   chain: ChainInfo;
   address: string;
+  /** On Stellar, the spendable XLM: the balance less the reserve the account must keep. */
   native: Holding;
-  /** The token asked for, unless it's the native coin. */
+  /** The token asked for; the native coin's holding when that's the one. */
   token?: Holding;
   /** False when the account doesn't exist on the chain yet (Stellar, NEAR): it holds nothing there. */
   accountExists?: false;
@@ -72,10 +75,10 @@ export async function readBalances(input: { chain: string; address: string; toke
   const base = { status: "ok" as const, chain, address };
   if (nativeRead.value === null) {
     // An account that doesn't exist holds nothing; Stellar fails its token reads rather than say so.
-    return { ...base, native: holding(native, 0n), ...(token && { token: holding(token, 0n) }), accountExists: false };
+    return { ...base, native: holding(native, 0n), ...(asked && { token: holding(asked, 0n) }), accountExists: false };
   }
   const held = holding(native, nativeRead.value);
-  if (!token || !tokenUnits) return { ...base, native: held };
+  if (!token || !tokenUnits) return { ...base, native: held, ...(asked && { token: held }) };
   try {
     return { ...base, native: held, token: holding(token, await tokenUnits) };
   } catch (error) {
@@ -100,5 +103,6 @@ async function cachedBalance(chainKey: string, address: string, token: SwapsApiT
 }
 
 function holding(token: SwapsApiToken, baseUnits: bigint): Holding {
-  return { symbol: token.symbol, amount: formatUnits(baseUnits, token.decimals), baseUnits: baseUnits.toString() };
+  const { symbol, address, decimals } = token;
+  return { symbol, address, decimals, amount: formatUnits(baseUnits, decimals), baseUnits: baseUnits.toString() };
 }

@@ -5,6 +5,7 @@
 
 import { EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../constants.js";
 import { ConnectionError, isSet } from "./profiles.js";
+import { checksumValid } from "./sodax.js";
 
 export interface PartnerFee {
   address: string;
@@ -17,7 +18,12 @@ function parsePartnerFee(address: unknown, bps: unknown): PartnerFee | undefined
   const addressText = typeof address === "string" ? address.trim() : "";
   const bpsText = typeof bps === "string" ? bps.trim() : "";
   const fee = /^\d{1,3}$/.test(bpsText) ? Number(bpsText) : Number.NaN;
-  if (!EVM_ADDRESS_PATTERN.test(addressText) || ZERO_ADDRESS_PATTERN.test(addressText) || !(fee >= 1 && fee <= 100)) {
+  if (
+    !EVM_ADDRESS_PATTERN.test(addressText) ||
+    ZERO_ADDRESS_PATTERN.test(addressText) ||
+    !checksumValid(addressText) ||
+    !(fee >= 1 && fee <= 100)
+  ) {
     throw new ConnectionError(
       400,
       "A partner fee needs both an EVM partner address and a whole number of basis points from 1 to 100.",

@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  checksumValid,
   encodeRecipient,
   evmChainIdFor,
   initSodax,
@@ -80,7 +81,10 @@ describe("addresses and contracts", () => {
   it("encodes recipients the SDK's way, refusing what isn't valid for the chain", () => {
     expect(encodeRecipient("0xa4b1.arbitrum", USER)).toBe(USER);
     expect(encodeRecipient("0xa4b1.arbitrum", "0x000000000000000000000000000000000000DEad")).toBeUndefined();
-    expect(encodeRecipient("sui", "0x2")).toBe(`0x${"0".repeat(63)}2`);
+    expect(encodeRecipient("sui", `0x${"0".repeat(63)}2`)).toBe(`0x${"0".repeat(63)}2`);
+    // The SDK would pad these to 32 bytes.
+    expect(encodeRecipient("sui", "0x2")).toBeUndefined();
+    expect(encodeRecipient("sui", USER)).toBeUndefined();
     expect(encodeRecipient("near", "alice.near")).toBe("0x616c6963652e6e656172");
     expect(encodeRecipient("nowhere", USER)).toBeUndefined();
   });
@@ -105,6 +109,13 @@ describe("addresses and contracts", () => {
       hubAsset: "0xdB7BdA65c3a1C51D64dC4444e418684677334109",
     });
     expect(packagedToken("sonic", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBeUndefined();
+  });
+
+  it("checks a mixed-case address's EIP-55 checksum", () => {
+    expect(checksumValid(USER)).toBe(true);
+    expect(checksumValid("0x000000000000000000000000000000000000DEad")).toBe(false);
+    expect(checksumValid(USER.toLowerCase())).toBe(true);
+    expect(checksumValid(`0x${USER.slice(2).toUpperCase()}`)).toBe(true);
   });
 
   it("encodes an approve as the SDK does", () => {

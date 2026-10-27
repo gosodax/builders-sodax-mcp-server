@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { partnerFeeFromEnv, partnerFeeFromRequest } from "./partnerFee.js";
 import { ConnectionError } from "./profiles.js";
+import { initSodax } from "./sodax.js";
 
 const ADDRESS = "0x000000000000000000000000000000000000dEaD";
 const OTHER = "0x1111111111111111111111111111111111111111";
@@ -56,5 +57,23 @@ describe("partnerFeeFromEnv", () => {
     });
     expect(partnerFeeFromEnv({})).toBeUndefined();
     expect(() => partnerFeeFromEnv({ SODAX_PARTNER_FEE_BPS: "5" })).toThrow(ConnectionError);
+  });
+});
+
+describe("with the swap tools on", () => {
+  beforeAll(() => initSodax());
+
+  // A typo there would send the fees to an address nobody holds.
+  it("refuses a mixed-case address with a bad EIP-55 checksum", () => {
+    const typo = "0x000000000000000000000000000000000000DEad";
+    expect(() => partnerFeeFromRequest(request({ partnerAddress: typo, partnerFeeBps: "10" }))).toThrow(
+      ConnectionError,
+    );
+    for (const address of [ADDRESS, ADDRESS.toLowerCase(), OTHER]) {
+      expect(partnerFeeFromRequest(request({ partnerAddress: address, partnerFeeBps: "10" }))).toEqual({
+        address,
+        bps: 10,
+      });
+    }
   });
 });

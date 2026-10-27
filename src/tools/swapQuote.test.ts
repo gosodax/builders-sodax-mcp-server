@@ -368,6 +368,12 @@ describe("sodax_swap_quote", () => {
       { toChain: "sui", toToken: "native", fromAddress: USER, toAddress: "not an address" },
       "INVALID_ADDRESS",
     ],
+    // The SDK would pad it to 32 bytes: a Sui address nobody meant.
+    [
+      "an EVM address as a Sui recipient",
+      { toChain: "sui", toToken: "native", fromAddress: USER, toAddress: USER },
+      "INVALID_ADDRESS",
+    ],
   ])("refuses %s before asking for a quote", async (_case, args, code) => {
     const calls = stubSwaps();
     const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", ...args });

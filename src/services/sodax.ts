@@ -7,7 +7,14 @@
  * request bodies and addresses, so callers only ever see `undefined` or a bare error.
  */
 
-import { HUB_CHAIN_KEY, type SpokeChainKey, getIntentRelayChainId, solverConfig, spokeChainConfig } from "@sodax/types";
+import {
+  HUB_CHAIN_KEY,
+  type SpokeChainKey,
+  getIntentRelayChainId,
+  isSuiChainKey,
+  solverConfig,
+  spokeChainConfig,
+} from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
 import { logger } from "./logger.js";
 
@@ -39,6 +46,8 @@ export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
 /** A recipient as intents carry it, or `undefined` if the address isn't valid for the chain (EIP-55 included). */
 export function encodeRecipient(chainKey: string, address: string): string | undefined {
   try {
+    // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
+    if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
     // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
     return sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
   } catch {
@@ -75,6 +84,16 @@ export function packagedToken(chainKey: string, address: string): { decimals: nu
 export function intentChainId(chainKey: string): string | undefined {
   const id: unknown = getIntentRelayChainId(chainKey as SpokeChainKey);
   return typeof id === "bigint" ? id.toString() : undefined;
+}
+
+/**
+ * Whether a mixed-case EVM address carries a valid EIP-55 checksum. Unchecked before initSodax:
+ * only the swap tools use such an address, and they load the SDK at boot.
+ */
+export function checksumValid(address: string): boolean {
+  const hex = address.slice(2);
+  if (!loaded || hex === hex.toLowerCase() || hex === hex.toUpperCase()) return true;
+  return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
 }
 
 const SDK_CALL_TIMEOUT_MS = 15_000;

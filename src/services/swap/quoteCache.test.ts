@@ -12,7 +12,7 @@ const NOW = Date.parse("2026-10-26T12:00:00Z");
 const KEY = "a".repeat(64);
 
 /** A quote whose deadline is `minutes` from now. */
-function quoteDue(minutes: number) {
+function quoteDue(minutes: number, keyHash = KEY) {
   const deadline = String(Math.floor(NOW / 1000) + minutes * 60);
   return putQuote({
     srcChainKey: "0xa4b1.arbitrum",
@@ -41,7 +41,7 @@ function quoteDue(minutes: number) {
       data: "0x",
     },
     relayData: { address: "0x000000000000000000000000000000000000dEaD", payload: "0x01" },
-    keyHash: KEY,
+    keyHash,
     minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
   });
 }
@@ -97,7 +97,7 @@ describe("quoteCache", () => {
   it("when full, drops an expired quote before any live one, then the oldest", () => {
     const oldest = quoteDue(15);
     const expired = quoteDue(-31);
-    for (let i = 0; i < 9_998; i++) quoteDue(15);
+    for (let i = 0; i < 9_998; i++) quoteDue(15, `key-${i % 20}`);
 
     // Full, within a minute of the last sweep: the expired quote goes, not the oldest live one.
     const next = quoteDue(15);
@@ -107,5 +107,22 @@ describe("quoteCache", () => {
 
     quoteDue(15);
     expect(getCachedQuote(oldest.quoteId, KEY)).toBeUndefined();
+  });
+
+  it("makes a key with 1,000 open quotes wait for one to expire, never dropping another key's", () => {
+    const other = quoteDue(15, "b".repeat(64));
+    for (let i = 0; i < 1_000; i++) quoteDue(15);
+    const refused = (() => {
+      try {
+        quoteDue(15);
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 45 * 60 } });
+    expect(getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
+
+    vi.setSystemTime(NOW + 45 * 60_000);
+    expect(quoteDue(15).quoteId).toEqual(expect.any(String));
   });
 });

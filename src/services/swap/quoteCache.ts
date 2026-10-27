@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
+import { ActionError } from "./errors.js";
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
 
 export type CachedQuote = IntentRequest & {
@@ -28,6 +29,8 @@ export type CachedQuote = IntentRequest & {
 };
 
 const MAX_QUOTES = 10_000;
+// One key can't fill the cache and push out other keys' live quotes; past this it waits instead.
+const MAX_QUOTES_PER_KEY = 1_000;
 const GRACE_MS = 30 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
@@ -43,6 +46,13 @@ export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): Cac
   if (quotes.size >= MAX_QUOTES || now - lastSweepAt >= SWEEP_INTERVAL_MS) {
     lastSweepAt = now;
     for (const [quoteId, cached] of quotes) if (cached.expiresAt <= now) quotes.delete(quoteId);
+  }
+  const own = [...quotes.values()].filter(cached => cached.keyHash === quote.keyHash && cached.expiresAt > now);
+  if (own.length >= MAX_QUOTES_PER_KEY) {
+    const freedAt = Math.min(...own.map(cached => cached.expiresAt));
+    throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
+      details: { retryAfterSec: Math.ceil((freedAt - now) / 1000) },
+    });
   }
   if (quotes.size >= MAX_QUOTES) {
     const oldest = quotes.keys().next().value;

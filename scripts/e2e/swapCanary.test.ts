@@ -1,5 +1,6 @@
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { spokeAssetManagerAbi } from "@sodax/sdk";
 import { spokeChainConfig } from "@sodax/types";
 import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -66,10 +67,17 @@ const OUTCOME_UNKNOWN: [string, Answer][] = [
 ];
 const SEND_ERRORS: [string, Answer][] = [...OUTCOME_UNKNOWN, ["a refusal", REFUSED]];
 
+// Encoded with the SDK's ABI, so the script's own fragment is checked against it.
+const depositData = (token: Hex = USDC, amount = AMOUNT) =>
+  encodeFunctionData({
+    abi: spokeAssetManagerAbi,
+    functionName: "transfer",
+    args: [token, ACCOUNT.address, amount, "0x1234"],
+  });
 const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId = 42161): SwapStep => ({
   kind,
   chainId,
-  tx: { from: ACCOUNT.address, to: ASSET_MANAGER, data: "0x1234", value: "0x0", ...tx },
+  tx: { from: ACCOUNT.address, to: ASSET_MANAGER, data: depositData(), value: "0x0", ...tx },
 });
 const swap = (tx: Partial<SwapStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
 const approveData = (spender: Hex = ASSET_MANAGER, amount = AMOUNT) =>
@@ -180,6 +188,7 @@ describe("stepMismatch", () => {
   });
 
   it.each<[string, SwapStep[], string]>([
+    ["no steps", [], "steps: one swap, last"],
     ["no swap", [approve()], "steps: one swap, last"],
     ["a step after the swap", [swap(), approve()], "steps: one swap, last"],
     ["two swaps", [swap(), swap()], "steps: one swap, last"],
@@ -187,6 +196,17 @@ describe("stepMismatch", () => {
     ["ETH sent with the swap", [swap({ value: "0x1" })], "step 1 (swap) tx.value"],
     ["ETH sent with the approve", [approve({ value: "0x1" }), swap()], "step 1 (approve) tx.value"],
     ["a swap into another contract", [swap({ to: USDC })], "step 1 (swap) tx.to"],
+    [
+      "a deposit of more than the amount",
+      [approve(), swap({ data: depositData(USDC, AMOUNT + 1n) })],
+      "step 2 (swap) tx.data: not transfer(USDC, 5000000)",
+    ],
+    [
+      "a deposit of another token",
+      [swap({ data: depositData(ASSET_MANAGER) })],
+      "step 1 (swap) tx.data: not transfer(USDC, 5000000)",
+    ],
+    ["a swap that isn't a deposit", [swap({ data: "0x1234" })], "step 1 (swap) tx.data: not transfer(USDC, 5000000)"],
     ["an approve on another token", [approve({ to: ASSET_MANAGER }), swap()], "step 1 (approve) tx.to"],
     [
       "another spender",

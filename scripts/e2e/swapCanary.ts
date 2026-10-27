@@ -28,11 +28,13 @@ import {
   RpcRequestError,
   createPublicClient,
   createWalletClient,
+  decodeFunctionData,
   encodeFunctionData,
   erc20Abi,
   formatEther,
   formatUnits,
   keccak256,
+  parseAbi,
   parseEther,
   parseUnits,
   publicActions,
@@ -74,6 +76,8 @@ const PREPARE_INTERVAL_MS = 5_000;
 // The server's retryable codes, but INTERNAL: a bug should fail the canary, not be waited out.
 const RETRYABLE: readonly ActionErrorCode[] = RETRYABLE_CODES.filter(code => code !== "INTERNAL");
 const PENDING: readonly TrackResult["status"][] = ["awaiting_source_confirmation", "queued", "in_progress"];
+// The spoke asset manager's deposit, as the SDK's `spokeAssetManagerAbi` has it.
+const ASSET_MANAGER_ABI = parseAbi(["function transfer(address token, bytes to, uint256 amount, bytes data) payable"]);
 
 let stage: Stage = "setup";
 
@@ -173,25 +177,37 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
 /**
  * The server builds what this key signs, so check the shape this route needs first: all on the source
  * chain with no ETH, a USDC approve of exactly the amount to the asset manager (a reset to 0 before it is
- * allowed), and one swap into the asset manager, last. Names the first field that differs.
+ * allowed), and one swap last: the asset manager's deposit of exactly the amount of USDC (an allowance
+ * left by an earlier run could pull more). Names the first field that differs.
  */
 export function stepMismatch(steps: SwapStep[], src: Wallet, amount: bigint): string | undefined {
   const { assetManager } = spokeChainConfig[src.key].addresses;
-  if (steps.findIndex(step => step.kind === "swap") !== steps.length - 1) return "steps: one swap, last";
+  if (steps.at(-1)?.kind !== "swap" || steps.findIndex(step => step.kind === "swap") !== steps.length - 1) {
+    return "steps: one swap, last";
+  }
   for (const [i, { kind, chainId, tx }] of steps.entries()) {
     const spend = kind === "approve" ? amount : 0n;
+    const approve = encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [assetManager, spend] });
     const checks: [string, boolean][] = [
       ["chainId", chainId === src.client.chain.id],
       ["tx.value", BigInt(tx.value) === 0n],
       ["tx.to", sameHex(tx.to, kind === "swap" ? assetManager : src.usdc.address)],
-      [
-        `tx.data: not approve(asset manager, ${spend})`,
-        kind === "swap" ||
-          sameHex(tx.data, encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [assetManager, spend] })),
-      ],
+      kind === "swap"
+        ? [`tx.data: not transfer(USDC, ${amount})`, deposits(tx.data, src.usdc.address, amount)]
+        : [`tx.data: not approve(asset manager, ${spend})`, sameHex(tx.data, approve)],
     ];
     const field = checks.find(([, ok]) => !ok)?.[0];
     if (field) return `step ${i + 1} (${kind}) ${field}`;
+  }
+}
+
+/** Whether `data` calls the asset manager's deposit of exactly `amount` of `token`. */
+function deposits(data: string, token: Hex, amount: bigint): boolean {
+  try {
+    const { args } = decodeFunctionData({ abi: ASSET_MANAGER_ABI, data: data as Hex });
+    return sameHex(args[0], token) && args[2] === amount;
+  } catch {
+    return false;
   }
 }
 

@@ -15,6 +15,7 @@ import {
   approveCalldata,
   encodeRecipient,
   evmChainIdFor,
+  intentChainId,
   isHubChain,
   packagedToken,
   rebuildSwapTx,
@@ -276,6 +277,8 @@ function checkAddress(address: string, chain: ChainInfo): string {
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** A token as an intent names it: a hub token (native S included) as is, else by its hub asset. */
+const intentToken = (chainKey: string, token: SwapsApiToken) => (isHubChain(chainKey) ? token.address : token.hubAsset);
 /** A value as a 32-byte ABI word (hex, no prefix). */
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
@@ -283,10 +286,10 @@ const word = (value: bigint | string) =>
 /**
  * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name the
  * first check that fails. The intent JSON must say what was asked (input net of the partner fee,
- * minimum, deadline, hub tokens, recipient as the SDK encodes it, sender, fee envelope, no partial
- * fill, any solver) and be created by the user's own hub wallet. The swap tx must then be, byte for
- * byte, the one the SDK builds for that intent (the relay payload included), and any approval
- * `approve(the pinned swap contract, exact amount)` on the source token.
+ * minimum, deadline, chains, tokens, recipient as the SDK encodes it, sender, fee envelope, no
+ * partial fill, any solver) and be created by the user's own hub wallet. The swap tx must then be,
+ * byte for byte, the one the SDK builds for that intent (the relay payload included), and any
+ * approval `approve(the pinned swap contract, exact amount)` on the source token.
  */
 function findMismatch(
   request: IntentRequest,
@@ -318,8 +321,10 @@ function findMismatch(
     ["inputAmount", intent.inputAmount === (request.inputAmount - want.fee).toString()],
     ["minOutputAmount", intent.minOutputAmount === request.minOutputAmount.toString()],
     ["deadline", intent.deadline === request.deadline],
-    ["inputToken", same(intent.inputToken, want.from.hubAsset)],
-    ["outputToken", same(intent.outputToken, want.to.hubAsset)],
+    ["srcChain", intent.srcChain === intentChainId(request.srcChainKey)],
+    ["dstChain", intent.dstChain === intentChainId(request.dstChainKey)],
+    ["inputToken", same(intent.inputToken, intentToken(request.srcChainKey, want.from))],
+    ["outputToken", same(intent.outputToken, intentToken(request.dstChainKey, want.to))],
     ["dstAddress", recipient !== undefined && same(intent.dstAddress, recipient)],
     ["srcAddress", same(intent.srcAddress, request.srcAddress)],
     ["feeData", intent.data.toLowerCase() === feeData],

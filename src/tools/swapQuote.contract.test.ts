@@ -56,6 +56,15 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(out.steps?.at(-1)).toMatchObject({ kind: "swap", chainId: 146, tx: { to: solverConfig.intentsContract } });
   });
 
+  // The intent names a hub token as is, so native S is the zero address there, not wS.
+  it.each([
+    ["to native S", { ...ARB_USDC, toChain: "sonic", toToken: "native", amount: "5" }],
+    ["from native S", { fromChain: "sonic", fromToken: "native", ...TO_BASE_USDC, amount: "100" }],
+  ])("builds a swap %s", async (_case, args) => {
+    const { out } = await callQuote({ ...args, fromAddress: USER });
+    expect(out.status).toBe("ready");
+  });
+
   it.each([
     [
       "NEAR",

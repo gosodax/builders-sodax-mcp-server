@@ -7,7 +7,7 @@
  * request bodies and addresses, so callers only ever see `undefined` or a bare error.
  */
 
-import { HUB_CHAIN_KEY, type SpokeChainKey, solverConfig, spokeChainConfig } from "@sodax/types";
+import { HUB_CHAIN_KEY, type SpokeChainKey, getIntentRelayChainId, solverConfig, spokeChainConfig } from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
 import { logger } from "./logger.js";
 
@@ -69,6 +69,12 @@ export function packagedToken(chainKey: string, address: string): { decimals: nu
   const config = spokeChainConfig as Record<string, { supportedTokens?: Record<string, Token> } | undefined>;
   const wanted = address.toLowerCase();
   return Object.values(config[chainKey]?.supportedTokens ?? {}).find(token => token.address.toLowerCase() === wanted);
+}
+
+/** A chain's id in an intent (`srcChain`, `dstChain`): the relay's, not the EVM one (Arbitrum is 23). */
+export function intentChainId(chainKey: string): string | undefined {
+  const id: unknown = getIntentRelayChainId(chainKey as SpokeChainKey);
+  return typeof id === "bigint" ? id.toString() : undefined;
 }
 
 const SDK_CALL_TIMEOUT_MS = 15_000;

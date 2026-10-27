@@ -8,6 +8,7 @@ import {
   encodeRecipient,
   evmChainIdFor,
   initSodax,
+  intentChainId,
   packagedToken,
   rebuildSwapTx,
   recipientReady,
@@ -96,6 +97,9 @@ describe("addresses and contracts", () => {
     expect(evmChainIdFor("sonic")).toBe(146);
     expect(evmChainIdFor("sui")).toBeUndefined();
     expect(evmChainIdFor("constructor")).toBeUndefined();
+    expect(intentChainId("0xa4b1.arbitrum")).toBe("23");
+    expect(intentChainId("sonic")).toBe("146");
+    expect(intentChainId("constructor")).toBeUndefined();
     expect(packagedToken("0xa4b1.arbitrum", "0xAF88d065e77c8cc2239327c5edb3a432268e5831")).toMatchObject({
       decimals: 6,
       hubAsset: "0xdB7BdA65c3a1C51D64dC4444e418684677334109",

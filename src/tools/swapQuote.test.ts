@@ -1,3 +1,4 @@
+import { EvmSolverService, Sodax, SonicSpokeService } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
@@ -5,10 +6,10 @@ import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
 import { type IntentJson, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
-import { catalogFetch, fixtureCatalog, fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
-import { clearSwapCatalogCache, findToken } from "../services/swap/tokens.js";
+import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { callQuote as quote } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach the hub RPC: the user's hub wallet is the stub's, and recipient checks are scripted.
@@ -42,7 +43,6 @@ const INTENTS = solverConfig.intentsContract;
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
 const approveData = (spender: string, amount: bigint | string) => `0x095ea7b3${word(spender)}${word(BigInt(amount))}`;
-const catalog = fixtureCatalog();
 
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
 
@@ -70,6 +70,33 @@ interface SwapsStub {
   resetData?: string;
 }
 
+// The SDK's own intent builders, which the live API runs; they read no chain.
+const builder = new Sodax();
+
+/** The intent the SDK builds for an `/intents` body, with its numbers as the API's strings. */
+async function sdkIntent(body: Record<string, string> & { partnerFee?: { address: string; percentage: number } }) {
+  const params = {
+    ...body,
+    inputAmount: BigInt(body.inputAmount),
+    minOutputAmount: BigInt(body.minOutputAmount),
+    deadline: BigInt(body.deadline),
+    allowPartialFill: false,
+  } as unknown as Parameters<typeof EvmSolverService.constructCreateIntentData>[0];
+  const [, intent] =
+    body.srcChainKey === "sonic"
+      ? await SonicSpokeService.createSwapIntent({
+          createIntentParams: params,
+          creatorHubWalletAddress: HUB_WALLET,
+          solverConfig,
+          fee: body.partnerFee,
+          hubProvider: builder.hubProvider,
+          raw: true,
+        })
+      : EvmSolverService.constructCreateIntentData(params, HUB_WALLET, builder.config, body.partnerFee);
+  const json = Object.entries(intent).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value]);
+  return Object.fromEntries(json) as IntentJson;
+}
+
 /** Serves the catalog plus the Swaps API routes; records each Swaps API call by path. */
 function stubSwaps(stub: SwapsStub = {}) {
   const calls: { path: string; body?: Record<string, unknown> }[] = [];
@@ -92,34 +119,14 @@ function stubSwaps(stub: SwapsStub = {}) {
       });
     }
     if (path === "/intents") {
-      // Like the live API: the intent's input is net of the partner fee and its tokens are hub assets; the
-      // tx is what the SDK builds for it (the live builds match it byte for byte, see sodax.test.ts).
-      const gross = BigInt(body.inputAmount);
-      const fee = body.partnerFee ? (gross * BigInt(body.partnerFee.percentage)) / 10_000n : 0n;
-      const src = findToken(catalog, body.srcChainKey, body.inputToken);
-      const dst = findToken(catalog, body.dstChainKey, body.outputToken);
-      const intent: IntentJson = {
-        intentId: "1",
-        creator: HUB_WALLET,
-        inputToken: String(src?.hubAsset),
-        outputToken: String(dst?.hubAsset),
-        inputAmount: String(gross - fee),
-        minOutputAmount: body.minOutputAmount,
-        deadline: body.deadline,
-        allowPartialFill: false,
-        srcChain: "23",
-        dstChain: "146",
-        srcAddress: body.srcAddress,
-        dstAddress: body.dstAddress,
-        solver: ZERO,
-        data: body.partnerFee ? `0x01${word(fee)}${word(body.partnerFee.address)}` : "0x",
-        ...stub.intent,
-      };
+      // Like the live API, the SDK builds both: the intent for the body, and the tx for the intent (the
+      // live builds match it byte for byte, see sodax.test.ts).
+      const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
       const signed = await sdk.rebuildSwapTx({
         srcChainKey: body.srcChainKey,
         srcAddress: body.srcAddress,
         token: body.inputToken,
-        amount: gross,
+        amount: BigInt(body.inputAmount),
         intent: { ...intent, ...stub.signedIntent },
       });
       if (!signed) throw new Error("the stub's intent didn't encode");
@@ -243,6 +250,9 @@ describe("sodax_swap_quote", () => {
     ["a lower minimum", { intent: { minOutputAmount: "1" } }, "minOutputAmount"],
     ["another recipient", { intent: { dstAddress: `0x${"1".repeat(40)}` } }, "dstAddress"],
     ["another output token", { intent: { outputToken: `0x${"2".repeat(40)}` } }, "outputToken"],
+    // Base's relay id: the same tokens and recipient, delivered on another chain.
+    ["another destination chain", { intent: { dstChain: "30" } }, "dstChain"],
+    ["another source chain", { intent: { srcChain: "30" } }, "srcChain"],
     ["a bigger input", { intent: { inputAmount: "5000001" } }, "inputAmount"],
     ["value on a token swap", { swapValue: "1" }, "tx.value"],
     ["an approval for another spender", { approveData: approveData(`0x${"3".repeat(40)}`, 5000000n) }, "approval"],
@@ -474,6 +484,25 @@ describe("sodax_swap_quote", () => {
       ["approve", 146, SONIC_USDC],
       ["swap", 146, INTENTS],
     ]);
+  });
+
+  // The SDK names a hub token in the intent as is: native S stays 0x0…0, not its hub asset wS.
+  it("builds a swap to native S, which the intent names as the zero address", async () => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, toToken: "native", amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(getCachedQuote(String(out.quoteId))?.intent.outputToken).toBe(ZERO);
+  });
+
+  it("builds a swap from native S as createIntent with the amount as value", async () => {
+    stubSwaps({ valid: true });
+    const sonicS = { fromChain: "sonic", fromToken: "native", toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+    const { out } = await quote({ ...sonicS, amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(out.steps).toMatchObject([
+      { kind: "swap", chainId: 146, tx: { to: INTENTS, value: `0x${(5n * 10n ** 18n).toString(16)}` } },
+    ]);
+    expect(getCachedQuote(String(out.quoteId))?.intent.inputToken).toBe(ZERO);
   });
 
   it.each<[string, SwapsStub, string]>([

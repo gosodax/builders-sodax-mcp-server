@@ -1,12 +1,14 @@
 /**
  * Operator alerts for deposits on chain that this server can't move on its own: an operator can
  * relay or refund them by hand. Logged, and posted to Discord when configured, at most once a day
- * per kind and tx. They carry the chain, tx hash, quote id and deadline, never an address.
+ * per kind and tx. They carry the chain, tx hash, quote id, deadline and a short hash of the
+ * caller's key, never an address or the key.
  */
 
 import { SODAX_ENV } from "../../constants.js";
 import { COLOR, postToDiscord } from "../discord.js";
 import { logger } from "../logger.js";
+import { callerKeyHash } from "../requestContext.js";
 
 export type AlertKind = "unknown_quote" | "quote_used" | "refund_relay_failed";
 
@@ -18,9 +20,17 @@ const TITLES: Record<AlertKind, string> = {
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
+// Any key can make public deposits look stranded, so past this many posts an hour the rest are
+// only logged, and one post at the end of the hour counts them.
+const POSTS_PER_HOUR = 20;
+const HOUR_MS = 60 * 60 * 1000;
 
 // Insertion order is age order; a repeat moves to the end.
 const sent = new Map<string, number>();
+let hourStart = Number.NEGATIVE_INFINITY;
+let postsThisHour = 0;
+let suppressed = 0;
+let summary: NodeJS.Timeout | undefined;
 
 export function alertOperator(
   kind: AlertKind,
@@ -34,17 +44,48 @@ export function alertOperator(
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
   sent.set(key, now);
 
-  logger.error({ alert: kind, ...fields }, TITLES[kind]);
-  const embedFields = Object.entries({ env: SODAX_ENV, ...fields })
+  // Enough to tell callers apart, not to look a key up.
+  const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
+  logger.error({ alert: kind, ...tagged }, TITLES[kind]);
+  if (!withinBudget(now)) return;
+  const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
     .filter(([, value]) => value !== undefined)
     .map(([name, value]) => ({ name, value: String(value), inline: name !== "txHash" }));
-  void postToDiscord({
-    embeds: [
-      { title: `🚨 ${TITLES[kind]}`, color: COLOR.red, fields: embedFields, timestamp: new Date().toISOString() },
-    ],
-  });
+  post(`🚨 ${TITLES[kind]}`, embedFields);
+}
+
+function withinBudget(now: number): boolean {
+  if (now - hourStart >= HOUR_MS) {
+    hourStart = now;
+    postsThisHour = 0;
+  }
+  if (postsThisHour < POSTS_PER_HOUR) {
+    postsThisHour++;
+    return true;
+  }
+  suppressed++;
+  summary ??= setTimeout(postSuppressed, hourStart + HOUR_MS - now).unref();
+  return false;
+}
+
+function postSuppressed(): void {
+  logger.error({ suppressed }, "Swap alerts over the hourly budget were only logged");
+  post(`🚨 ${suppressed} more swap alerts in the last hour, only logged`, [
+    { name: "env", value: SODAX_ENV, inline: true },
+  ]);
+  suppressed = 0;
+  summary = undefined;
+}
+
+function post(title: string, fields: { name: string; value: string; inline: boolean }[]): void {
+  void postToDiscord({ embeds: [{ title, color: COLOR.red, fields, timestamp: new Date().toISOString() }] });
 }
 
 export function clearAlerts(): void {
   sent.clear();
+  clearTimeout(summary);
+  summary = undefined;
+  hourStart = Number.NEGATIVE_INFINITY;
+  postsThisHour = 0;
+  suppressed = 0;
 }

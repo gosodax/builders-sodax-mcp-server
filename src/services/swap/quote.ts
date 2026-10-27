@@ -24,7 +24,7 @@ import {
 import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
-import { putQuote } from "./quoteCache.js";
+import { checkQuoteRoom, putQuote } from "./quoteCache.js";
 import { resolveToken } from "./resolver.js";
 import { configDisagrees, sourceChainFor } from "./source.js";
 import {
@@ -116,6 +116,8 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   // An EVM recipient defaults to the sender.
   const toAddress = input.toAddress ? checkAddress(input.toAddress, to.chain) : dstEvm ? fromAddress : undefined;
   const ready = fromAddress !== undefined && toAddress !== undefined;
+  // Before any upstream call, so a key at its cap of open quotes costs nothing.
+  if (ready) checkQuoteRoom(callerKeyHash());
 
   const [quoted, deadline] = await Promise.all([
     getQuote({

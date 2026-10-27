@@ -8,7 +8,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { isHubChain } from "../sodax.js";
+import { type EvmReceipt, isHubChain } from "../sodax.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, claimDeposit, markRelayedForRefund, markSubmitted } from "./quoteCache.js";
@@ -105,14 +105,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: RETRY_AFTER_SEC };
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };
-  if (!quote) {
-    // No quote here (a restart, or its grace period over): a deposit may be stranded. Only a named
-    // quoteId alerts, or any public deposit could page an operator.
-    const isDeposit = depositMessages(receipt, source.connection, source.assetManager).length > 0;
-    const alerted = isDeposit && quoteId !== undefined;
-    if (alerted) alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
-    return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
-  }
+  if (!quote) return withoutQuote(base, source, receipt);
   const deposit = checkDeposit(receipt, {
     connection: source.connection,
     assetManager: source.assetManager,
@@ -123,8 +116,11 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (deposit !== "match") {
     return { ...base, status: "not_submitted", reason: deposit === "mismatch" ? "deposit_mismatch" : "not_a_deposit" };
   }
+  const claim = claimDeposit(quote.quoteId, txHash);
+  // Dropped from the cache during the reads above.
+  if (claim === "gone") return withoutQuote(base, source, receipt);
   // Both deposits carry the same intent id, so only the first can become an intent.
-  if (!claimDeposit(quote.quoteId, txHash)) {
+  if (claim === "taken") {
     alertOperator("quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "quote_used" };
   }
@@ -162,6 +158,16 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 
+/** A mined tx with no quote here (a restart, or its grace period over): a deposit may be stranded. */
+function withoutQuote(base: SwapRef, source: SwapSource, receipt: EvmReceipt): TrackResult {
+  const { txHash, chain, quoteId } = base;
+  const isDeposit = depositMessages(receipt, source.connection, source.assetManager).length > 0;
+  // Only a named quoteId alerts, or any public deposit could page an operator.
+  const alerted = isDeposit && quoteId !== undefined;
+  if (alerted) alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
+  return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
+}
+
 async function relayForRefund(base: SwapRef, quote: CachedQuote): Promise<TrackResult> {
   const { txHash, chain } = base;
   let relayed: boolean;
@@ -173,7 +179,7 @@ async function relayForRefund(base: SwapRef, quote: CachedQuote): Promise<TrackR
     relayed = false;
   }
   if (relayed) {
-    markRelayedForRefund(quote.quoteId);
+    markRelayedForRefund(quote);
     logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Relayed an expired swap deposit for refund");
     return { ...base, status: "expired_refunding" };
   }

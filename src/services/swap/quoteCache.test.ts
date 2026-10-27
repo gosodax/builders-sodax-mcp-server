@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  checkQuoteRoom,
   claimDeposit,
   clearQuoteCache,
   getCachedQuote,
@@ -72,22 +73,31 @@ describe("quoteCache", () => {
 
   it("gives a quote to its first checked deposit for good, and records how it was handed over", () => {
     const { quoteId } = quoteDue(15);
-    expect(claimDeposit(quoteId, "0x01")).toBe(true);
-    expect(claimDeposit(quoteId, "0x02")).toBe(false);
-    expect(claimDeposit(quoteId, "0x01")).toBe(true);
+    expect(claimDeposit(quoteId, "0x01")).toBe("claimed");
+    expect(claimDeposit(quoteId, "0x02")).toBe("taken");
+    expect(claimDeposit(quoteId, "0x01")).toBe("claimed");
     expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01" });
     expect(getCachedQuote(quoteId, KEY)).not.toHaveProperty("handedOver");
     markSubmitted(quoteId);
     expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01", handedOver: "submitted" });
-    expect(claimDeposit("not-a-quote", "0x01")).toBe(false);
+    expect(claimDeposit("not-a-quote", "0x01")).toBe("gone");
   });
 
-  it("keeps a relayed quote for a day, its only record of the refund", () => {
-    const { quoteId } = quoteDue(15);
-    claimDeposit(quoteId, "0xaa");
-    markRelayedForRefund(quoteId);
+  it("keeps a relayed quote for a day, its only record of the refund, even one dropped while it was relayed", () => {
+    const quote = quoteDue(15);
+    claimDeposit(quote.quoteId, "0xaa");
+    markRelayedForRefund(quote);
     vi.setSystemTime(NOW + 23 * 60 * 60 * 1000);
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0xaa", handedOver: "relayed_for_refund" });
+    expect(getCachedQuote(quote.quoteId, KEY)).toMatchObject({
+      depositTxHash: "0xaa",
+      handedOver: "relayed_for_refund",
+    });
+
+    const dropped = quoteDue(15);
+    claimDeposit(dropped.quoteId, "0xbb");
+    clearQuoteCache();
+    markRelayedForRefund(dropped);
+    expect(getCachedQuote(dropped.quoteId, KEY)).toMatchObject({ handedOver: "relayed_for_refund" });
   });
 
   it("returns nothing for an unknown id", () => {
@@ -119,10 +129,19 @@ describe("quoteCache", () => {
         return error;
       }
     })();
-    expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 45 * 60 } });
+    // Freed at the first deadline, not 30 minutes after it.
+    expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 15 * 60 } });
+    expect(() => checkQuoteRoom(KEY)).toThrow(refused as Error);
     expect(getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
 
-    vi.setSystemTime(NOW + 45 * 60_000);
+    vi.setSystemTime(NOW + 15 * 60_000);
     expect(quoteDue(15).quoteId).toEqual(expect.any(String));
+  });
+
+  it("doesn't count a quote a deposit claimed toward its key's cap", () => {
+    const [first] = Array.from({ length: 1_000 }, () => quoteDue(15));
+    expect(() => checkQuoteRoom(KEY)).toThrow("too many open swap quotes");
+    claimDeposit(first.quoteId, "0x01");
+    expect(() => quoteDue(15)).not.toThrow();
   });
 });

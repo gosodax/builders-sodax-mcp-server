@@ -10,6 +10,7 @@ import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callQuote as quote } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach the hub RPC: the user's hub wallet is the stub's, and recipient checks are scripted.
@@ -223,6 +224,15 @@ describe("sodax_swap_quote", () => {
     expect(out.nextStep).toContain("Balances aren't checked here.");
     expect(out.nextStep).toContain("then call sodax_swap_track with the quoteId");
     expect(out.nextStep).not.toContain("don't send");
+  });
+
+  it("refuses a key at its cap of open quotes before calling the swap service, but still prices for it", async () => {
+    for (let i = 0; i < 1_000; i++) cacheQuote({ deadline: DEADLINE });
+    const calls = stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 900 });
+    expect(calls).toEqual([]);
+    expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
   });
 
   it("skips the approve when the allowance is already enough (a native token)", async () => {

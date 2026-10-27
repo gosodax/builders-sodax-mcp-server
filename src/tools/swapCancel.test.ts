@@ -130,9 +130,10 @@ describe("sodax_swap_cancel", () => {
 
   it("calls a deposit this server relayed for refund already refunding, though the backend has no row", async () => {
     stubBackend({ row: null });
-    const { quoteId } = cacheQuote();
+    const quote = cacheQuote();
+    const { quoteId } = quote;
     claimDeposit(quoteId, TX);
-    markRelayedForRefund(quoteId);
+    markRelayedForRefund(quote);
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "refunding" });
     expect(out.nextStep).toContain("already being refunded");

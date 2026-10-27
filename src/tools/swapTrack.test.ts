@@ -178,6 +178,20 @@ describe("sodax_swap_track", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("treats a quote dropped from the cache while its deposit was read as gone, not as used", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    vi.mocked(getEvmReceipt).mockImplementation(async () => {
+      clearQuoteCache();
+      return DEPOSIT_RECEIPT;
+    });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: true });
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "unknown_quote" }), expect.any(String));
+    expect(logger.error).not.toHaveBeenCalledWith(expect.objectContaining({ alert: "quote_used" }), expect.any(String));
+    expect(submits(calls)).toEqual([]);
+  });
+
   it("relays an expired deposit for refund once, then reports it without calling again", async () => {
     const calls = stubBackend();
     const { quoteId } = cacheQuote();

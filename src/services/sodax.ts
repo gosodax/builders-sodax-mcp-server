@@ -70,13 +70,15 @@ export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
 
 /** A recipient as intents carry it, or `undefined` if the address isn't valid for the chain (EIP-55 included). */
 export function encodeRecipient(chainKey: string, address: string): string | undefined {
-  // Mainnet only: the SDK would encode a Stacks testnet principal (ST…, SN…) too.
-  if (chainConfigs[chainKey]?.chain?.type === "STACKS" && /^S[TN]/.test(address)) return undefined;
   try {
     // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
     if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
     // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
-    return sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
+    const encoded = sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
+    // The SDK encodes any Stacks version, testnet (ST…, St…, SN…) included: only mainnet single- or multi-sig
+    // (0x16, 0x14) is taken, in a standard (0x05) or contract (0x06) principal.
+    if (chainConfigs[chainKey]?.chain?.type === "STACKS" && !/^0x0[56]1[46]/.test(encoded)) return undefined;
+    return encoded;
   } catch {
     return undefined;
   }

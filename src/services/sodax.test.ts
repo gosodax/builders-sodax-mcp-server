@@ -114,10 +114,21 @@ describe("addresses and contracts", () => {
     expect(encodeRecipient("nowhere", USER)).toBeUndefined();
   });
 
-  it("refuses a Stacks testnet principal, which the SDK would encode for mainnet", () => {
+  it("takes only a mainnet Stacks principal, which the SDK can't tell from a testnet one", () => {
     expect(encodeRecipient("stacks", "SP3031RGK734636C8KGW2Y76TEQBTVX59Q472EQH0")).toMatch(/^0x0516/);
     expect(encodeRecipient("stacks", "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4")).toMatch(/^0x0514/);
-    expect(encodeRecipient("stacks", "ST000000000000000000002AMW42H")).toBeUndefined();
+    expect(encodeRecipient("stacks", "SP000000000000000000002Q6VF78.pox-4")).toMatch(/^0x0616/);
+    // Testnet with the version letter in either case (the SDK reads both), and any other version.
+    for (const notMainnet of [
+      "ST000000000000000000002AMW42H",
+      "St000000000000000000002AMW42H",
+      "SN000000000000000000003YDHWKJ",
+      "Sn000000000000000000003YDHWKJ",
+      "St000000000000000000002AMW42H.pox-4",
+      "SA3031RG000000000000000000000000002XQ4A5D",
+    ]) {
+      expect(encodeRecipient("stacks", notMainnet)).toBeUndefined();
+    }
   });
 
   it("pins the swap contract: a spoke's asset manager, the hub intents contract", () => {

@@ -333,6 +333,23 @@ describe("sodax_swap_quote", () => {
     expect(calls.find(call => call.path === "/intents")?.body?.dstAddress).toBe(recipient);
   });
 
+  it.each(["ST000000000000000000002AMW42H", "St000000000000000000002AMW42H"])(
+    "refuses a Stacks testnet recipient (%s) before asking for a quote",
+    async toAddress => {
+      const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+      const configs = JSON.parse(fixtureText("chain-configs.json"));
+      // STX as the SDK config lists it.
+      const stx = "ST000000000000000000002AMW42H.nativetoken";
+      const hubAsset = "0x30b3b1a3e4f1235472772e60a8cd9c0165db641e";
+      tokens.stacks = [{ symbol: "STX", name: "Stacks", decimals: 6, address: stx, chainKey: "stacks", hubAsset }];
+      configs.stacks = { chain: { id: "stacks", chainId: "stacks", name: "Stacks", type: "STACKS" }, nativeToken: stx };
+      const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+      const { out } = await quote({ ...USDC_TO_SONIC, toChain: "stacks", toToken: "STX", amount: "5", toAddress });
+      expect(out.error.code).toBe("INVALID_ADDRESS");
+      expect(calls).toEqual([]);
+    },
+  );
+
   it("reports a chain the config doesn't describe as unavailable, before any quote", async () => {
     const configs = JSON.parse(fixtureText("chain-configs.json"));
     delete configs.sonic.chain;

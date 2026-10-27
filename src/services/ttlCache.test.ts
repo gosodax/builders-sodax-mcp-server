@@ -31,10 +31,12 @@ describe("TtlCache", () => {
     expect(cache.stats().keys).toEqual(["d"]);
   });
 
-  it("reports and clears its entries", () => {
+  it("reports, deletes and clears its entries", () => {
     const cache = new TtlCache();
     cache.set("a", 1);
     cache.set("b", 2);
+    cache.set("c", 3);
+    cache.delete("c");
     expect(cache.stats()).toEqual({ size: 2, keys: ["a", "b"] });
     cache.clear();
     expect(cache.stats()).toEqual({ size: 0, keys: [] });

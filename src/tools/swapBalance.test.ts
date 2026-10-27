@@ -4,7 +4,7 @@ import { recipientReady, walletBalance } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearBalanceCache } from "../services/swap/balance.js";
-import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { clearSwapCatalogCache, getSwapCatalog } from "../services/swap/tokens.js";
 import { callTool } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach a chain: balances are scripted per test, by token address.
@@ -218,6 +218,37 @@ describe("sodax_get_balance", () => {
     await balance({ chain: "hedera", address: USER });
     await balance({ chain: "hedera", address: USER });
     expect(walletBalance).toHaveBeenCalledTimes(7);
+  });
+
+  it("shares one read between parallel calls for a wallet", async () => {
+    await getSwapCatalog();
+    const pending: ((units: bigint) => void)[] = [];
+    vi.mocked(walletBalance).mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+    const calls = [balance({ chain: "arb", address: USER }), balance({ chain: "arb", address: USER })];
+    // Both calls reach the read before it settles.
+    await new Promise(resolve => setTimeout(resolve, 10));
+    for (const resolve of pending) resolve(1n);
+    const outs = await Promise.all(calls);
+    expect(outs.map(({ out }) => out.native.baseUnits)).toEqual(["1", "1"]);
+    expect(walletBalance).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a newer read when one that outlived the cache fails", async () => {
+    await getSwapCatalog();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-27T12:00:00Z"));
+    let fail = () => {};
+    vi.mocked(walletBalance)
+      .mockImplementationOnce(() => new Promise((_, reject) => (fail = () => reject(new Error("timeout")))))
+      .mockResolvedValue(2n);
+    const slow = balance({ chain: "arb", address: USER });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    now.mockReturnValue(Date.parse("2026-10-27T12:00:05.001Z"));
+    await balance({ chain: "arb", address: USER });
+    fail();
+    expect((await slow).out.error.code).toBe("CHAIN_UNAVAILABLE");
+    expect((await balance({ chain: "arb", address: USER })).out.native.baseUnits).toBe("2");
+    expect(walletBalance).toHaveBeenCalledTimes(2);
   });
 
   it("reads only BTC on Bitcoin, where the SDK would report any other token as 0", async () => {

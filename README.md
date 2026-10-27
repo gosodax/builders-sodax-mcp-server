@@ -202,7 +202,7 @@ Once connected, try asking your AI coding assistant:
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
 | SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list, quotes and transactions (swap tools) | 2 min for the token list (up to 30 min while the API is down) |
-| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: wallet balances, source-tx receipts, NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release; chain reads uncached |
+| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: wallet balances, source-tx receipts, NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release; balance reads kept 5 s; other chain reads uncached |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 

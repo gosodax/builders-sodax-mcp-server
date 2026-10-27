@@ -91,15 +91,18 @@ export async function readBalances(input: { chain: string; address: string; toke
   }
 }
 
-/** `walletBalance`, kept a few seconds per chain, wallet and token. */
-async function cachedBalance(chainKey: string, address: string, token: SwapsApiToken): Promise<bigint | null> {
+/** `walletBalance`, kept a few seconds per chain, wallet and token; parallel calls share one read. */
+function cachedBalance(chainKey: string, address: string, token: SwapsApiToken): Promise<bigint | null> {
   const key = JSON.stringify([chainKey, address, token.address]);
-  // Boxed, so a cached `null` (a missing account) isn't a miss.
-  const cached = balances.get<{ units: bigint | null }>(key);
-  if (cached) return cached.units;
-  const units = await walletBalance(chainKey, address, token);
-  balances.set(key, { units });
-  return units;
+  const cached = balances.get<Promise<bigint | null>>(key);
+  if (cached) return cached;
+  const read = walletBalance(chainKey, address, token);
+  balances.set(key, read);
+  // A failed read is never kept; a newer one under the key stays.
+  read.catch(() => {
+    if (balances.get(key) === read) balances.delete(key);
+  });
+  return read;
 }
 
 function holding(token: SwapsApiToken, baseUnits: bigint): Holding {

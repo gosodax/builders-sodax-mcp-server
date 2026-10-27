@@ -1,7 +1,7 @@
 /**
  * A per-module response cache: an entry expires `ttlMs` after it was stored.
- * The data API and solver clients each keep one, so `sodax_refresh_cache` can
- * report what it cleared per cache.
+ * The data API and solver clients each keep one, which `sodax_refresh_cache` clears
+ * and reports per cache; the swap tools' balance cache (5 s) is left to expire.
  */
 
 import { CACHE_DURATION_MS } from "../constants.js";
@@ -37,6 +37,10 @@ export class TtlCache {
       }
     }
     this.entries.set(key, { data, storedAt: now });
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
   }
 
   clear(): void {

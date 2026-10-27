@@ -97,4 +97,23 @@ describe("resolveConnection", () => {
     expect(warn).not.toHaveBeenCalled();
     expect(debug).not.toHaveBeenCalled();
   });
+
+  describe("with the switch off", () => {
+    it("refuses the swap profile with 400, even with a SODAX key", () => {
+      const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }), false);
+      expect(connection).toBeUndefined();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        jsonrpc: "2.0",
+        error: { code: -32602, message: "The swap profile is not enabled on this server yet. Use builder or all." },
+        id: null,
+      });
+    });
+
+    it("serves a keyed default connection the builder tools only, forwarding its key", () => {
+      const { connection, res } = resolve(fakeReq({}, { "x-api-key": KEY }), false);
+      expect(connection).toEqual({ apiKey: KEY, toolsets: { builder: true, swap: false } });
+      expect(res.status).not.toHaveBeenCalled();
+    });
+  });
 });

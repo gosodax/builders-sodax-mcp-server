@@ -25,7 +25,9 @@ export function describeProfiles(swapToolsEnabled: boolean): Record<Profile, str
   return {
     builder: "Data, relay and SDK docs tools",
     swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Not enabled on this server yet",
-    all: "Both; the swap tools only with an x-api-key header",
+    all: swapToolsEnabled
+      ? "Both; the swap tools only with an x-api-key header"
+      : "The builder tools; swap tools aren't enabled yet",
   };
 }
 

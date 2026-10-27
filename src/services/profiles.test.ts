@@ -132,6 +132,11 @@ describe("describeProfiles", () => {
     expect(describeProfiles(false).swap).toBe("Not enabled on this server yet");
     expect(describeProfiles(true).swap).toContain("x-api-key");
   });
+
+  it("offers the swap tools in all only while the switch is on", () => {
+    expect(describeProfiles(false).all).toBe("The builder tools; swap tools aren't enabled yet");
+    expect(describeProfiles(true).all).toContain("x-api-key");
+  });
 });
 
 describe("profileFromRequest", () => {

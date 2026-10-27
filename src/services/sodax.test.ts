@@ -6,7 +6,9 @@ import { logger } from "./logger.js";
 import {
   approveCalldata,
   encodeRecipient,
+  evmChainIdFor,
   initSodax,
+  packagedToken,
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
@@ -87,6 +89,18 @@ describe("addresses and contracts", () => {
     expect(swapContractFor("sonic")).toBe(solverConfig.intentsContract);
     expect(swapContractFor("solana")).toBeUndefined();
     expect(swapContractFor("nowhere")).toBeUndefined();
+  });
+
+  it("reads chain ids and tokens from the packaged config", () => {
+    expect(evmChainIdFor("0xa4b1.arbitrum")).toBe(42161);
+    expect(evmChainIdFor("sonic")).toBe(146);
+    expect(evmChainIdFor("sui")).toBeUndefined();
+    expect(evmChainIdFor("constructor")).toBeUndefined();
+    expect(packagedToken("0xa4b1.arbitrum", "0xAF88d065e77c8cc2239327c5edb3a432268e5831")).toMatchObject({
+      decimals: 6,
+      hubAsset: "0xdB7BdA65c3a1C51D64dC4444e418684677334109",
+    });
+    expect(packagedToken("sonic", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBeUndefined();
   });
 
   it("encodes an approve as the SDK does", () => {

@@ -56,6 +56,21 @@ export function swapContractFor(chainKey: string): string | undefined {
   return typeof contract === "string" && EVM_ADDRESS_PATTERN.test(contract) ? contract : undefined;
 }
 
+/** A chain's EVM chain id, from the packaged config. */
+export function evmChainIdFor(chainKey: string): number | undefined {
+  const config = spokeChainConfig as Record<string, { chain?: { type?: unknown; chainId?: unknown } } | undefined>;
+  const chain = config[chainKey]?.chain;
+  return chain?.type === "EVM" && typeof chain.chainId === "number" ? chain.chainId : undefined;
+}
+
+/** A token as the packaged config lists it on a chain (addresses compared as the SDK does), if it does. */
+export function packagedToken(chainKey: string, address: string): { decimals: number; hubAsset: string } | undefined {
+  type Token = { address: string; decimals: number; hubAsset: string };
+  const config = spokeChainConfig as Record<string, { supportedTokens?: Record<string, Token> } | undefined>;
+  const wanted = address.toLowerCase();
+  return Object.values(config[chainKey]?.supportedTokens ?? {}).find(token => token.address.toLowerCase() === wanted);
+}
+
 const SDK_CALL_TIMEOUT_MS = 15_000;
 
 /** A bounded SDK call whose failure (timeout included) carries no SDK text. */

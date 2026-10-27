@@ -14,7 +14,9 @@ import {
   type SwapTx,
   approveCalldata,
   encodeRecipient,
+  evmChainIdFor,
   isHubChain,
+  packagedToken,
   rebuildSwapTx,
   swapContractFor,
   userHubWallet,
@@ -153,16 +155,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     return { status: "price_only", ...summary, missing };
   }
 
-  // Pinned from the packaged config; the live chain config must agree with it.
+  // Pinned from the packaged config; the live chain config must agree with it. Five EVM chains
+  // share one asset manager, so the chain id is pinned too.
   const swapContract = swapContractFor(from.chain.key);
   const live = from.config.swapContract;
-  if (!swapContract || (live && !same(live, swapContract))) {
-    logger.error({ chainKey: from.chain.key }, "The live chain config's swap contract differs from the SDK's");
-    throw new ActionError(
-      "UPSTREAM_UNAVAILABLE",
-      "The SODAX config doesn't agree on the source chain's swap contract.",
-    );
-  }
+  if (!swapContract || (live && !same(live, swapContract))) throw configDisagrees(from.chain.key, "swapContract");
+  const pinnedChainId = evmChainIdFor(from.chain.key);
+  if (pinnedChainId !== chainId) throw configDisagrees(from.chain.key, "chainId");
 
   const recipient = await checkRecipient({
     chainKey: to.chain.key,
@@ -226,7 +225,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     fromAddress,
     toAddress,
     checks: { balance: "not_checked", recipient },
-    ...toSteps(built.tx, approval, chainId, fromAddress),
+    ...toSteps(built.tx, approval, pinnedChainId, fromAddress),
   };
 }
 
@@ -248,7 +247,19 @@ function resolveSide(
   }
   const config = catalog.chains[resolution.chain.key];
   if (!config) throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX chain config doesn't describe that chain.");
+  // The amount is scaled by these decimals and the intent checked against this hub asset.
+  const { decimals, hubAsset, address } = resolution.token;
+  const packaged = packagedToken(resolution.chain.key, address);
+  if (packaged && (packaged.decimals !== decimals || !same(packaged.hubAsset, hubAsset))) {
+    throw configDisagrees(resolution.chain.key, `${side}Token`);
+  }
   return { ...resolution, config };
+}
+
+/** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
+function configDisagrees(chainKey: string, field: string): ActionError {
+  logger.error({ chainKey, field }, "The live SODAX config differs from the SDK's");
+  return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX config doesn't agree with the SDK's.");
 }
 
 function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }): Side {

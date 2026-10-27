@@ -47,7 +47,8 @@ const catalog = fixtureCatalog();
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
 
 interface SwapsStub {
-  /** Replaces the recorded chain config. */
+  /** Replace the recorded token list and chain config. */
+  tokens?: string;
   configs?: string;
   quote?: () => Response;
   deadline?: string;
@@ -72,7 +73,7 @@ interface SwapsStub {
 /** Serves the catalog plus the Swaps API routes; records each Swaps API call by path. */
 function stubSwaps(stub: SwapsStub = {}) {
   const calls: { path: string; body?: Record<string, unknown> }[] = [];
-  const serveCatalog = catalogFetch(undefined, stub.configs);
+  const serveCatalog = catalogFetch(stub.tokens, stub.configs);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (!url.startsWith(`${SODAX_SWAPS_BASE_URL}/`) || url.endsWith("/tokens")) return serveCatalog(input, init);
@@ -525,6 +526,33 @@ describe("sodax_swap_quote", () => {
     expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
     expect(calls.map(call => call.path)).not.toContain("/intents");
   });
+
+  it("refuses a live chain id that differs from the SDK config's", async () => {
+    // Base shares Arbitrum's asset manager, so only the chain id tells them apart.
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs["0xa4b1.arbitrum"].chain.chainId = 8453;
+    const calls = stubSwaps({ configs: JSON.stringify(configs) });
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(calls.map(call => call.path)).not.toContain("/intents");
+  });
+
+  it.each([
+    ["decimals of the token sent", "0xa4b1.arbitrum", ARB_USDC, { decimals: 18 }],
+    ["hub asset of the token sent", "0xa4b1.arbitrum", ARB_USDC, { hubAsset: `0x${"e".repeat(40)}` }],
+    ["decimals of the token received", "sonic", SONIC_USDC, { decimals: 18 }],
+  ])(
+    "refuses a live token list that disagrees with the SDK config on the %s",
+    async (_case, chainKey, address, change) => {
+      const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+      const token = tokens[chainKey].find((entry: { address: string }) => entry.address === address);
+      Object.assign(token, change);
+      const calls = stubSwaps({ tokens: JSON.stringify(tokens) });
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+      expect(calls).toEqual([]);
+    },
+  );
 
   it("warns about a defaulted recipient only across chains", async () => {
     stubSwaps();

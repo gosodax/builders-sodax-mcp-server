@@ -5,7 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { parseApiKey } from "./requestContext.js";
+import { MAX_API_KEY_LENGTH, parseApiKey } from "./requestContext.js";
 
 const PROFILES = ["builder", "swap", "all"] as const;
 type Profile = (typeof PROFILES)[number];
@@ -15,9 +15,9 @@ export interface Toolsets {
   swap: boolean;
 }
 
-/** The toolsets a connection gets, plus a line for the agent when the swap tools only wait for a usable key. */
+/** The toolsets a connection gets, plus a line for the agent when its key was dropped or would add the swap tools. */
 export interface ToolSelection extends Toolsets {
-  swapKeyHint?: string;
+  keyHint?: string;
 }
 
 /** What each profile serves. `swapToolsEnabled` is the server's rollout switch. */
@@ -63,11 +63,14 @@ export function parseSwapToolsEnabled(value: string | undefined): boolean {
   throw new Error('SODAX_SWAP_TOOLS_ENABLED must be "true" or "false"');
 }
 
-/** What's wrong with the caller's key and how to fix it. The value is never echoed. */
-function keyFix(apiKey: "malformed" | "missing"): string {
-  return apiKey === "malformed"
-    ? `The x-api-key value (SODAX_API_KEY on stdio) isn't a SODAX API key (expected sodax_… alone): ${API_KEYS_DOCS_URL}`
-    : `Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`;
+// What's wrong with the caller's key and how to fix it. The value is never echoed.
+const SEND_A_KEY = `Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`;
+const NOT_A_SODAX_KEY = `The x-api-key value (SODAX_API_KEY on stdio) isn't a SODAX API key (a sodax_… key alone, at most ${MAX_API_KEY_LENGTH} characters)`;
+const KEY_DROPPED = `${NOT_A_SODAX_KEY}, so calls go out without one: ${API_KEYS_DOCS_URL}`;
+
+interface SelectOptions {
+  apiKey: ApiKeyStatus;
+  swapToolsEnabled: boolean;
 }
 
 function parseProfile(requested: unknown): Profile | undefined {
@@ -77,10 +80,7 @@ function parseProfile(requested: unknown): Profile | undefined {
   return PROFILES.find(known => known === profile);
 }
 
-export function selectToolsets(
-  requested: unknown,
-  opts: { apiKey: ApiKeyStatus; swapToolsEnabled: boolean },
-): ToolSelection {
+export function selectToolsets(requested: unknown, opts: SelectOptions): ToolSelection {
   const profile = parseProfile(requested);
   if (!profile) {
     const enabled = PROFILES.filter(known => known !== "swap" || opts.swapToolsEnabled);
@@ -90,21 +90,30 @@ export function selectToolsets(
   if (profile === "swap" && !opts.swapToolsEnabled) {
     throw new ConnectionError(400, "The swap profile is not enabled on this server yet. Use builder or all.");
   }
-  if (profile === "swap" && opts.apiKey !== "valid") {
-    throw new ConnectionError(403, `API key required for the swap profile. ${keyFix(opts.apiKey)}`);
+  if (profile === "swap" && opts.apiKey === "missing") {
+    throw new ConnectionError(403, `API key required for the swap profile. ${SEND_A_KEY}`);
+  }
+  if (profile === "swap" && opts.apiKey === "malformed") {
+    throw new ConnectionError(
+      403,
+      `A SODAX API key is required for the swap profile. ${NOT_A_SODAX_KEY}: ${API_KEYS_DOCS_URL}`,
+    );
   }
   const toolsets = {
     builder: profile !== "swap",
     swap: profile !== "builder" && opts.swapToolsEnabled && opts.apiKey === "valid",
   };
-  // Otherwise a keyless `all` connection can't tell the swap tools exist.
+  const keyHint = keyHintFor(profile, opts);
+  return keyHint ? { ...toolsets, keyHint } : toolsets;
+}
+
+/** The agent can't see either otherwise: a keyless `all` has swap tools to unlock, a malformed key is dropped. */
+function keyHintFor(profile: Profile, opts: SelectOptions): string | undefined {
+  const keyFix = opts.apiKey === "malformed" ? KEY_DROPPED : SEND_A_KEY;
   if (profile === "all" && opts.swapToolsEnabled && opts.apiKey !== "valid") {
-    return {
-      ...toolsets,
-      swapKeyHint: `This connection has no swap tools: they need a SODAX API key. ${keyFix(opts.apiKey)}`,
-    };
+    return `This connection has no swap tools: they need a SODAX API key. ${keyFix}`;
   }
-  return toolsets;
+  return opts.apiKey === "malformed" ? KEY_DROPPED : undefined;
 }
 
 /** The first value that is set. A blank string counts as unset, so `?profile=` can't override the header. */

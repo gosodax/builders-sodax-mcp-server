@@ -24,13 +24,13 @@ export function resolveConnection(
   res: Response,
   swapToolsEnabled: boolean,
 ): { apiKey?: string; toolsets: ToolSelection } | undefined {
-  const apiKey = callerApiKey(req);
-  const keyStatus = apiKeyStatus(req.get("x-api-key"));
+  const rawKey = req.get("x-api-key");
+  const keyStatus = apiKeyStatus(rawKey);
   try {
     const toolsets = selectToolsets(profileFromRequest(req), { apiKey: keyStatus, swapToolsEnabled });
-    // Never the value: it may be another service's secret.
-    if (keyStatus === "malformed") logger.warn("x-api-key is not a SODAX API key (sodax_…); calls go out keyless");
-    return { apiKey, toolsets };
+    // Debug: it repeats on every request and the client's instructions say it. Never the value: it may be a secret.
+    if (keyStatus === "malformed") logger.debug("x-api-key is not a SODAX API key (sodax_…); calls go out keyless");
+    return { apiKey: parseApiKey(rawKey), toolsets };
   } catch (error) {
     if (!(error instanceof ConnectionError)) throw error;
     res

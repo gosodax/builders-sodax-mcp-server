@@ -15,6 +15,7 @@ const keyed = { apiKey: "valid" } as const;
 const keyless = { apiKey: "missing" } as const;
 const malformed = { apiKey: "malformed" } as const;
 const DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
+const NOT_A_SODAX_KEY = "isn't a SODAX API key (a sodax_… key alone, at most 128 characters)";
 
 function refusal(requested: unknown, opts: Parameters<typeof selectToolsets>[1]): ConnectionError {
   try {
@@ -33,21 +34,35 @@ describe("selectToolsets", () => {
 
   it("gives a keyless default connection the builder tools only, and says the swap tools need a key", () => {
     const selection = selectToolsets(undefined, { ...keyless, ...on });
-    expect(selection).toEqual({ builder: true, swap: false, swapKeyHint: expect.any(String) });
-    expect(selection.swapKeyHint).toContain("x-api-key header");
-    expect(selection.swapKeyHint).toContain(DOCS_URL);
+    expect(selection).toEqual({ builder: true, swap: false, keyHint: expect.any(String) });
+    expect(selection.keyHint).toContain("x-api-key header");
+    expect(selection.keyHint).toContain(DOCS_URL);
   });
 
   it("tells a default connection with a malformed key that the value isn't a SODAX key", () => {
     const selection = selectToolsets("all", { ...malformed, ...on });
     expect([selection.builder, selection.swap]).toEqual([true, false]);
-    expect(selection.swapKeyHint).toContain("isn't a SODAX API key (expected sodax_… alone)");
+    expect(selection.keyHint).toBe(
+      `This connection has no swap tools: they need a SODAX API key. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
+    );
+  });
+
+  it.each([
+    ["builder", on],
+    ["builder", off],
+    ["all", off],
+  ] as const)("tells a %s connection (switch %j) its malformed key is dropped", (profile, switchOpts) => {
+    const selection = selectToolsets(profile, { ...malformed, ...switchOpts });
+    expect([selection.builder, selection.swap]).toEqual([true, false]);
+    expect(selection.keyHint).toBe(
+      `The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
+    );
   });
 
   it("adds no key hint where a key wouldn't bring the swap tools", () => {
-    expect(selectToolsets("all", { ...keyed, ...on }).swapKeyHint).toBeUndefined();
-    expect(selectToolsets("builder", { ...keyless, ...on }).swapKeyHint).toBeUndefined();
-    expect(selectToolsets("all", { ...keyless, ...off }).swapKeyHint).toBeUndefined();
+    expect(selectToolsets("all", { ...keyed, ...on }).keyHint).toBeUndefined();
+    expect(selectToolsets("builder", { ...keyless, ...on }).keyHint).toBeUndefined();
+    expect(selectToolsets("all", { ...keyless, ...off }).keyHint).toBeUndefined();
   });
 
   it("keeps the swap tools out of every profile while the switch is off", () => {
@@ -82,27 +97,28 @@ describe("selectToolsets", () => {
   it("refuses a keyless swap connection with 403 and where to get a key", () => {
     const error = refusal("swap", { ...keyless, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
-    expect(error.message).toContain("API key required");
-    expect(error.message).toContain("Send it in the x-api-key header");
+    expect(error.message).toMatch(/^API key required for the swap profile\. Send it in the x-api-key header/);
     expect(error.message).toContain(DOCS_URL);
   });
 
   it("refuses a swap connection whose key isn't a SODAX key, saying so", () => {
     const error = refusal("swap", { ...malformed, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
-    expect(error.message).toContain("isn't a SODAX API key (expected sodax_… alone)");
-    expect(error.message).not.toContain("Send it in");
-    expect(error.message).toContain(DOCS_URL);
+    expect(error.message).toBe(
+      `A SODAX API key is required for the swap profile. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}: ${DOCS_URL}`,
+    );
   });
 });
 
 describe("apiKeyStatus", () => {
   it.each([
     [" sodax_test-key_1 ", "valid"],
+    [`sodax_${"a".repeat(122)}`, "valid"],
     ["Bearer sodax_a", "malformed"],
     ["sodax_a, sodax_b", "malformed"],
     ["sodax_", "malformed"],
     ["sk-live-abc123", "malformed"],
+    [`sodax_${"a".repeat(123)}`, "malformed"],
     [undefined, "missing"],
     ["", "missing"],
     ["  ", "missing"],

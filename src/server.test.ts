@@ -55,6 +55,12 @@ describe("instructions", () => {
     const builder = await instructions({ builder: true, swap: false });
     const keyless = selectToolsets(undefined, { apiKey: "missing", swapToolsEnabled: true });
     expect(builder).not.toContain("x-api-key");
-    expect(await instructions(keyless)).toBe(`${builder}\n\n${keyless.swapKeyHint}`);
+    expect(await instructions(keyless)).toBe(`${builder}\n\n${keyless.keyHint}`);
+  });
+
+  it("tell a builder connection, last, that its malformed key is dropped", async () => {
+    const builder = await instructions({ builder: true, swap: false });
+    const malformed = selectToolsets("builder", { apiKey: "malformed", swapToolsEnabled: false });
+    expect(await instructions(malformed)).toBe(`${builder}\n\n${malformed.keyHint}`);
   });
 });

@@ -89,12 +89,11 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
 
 async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
-  if (process.env.SODAX_API_KEY && !apiKey) {
-    logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
-  }
+  const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
+  if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
   // Before the docs warm-up, so a refused profile fails fast.
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
-    apiKey: apiKeyStatus(process.env.SODAX_API_KEY),
+    apiKey: keyStatus,
     swapToolsEnabled,
   });
 

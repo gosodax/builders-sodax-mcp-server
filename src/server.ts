@@ -65,7 +65,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
       name: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
     },
-    { instructions: [SERVER_INSTRUCTIONS, toolsets.swapKeyHint].filter(Boolean).join("\n\n") },
+    { instructions: [SERVER_INSTRUCTIONS, toolsets.keyHint].filter(Boolean).join("\n\n") },
   );
 
   // Wrap server.tool() so every tool call is tracked in PostHog

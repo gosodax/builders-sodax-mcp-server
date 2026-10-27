@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ConnectionError,
+  apiKeyStatus,
   parseSwapToolsEnabled,
   profileFromArgs,
   profileFromRequest,
@@ -9,10 +10,12 @@ import {
 
 const on = { swapToolsEnabled: true };
 const off = { swapToolsEnabled: false };
-const keyed = { hasApiKey: true };
-const keyless = { hasApiKey: false };
+const keyed = { apiKey: "valid" } as const;
+const keyless = { apiKey: "missing" } as const;
+const malformed = { apiKey: "malformed" } as const;
+const DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
-function refusal(requested: unknown, opts: { hasApiKey: boolean; swapToolsEnabled: boolean }): ConnectionError {
+function refusal(requested: unknown, opts: Parameters<typeof selectToolsets>[1]): ConnectionError {
   try {
     selectToolsets(requested, opts);
   } catch (error) {
@@ -27,8 +30,8 @@ describe("selectToolsets", () => {
     expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true });
   });
 
-  it("gives a keyless default connection the builder tools only", () => {
-    expect(selectToolsets(undefined, { ...keyless, ...on })).toEqual({ builder: true, swap: false });
+  it.each([keyless, malformed])("gives a default connection without a SODAX key the builder tools only (%j)", key => {
+    expect(selectToolsets(undefined, { ...key, ...on })).toEqual({ builder: true, swap: false });
   });
 
   it("keeps the swap tools out of every profile while the switch is off", () => {
@@ -60,7 +63,31 @@ describe("selectToolsets", () => {
     const error = refusal("swap", { ...keyless, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
     expect(error.message).toContain("API key required");
-    expect(error.message).toContain("https://docs.sodax.com/developers/how-to/api-keys");
+    expect(error.message).toContain("Send it in the x-api-key header");
+    expect(error.message).toContain(DOCS_URL);
+  });
+
+  it("refuses a swap connection whose key isn't a SODAX key, saying so", () => {
+    const error = refusal("swap", { ...malformed, ...on });
+    expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
+    expect(error.message).toContain("isn't a SODAX API key (expected sodax_… alone)");
+    expect(error.message).not.toContain("Send it in");
+    expect(error.message).toContain(DOCS_URL);
+  });
+});
+
+describe("apiKeyStatus", () => {
+  it.each([
+    [" sodax_test-key_1 ", "valid"],
+    ["Bearer sodax_a", "malformed"],
+    ["sodax_a, sodax_b", "malformed"],
+    ["sodax_", "malformed"],
+    ["sk-live-abc123", "malformed"],
+    [undefined, "missing"],
+    ["", "missing"],
+    ["  ", "missing"],
+  ])("%j → %s", (value, expected) => {
+    expect(apiKeyStatus(value)).toBe(expected);
   });
 });
 

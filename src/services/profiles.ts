@@ -9,6 +9,7 @@
  */
 
 import { parseArgs } from "node:util";
+import { parseApiKey } from "./requestContext.js";
 
 const PROFILES = ["builder", "swap", "all"] as const;
 type Profile = (typeof PROFILES)[number];
@@ -16,6 +17,14 @@ type Profile = (typeof PROFILES)[number];
 export interface Toolsets {
   builder: boolean;
   swap: boolean;
+}
+
+/** The caller's key as the swap gate sees it: a SODAX key, a value that isn't one, or none (blank counts as none). */
+export type ApiKeyStatus = "valid" | "malformed" | "missing";
+
+export function apiKeyStatus(raw: string | undefined): ApiKeyStatus {
+  if (parseApiKey(raw)) return "valid";
+  return raw?.trim() ? "malformed" : "missing";
 }
 
 /**
@@ -44,6 +53,13 @@ export function parseSwapToolsEnabled(value: string | undefined): boolean {
   throw new Error('SODAX_SWAP_TOOLS_ENABLED must be "true" or "false"');
 }
 
+/** What's wrong with the caller's key and how to fix it. The value is never echoed. */
+function keyFix(apiKey: "malformed" | "missing"): string {
+  return apiKey === "malformed"
+    ? `The x-api-key value (SODAX_API_KEY on stdio) isn't a SODAX API key (expected sodax_… alone): ${API_KEYS_DOCS_URL}`
+    : `Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`;
+}
+
 function parseProfile(requested: unknown): Profile | undefined {
   if (requested === undefined) return "all";
   if (typeof requested !== "string") return undefined; // e.g. a repeated ?profile=
@@ -51,22 +67,22 @@ function parseProfile(requested: unknown): Profile | undefined {
   return PROFILES.find(known => known === profile);
 }
 
-export function selectToolsets(requested: unknown, opts: { hasApiKey: boolean; swapToolsEnabled: boolean }): Toolsets {
+export function selectToolsets(
+  requested: unknown,
+  opts: { apiKey: ApiKeyStatus; swapToolsEnabled: boolean },
+): Toolsets {
   const profile = parseProfile(requested);
   // The requested value isn't echoed back: it's caller input of any size.
   if (!profile) throw new ConnectionError(400, `Unknown profile. Use ${PROFILES.join(", ")}.`);
   if (profile === "swap" && !opts.swapToolsEnabled) {
     throw new ConnectionError(400, "The swap profile is not enabled on this server yet. Use builder or all.");
   }
-  if (profile === "swap" && !opts.hasApiKey) {
-    throw new ConnectionError(
-      403,
-      `API key required for the swap profile. Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`,
-    );
+  if (profile === "swap" && opts.apiKey !== "valid") {
+    throw new ConnectionError(403, `API key required for the swap profile. ${keyFix(opts.apiKey)}`);
   }
   return {
     builder: profile !== "swap",
-    swap: profile !== "builder" && opts.swapToolsEnabled && opts.hasApiKey,
+    swap: profile !== "builder" && opts.swapToolsEnabled && opts.apiKey === "valid",
   };
 }
 

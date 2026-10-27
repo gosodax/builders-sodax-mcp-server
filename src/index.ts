@@ -17,6 +17,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
+import { callerApiKey, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
@@ -25,14 +26,7 @@ import { notifyError, notifyServerStarted, notifyServerStopping } from "./servic
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
-import {
-  ConnectionError,
-  type Toolsets,
-  parseSwapToolsEnabled,
-  profileFromArgs,
-  profileFromRequest,
-  selectToolsets,
-} from "./services/profiles.js";
+import { apiKeyStatus, parseSwapToolsEnabled, profileFromArgs, selectToolsets } from "./services/profiles.js";
 import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
@@ -94,7 +88,7 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   }
   // Before the docs warm-up, so a refused profile fails fast.
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
-    hasApiKey: apiKey !== undefined,
+    apiKey: apiKeyStatus(process.env.SODAX_API_KEY),
     swapToolsEnabled,
   });
 
@@ -109,32 +103,10 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
-/** The SODAX API key a client sent, forwarded on its data API and solver calls. Absent → keyless. */
-function callerApiKey(req: Request): string | undefined {
-  return parseApiKey(req.get("x-api-key"));
-}
-
 async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   if (process.env.SODAX_API_KEY) {
     logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
   }
-
-  /** A connection's key and toolsets, resolved once; undefined once it has been refused. */
-  const resolveConnection = (req: Request, res: Response): { apiKey?: string; toolsets: Toolsets } | undefined => {
-    const apiKey = callerApiKey(req);
-    try {
-      return {
-        apiKey,
-        toolsets: selectToolsets(profileFromRequest(req), { hasApiKey: apiKey !== undefined, swapToolsEnabled }),
-      };
-    } catch (error) {
-      if (!(error instanceof ConnectionError)) throw error;
-      res
-        .status(error.httpStatus)
-        .json({ jsonrpc: "2.0", error: { code: error.rpcCode, message: error.message }, id: null });
-      return undefined;
-    }
-  };
 
   // Warm SDK docs cache before starting HTTP server
   logger.info("Initializing SODAX docs proxy...");
@@ -266,7 +238,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   });
 
   app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res);
+    const connection = resolveConnection(req, res, swapToolsEnabled);
     if (!connection) return;
     const clientId = hashClientIp(req.ip || "unknown");
     const requestServer = await createServer(connection.toolsets, clientId);
@@ -283,7 +255,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res);
+    const connection = resolveConnection(req, res, swapToolsEnabled);
     if (!connection) return;
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(connection.toolsets, clientId);

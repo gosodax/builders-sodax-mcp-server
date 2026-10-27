@@ -111,6 +111,16 @@ describe("resolveToken", () => {
     expect(resolve(chain, "USDC").chain.key).toBe(key);
   });
 
+  it("matches a chain id only against EVM chains", () => {
+    const usdc = catalog.tokens["0xa4b1.arbitrum"].find(token => token.symbol === "USDC");
+    const tokens = { stellar: [{ ...usdc, chainKey: "stellar" }], "0xa4b1.arbitrum": [usdc] };
+    const configs = {
+      stellar: { chain: { type: "STELLAR", chainId: 42161 } },
+      "0xa4b1.arbitrum": { chain: { type: "EVM", chainId: 42161 } },
+    };
+    expect(resolveToken(parseCatalog(tokens, configs), "42161", "USDC").chain.key).toBe("0xa4b1.arbitrum");
+  });
+
   // 250 / 0xfa is Fantom; 1 is Ethereum, absent here, and must not match the "0x1." of ICON's key.
   it.each(["Fantom", "250", "0xfa", "1", "0x1"])("refuses an unknown chain %j with the supported list", chain => {
     expect(() => resolve(chain, "USDC")).toThrow(

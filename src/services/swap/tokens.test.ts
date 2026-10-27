@@ -66,6 +66,20 @@ describe("getSwapCatalog", () => {
     expect(warn).toHaveBeenCalledWith({ chains: ["hyper", "sui"] }, "No native token is marked on these swap chains");
   });
 
+  it("names the chains whose config is missing or malformed in a warning", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs.hyper.chain.chainId = "hyper";
+    delete configs.sui.chain;
+    const serve = catalogFetch();
+    fetchSpy.mockImplementation(async (input, init) =>
+      isConfigCall(input) ? new Response(JSON.stringify(configs)) : serve(input, init),
+    );
+    const warn = vi.spyOn(logger, "warn");
+    const catalog = await getSwapCatalog();
+    expect(catalog.chains).not.toHaveProperty("hyper");
+    expect(warn).toHaveBeenCalledWith({ chains: ["hyper", "sui"] }, "No valid chain config for these swap chains");
+  });
+
   it("serves the last catalog at once while a refresh fails, for up to 30 minutes", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(0);
     const fresh = await getSwapCatalog();

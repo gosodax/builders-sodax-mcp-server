@@ -20,7 +20,9 @@ export function registerSwapTools(server: McpServer): void {
         .trim()
         .min(1)
         .max(64)
-        .describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+        .describe(
+          'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+        ),
       query: z
         .string()
         .trim()

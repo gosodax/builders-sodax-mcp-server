@@ -34,7 +34,10 @@ beforeEach(() => {
   errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("registerActionTool", () => {
   it("returns an ActionError with its code, details and next step", async () => {
@@ -87,6 +90,17 @@ describe("registerActionTool", () => {
     expect(alerts[0][0]).toMatchObject({ tool: "test_action_tool", code: "INTERNAL" });
   });
 
+  it("posts an unexpected error to Discord by its class only, never its message", async () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    await callFailingTool(new TypeError("details that must stay server-side, from https://rpc.example/KEY"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = String(fetch.mock.calls[0][1]?.body);
+    expect(body).toContain("TypeError");
+    expect(body).not.toContain("must stay server-side");
+    expect(body).not.toContain("KEY");
+  });
+
   it("alerts on a swap the service built wrong, but not on what the agent or an outage can fix", async () => {
     await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
     await callFailingTool(new ActionError("RATE_LIMITED", "Slow down."));
@@ -101,5 +115,13 @@ describe("registerActionTool", () => {
     await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
     const reasons = errors.mock.calls.map(([fields]) => (fields as { reason?: string }).reason).filter(Boolean);
     expect(reasons).toEqual(["The config doesn't agree.", "Built a different swap."]);
+  });
+
+  it("alerts once per chain the failure names", async () => {
+    for (const chainKey of ["sonic", "0xa4b1.arbitrum", "sonic"]) {
+      await callFailingTool(new ActionError("SWAP_MISMATCH", "The config doesn't agree.", { details: { chainKey } }));
+    }
+    const chains = errors.mock.calls.map(([fields]) => (fields as { chainKey?: string }).chainKey).filter(Boolean);
+    expect(chains).toEqual(["sonic", "0xa4b1.arbitrum"]);
   });
 });

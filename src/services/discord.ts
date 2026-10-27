@@ -50,7 +50,7 @@ export function isDiscordConfigured(): boolean {
  * mid-surrogate-pair, which would otherwise leak a lone surrogate (rendered as
  * `�`) into the Discord payload.
  */
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }

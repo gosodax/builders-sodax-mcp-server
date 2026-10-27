@@ -101,7 +101,7 @@ describe("alertOperator", () => {
   it("counts tool errors toward the same hourly cap", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
-    for (let i = 0; i < 20; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    for (let i = 0; i < 20; i++) alertOperator("submit_rejected", { ...FIELDS, txHash: `0x${i}` });
     alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
     expect(fetch).toHaveBeenCalledTimes(20);
     expect(logger.error).toHaveBeenCalledTimes(21);
@@ -116,6 +116,25 @@ describe("alertOperator", () => {
     alertOperator("swap_error", { tool: "sodax_swap_track", code: "INTERNAL" });
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(3);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps a tool error on one chain apart from the same on another", () => {
+    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "SWAP_MISMATCH", reason: "r", chainKey: "sonic" });
+    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "SWAP_MISMATCH", reason: "r", chainKey: "hyper" });
+    expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(2);
+  });
+
+  it("posts field values without URLs and capped in length", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    alertOperator("swap_error", {
+      tool: "sodax_swap_quote",
+      reason: `from https://rpc.example/KEY ${"x".repeat(2000)}`,
+    });
+    const { embeds } = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+    const reason = embeds[0].fields.find((field: { name: string }) => field.name === "reason").value;
+    expect(reason).toMatch(/^from <url> x+…$/);
+    expect(reason.length).toBeLessThanOrEqual(256);
   });
 
   it("only logs without a webhook", () => {

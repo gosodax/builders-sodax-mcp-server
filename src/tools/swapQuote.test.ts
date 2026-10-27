@@ -8,6 +8,7 @@ import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWal
 import { clearCache } from "../services/sodaxApi.js";
 import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { clearAlerts } from "../services/swap/alerts.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -656,9 +657,16 @@ describe("sodax_swap_quote", () => {
     clearCache();
     configs["0xa4b1.arbitrum"].addresses = { assetManager: `0x${"e".repeat(40)}` };
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
+    clearAlerts();
+    const error = vi.spyOn(logger, "error");
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" });
     expect(calls.map(call => call.path)).not.toContain("/intents");
+    // The alert names the chain, so another chain's disagreement alerts too.
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "swap_error", code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" }),
+      expect.any(String),
+    );
   });
 
   it("refuses a live chain id that differs from the SDK config's", async () => {
@@ -670,6 +678,7 @@ describe("sodax_swap_quote", () => {
     expect(out.error).toMatchObject({
       code: "SWAP_MISMATCH",
       message: "The SODAX config doesn't agree with the SDK's.",
+      chainKey: "0xa4b1.arbitrum",
     });
     expect(calls).toEqual([]);
   });

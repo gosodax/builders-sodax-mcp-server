@@ -6,8 +6,8 @@
  */
 
 import { SODAX_ENV } from "../../constants.js";
-import { COLOR, postToDiscord } from "../discord.js";
-import { logger } from "../logger.js";
+import { COLOR, postToDiscord, truncate } from "../discord.js";
+import { logger, withoutUrls } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 
 export type AlertKind =
@@ -34,6 +34,8 @@ const TITLES: Record<AlertKind, string> = {
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
+// Discord allows 1024; a hash or a fixed reason fits well within this.
+const FIELD_VALUE_MAX = 256;
 // Past this many posts an hour the rest are only logged, and one post at the end of the hour counts
 // them. Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
 // alerts have their own small budget and can't crowd out the alerts on deposits this server checked.
@@ -63,9 +65,11 @@ export function alertOperator(
     reason?: string;
   },
 ): void {
-  // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code and reason.
+  // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
-    kind === "swap_error" ? [kind, fields.tool, fields.code, fields.reason] : [kind, fields.chainKey, fields.txHash],
+    kind === "swap_error"
+      ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
+      : [kind, fields.chainKey, fields.txHash],
   );
   const now = Date.now();
   const last = sent.get(key);
@@ -81,7 +85,12 @@ export function alertOperator(
   sent.set(key, now);
   const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
     .filter(([, value]) => value !== undefined)
-    .map(([name, value]) => ({ name, value: String(value), inline: name !== "txHash" }));
+    // Fields carry no error text by contract; this keeps a slip from posting a URL or a wall of text.
+    .map(([name, value]) => ({
+      name,
+      value: truncate(withoutUrls(String(value)), FIELD_VALUE_MAX),
+      inline: name !== "txHash",
+    }));
   post(`🚨 ${TITLES[kind]}`, embedFields);
 }
 

@@ -223,7 +223,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       { mismatch, srcChainKey, dstChainKey, txTo: built.tx.to, dataSha256 },
       "The Swaps API built a swap that doesn't match the quote",
     );
-    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.");
+    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.", {
+      details: { chainKey: srcChainKey },
+    });
   }
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {

@@ -53,7 +53,7 @@ const unsupportedSource = (chain: ChainInfo) =>
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
   logger.error({ chainKey, field, token }, "The live SODAX config differs from the SDK's");
-  return new ActionError("SWAP_MISMATCH", "The SODAX config doesn't agree with the SDK's.");
+  return new ActionError("SWAP_MISMATCH", "The SODAX config doesn't agree with the SDK's.", { details: { chainKey } });
 }
 
 /**

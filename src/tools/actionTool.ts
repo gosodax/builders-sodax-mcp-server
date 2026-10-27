@@ -43,7 +43,14 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
         // ActionError messages here are fixed text; an unexpected error is named by its class only.
         const reason =
           error instanceof ActionError ? error.message : error instanceof Error ? error.name : typeof error;
-        alertOperator("swap_error", { tool: name, code: failure.code, reason });
+        // Per chain too: one chain's config or builds going wrong doesn't silence another's.
+        const chainKey = failure.details?.chainKey;
+        alertOperator("swap_error", {
+          tool: name,
+          code: failure.code,
+          reason,
+          chainKey: typeof chainKey === "string" ? chainKey : undefined,
+        });
       }
       const out = { error: { ...failure.details, code: failure.code, message: failure.message } };
       const nextStep =

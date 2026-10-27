@@ -78,6 +78,18 @@ describe("resolveNextStep", () => {
     );
   });
 
+  it("names the token and chain an address matched", () => {
+    expect(nextStep("Arbitrum", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBe(
+      "That address is USDC on Arbitrum. Use chain.key and token.address for this side of the swap; amounts stay in human units.",
+    );
+  });
+
+  it("says which chains list an address this chain doesn't", () => {
+    expect(nextStep("Avalanche", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBe(
+      "No swap token on Avalanche matches that; it is USDC on Arbitrum. Confirm the chain with the user, then call sodax_resolve_token again with that chain.",
+    );
+  });
+
   it("lists the candidates to ask about, with names when symbols repeat", () => {
     expect(nextStep("hyper", "USDT")).toContain("which of USDT0 on HyperEVM");
     const usdc = catalog.tokens.sonic.find(token => token.symbol === "USDC");

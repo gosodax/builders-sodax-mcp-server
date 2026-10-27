@@ -138,6 +138,32 @@ describe("resolveToken", () => {
     expect(resolve("sui", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")).toMatchObject({ status: "not_found" });
   });
 
+  it("resolves the same address on each chain to that chain's own token", () => {
+    const zero = `0x${"0".repeat(40)}`;
+    expect(resolve("sonic", zero)).toMatchObject({ matchedBy: "address", token: { symbol: "S" } });
+    expect(resolve("hyper", zero)).toMatchObject({ matchedBy: "address", token: { symbol: "HYPE" } });
+    // Live on 2026-10-27: 0x1f22…dd13 is INJ on Sonic and SODA on Optimism.
+    const address = "0x1f22279C89B213944b7Ea41daCB0a868DdCDFd13";
+    const twins = parseCatalog(
+      {
+        sonic: [{ ...catalog.tokens.sonic[1], symbol: "INJ", address }],
+        "0xa.optimism": [{ ...catalog.tokens.sonic[1], symbol: "SODA", address, chainKey: "0xa.optimism" }],
+      },
+      {},
+    );
+    expect(resolveToken(twins, "sonic", address)).toMatchObject({ token: { symbol: "INJ", chainKey: "sonic" } });
+    expect(resolveToken(twins, "Optimism", address)).toMatchObject({ token: { symbol: "SODA" } });
+  });
+
+  it("names the other chains that list an address this chain doesn't", () => {
+    const arbitrumUsdc = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+    expect(resolve("Avalanche", arbitrumUsdc)).toMatchObject({
+      status: "not_found",
+      otherChains: [{ chain: { key: "0xa4b1.arbitrum", name: "Arbitrum" }, token: { symbol: "USDC" } }],
+    });
+    expect(resolve("Arbitrum", "WETH")).not.toHaveProperty("otherChains");
+  });
+
   it("finds no native token on a chain the config doesn't describe", () => {
     const partial = parseCatalog({ newchain: [{ ...catalog.tokens.hyper[0], chainKey: "newchain" }] }, {});
     expect(resolveToken(partial, "newchain", "native")).toMatchObject({ status: "not_found" });

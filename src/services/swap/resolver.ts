@@ -2,7 +2,8 @@
  * Resolve "a token on a chain", as a person would name it, against the swap catalog.
  *
  * First rule that matches wins: contract address → `native` or an exact symbol →
- * a fuzzy match (always `ambiguous`: USDT0 is not USDT) → `not_found` with suggestions.
+ * a fuzzy match (always `ambiguous`: USDT0 is not USDT) → `not_found` with suggestions,
+ * and any other chains that list the query as a token address.
  * Returns structure only; each tool words its own next step.
  */
 
@@ -14,7 +15,13 @@ import { type SwapCatalog, type SwapsApiToken, findToken } from "./tokens.js";
 export type Resolution =
   | { status: "resolved"; chain: ChainInfo; matchedBy: "address" | "symbol" | "native"; token: SwapsApiToken }
   | { status: "ambiguous"; chain: ChainInfo; query: string; candidates: SwapsApiToken[] }
-  | { status: "not_found"; chain: ChainInfo; query: string; suggestions: SwapsApiToken[] };
+  | {
+      status: "not_found";
+      chain: ChainInfo;
+      query: string;
+      suggestions: SwapsApiToken[];
+      otherChains?: { chain: ChainInfo; token: SwapsApiToken }[];
+    };
 
 const MAX_CANDIDATES = 10;
 const MAX_SUGGESTIONS = 5;
@@ -66,7 +73,14 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
     if (fuzzy.length > 0) return { status: "ambiguous", chain, query: q, candidates: fuzzy.slice(0, MAX_CANDIDATES) };
   }
 
-  return notFound(suggest(tokens, needle));
+  const otherChains = Object.keys(catalog.tokens)
+    .filter(other => other !== key)
+    .flatMap(other => {
+      const token = findToken(catalog, other, q);
+      return token ? [{ chain: toChain(other), token }] : [];
+    })
+    .slice(0, MAX_SUGGESTIONS);
+  return { ...notFound(suggest(tokens, needle)), ...(otherChains.length > 0 && { otherChains }) };
 }
 
 /**

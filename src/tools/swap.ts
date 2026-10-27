@@ -50,7 +50,11 @@ export function resolveNextStep(resolution: Resolution): string {
   switch (resolution.status) {
     case "resolved": {
       const { token } = resolution;
-      return token.access ? `${token.symbol} on ${chain} ${RESTRICTED[token.access]}. ${USE_RESOLVED}` : USE_RESOLVED;
+      const named = `${token.symbol} on ${chain}`;
+      // The same address can be a different token on each chain.
+      const found = resolution.matchedBy === "address" ? `That address is ${named}. ` : "";
+      const restricted = token.access ? `${named} ${RESTRICTED[token.access]}. ` : "";
+      return `${found}${restricted}${USE_RESOLVED}`;
     }
     case "ambiguous": {
       // Two candidates can share a symbol (bridged and native USDC); the name tells them apart.
@@ -65,6 +69,10 @@ export function resolveNextStep(resolution: Resolution): string {
       return `Ask the user which of ${labels} on ${chain} they mean, then call sodax_resolve_token again with its address.`;
     }
     case "not_found": {
+      if (resolution.otherChains) {
+        const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
+        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with that chain.`;
+      }
       const [first] = resolution.suggestions;
       if (!first) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
       const native = first.isNative ? " (the native token)" : "";

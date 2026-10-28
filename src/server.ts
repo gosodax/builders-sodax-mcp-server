@@ -56,6 +56,10 @@ const SWAP_INSTRUCTIONS = [
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };
 
+// With both toolsets, builder tools that relay, quote and look up intents compete with the swap tools.
+const BOTH_INSTRUCTIONS =
+  "For a user's swap use the `sodax_swap_*` tools, not `sodax_relay_submit_tx`, `sodax_get_transaction` or `sodax_get_solver_quote`.";
+
 // The static tools of each toolset, in registration order. createServer registers them on a real
 // server and seedToolRegistry records them for the counts, so the two can't drift.
 const STATIC_REGISTRARS: Record<keyof Toolsets, ((server: McpServer) => void)[]> = {
@@ -79,7 +83,15 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
       name: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
     },
-    { instructions: [...enabled(toolsets, INSTRUCTIONS), toolsets.keyHint].filter(Boolean).join("\n\n") },
+    {
+      instructions: [
+        ...enabled(toolsets, INSTRUCTIONS),
+        toolsets.builder && toolsets.swap ? BOTH_INSTRUCTIONS : undefined,
+        toolsets.keyHint,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    },
   );
 
   // Wrap server.tool() so every tool call is tracked in PostHog

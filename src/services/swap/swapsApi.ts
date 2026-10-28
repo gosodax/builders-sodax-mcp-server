@@ -106,7 +106,7 @@ export async function getQuote(request: QuoteRequest): Promise<bigint> {
 }
 
 // The hub clock may run a little off ours; anything further off is not a deadline we asked for.
-const MAX_CLOCK_SKEW_SEC = 300;
+export const MAX_CLOCK_SKEW_SEC = 300;
 // However the clocks differ, the user needs at least this long to sign and send.
 const MIN_TIME_TO_SEND_SEC = 120;
 
@@ -149,6 +149,11 @@ export interface Approval {
 
 export async function buildApprove(request: IntentRequest): Promise<Approval> {
   return call(z.object({ tx: evmTxSchema, resetTx: evmTxSchema.optional() }), "/approve", intentBody(request));
+}
+
+/** The token list, unchecked: the catalog checks it. Fails like any other Swaps API call. */
+export function getSwapTokens(): Promise<unknown> {
+  return send("/tokens", undefined, fetchJson);
 }
 
 /** The backend's record of a submitted swap, or `null` if it has none. Keyless. */

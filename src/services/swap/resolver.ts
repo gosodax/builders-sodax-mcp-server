@@ -8,6 +8,7 @@
  */
 
 import { chainDisplayName } from "../../constants.js";
+import { evmSpokeFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type SwapCatalog, type SwapsApiToken, findToken } from "./tokens.js";
@@ -29,13 +30,15 @@ const MAX_SUGGESTIONS = 5;
 const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 /**
- * A chain as a person would name it, or by EVM chain id. Refused otherwise with the supported list and any
- * within two typos.
+ * A chain as a person would name it, or by EVM chain id. Refused otherwise with the supported list (only
+ * chains a swap can start from, for a swap's source) and any within two typos.
  */
-export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string): ChainInfo {
+export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourcesOnly = false): ChainInfo {
   const key = findChainKey(catalog, chainQuery);
   if (key) return toChain(key);
-  const supported = Object.keys(catalog.tokens).map(toChain);
+  const supported = Object.keys(catalog.tokens)
+    .filter(other => !sourcesOnly || isSwapSource(catalog, other))
+    .map(toChain);
   const near = nearestChains(supported, chainQuery);
   const names = near.map(chain => chain.name).join(" or ");
   throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
@@ -45,6 +48,11 @@ export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string): Chai
         ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
         : undefined,
   });
+}
+
+/** A chain a swap can start from: an EVM spoke whose deposits the SDK config can prove. */
+export function isSwapSource(catalog: SwapCatalog, chainKey: string): boolean {
+  return catalog.chains[chainKey]?.type === "EVM" && evmSpokeFor(chainKey) !== undefined;
 }
 
 /** The chains within two typos of the query, by name or key, closest first. */

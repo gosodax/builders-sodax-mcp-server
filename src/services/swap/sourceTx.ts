@@ -40,13 +40,14 @@ export function depositMessages(receipt: EvmReceipt, connection: string, assetMa
   return connectionMessages(receipt, connection).filter(message => same(message.srcAddress, assetManager));
 }
 
-export type DepositCheck = "match" | "not_a_deposit" | "mismatch";
+export type DepositCheck = "match" | "not_a_deposit" | "mismatch" | "other_sender";
 
 /**
  * Whether the receipt holds this quote's deposit: a message from the asset manager to the hub
  * whose RLP payload `[token, from, to, amount, data]` comes from the quoted sender, goes to the
  * intent's creator and carries the cached relay payload. Amounts aren't compared: the payload's
- * `createIntent` binds them.
+ * `createIntent` binds them. Else `other_sender` for that deposit from another address, `mismatch`
+ * for the sender's deposit for another intent, `not_a_deposit` for anyone else's (a bundle can hold one).
  */
 export function checkDeposit(
   receipt: EvmReceipt,
@@ -58,20 +59,41 @@ export function checkDeposit(
     relayData: { address: string; payload: string };
   },
 ): DepositCheck {
-  const deposits = depositMessages(receipt, want.connection, want.assetManager);
-  if (deposits.length === 0) return "not_a_deposit";
-  const matches = deposits.some(message => {
+  const transfers = hubTransfers(receipt, want);
+  const fromUser = (transfer: Transfer) => same(transfer.from, want.srcAddress);
+  const isIntent = (transfer: Transfer) =>
+    same(transfer.to, want.relayData.address) && same(transfer.data, want.relayData.payload);
+  if (transfers.some(transfer => fromUser(transfer) && isIntent(transfer))) return "match";
+  if (transfers.some(isIntent)) return "other_sender";
+  return transfers.some(fromUser) ? "mismatch" : "not_a_deposit";
+}
+
+/** Whether the receipt holds a deposit to the hub from `from` (its RLP sender) to the hub wallet `to`. */
+export function holdsDeposit(
+  receipt: EvmReceipt,
+  want: { connection: string; assetManager: string; srcChain: string; from: string; to: string },
+): boolean {
+  return hubTransfers(receipt, want).some(transfer => same(transfer.from, want.from) && same(transfer.to, want.to));
+}
+
+interface Transfer {
+  from: string;
+  to: string;
+  data: string;
+}
+
+/** The RLP transfers the asset manager sent the hub from `srcChain`; an undecodable one is skipped. */
+function hubTransfers(
+  receipt: EvmReceipt,
+  want: { connection: string; assetManager: string; srcChain: string },
+): Transfer[] {
+  return depositMessages(receipt, want.connection, want.assetManager).flatMap(message => {
     const items = decodeRlpList(message.payload);
-    return (
-      message.srcChainId === BigInt(want.srcChain) &&
-      message.dstChainId === HUB_RELAY_ID &&
-      items?.length === 5 &&
-      same(items[1], want.srcAddress) &&
-      same(items[2], want.relayData.address) &&
-      same(items[4], want.relayData.payload)
-    );
+    if (message.srcChainId !== BigInt(want.srcChain) || message.dstChainId !== HUB_RELAY_ID || items?.length !== 5) {
+      return [];
+    }
+    return [{ from: items[1], to: items[2], data: items[4] }];
   });
-  return matches ? "match" : "mismatch";
 }
 
 /** Whether the receipt holds the user's cancel: their message to their hub wallet with this payload. */

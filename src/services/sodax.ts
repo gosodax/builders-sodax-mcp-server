@@ -128,6 +128,16 @@ export function connectionFor(chainKey: string): string | undefined {
   return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
 }
 
+/** An EVM spoke's chain id, `connection` and asset manager from the packaged config, if it has all three. */
+export function evmSpokeFor(
+  chainKey: string,
+): { chainId: number; connection: string; assetManager: string } | undefined {
+  const chainId = evmChainIdFor(chainKey);
+  const connection = connectionFor(chainKey);
+  const assetManager = swapContractFor(chainKey);
+  return chainId !== undefined && connection && assetManager ? { chainId, connection, assetManager } : undefined;
+}
+
 const asEvmAddress = (value: unknown) =>
   typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
 

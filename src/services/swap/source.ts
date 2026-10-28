@@ -6,11 +6,11 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, connectionFor, evmChainIdFor, getEvmReceipt, isTxKnown, swapContractFor } from "../sodax.js";
-import type { ChainInfo } from "../sodaxApi.js";
+import { type EvmReceipt, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
+import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
-import { resolveSwapChain, toChain } from "./resolver.js";
+import { isSwapSource, resolveSwapChain, toChain } from "./resolver.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
 import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 
@@ -36,15 +36,19 @@ export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote }
  * live chain id that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
-  const live = catalog.chains[chain.key];
-  const chainId = evmChainIdFor(chain.key);
-  const connection = connectionFor(chain.key);
-  const assetManager = swapContractFor(chain.key);
-  if (live?.type !== "EVM" || chainId === undefined || !connection || !assetManager) {
-    throw new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`);
-  }
-  return { chainId, connection, assetManager };
+  if (!isSwapSource(catalog, chain.key)) throw unsupportedSource(chain);
+  return pinnedSource(chain);
 }
+
+/** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
+function pinnedSource(chain: ChainInfo): SourceChain {
+  const source = evmSpokeFor(chain.key);
+  if (!source) throw unsupportedSource(chain);
+  return source;
+}
+
+const unsupportedSource = (chain: ChainInfo) =>
+  new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`);
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
@@ -52,29 +56,39 @@ export function configDisagrees(chainKey: string, field: string, token?: string)
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX config doesn't agree with the SDK's.");
 }
 
-/** The source from the caller's quote, or from `chain` without one. Quotes are bound to their creator's key. */
+/**
+ * The source from the caller's quote, or from `chain` without one. Quotes are bound to their creator's key.
+ * A quote's source comes from the SDK config, not the live catalog: its deposit may already be on chain.
+ */
 export async function resolveSource(input: { quoteId?: string; chain?: string }): Promise<SwapSource> {
   const cached = input.quoteId ? getCachedQuote(input.quoteId, callerKeyHash()) : undefined;
   if (cached === "key_mismatch") {
     throw new ActionError("QUOTE_KEY_MISMATCH", "That quote was made with another SODAX API key.");
   }
-  const catalog = await getSwapCatalog();
-  let chain = cached && toChain(cached.srcChainKey);
-  if (input.chain) {
-    const named = resolveSwapChain(catalog, input.chain);
-    if (chain && named.key !== chain.key) {
+  if (cached) {
+    const chain = toChain(cached.srcChainKey);
+    if (input.chain && !namesChain(input.chain, chain.key)) {
       throw new ActionError("QUOTE_MISMATCH", "That quote is for another source chain.");
     }
-    chain = named;
+    return { chain, ...pinnedSource(chain), quote: cached };
   }
-  if (!chain) {
+  if (!input.chain) {
     if (!input.quoteId) throw new ActionError("QUOTE_NOT_FOUND", "Pass the quoteId or the source chain.");
     // With the chain the tx is still checked, and a stranded deposit reported.
     throw new ActionError("QUOTE_NOT_FOUND", "That quote has expired or isn't known here.", {
       nextStep: "Call again with the same arguments plus chain set to the swap's source chain key.",
     });
   }
-  return { chain, ...sourceChainFor(catalog, chain), ...(cached && { quote: cached }) };
+  const catalog = await getSwapCatalog();
+  const chain = resolveSwapChain(catalog, input.chain, true);
+  return { chain, ...sourceChainFor(catalog, chain) };
+}
+
+/** Whether `query` names the chain `chainKey`, as a name, ticker, key or EVM chain id, without the catalog. */
+function namesChain(query: string, chainKey: string): boolean {
+  if (resolveChainKey(query, [chainKey]).key === chainKey) return true;
+  const id = query.trim();
+  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(id) && Number(id) === evmChainIdFor(chainKey);
 }
 
 /** The receipt, or `null` while the tx isn't mined. */

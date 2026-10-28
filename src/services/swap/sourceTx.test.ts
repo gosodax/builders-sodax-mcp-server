@@ -17,6 +17,7 @@ import {
   decodeRlpList,
   decodeSendMessage,
   holdsCancel,
+  holdsDeposit,
 } from "./sourceTx.js";
 
 const WANT = {
@@ -67,14 +68,22 @@ describe("checkDeposit", () => {
     expect(checkDeposit(RECEIPT, WANT)).toBe("match");
   });
 
-  it("calls a different payload, sender, recipient, source chain or destination a mismatch", () => {
+  it("calls the sender's deposit for another intent a mismatch", () => {
     const flipped = `${RELAY_DATA.payload.slice(0, -2)}${RELAY_DATA.payload.endsWith("00") ? "01" : "00"}`;
     expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, payload: flipped } })).toBe("mismatch");
-    expect(checkDeposit(RECEIPT, { ...WANT, srcAddress: CREATOR })).toBe("mismatch");
     expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, address: CREATOR } })).toBe("mismatch");
-    expect(checkDeposit(RECEIPT, { ...WANT, srcChain: "30" })).toBe("mismatch");
+  });
+
+  it("tells this intent's deposit from another address apart", () => {
+    expect(checkDeposit(RECEIPT, { ...WANT, srcAddress: CREATOR })).toBe("other_sender");
+  });
+
+  it("finds no deposit of the quote's in someone else's, or in a message from another chain or to another hub", () => {
+    const someoneElse = { ...WANT, srcAddress: CREATOR, relayData: { address: CREATOR, payload: "0x01" } };
+    expect(checkDeposit(RECEIPT, someoneElse)).toBe("not_a_deposit");
+    expect(checkDeposit(RECEIPT, { ...WANT, srcChain: "30" })).toBe("not_a_deposit");
     const toAnotherHub = receiptWith({ dstChainId: 147n, payload: MESSAGE?.payload ?? "0x" });
-    expect(checkDeposit(toAnotherHub, WANT)).toBe("mismatch");
+    expect(checkDeposit(toAnotherHub, WANT)).toBe("not_a_deposit");
   });
 
   it("finds no deposit from another contract, another sender (an approve's case) or another event", () => {
@@ -83,6 +92,26 @@ describe("checkDeposit", () => {
     const otherEvent = { reverted: false, logs: [{ ...RECEIPT.logs[0], topics: [`0x${"1".repeat(64)}`] }] };
     expect(checkDeposit(otherEvent, WANT)).toBe("not_a_deposit");
     expect(checkDeposit({ reverted: false, logs: [] }, WANT)).toBe("not_a_deposit");
+  });
+});
+
+describe("holdsDeposit", () => {
+  const want = {
+    connection: CONNECTION,
+    assetManager: ASSET_MANAGER,
+    srcChain: "23",
+    from: USER,
+    to: RELAY_DATA.address,
+  };
+
+  it("finds the sender's deposit to that hub wallet", () => {
+    expect(holdsDeposit(RECEIPT, want)).toBe(true);
+  });
+
+  it("refuses another sender, hub wallet or source chain", () => {
+    expect(holdsDeposit(RECEIPT, { ...want, from: CREATOR })).toBe(false);
+    expect(holdsDeposit(RECEIPT, { ...want, to: CREATOR })).toBe(false);
+    expect(holdsDeposit(RECEIPT, { ...want, srcChain: "30" })).toBe(false);
   });
 });
 

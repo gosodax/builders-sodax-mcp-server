@@ -10,11 +10,22 @@ import { COLOR, postToDiscord } from "../discord.js";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 
-export type AlertKind = "unknown_quote" | "quote_used" | "refund_relay_failed" | "submit_rejected";
+export type AlertKind =
+  | "unknown_quote"
+  | "other_quote_deposit"
+  | "other_sender_deposit"
+  | "quote_used"
+  | "multiple_deposits"
+  | "refund_relay_failed"
+  | "submit_rejected";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
+  other_quote_deposit:
+    "Swap deposit tracked under another quote of its sender's: relay it by hand if its own isn't tracked",
+  other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
+  multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
 };
@@ -22,9 +33,10 @@ const TITLES: Record<AlertKind, string> = {
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
 // Past this many posts an hour the rest are only logged, and one post at the end of the hour counts
-// them. Any key can name a made-up quoteId for a public deposit, so unknown_quote has its own small
-// budget and can't crowd out the alerts on deposits this server checked.
+// them. Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
+// alerts have their own small budget and can't crowd out the alerts on deposits this server checked.
 const POSTS_PER_HOUR = { unknown_quote: 5, checked: 20 };
+const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit"];
 const HOUR_MS = 60 * 60 * 1000;
 
 type Budget = keyof typeof POSTS_PER_HOUR;
@@ -49,7 +61,7 @@ export function alertOperator(
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   logger.error({ alert: kind, ...tagged }, TITLES[kind]);
   // Only a posted alert is deduped, so one held back by the budget is posted on a later call.
-  if (!withinBudget(kind === "unknown_quote" ? "unknown_quote" : "checked", now)) return;
+  if (!withinBudget(PUBLIC_KINDS.includes(kind) ? "unknown_quote" : "checked", now)) return;
   sent.delete(key);
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
   sent.set(key, now);

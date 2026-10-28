@@ -50,7 +50,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   QUOTE_NOT_FOUND:
     "Call again with chain set to the swap's source chain key, or with the quoteId from sodax_swap_quote.",
   QUOTE_MISMATCH: "That quoteId is for another source chain: pass the quoteId this transaction was made from.",
-  QUOTE_KEY_MISMATCH: "Call again with the same SODAX API key that created the quote.",
+  QUOTE_KEY_MISMATCH:
+    "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
   API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header: ${API_KEYS_DOCS_URL}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
   CHAIN_UNAVAILABLE: RETRY_LATER,

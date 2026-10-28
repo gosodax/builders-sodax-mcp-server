@@ -102,7 +102,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_track",
-    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending; while the result has retryAfterSec, call again after that many seconds. A successful result without retryAfterSec is final; after an error, follow its nextStep. Repeated calls never resubmit. It checks the transaction on chain before submitting. Use the same API key as the quote. This server never signs or moves funds.",
+    "Submit and track a swap once the user's wallet has sent its swap transaction. Call it right after sending; while the result has retryAfterSec, call again after that many seconds. A successful result without retryAfterSec is final; after an error, follow its nextStep. Repeated calls never resubmit. It checks the transaction on chain before submitting. This server never signs or moves funds.",
     swapArgs,
     swapActionHints,
     async args => {
@@ -115,7 +115,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_cancel",
-    "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it. Use the same API key as the quote. This server never signs or moves funds.",
+    "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it. This server never signs or moves funds.",
     {
       ...swapArgs,
       cancelTxHash: txHashArg
@@ -223,6 +223,7 @@ function quoteNextStep(quote: SwapQuote): string {
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.`,
     "Balances aren't checked here.",
+    `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
     "Once they confirm, have their wallet send the steps in order, each confirmed before the next (or the batch), before it expires, then call sodax_swap_track with the quoteId and the swap transaction's hash.",
   ].join(" ");
 }
@@ -232,9 +233,10 @@ const again = (seconds: number) => `call sodax_swap_track again in about ${secon
 const NOT_SUBMITTED: Record<Extract<TrackResult, { status: "not_submitted" }>["reason"], string> = {
   not_a_deposit:
     "That transaction isn't this quote's swap (it may be the approve, or the swap call failed inside a batch); ask for the swap transaction's hash.",
-  deposit_mismatch:
-    "That transaction is a SODAX deposit for another quote; track it with the quoteId it was made from.",
+  deposit_mismatch: `That transaction is a SODAX deposit from this wallet for another quote: track it with the quoteId it was made from. Without that quoteId, ${DEPOSIT_SAFE}.`,
+  other_sender: `That transaction sent this quote's swap from another address than its fromAddress, so this server can't submit it: ${DEPOSIT_SAFE}.`,
   quote_used: `This quote was already used by another transaction, so this one can't become a swap: ${DEPOSIT_SAFE}.`,
+  multiple_deposits: `That transaction holds other SODAX deposits besides this swap, so this server can't submit it: ${DEPOSIT_SAFE}. Next time, send each swap as its own transaction.`,
 };
 
 const OUTCOME: Record<TrackOutcome, string> = {
@@ -253,8 +255,11 @@ export function trackNextStep(result: TrackResult): string {
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; ${again(result.retryAfterSec)}, and don't resend it.`
         : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise ${again(result.retryAfterSec)}, and don't resend it.`;
-    case "source_not_found":
-      return `${chain} hasn't seen this transaction, and no quote here is still waiting for it. Check that this is the swap transaction's hash on ${chain}, not a batch id; if it is, the wallet never sent it and nothing was swapped. Stop tracking it, and quote again if the user still wants to swap.`;
+    case "source_not_found": {
+      // A sped-up or replaced tx has a new hash; its deposit still matches the quote.
+      const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
+      return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+    }
     case "source_failed":
       return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
     case "not_submitted":
@@ -268,6 +273,8 @@ export function trackNextStep(result: TrackResult): string {
       return "The swap reached SODAX after its quote expired, so it won't be filled and is being refunded to the user; they must not send it again.";
     case "expired_unsubmitted":
       return `The swap reached SODAX after its quote expired and its refund couldn't start: ${DEPOSIT_SAFE}. To retry the refund, ${again(result.retryAfterSec)}.`;
+    case "submit_refused":
+      return `The swap service refused this deposit, so it won't be swapped: ${DEPOSIT_SAFE}. Once the quote expires this server starts the refund: ${again(result.retryAfterSec)}.`;
     case "queued":
       return `The swap is queued for processing; ${again(result.retryAfterSec)}.`;
     case "in_progress":
@@ -286,6 +293,8 @@ export function trackNextStep(result: TrackResult): string {
     }
     case "failed":
       return `${OUTCOME[result.outcome]} ${failedNextStep(result)}`;
+    case "unknown":
+      return "The swap service reports a status this server doesn't know, so it can't tell how the swap ended: stop tracking it, and tell the user its outcome isn't known here yet and that they must not send it again.";
   }
 }
 

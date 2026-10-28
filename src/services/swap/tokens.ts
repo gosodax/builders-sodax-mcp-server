@@ -7,11 +7,11 @@
  */
 
 import { z } from "zod";
-import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, SODAX_SWAPS_BASE_URL, ZERO_ADDRESS_PATTERN } from "../../constants.js";
-import { fetchJson } from "../http.js";
+import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
+import { getSwapTokens } from "./swapsApi.js";
 
 const SYMBOL_PATTERN = /^[A-Za-z0-9 ._()+-]{1,32}$/;
 // Live keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
@@ -123,10 +123,7 @@ export function clearSwapCatalogCache(): void {
 
 async function loadCatalog(): Promise<SwapCatalog> {
   try {
-    const [rawTokens, rawConfigs] = await Promise.all([
-      fetchJson<unknown>(`${SODAX_SWAPS_BASE_URL}/tokens`),
-      getAllChainsConfigs(),
-    ]);
+    const [rawTokens, rawConfigs] = await Promise.all([getSwapTokens(), getAllChainsConfigs()]);
     const catalog = parseCatalog(rawTokens, rawConfigs);
     const chains = Object.values(catalog.tokens);
     if (!chains.some(tokens => tokens.length > 0)) logger.error("The swap token list has no usable tokens");
@@ -145,6 +142,10 @@ async function loadCatalog(): Promise<SwapCatalog> {
       return catalog;
     }
   } catch (error) {
+    // A rate limit or a refused key tells the agent what to do; anything else is the list being unavailable.
+    if (error instanceof ActionError && (error.code === "RATE_LIMITED" || error.code === "API_KEY_REQUIRED")) {
+      throw error;
+    }
     logger.error({ err: error }, "Failed to load the swap token catalog");
   }
   throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap token list is unavailable.");

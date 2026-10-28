@@ -222,6 +222,9 @@ describe("sodax_swap_quote", () => {
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
     expect(out.nextStep).toContain("Balances aren't checked here.");
+    expect(out.nextStep).toContain(
+      "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
+    );
     expect(out.nextStep).toContain("then call sodax_swap_track with the quoteId");
     expect(out.nextStep).not.toContain("don't send");
   });
@@ -230,7 +233,7 @@ describe("sodax_swap_quote", () => {
     for (let i = 0; i < 1_000; i++) cacheQuote({ deadline: DEADLINE });
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 900 });
+    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 45 * 60 });
     expect(calls).toEqual([]);
     expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
   });

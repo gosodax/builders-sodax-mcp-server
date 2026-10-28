@@ -50,6 +50,18 @@ describe("getSwapCatalog", () => {
   });
 
   it.each([
+    [429, { "Retry-After": "12" }, { code: "RATE_LIMITED", details: { retryAfterSec: 12 } }],
+    [401, {}, { code: "API_KEY_REQUIRED" }],
+    [500, {}, { code: "UPSTREAM_UNAVAILABLE" }],
+  ])("maps a %i on the token list like any other Swaps API call", async (status, headers, error) => {
+    const serve = catalogFetch();
+    fetchSpy.mockImplementation(async (input, init) =>
+      isConfigCall(input) ? serve(input, init) : new Response("", { status, headers }),
+    );
+    await expect(getSwapCatalog()).rejects.toMatchObject(error);
+  });
+
+  it.each([
     ["the chain config is down", () => Promise.reject(new Error("config down"))],
     ["the chain config marks no native token", async () => new Response("{}")],
   ])("never caches a catalog without native marks: %s", async (_case, config) => {

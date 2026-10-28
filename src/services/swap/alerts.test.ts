@@ -73,6 +73,16 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(27);
   });
 
+  it("puts another quote's deposit, which any key can name, on the lost quotes' budget", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 3; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    for (let i = 0; i < 3; i++) alertOperator("other_quote_deposit", { ...FIELDS, txHash: `0x${i}` });
+    expect(fetch).toHaveBeenCalledTimes(5);
+    alertOperator("other_sender_deposit", FIELDS);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
   it("posts an alert the budget held back when it comes again, instead of muting it for a day", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });

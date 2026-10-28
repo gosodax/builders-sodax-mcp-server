@@ -30,8 +30,8 @@ export function parseUnits(amount: string, decimals: number): bigint {
 }
 
 /**
- * An amount sent as a JSON number, as the decimal it was written as. Only one with no exponent and at most
- * 15 significant digits is sure to read back exactly; any other may have lost digits, so it's refused.
+ * An amount sent as a JSON number, as a decimal. One with an exponent or more than 15 significant digits is
+ * refused, since it may have lost digits; digits the JSON parse already dropped can't be seen.
  */
 export function amountText(amount: string | number): string {
   if (typeof amount === "string") return amount;

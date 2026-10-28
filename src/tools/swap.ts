@@ -338,7 +338,7 @@ export function trackNextStep(result: TrackResult): string {
       const atLeast = `at least ${promised.amount} ${promised.symbol}`;
       return result.delivery === "complete"
         ? `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`
-        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop. Don't send it again.`;
+        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.`;
     }
     case "failed":
       return `${OUTCOME[result.outcome]} ${failedNextStep(result)}`;

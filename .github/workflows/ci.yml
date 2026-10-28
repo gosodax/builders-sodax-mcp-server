@@ -11,6 +11,9 @@ on:
       - development
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test

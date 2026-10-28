@@ -51,7 +51,8 @@ Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_AP
 (`sodax_…`) is ignored.
 
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
-carries. The MCP SDKs' SSE clients already send their headers on both.
+carries, and a session opened with a key refuses a message without that key (HTTP 403). The MCP SDKs' SSE clients
+already send their headers on both.
 
 ```json
 {
@@ -93,9 +94,9 @@ every transaction; the server never signs.
    destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
    needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId` and
    `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
-2. The user's wallet signs and sends each step in order, each confirmed before the next. A wallet that supports
-   EIP-5792 can send the quote's `batch` in place of the steps its `replaces` lists; a `reset_approve` still goes
-   first.
+2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
+   order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
+   steps its `replaces` lists; a `reset_approve` still goes first.
 3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` refunds the deposit instead. While
@@ -288,7 +289,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
 | `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
-| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. |
+| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. The drift-check workflow runs them against production, without a key. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
 
 ### Canary swap E2E

@@ -211,7 +211,7 @@ async function runHTTP(): Promise<void> {
   });
   app.use(limiter);
 
-  // Stricter rate limit for MCP endpoints (60 per minute; a batch counts per message)
+  // Stricter rate limit for MCP endpoints (60 per minute; a batch on /mcp counts per message)
   const mcpLimiter = createMcpLimiter();
 
   app.use(express.json({ limit: "100kb" }));

@@ -12,6 +12,7 @@ import {
   jsonErrorHandler,
   mcpGetNotAllowed,
 } from "./httpGuards.js";
+import { logger } from "./logger.js";
 
 vi.mock("./discord.js", () => ({ notifyError: vi.fn(async () => {}) }));
 
@@ -35,14 +36,24 @@ function post(url: string, body: string): Promise<Response> {
 }
 
 describe("createMcpLimiter", () => {
+  /** One limiter shared by /mcp and /messages, as in index.ts. */
   async function limitedApp(limit: number): Promise<string> {
     const app = express();
     app.use(express.json());
-    app.post("/mcp", createMcpLimiter(limit), (_req, res) => {
-      res.json({ ok: true });
-    });
+    const limiter = createMcpLimiter(limit);
+    for (const path of ["/mcp", "/messages"]) {
+      app.post(path, limiter, (_req, res) => {
+        res.json({ ok: true });
+      });
+    }
     return serve(app);
   }
+
+  const limitError = {
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Too many MCP requests, please try again later." },
+    id: null,
+  };
 
   it("counts each message of a batch against the limit", async () => {
     const url = await limitedApp(5);
@@ -51,7 +62,28 @@ describe("createMcpLimiter", () => {
     const res = await post(`${url}/mcp`, JSON.stringify([rpc(4), rpc(5), rpc(6)]));
 
     expect(res.status).toBe(429);
-    expect(await res.json()).toEqual({ error: "Too many MCP requests, please try again later." });
+    expect(await res.json()).toEqual(limitError);
+  });
+
+  it("counts a batch on /messages once, since the SSE transport refuses batches", async () => {
+    const url = await limitedApp(2);
+
+    expect((await post(`${url}/messages`, JSON.stringify([rpc(1), rpc(2), rpc(3)]))).status).toBe(200);
+    expect((await post(`${url}/messages`, JSON.stringify(rpc(4)))).status).toBe(200);
+    expect((await post(`${url}/messages`, JSON.stringify(rpc(5)))).status).toBe(429);
+  });
+
+  it("answers the limit with a JSON-RPC error on /mcp and a plain JSON error elsewhere", async () => {
+    const url = await limitedApp(1);
+    await post(`${url}/mcp`, JSON.stringify(rpc(1)));
+
+    const onMcp = await post(`${url}/MCP/`, JSON.stringify(rpc(2)));
+    const onMessages = await post(`${url}/messages`, JSON.stringify(rpc(3)));
+
+    expect(onMcp.status).toBe(429);
+    expect(await onMcp.json()).toEqual(limitError);
+    expect(onMessages.status).toBe(429);
+    expect(await onMessages.json()).toEqual({ error: "Too many MCP requests, please try again later." });
   });
 
   it("counts a single message once", async () => {
@@ -102,6 +134,15 @@ describe("SseSessionLimiter", () => {
     a?.release(); // a second release must not free another slot
     expect(limiter.open("1.1.1.1", () => {})).not.toBeNull();
     expect(limiter.open("1.1.1.1", () => {})).toBeNull();
+  });
+
+  it("counts IPv6 clients per /56 subnet, like the rate limiter", () => {
+    const limiter = new SseSessionLimiter(10, 2, 1000);
+    limiter.open("2001:db8:0:1::1", () => {});
+    limiter.open("2001:db8:0:2::2", () => {});
+
+    expect(limiter.open("2001:db8:0:ff::3", () => {})).toBeNull();
+    expect(limiter.open("2001:db8:0:100::1", () => {})).not.toBeNull();
   });
 
   it("caps sessions globally across IPs", () => {
@@ -165,6 +206,13 @@ describe("jsonErrorHandler", () => {
         throw new Error("internal detail");
       }),
     );
+    app.get(
+      "/late-boom",
+      asyncHandler(async (_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" }).write("data: x\n\n");
+        throw new Error("internal detail");
+      }),
+    );
     app.use(jsonErrorHandler);
     return serve(app);
   }
@@ -189,6 +237,15 @@ describe("jsonErrorHandler", () => {
 
     expect(res.status).toBe(413);
     expect(await res.json()).toMatchObject({ jsonrpc: "2.0", error: { code: -32600 }, id: null });
+  });
+
+  it.each(["/mcp/", "/MCP"])("treats %s as /mcp, as Express routing does", async path => {
+    const url = await errorApp();
+
+    const res = await post(`${url}${path}`, "{bad");
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ jsonrpc: "2.0", error: { code: -32700 }, id: null });
   });
 
   it("answers malformed JSON elsewhere with a plain JSON error", async () => {
@@ -227,6 +284,23 @@ describe("jsonErrorHandler", () => {
     now.mockReturnValue(start + 60_000);
     await fetch(`${url}/boom`);
     expect(notifyError).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
+  it("logs and alerts on an error raised after the headers were sent", async () => {
+    const url = await errorApp();
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 20 * 60_000);
+    const logError = vi.spyOn(logger, "error");
+    vi.mocked(notifyError).mockClear();
+
+    // The response is cut off, so reading it fails.
+    await fetch(`${url}/late-boom`)
+      .then(res => res.text())
+      .catch(() => {});
+
+    expect(logError).toHaveBeenCalledWith({ err: expect.any(Error) }, "Unhandled HTTP error");
+    expect(notifyError).toHaveBeenCalledWith("Unhandled error on GET /late-boom", expect.any(Error));
+    logError.mockRestore();
     now.mockRestore();
   });
 });

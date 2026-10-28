@@ -328,4 +328,17 @@ describe("path parameters", () => {
 
     expect(requestedUrls()).toEqual([`${SODAX_API_BASE_URL}/moneymarket/position/0xAbC`]);
   });
+
+  it.each<[string, (mod: Api, value: string) => Promise<unknown>]>([
+    ["getSwapTokens", (m, v) => m.getSwapTokens(v)],
+    ["getHubAssets", (m, v) => m.getHubAssets(v)],
+    ["getMoneyMarketTokens", (m, v) => m.getMoneyMarketTokens(v)],
+  ])("%s caches by the trimmed value", async (_name, call) => {
+    const { mod, requestedUrls } = await load();
+
+    await call(mod, "sonic");
+    await call(mod, "  sonic ");
+
+    expect(requestedUrls()).toHaveLength(1);
+  });
 });

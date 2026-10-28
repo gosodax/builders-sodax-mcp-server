@@ -214,25 +214,29 @@ function registerDocsMetaTools(server: McpServer): void {
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
-      const tools = await refreshDocsTools();
+      const { tools, fetched } = await refreshDocsTools();
+      const notRefreshed = "Not refreshed: a refresh already ran in the last minute";
 
       if (tools.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "⚠️ Could not connect to docs.sodax.com\n\nThe SODAX docs MCP may be temporarily unavailable. Try again later or visit https://docs.sodax.com directly.",
+              text: fetched
+                ? "⚠️ Could not connect to docs.sodax.com\n\nThe SODAX docs MCP may be temporarily unavailable. Try again later or visit https://docs.sodax.com directly."
+                : `⚠️ ${notRefreshed}, and no SDK documentation tools are available.\n\nTry again in a minute or visit https://docs.sodax.com directly.`,
             },
           ],
         };
       }
 
       const toolList = tools.map(t => `- \`docs_${t.name}\`: ${t.description}`).join("\n");
+      const status = fetched ? "✅ Refreshed." : `${notRefreshed}.`;
       return {
         content: [
           {
             type: "text",
-            text: `✅ Refreshed. ${tools.length} SDK documentation tools available:\n\n${toolList}`,
+            text: `${status} ${tools.length} SDK documentation tools available:\n\n${toolList}`,
           },
         ],
       };

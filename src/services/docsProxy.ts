@@ -48,8 +48,8 @@ let lastFailedFetchAt = 0;
 // completions race on the shared state above — e.g. a slow failure finishing
 // after a success re-sets lastFailedFetchAt and leaves health false for the whole
 // TTL. So at most one fetch runs at a time and concurrent callers share it.
-// clearDocsCache() bumps the generation, so a fetch already in flight at a
-// refresh is discarded rather than overwriting the refreshed state.
+// clearDocsCache() (tests only) bumps the generation, so a fetch already in
+// flight when it runs is discarded rather than overwriting the cleared state.
 let inFlight: Promise<DocsTool[]> | null = null;
 let generation = 0;
 
@@ -206,12 +206,13 @@ export async function fetchDocsTools(options: { force?: boolean } = {}): Promise
 /**
  * Re-fetch the docs tools for docs_refresh, bypassing the TTL and the failure
  * back-off at most once per REFRESH_MIN_INTERVAL_MS; otherwise same as fetchDocsTools().
+ * `fetched` is false when the result came from the cache instead of upstream.
  */
-export async function refreshDocsTools(): Promise<DocsTool[]> {
-  if (inFlight) return inFlight;
-  if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return fetchDocsTools();
+export async function refreshDocsTools(): Promise<{ tools: DocsTool[]; fetched: boolean }> {
+  if (inFlight) return { tools: await inFlight, fetched: true };
+  if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return { tools: await fetchDocsTools(), fetched: false };
   lastRefreshAt = Date.now();
-  return startFetch();
+  return { tools: await startFetch(), fetched: true };
 }
 
 function startFetch(): Promise<DocsTool[]> {
@@ -330,7 +331,7 @@ export function getCachedDocsHealth(): { healthy: boolean; toolCount: number } {
 }
 
 /**
- * Clear the tools cache to force a refresh
+ * Clear the tools cache. Tests only: docs_refresh keeps the cache (refreshDocsTools).
  */
 export function clearDocsCache(): void {
   cachedTools = null;

@@ -125,7 +125,7 @@ export async function getIntegratedNetworksCount(): Promise<number> {
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
   const chain = chainId ? pathParam("chainId", chainId) : undefined;
-  const cacheKey = `tokens-${chainId || "all"}`;
+  const cacheKey = `tokens-${chain || "all"}`;
   const cached = getCached<SwapToken[]>(cacheKey);
   if (cached) return cached;
 
@@ -557,7 +557,7 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
   const chain = chainId ? pathParam("chainId", chainId) : undefined;
-  const cacheKey = `hub-assets-${chainId || "all"}`;
+  const cacheKey = `hub-assets-${chain || "all"}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
@@ -577,7 +577,7 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
   const chain = chainId ? pathParam("chainId", chainId) : undefined;
-  const cacheKey = `mm-tokens-${chainId || "all"}`;
+  const cacheKey = `mm-tokens-${chain || "all"}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 

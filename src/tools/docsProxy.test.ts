@@ -84,6 +84,23 @@ describe("docs_refresh", () => {
     expect((await pending).content[0]?.text).toContain("Refreshed");
   });
 
+  it("says when it reuses a refresh from the last minute", async () => {
+    const refresh = await loadDocsRefresh();
+
+    expect((await refresh()).content[0]?.text).toMatch(/^✅ Refreshed\. 2 /);
+    expect((await refresh()).content[0]?.text).toMatch(/^Not refreshed: a refresh already ran in the last minute\. 2 /);
+  });
+
+  it("does not report a failed connection when it reuses a refresh from the last minute", async () => {
+    upstream.down = true;
+    const refresh = await loadDocsRefresh();
+
+    expect((await refresh()).content[0]?.text).toContain("Could not connect");
+    const reused = (await refresh()).content[0]?.text;
+    expect(reused).toContain("Not refreshed: a refresh already ran in the last minute");
+    expect(reused).not.toContain("Could not connect");
+  });
+
   it("keeps serving the cached tools when a refresh fails", async () => {
     const refresh = await loadDocsRefresh();
     const { fetchDocsTools, getCachedDocsHealth } = await import("../services/docsProxy.js");

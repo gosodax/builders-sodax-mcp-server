@@ -39,7 +39,8 @@ What shapes the design:
 - Put `builders.sodax.com` behind the same HAProxy edge as the API, so keys and limits are enforced in one place.
 - The swap tools need an API key: `x-api-key` on HTTP, or `SODAX_API_KEY` on stdio. A connection without one gets no swap tools. `?profile=swap` is refused with "API key required" and where to get one, and `all` serves only the builder tools.
 - The server only checks that a key is there. Whether it's valid is the backend's call.
-- Builder tools stay open without a key. When a key is sent, it goes on every backend call.
+- Builder tools stay open without a key. When a key is sent, it goes on every backend call made for that caller. Lists cached for all callers, like the swap token catalog, load without one, so one caller's key can't fail them for the others.
+- On SSE, a session opened with a key refuses a message that doesn't carry the same key.
 - Drop the server's own inbound limit once the edge is in front, so only one counter applies. Behind a proxy it would only see the edge's IP anyway.
 - On a 429, wait out `Retry-After` instead of retrying at once, and tell the agent when to come back (`RATE_LIMITED` with `retryAfterSec`). A 401 or 403 becomes "API key required", with where to get one.
 
@@ -77,6 +78,7 @@ What shapes the design:
 **Consequences.**
 - Existing connections get `all`. Without a key, that's today's tools, unchanged. With a key, the swap tools come too; to keep today's exact list, connect with `?profile=builder`.
 - A swap agent connects to `/mcp?profile=swap` with a key and sees five tools.
+- Phase 2 adds its own profile for its tools. Adding a profile changes nothing for existing connections, and `all` keeps serving every tool.
 
 ### D5. Chains
 
@@ -112,7 +114,7 @@ What shapes the design:
 
 - Amounts go in as human units (`"0.5"`), and base units come back alongside.
 - The intent is built with `createIntent`, not `includeTxData`. The minimum output comes from the slippage (1 to 500 bps, default 100), and the deadline from `getDeadline` (5 to 60 minutes, default 15). An intent that isn't filled in time is cancelled and refunded by the backend.
-- The answer shows the expected output, minimum received, solver fee, partner fee and expiry. The API has no speed tier.
+- The answer shows the expected output (already net of the solver's fee), minimum received, partner fee, USD value and expiry, as a time and as seconds left. The API has no speed tier.
 - The partner fee comes from the connection, never from tool input:
   - the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers;
   - or `partnerAddress` and `partnerFeeBps` in the URL query, for clients that only take a URL;
@@ -120,6 +122,7 @@ What shapes the design:
 
   The address must be a valid EVM address and the fee 1 to 100 bps. Anything else is rejected when connecting. The same fee goes to the quote and the intent, and is cached with them. Without it, there is no partner fee.
 - With `fromAddress`, the quote checks the destination, then lists the steps to sign in order: a reset approve if needed, an approve if needed, then the swap. It doesn't check the balance: `sodax_get_balance` does, and the wallet refuses a swap it can't pay for.
+- Every step's transaction carries its chain id. Several EVM chains share the contracts a step calls, so a wallet on the wrong network refuses the step instead of depositing there.
 - Without `fromAddress`, it's a price quote only.
 - The intent is cached under a `quoteId`, so the model never retypes bigint fields.
 
@@ -129,22 +132,28 @@ What shapes the design:
 - Otherwise it checks that this transaction is the quoted deposit before calling `submit-tx`. Without the check, a wrong hash, such as the approve's, is queued and later abandoned.
 - The right place for the check is `submit-tx` itself, so every client gets it. Until the backend does it, the server checks EVM sources through the env RPCs: the receipt succeeded and holds the message log from the chain's SODAX `connection` contract, carrying the relay payload cached with the quote.
 - Matching the transaction input isn't enough. The same bytes can be sent to a different contract, and a smart-wallet batch can succeed while the inner call fails. The message log only exists if the deposit happened.
+- The backend keys a swap on its transaction, so a transaction holding more than one deposit isn't submitted. The server alerts the operator instead, and the next step asks for one swap per transaction.
+- A deposit for this quote sent from another address, or a deposit from this sender for another quote, isn't submitted either, and alerts the operator.
+- A quoted source chain is read from the SDK config, so a deposit stays trackable if the live chain config drops that chain.
 - Then it calls `submit-tx` once and reports progress in plain words until a final state. `solved` means the solver filled the intent on the hub; to any chain but Sonic, the output arrives one cross-chain hop later.
+- If `submit-tx` refuses the deposit before its deadline, the server alerts and doesn't resubmit. It relays the deposit to the hub on the first call after the deadline, or at once when the deadline is only minutes away. The backend refunds it there like any expired intent, since nothing posts it to a solver.
+- A transaction the chain hasn't seen may have been sped up or replaced in the wallet. The answer says to track the new hash with the same `quoteId`, and to quote again only if the wallet shows nothing was sent.
+- A backend status this server doesn't know is polled only while the quote can still be filled.
 
 ### Cancel
 
 - The first call checks the status. If the swap is already solved, it says so. Otherwise it returns the unsigned cancel transaction.
 - The second call, with `cancelTxHash`, checks the receipt and relays it through `/swaps/intents/submit`, because the cancel endpoint only builds the transaction.
-- The intent comes from the hub or the quote cache, never from model input.
+- The intent comes from the hub or the quote cache, never from model input. A cached quote is compared with the hub intent only for the deposit `track` checked as that quote's. Without a quote, the hub intent must come from the transaction's sender and that sender's hub wallet.
 - The cancel the backend builds is checked before it is returned: its message payload must equal the SDK's own cancel for that intent, so the user's hub wallet runs nothing else.
 - Once Solana and Bitcoin sources open, cancel isn't offered for them: relaying needs relay data the cancel endpoint doesn't return. The answer there is to wait for the deadline, after which the backend refunds.
 
 ### Quote cache
 
-- It lives in memory. An entry is kept until the intent deadline plus 30 minutes, with at most 10,000 entries and 1,000 open quotes per API key; a key over its cap is refused, so no one's live quote is pushed out. The Bound token is never cached.
+- It lives in memory. An entry is kept until the intent deadline plus 30 minutes, with at most 10,000 entries and 1,000 open quotes per API key; a key over its cap is refused. When the cache is full, expired entries go first, then unused quotes past their deadline. A live quote or one with a deposit is never dropped, so new quotes are refused until room frees up. The Bound token is never cached.
 - If the server restarts after the user broadcasts but before `track` submits, the entry is lost and the swap sits on chain, unsubmitted.
 - The server can't see this on its own. It finds out only when `track` is called again for that transaction and finds neither the quote nor a backend record. It then returns `not_submitted_unknown_quote`, tells the user the swap is on chain but not submitted yet, and alerts the operator with the source chain, tx hash and quote id so they can find the deposit and relay it.
-- If nobody calls `track` again, no alert fires.
+- If nobody calls `track` again, no alert fires. The deposit isn't lost: nothing fills an intent that was never submitted, and relaying the deposit after its deadline gets it refunded.
 
 ## Safety rules
 
@@ -154,6 +163,7 @@ What shapes the design:
   - values that validate as an address or token on the chosen chain, since a Sui address or coin type and a NEAR implicit account also contain 64 hex characters;
   - the Bound token.
 - `track` and `cancel` trust only the quote cache and on-chain data.
+- Every unsigned transaction names its chain, so it can't be sent on another network.
 - Slippage and deadline outside their bounds are rejected, not clamped.
 - Above a configurable USD value, the quote warns but doesn't block. The user's signature is the real check.
 - `SODAX_ENV` chooses production or canary once, at boot. There's no per-request switch.

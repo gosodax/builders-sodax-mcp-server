@@ -15,7 +15,7 @@
       "headers": [
         {
           "name": "x-api-key",
-          "description": "Optional SODAX API key, forwarded on the server's data API and solver calls",
+          "description": "SODAX API key. Optional for the builder tools; required for the swap tools once they are enabled. Forwarded on the server's data API and solver calls",
           "isRequired": false,
           "isSecret": true
         }

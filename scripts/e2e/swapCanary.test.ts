@@ -77,7 +77,14 @@ const depositData = (token: Hex = USDC, amount = AMOUNT) =>
 const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId = 42161): SwapStep => ({
   kind,
   chainId,
-  tx: { from: ACCOUNT.address, to: ASSET_MANAGER, data: depositData(), value: "0x0", ...tx },
+  tx: {
+    from: ACCOUNT.address,
+    to: ASSET_MANAGER,
+    data: depositData(),
+    value: "0x0",
+    chainId: `0x${chainId.toString(16)}`,
+    ...tx,
+  },
 });
 const swap = (tx: Partial<SwapStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
 const approveData = (spender: Hex = ASSET_MANAGER, amount = AMOUNT) =>

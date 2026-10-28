@@ -52,6 +52,19 @@ function apiUrl(path: string): string {
   return `${SODAX_API_BASE_URL}${path}`;
 }
 
+// Hashes, addresses and chain keys across all supported chains (0x-hex, base58,
+// bech32, "name.near", "0.0.123", "injective-1") fit this set.
+const PATH_PARAM_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/** Validates user input bound for a URL path segment and returns it encoded. */
+function pathParam(name: string, value: string): string {
+  const trimmed = value.trim();
+  if (!PATH_PARAM_PATTERN.test(trimmed) || trimmed === "." || trimmed === "..") {
+    throw new Error(`Invalid ${name}: use only letters, digits, ".", "_" or "-" (max 128 characters)`);
+  }
+  return encodeURIComponent(trimmed);
+}
+
 /**
  * Get all supported blockchain networks.
  *
@@ -111,12 +124,13 @@ export async function getIntegratedNetworksCount(): Promise<number> {
  * Get available tokens for swapping on a specific chain
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
   const cacheKey = `tokens-${chainId || "all"}`;
   const cached = getCached<SwapToken[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : "/config/swap/tokens";
+    const endpoint = chain ? `/config/swap/${chain}/tokens` : "/config/swap/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     // API returns object keyed by chain ID, flatten if getting all
     let tokens: SwapToken[] = [];
@@ -245,8 +259,9 @@ export async function resolveChainSupport(query: string): Promise<ChainSupport> 
  * Look up a transaction/intent by hash
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
+  const hash = pathParam("txHash", txHash);
   try {
-    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${txHash}`));
+    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${hash}`));
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
@@ -267,6 +282,7 @@ export async function getUserTransactions(
     toBlock?: number;
   },
 ): Promise<Transaction[]> {
+  const address = pathParam("userAddress", userAddress);
   try {
     const params = new URLSearchParams();
     if (options?.limit !== undefined) params.append("limit", options.limit.toString());
@@ -275,7 +291,7 @@ export async function getUserTransactions(
     if (options?.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/intent/user/${address}${queryString ? `?${queryString}` : ""}`);
     const data = await fetchJson<{ items?: Transaction[]; data?: Transaction[] }>(url);
     // API returns { items, total, offset, limit }
     return data?.items || data?.data || [];
@@ -425,9 +441,10 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
  * Get user's money market position
  */
 export async function getUserPosition(userAddress: string): Promise<UserPosition | null> {
+  const address = pathParam("userAddress", userAddress);
   try {
     const data = await fetchJsonOrNull<{ data?: UserPosition } | UserPosition>(
-      apiUrl(`/moneymarket/position/${userAddress}`),
+      apiUrl(`/moneymarket/position/${address}`),
     );
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
@@ -539,12 +556,13 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  * Get hub (Sonic) assets representing spoke tokens
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
   const cacheKey = `hub-assets-${chainId || "all"}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/hub/${chainId}/assets` : "/config/hub/assets";
+    const endpoint = chain ? `/config/hub/${chain}/assets` : "/config/hub/assets";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     setCache(cacheKey, data);
     return data;
@@ -558,12 +576,13 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  * Get money market supported tokens
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
   const cacheKey = `mm-tokens-${chainId || "all"}`;
   const cached = getCached<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : "/config/money-market/tokens";
+    const endpoint = chain ? `/config/money-market/${chain}/tokens` : "/config/money-market/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     setCache(cacheKey, data);
     return data;
@@ -622,6 +641,8 @@ export async function getAmmPoolCandles(
   poolId: string,
   options?: { interval?: string; from?: number; to?: number },
 ): Promise<unknown> {
+  const chain = pathParam("chainId", chainId);
+  const pool = pathParam("poolId", poolId);
   try {
     const params = new URLSearchParams();
     if (options?.interval) params.append("interval", options.interval);
@@ -629,7 +650,7 @@ export async function getAmmPoolCandles(
     if (options?.to) params.append("to", options.to.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/amm/pools/${chainId}/${poolId}/candles${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/amm/pools/${chain}/${pool}/candles${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch AMM pool candles");
@@ -641,8 +662,9 @@ export async function getAmmPoolCandles(
  * Look up an intent by its intent hash (not tx hash)
  */
 export async function getIntent(intentHash: string): Promise<unknown> {
+  const hash = pathParam("intentHash", intentHash);
   try {
-    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${intentHash}`));
+    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${hash}`));
     if (data === null) return null;
     return data?.data ?? data ?? null;
   } catch (error) {
@@ -655,12 +677,13 @@ export async function getIntent(intentHash: string): Promise<unknown> {
  * Get solver intent details by intent hash
  */
 export async function getSolverIntent(intentHash: string, includeAll?: boolean): Promise<unknown> {
+  const hash = pathParam("intentHash", intentHash);
   try {
     const params = new URLSearchParams();
     if (includeAll) params.append("includeAll", "true");
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/intents/${intentHash}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/intents/${hash}${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch solver intent");
@@ -672,8 +695,9 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
  * Get a single money market asset by reserve address
  */
 export async function getMoneyMarketAsset(reserveAddress: string): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
-    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserveAddress}`));
+    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserve}`));
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market asset");
     throw new Error("Failed to fetch money market asset from SODAX API");
@@ -687,13 +711,14 @@ export async function getMoneyMarketAssetBorrowers(
   reserveAddress: string,
   options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
     const params = new URLSearchParams();
     if (options?.offset) params.append("offset", options.offset.toString());
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/borrowers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserve}/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch asset borrowers");
@@ -708,13 +733,14 @@ export async function getMoneyMarketAssetSuppliers(
   reserveAddress: string,
   options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
     const params = new URLSearchParams();
     if (options?.offset) params.append("offset", options.offset.toString());
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/suppliers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserve}/suppliers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch asset suppliers");
@@ -747,12 +773,13 @@ export async function getMoneyMarketBorrowers(options?: {
  * Get partner summary by receiver address
  */
 export async function getPartnerSummary(receiver: string, chainId?: string): Promise<unknown> {
+  const partner = pathParam("receiver", receiver);
   try {
     const params = new URLSearchParams();
     if (chainId) params.append("chainId", chainId);
 
     const queryString = params.toString();
-    const url = apiUrl(`/partners/${receiver}/summary${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/partners/${partner}/summary${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch partner summary");

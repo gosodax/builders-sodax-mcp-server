@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SODAX_API_BASE_URL } from "../constants.js";
 
 vi.mock("./http.js", () => ({
   fetchJson: vi.fn(),
@@ -252,5 +253,79 @@ describe("getSupportedChainsDetailed", () => {
       { key: "sonic", name: "Sonic" },
       { key: "0xa86a.avax", name: "Avalanche" },
     ]);
+  });
+});
+
+describe("path parameters", () => {
+  type Api = typeof import("./sodaxApi.js");
+
+  async function load() {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const fetchJson = vi.mocked(http.fetchJson).mockResolvedValue({});
+    const fetchJsonOrNull = vi.mocked(http.fetchJsonOrNull).mockResolvedValue({});
+    const requestedUrls = () => [...fetchJson.mock.calls, ...fetchJsonOrNull.mock.calls].map(([url]) => url);
+    return { mod, requestedUrls };
+  }
+
+  // Every service that puts caller input into a URL path, with that input set to `value`.
+  const callers: Array<[string, (mod: Api, value: string) => Promise<unknown>]> = [
+    ["getSwapTokens", (m, v) => m.getSwapTokens(v)],
+    ["getTransaction", (m, v) => m.getTransaction(v)],
+    ["getUserTransactions", (m, v) => m.getUserTransactions(v)],
+    ["getUserPosition", (m, v) => m.getUserPosition(v)],
+    ["getHubAssets", (m, v) => m.getHubAssets(v)],
+    ["getMoneyMarketTokens", (m, v) => m.getMoneyMarketTokens(v)],
+    ["getAmmPoolCandles (chainId)", (m, v) => m.getAmmPoolCandles(v, "0xabc")],
+    ["getAmmPoolCandles (poolId)", (m, v) => m.getAmmPoolCandles("146", v)],
+    ["getIntent", (m, v) => m.getIntent(v)],
+    ["getSolverIntent", (m, v) => m.getSolverIntent(v)],
+    ["getMoneyMarketAsset", (m, v) => m.getMoneyMarketAsset(v)],
+    ["getMoneyMarketAssetBorrowers", (m, v) => m.getMoneyMarketAssetBorrowers(v)],
+    ["getMoneyMarketAssetSuppliers", (m, v) => m.getMoneyMarketAssetSuppliers(v)],
+    ["getPartnerSummary", (m, v) => m.getPartnerSummary(v)],
+  ];
+
+  it.each(callers)("%s rejects input that would change the request path", async (_name, call) => {
+    const { mod, requestedUrls } = await load();
+
+    for (const value of ["../config/all", "..", ".", "0xabc?limit=1", "0xabc#x", "a/b", "a\\b", "%2e%2e", "a b"]) {
+      await expect(call(mod, value), value).rejects.toThrow(/^Invalid /);
+    }
+    expect(requestedUrls()).toEqual([]);
+  });
+
+  it("accepts hashes, addresses and chain keys from every chain family", async () => {
+    const { mod, requestedUrls } = await load();
+    const values = [
+      "0x2b58be76e86c2b4e1e3a14e8c1d6d1bbc1f9e1c6f0e3a3e0c4b6e5f4a3b2c1d0", // EVM tx hash
+      "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW", // Solana
+      "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d", // Bitcoin
+      "alice.near",
+      "0.0.123456", // Hedera
+      "inj1qy352euf40x77qfrg4ncn27dauqjx3t83x4ummcpydzk0zdtehhse25p74", // bech32
+    ];
+
+    for (const value of values) await mod.getTransaction(value);
+    await mod.getSwapTokens("0x2105.base");
+    await mod.getHubAssets("injective-1");
+
+    expect(requestedUrls().sort()).toEqual(
+      [
+        ...values.map(v => `${SODAX_API_BASE_URL}/intent/tx/${v}`),
+        `${SODAX_API_BASE_URL}/config/swap/0x2105.base/tokens`,
+        `${SODAX_API_BASE_URL}/config/hub/injective-1/assets`,
+      ].sort(),
+    );
+  });
+
+  it("trims surrounding whitespace before building the path", async () => {
+    const { mod, requestedUrls } = await load();
+
+    await mod.getUserPosition("  0xAbC  ");
+
+    expect(requestedUrls()).toEqual([`${SODAX_API_BASE_URL}/moneymarket/position/0xAbC`]);
   });
 });

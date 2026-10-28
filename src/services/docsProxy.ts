@@ -40,7 +40,7 @@ const TOOLS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 // re-run the initialize + tools/list round-trips (up to 30s each when upstream
 // hangs). After a failed or empty fetch we serve whatever is cached (possibly
 // nothing) for this long before trying upstream again. Startup warm-up and
-// docs_refresh bypass it via `force` / clearDocsCache().
+// docs_refresh bypass it via `force` / refreshDocsTools().
 const FAILED_FETCH_BACKOFF_MS = 60 * 1000;
 let lastFailedFetchAt = 0;
 
@@ -52,6 +52,11 @@ let lastFailedFetchAt = 0;
 // refresh is discarded rather than overwriting the refreshed state.
 let inFlight: Promise<DocsTool[]> | null = null;
 let generation = 0;
+
+// docs_refresh is open to every caller, so it reaches upstream at most once per
+// window. It never clears the cache: other requests keep the current tools.
+const REFRESH_MIN_INTERVAL_MS = 60 * 1000;
+let lastRefreshAt = 0;
 
 // MCP session id, if the docs server issues one via the `Mcp-Session-Id`
 // response header. Mintlify currently answers statelessly (no session), so this
@@ -195,10 +200,22 @@ export async function fetchDocsTools(options: { force?: boolean } = {}): Promise
     return cachedTools || [];
   }
 
-  if (inFlight) return inFlight;
+  return inFlight ?? startFetch();
+}
 
-  const gen = generation;
-  const attempt = fetchAndApply(gen);
+/**
+ * Re-fetch the docs tools for docs_refresh, bypassing the TTL and the failure
+ * back-off at most once per REFRESH_MIN_INTERVAL_MS; otherwise same as fetchDocsTools().
+ */
+export async function refreshDocsTools(): Promise<DocsTool[]> {
+  if (inFlight) return inFlight;
+  if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return fetchDocsTools();
+  lastRefreshAt = Date.now();
+  return startFetch();
+}
+
+function startFetch(): Promise<DocsTool[]> {
+  const attempt = fetchAndApply(generation);
   inFlight = attempt;
   attempt.finally(() => {
     if (inFlight === attempt) inFlight = null;

@@ -12,9 +12,9 @@ import {
   DocsTool,
   callDocsTool,
   checkDocsHealth,
-  clearDocsCache,
   fetchDocsTools,
   getCachedDocsToolNames as getCachedRawDocsToolNames,
+  refreshDocsTools,
 } from "../services/docsProxy.js";
 import { logger } from "../services/logger.js";
 import { registerAppTool } from "../services/toolRegistry.js";
@@ -214,8 +214,7 @@ function registerDocsMetaTools(server: McpServer): void {
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async () => {
-      clearDocsCache();
-      const tools = await fetchDocsTools();
+      const tools = await refreshDocsTools();
 
       if (tools.length === 0) {
         return {

@@ -223,7 +223,7 @@ describe("sodax_swap_quote", () => {
     expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
-    expect(out.nextStep).toContain("Balances aren't checked here.");
+    expect(out.nextStep).toContain("Balances aren't checked here; sodax_get_balance reads them.");
     expect(out.nextStep).toContain(
       "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
     );
@@ -332,6 +332,23 @@ describe("sodax_swap_quote", () => {
     expect(out).toMatchObject({ status: "ready", toAddress: recipient, checks: { recipient: "not_needed" } });
     expect(calls.find(call => call.path === "/intents")?.body?.dstAddress).toBe(recipient);
   });
+
+  it.each(["ST000000000000000000002AMW42H", "St000000000000000000002AMW42H"])(
+    "refuses a Stacks testnet recipient (%s) before asking for a quote",
+    async toAddress => {
+      const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+      const configs = JSON.parse(fixtureText("chain-configs.json"));
+      // STX as the SDK config lists it.
+      const stx = "ST000000000000000000002AMW42H.nativetoken";
+      const hubAsset = "0x30b3b1a3e4f1235472772e60a8cd9c0165db641e";
+      tokens.stacks = [{ symbol: "STX", name: "Stacks", decimals: 6, address: stx, chainKey: "stacks", hubAsset }];
+      configs.stacks = { chain: { id: "stacks", chainId: "stacks", name: "Stacks", type: "STACKS" }, nativeToken: stx };
+      const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+      const { out } = await quote({ ...USDC_TO_SONIC, toChain: "stacks", toToken: "STX", amount: "5", toAddress });
+      expect(out.error.code).toBe("INVALID_ADDRESS");
+      expect(calls).toEqual([]);
+    },
+  );
 
   it("reports a chain the config doesn't describe as unavailable, before any quote", async () => {
     const configs = JSON.parse(fixtureText("chain-configs.json"));

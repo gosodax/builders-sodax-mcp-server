@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { EvmHubProvider, NearSpokeService, StellarSpokeService } from "@sodax/sdk";
+import { createRequire } from "node:module";
+import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
@@ -19,9 +20,13 @@ import {
   sdkLogger,
   swapContractFor,
   userHubWallet,
+  walletBalance,
 } from "./sodax.js";
 
 const USER = "0x000000000000000000000000000000000000dEaD";
+
+// Not a dependency here: the copy the SDK runs on, so its errors are the ones the SDK sees.
+const stellar = createRequire(createRequire(import.meta.url).resolve("@sodax/sdk"))("@stellar/stellar-sdk");
 
 /** A live `POST /v1/swaps/intents` response (2026-10-26, nothing signed). */
 function recorded(name: "built-intent-usdc-fee.json" | "built-intent-eth.json" | "built-intent-sonic.json") {
@@ -109,6 +114,23 @@ describe("addresses and contracts", () => {
     expect(encodeRecipient("nowhere", USER)).toBeUndefined();
   });
 
+  it("takes only a mainnet Stacks principal, which the SDK can't tell from a testnet one", () => {
+    expect(encodeRecipient("stacks", "SP3031RGK734636C8KGW2Y76TEQBTVX59Q472EQH0")).toMatch(/^0x0516/);
+    expect(encodeRecipient("stacks", "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4")).toMatch(/^0x0514/);
+    expect(encodeRecipient("stacks", "SP000000000000000000002Q6VF78.pox-4")).toMatch(/^0x0616/);
+    // Testnet with the version letter in either case (the SDK reads both), and any other version.
+    for (const notMainnet of [
+      "ST000000000000000000002AMW42H",
+      "St000000000000000000002AMW42H",
+      "SN000000000000000000003YDHWKJ",
+      "Sn000000000000000000003YDHWKJ",
+      "St000000000000000000002AMW42H.pox-4",
+      "SA3031RG000000000000000000000000002XQ4A5D",
+    ]) {
+      expect(encodeRecipient("stacks", notMainnet)).toBeUndefined();
+    }
+  });
+
   it("pins the swap contract: a spoke's asset manager, the hub intents contract", () => {
     expect(swapContractFor("0xa4b1.arbitrum")).toBe("0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3");
     expect(swapContractFor("sonic")).toBe(solverConfig.intentsContract);
@@ -176,6 +198,89 @@ describe("SDK calls", () => {
   it("pass a result through", async () => {
     vi.spyOn(EvmHubProvider.prototype, "getUserHubWalletAddress").mockResolvedValue(`0x${"c".repeat(40)}`);
     await expect(userHubWallet("0xa4b1.arbitrum", USER)).resolves.toBe(`0x${"c".repeat(40)}`);
+  });
+});
+
+describe("walletBalance", () => {
+  const USDC = { address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" };
+
+  it("reads the token for the address on the chain, and passes the base units through", async () => {
+    const read = vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValue({ ok: true, value: 5n });
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).resolves.toBe(5n);
+    expect(read).toHaveBeenCalledWith({ srcChainKey: "0xa4b1.arbitrum", srcAddress: USER, token: USDC });
+  });
+
+  it("fails a read the SDK reports as failed, or that throws, without its text: never 0", async () => {
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValueOnce({
+      ok: false,
+      error: new Error("URL: https://rpc/key123"),
+    } as never);
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow(/^SDK call failed$/);
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockRejectedValueOnce(new Error("URL: https://rpc/key123"));
+    await expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow(/^SDK call failed$/);
+  });
+
+  it("gives up after 8 seconds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(SpokeService.prototype, "getWalletBalance").mockReturnValue(new Promise(() => {}));
+    const pending = expect(walletBalance("0xa4b1.arbitrum", USER, USDC)).rejects.toThrow("SDK call failed");
+    await vi.advanceTimersByTimeAsync(8_000);
+    await pending;
+  });
+
+  describe("an account that doesn't exist yet", () => {
+    const XLM = { address: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA" };
+
+    // NEAR's RPC answer for an account that doesn't exist (live, 2026-10-27), which the SDK's client turns
+    // into its own error.
+    const nearUnknownAccount: typeof fetch = async (_url, init) => {
+      const { id, params } = JSON.parse(String(init?.body));
+      return Response.json({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          name: "HANDLER_ERROR",
+          cause: {
+            name: "UNKNOWN_ACCOUNT",
+            info: { requested_account_id: params.account_id, block_hash: "EK7bepCQ", block_height: 221773366 },
+          },
+          code: -32000,
+          message: "Server error",
+          data: `account ${params.account_id} does not exist while viewing`,
+        },
+      });
+    };
+
+    it('reads as null on Stellar by Horizon\'s 404, though stellar-sdk names its NotFoundError "Error"', async () => {
+      const notFound = new stellar.NotFoundError("Not Found", { title: "Resource Missing", status: 404 });
+      expect(notFound.name).toBe("Error");
+      const load = vi.spyOn(stellar.Horizon.Server.prototype, "loadAccount").mockRejectedValueOnce(notFound);
+      await expect(walletBalance("stellar", stellar.Keypair.random().publicKey(), XLM)).resolves.toBeNull();
+      load.mockRejectedValueOnce(new stellar.NetworkError("Internal Server Error", { status: 500 }));
+      await expect(walletBalance("stellar", stellar.Keypair.random().publicKey(), XLM)).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
+
+    it("reads as null on NEAR by the SDK's AccountDoesNotExistError", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(nearUnknownAccount);
+      await expect(walletBalance("near", "nobody.near", { address: "NEAR" })).resolves.toBeNull();
+    });
+
+    it("is never read from a token: a NEAR token contract that doesn't exist fails the same way", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(nearUnknownAccount);
+      await expect(walletBalance("near", "alice.near", { address: "no-such-token.near" })).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
+
+    it("is never read on another family, whatever the error looks like", async () => {
+      const lookalike = Object.assign(new Error("x"), { name: "AccountDoesNotExistError", response: { status: 404 } });
+      vi.spyOn(SpokeService.prototype, "getWalletBalance").mockResolvedValue({ ok: false, error: lookalike } as never);
+      await expect(walletBalance("0xa4b1.arbitrum", USER, { address: `0x${"0".repeat(40)}` })).rejects.toThrow(
+        /^SDK call failed$/,
+      );
+    });
   });
 });
 

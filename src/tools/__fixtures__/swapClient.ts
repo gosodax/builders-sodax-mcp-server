@@ -24,10 +24,19 @@ export type QuoteOut = Partial<Extract<SwapQuote, { status: "ready" }>> &
     error: { code: string } & Record<string, unknown>;
   };
 
-/** Calls sodax_swap_quote on a fresh connection and closes it. */
-export async function callQuote(args: Record<string, unknown>) {
+/** Any outcome's fields, so a test can assert on whichever one it expects. */
+export type ToolOut = Record<string, unknown> & {
+  status: string;
+  nextStep: string;
+  error: { code: string } & Record<string, unknown>;
+};
+
+/** Calls a swap tool on a fresh connection and closes it. */
+export async function callTool<Out = ToolOut>(name: string, args: Record<string, unknown>) {
   const client = await swapClient();
-  const result = await client.callTool({ name: "sodax_swap_quote", arguments: args });
+  const result = await client.callTool({ name, arguments: args });
   await client.close();
-  return { isError: result.isError, out: result.structuredContent as QuoteOut };
+  return { isError: result.isError, out: result.structuredContent as Out };
 }
+
+export const callQuote = (args: Record<string, unknown>) => callTool<QuoteOut>("sodax_swap_quote", args);

@@ -532,7 +532,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.delivery).toBe("in_transit");
     expect(out.nextStep).toBe(
-      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop. Don't send it again.",
+      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.",
     );
   });
 

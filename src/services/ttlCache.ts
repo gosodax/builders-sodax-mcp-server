@@ -1,15 +1,20 @@
 /**
  * A per-module response cache: an entry expires `ttlMs` after it was stored.
- * The data API and solver clients each keep one, so `sodax_refresh_cache` can
- * report what it cleared per cache.
+ * The data API and solver clients each keep one, which `sodax_refresh_cache` clears
+ * and reports per cache; the swap tools' balance cache (5 s) is left to expire.
  */
 
 import { CACHE_DURATION_MS } from "../constants.js";
 
 export class TtlCache {
+  // Insertion order is age order (`set` moves a key to the end), which eviction relies on.
   private readonly entries = new Map<string, { data: unknown; storedAt: number }>();
 
-  constructor(private readonly ttlMs = CACHE_DURATION_MS) {}
+  /** `maxEntries` bounds a cache keyed by what callers pass. */
+  constructor(
+    private readonly ttlMs = CACHE_DURATION_MS,
+    private readonly maxEntries = Number.POSITIVE_INFINITY,
+  ) {}
 
   get<T>(key: string): T | null {
     const entry = this.entries.get(key);
@@ -22,7 +27,20 @@ export class TtlCache {
   }
 
   set(key: string, data: unknown): void {
-    this.entries.set(key, { data, storedAt: Date.now() });
+    const now = Date.now();
+    this.entries.delete(key);
+    // Full: oldest first, what expired goes, then live entries until there's room.
+    if (this.entries.size >= this.maxEntries) {
+      for (const [stored, entry] of this.entries) {
+        if (now - entry.storedAt <= this.ttlMs && this.entries.size < this.maxEntries) break;
+        this.entries.delete(stored);
+      }
+    }
+    this.entries.set(key, { data, storedAt: now });
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
   }
 
   clear(): void {

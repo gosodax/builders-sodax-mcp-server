@@ -63,6 +63,12 @@ describe("resolveNextStep", () => {
     );
   });
 
+  it("says which chains list a symbol this chain doesn't", () => {
+    expect(nextStep("Arbitrum", "HBAR")).toBe(
+      "No swap token on Arbitrum matches that; it is HBAR on Hedera. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.",
+    );
+  });
+
   it("tells the agent which side a restricted token may be used on", () => {
     expect(nextStep("Arbitrum", "tBTC")).toBe(
       "tBTC on Arbitrum is withdraw-only: use it only as the token the user receives. Pass chain.key and token.address to sodax_swap_quote for this side; amounts stay in token units.",

@@ -14,7 +14,7 @@ export function parseUnits(amount: string, decimals: number): bigint {
   if (!AMOUNT.test(text) || fraction.length > decimals) {
     throw new ActionError(
       "INVALID_AMOUNT",
-      `Give the amount as a plain decimal with at most ${decimals} digits after the point.`,
+      `Give the amount as a plain decimal, with no commas or units and at most ${decimals} digits after the point.`,
     );
   }
   const base = BigInt(whole + fraction.padEnd(decimals, "0"));

@@ -17,7 +17,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { callerApiKey, resolveConnection } from "./connection.js";
+import { messageContext, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
@@ -301,7 +301,8 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
       return;
     }
     // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-    const context = { ...session.context, apiKey: callerApiKey(req) };
+    const context = messageContext(session.context, req, res);
+    if (!context) return;
     await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
   });
 

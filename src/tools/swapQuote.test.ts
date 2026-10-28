@@ -198,6 +198,7 @@ describe("sodax_swap_quote", () => {
       fromAddress: USER,
       toAddress: USER,
       expiresAt: new Date(Number(DEADLINE) * 1000).toISOString(),
+      expiresInSec: 900,
       checks: { balance: "not_checked", recipient: "not_needed" },
       steps: [
         { kind: "approve", chainId: 42161, tx: { to: ARB_USDC } },
@@ -213,6 +214,8 @@ describe("sodax_swap_quote", () => {
       { to: ARB_USDC, value: "0x0", data: approveData(ASSET_MANAGER, 5000000n) },
       { to: ASSET_MANAGER, value: "0x0", data: out.steps?.[1].tx.data },
     ]);
+    // In each tx too: Arbitrum, Base, Optimism and Polygon share the asset manager these steps call.
+    expect(out.steps?.map(step => step.tx.chainId)).toEqual(["0xa4b1", "0xa4b1"]);
     const intents = calls.find(call => call.path === "/intents");
     expect(intents?.body).toMatchObject({
       inputAmount: "5000000",

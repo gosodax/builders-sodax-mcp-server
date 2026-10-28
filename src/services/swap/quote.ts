@@ -70,9 +70,11 @@ interface QuoteSummary {
 export interface SwapStep {
   kind: "reset_approve" | "approve" | "swap";
   chainId: number;
-  /** `value` is a hex quantity. */
-  tx: EvmTx;
+  tx: StepTx;
 }
+
+/** `value` and `chainId` are hex quantities. */
+export type StepTx = EvmTx & { chainId: string };
 
 /** EIP-5792 `wallet_sendCalls`, for wallets that batch: it replaces the steps it lists. */
 export interface SwapBatch {
@@ -96,6 +98,8 @@ export type SwapQuote =
       quoteId: string;
       /** ISO time; the swap step must be mined before it. */
       expiresAt: string;
+      /** Seconds from now to `expiresAt`, for agents that can't do time arithmetic. */
+      expiresInSec: number;
       fromAddress: string;
       toAddress: string;
       checks: { balance: "not_checked"; recipient: RecipientCheck };
@@ -228,6 +232,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     ...summary,
     quoteId,
     expiresAt: new Date(Number(deadline) * 1000).toISOString(),
+    expiresInSec: Math.max(0, Math.floor(Number(deadline) - Date.now() / 1000)),
     fromAddress,
     toAddress,
     checks: { balance: "not_checked", recipient },
@@ -351,9 +356,12 @@ function findMismatch(
   return checks.find(([, ok]) => !ok)?.[0];
 }
 
-/** Values as hex quantities, as `eth_sendTransaction` and `wallet_sendCalls` take them. */
-function toStepTx(tx: EvmTx): EvmTx {
-  return { ...tx, value: `0x${BigInt(tx.value).toString(16)}` };
+/**
+ * Hex quantities, as `eth_sendTransaction` takes them. The chain id is in the tx: several chains share the
+ * contracts a step calls, so a wallet on another network must refuse it rather than send it there.
+ */
+function toStepTx(tx: EvmTx, chainId: number): StepTx {
+  return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
 }
 
 /** The steps in order and, with an approval, the approve and swap as one batch. A reset stays out: it must land first. */
@@ -363,11 +371,11 @@ function toSteps(
   chainId: number,
   from: string,
 ): { steps: SwapStep[]; batch?: SwapBatch } {
-  const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx) };
+  const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx, chainId) };
   if (!approval) return { steps: [swap] };
-  const approve: SwapStep = { kind: "approve", chainId, tx: toStepTx(approval.tx) };
+  const approve: SwapStep = { kind: "approve", chainId, tx: toStepTx(approval.tx, chainId) };
   const reset: SwapStep[] = approval.resetTx
-    ? [{ kind: "reset_approve", chainId, tx: toStepTx(approval.resetTx) }]
+    ? [{ kind: "reset_approve", chainId, tx: toStepTx(approval.resetTx, chainId) }]
     : [];
   return {
     steps: [...reset, approve, swap],

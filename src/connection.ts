@@ -19,6 +19,18 @@ export function callerApiKey(req: Request): string | undefined {
   return parseApiKey(req.get("x-api-key"));
 }
 
+/**
+ * The context a POST /messages runs in: its SSE session's, with the message's own key. A session opened
+ * with a key serves its tools only to messages that send that key; undefined once a message is refused.
+ */
+export function messageContext(session: RequestContext, req: Request, res: Response): RequestContext | undefined {
+  const apiKey = callerApiKey(req);
+  if (session.apiKey === undefined || apiKey === session.apiKey) return { ...session, apiKey };
+  const message = "Send each message with the x-api-key this SSE session was opened with.";
+  res.status(403).json({ jsonrpc: "2.0", error: { code: -32000, message }, id: null });
+  return undefined;
+}
+
 /** A connection's settings, resolved once; undefined once it has been refused. */
 export function resolveConnection(
   req: Request,

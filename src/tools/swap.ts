@@ -270,9 +270,9 @@ export function trackNextStep(result: TrackResult): string {
         ? "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again."
         : `That transaction isn't a SODAX swap deposit on ${chain}; ask for the swap transaction's hash.`;
     case "expired_refunding":
-      return "The swap reached SODAX after its quote expired, so it won't be filled and is being refunded to the user; they must not send it again.";
+      return "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";
     case "expired_unsubmitted":
-      return `The swap reached SODAX after its quote expired and its refund couldn't start: ${DEPOSIT_SAFE}. To retry the refund, ${again(result.retryAfterSec)}.`;
+      return `The swap won't be filled and its refund couldn't start: ${DEPOSIT_SAFE}. To retry the refund, ${again(result.retryAfterSec)}.`;
     case "submit_refused":
       return `The swap service refused this deposit, so it won't be swapped: ${DEPOSIT_SAFE}. Once the quote expires this server starts the refund: ${again(result.retryAfterSec)}.`;
     case "queued":

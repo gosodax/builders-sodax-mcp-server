@@ -10,7 +10,7 @@ import { type EvmReceipt, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown }
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
-import { isSwapSource, resolveSwapChain, toChain } from "./resolver.js";
+import { chainIdQuery, resolveSwapChain, toChain } from "./resolver.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
 import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 
@@ -36,7 +36,7 @@ export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote }
  * live chain id that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
-  if (!isSwapSource(catalog, chain.key)) throw unsupportedSource(chain);
+  if (catalog.chains[chain.key]?.type !== "EVM") throw unsupportedSource(chain);
   return pinnedSource(chain);
 }
 
@@ -87,8 +87,8 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
 /** Whether `query` names the chain `chainKey`, as a name, ticker, key or EVM chain id, without the catalog. */
 function namesChain(query: string, chainKey: string): boolean {
   if (resolveChainKey(query, [chainKey]).key === chainKey) return true;
-  const id = query.trim();
-  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(id) && Number(id) === evmChainIdFor(chainKey);
+  const id = chainIdQuery(query);
+  return id !== undefined && id === evmChainIdFor(chainKey);
 }
 
 /** The receipt, or `null` while the tx isn't mined. */

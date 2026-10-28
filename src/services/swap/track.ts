@@ -118,7 +118,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (!receipt) {
     const seen = await seenOnChain(chain, txHash);
     // An unseen tx is worth waiting for only while its quote can still be sent.
-    const sendable = quote && Date.now() < (Number(quote.intent.deadline) + UNSEEN_AFTER_DEADLINE_SEC) * 1000;
+    const sendable = quote && Date.now() < deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
     if (!seen && !sendable) return { ...base, status: "source_not_found" };
     return { ...base, status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: RETRY_AFTER_SEC };
   }
@@ -253,7 +253,7 @@ function fromStatus(row: SubmitTxStatus, quote?: CachedQuote): TrackState {
       const known = STAGES.includes(row.status);
       if (!known) logger.warn({ status: row.status }, "Unknown submit-tx status");
       // A status added upstream may be final: worth polling only while the quote can still be filled.
-      const fillable = quote !== undefined && Date.now() < Number(quote.intent.deadline) * 1000;
+      const fillable = quote !== undefined && Date.now() < deadlineMs(quote);
       if (!known && !fillable) return { status: "unknown" };
       return {
         status: "in_progress",

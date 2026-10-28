@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
+import { runWithRequestContext } from "../requestContext.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getSwapTokens } from "./swapsApi.js";
@@ -91,7 +92,8 @@ export function getSwapCatalog(): Promise<SwapCatalog> {
 
 function refreshCatalog(): Promise<SwapCatalog> {
   const startedIn = generation;
-  return loadCatalog()
+  // Shared by every caller, so no caller's key: one bad key can't fail the load for the others.
+  return runWithRequestContext({}, loadCatalog)
     .then(
       catalog => {
         if (startedIn === generation) cached = { catalog, fetchedAt: Date.now() };
@@ -142,10 +144,8 @@ async function loadCatalog(): Promise<SwapCatalog> {
       return catalog;
     }
   } catch (error) {
-    // A rate limit or a refused key tells the agent what to do; anything else is the list being unavailable.
-    if (error instanceof ActionError && (error.code === "RATE_LIMITED" || error.code === "API_KEY_REQUIRED")) {
-      throw error;
-    }
+    // A rate limit tells the agent when to come back; anything else is the list being unavailable.
+    if (error instanceof ActionError && error.code === "RATE_LIMITED") throw error;
     logger.error({ err: error }, "Failed to load the swap token catalog");
   }
   throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap token list is unavailable.");

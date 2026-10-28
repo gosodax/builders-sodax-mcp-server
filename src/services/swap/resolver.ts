@@ -128,10 +128,15 @@ function findChainKey(catalog: SwapCatalog, query: string): string | undefined {
   const keys = Object.keys(catalog.tokens);
   const { key } = resolveChainKey(query, keys);
   if (key) return key;
-  const q = query.trim();
-  if (!/^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q)) return undefined;
-  const id = Number(q);
+  const id = chainIdQuery(query);
+  if (id === undefined) return undefined;
   return keys.find(other => catalog.chains[other]?.type === "EVM" && catalog.chains[other].chainId === id);
+}
+
+/** An EVM chain id typed as a query, in decimal or hex. */
+export function chainIdQuery(query: string): number | undefined {
+  const q = query.trim();
+  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q) ? Number(q) : undefined;
 }
 
 /** The native token first for a wrapped-native guess (WETH on a chain whose gas token is ETH), then near misses. */

@@ -88,7 +88,7 @@ What shapes the design:
 - Sources in phase 1: the EVM spoke chains. Sonic, the hub, is not a source yet: it has no `connection` contract, so nothing on chain proves a deposit from it. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
 - When those sources open, Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
 - Before building a swap to NEAR or Stellar, check with the SDK that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
-- No `rpcUrl` input. Operators set RPC URLs per chain through env; without one, the SDK's packaged default is used. The server reads chains only through the SDK: source transactions on EVM source chains, the user's hub wallet on Sonic, recipients on NEAR and Stellar, and wallet balances. Whether an approve is needed comes from the backend's allowance check.
+- No `rpcUrl` input. Operators set RPC URLs per chain through env; without one, the SDK's packaged default is used. The server reads chains only through the SDK: source transactions on EVM source chains, the user's hub wallet on Sonic, recipients on NEAR and Stellar, wallet balances, and the source chain's block number in a ready quote, so a dead RPC fails the quote (`CHAIN_UNAVAILABLE`) before anything is signed rather than at track. Whether an approve is needed comes from the backend's allowance check.
 
 **Consequences.**
 - Phase 1 covers the swaps most agents start with, without a reader for every chain family.
@@ -114,7 +114,9 @@ What shapes the design:
 
 - Amounts go in as human units (`"0.5"`), and base units come back alongside.
 - The intent is built with `createIntent`, not `includeTxData`. The minimum output comes from the slippage (1 to 500 bps, default 100), and the deadline from `getDeadline` (5 to 60 minutes, default 15). An intent that isn't filled in time is cancelled and refunded by the backend.
-- The answer shows the expected output (already net of the solver's fee), minimum received, partner fee, USD value and expiry, as a time and as seconds left. The API has no speed tier.
+- The answer shows the expected output (already net of the solver's fee), minimum received, partner fee, USD values in and out, and expiry, as a time and as seconds left. The API has no speed tier.
+- The quote is checked against market prices: an output worth less than 90% of the input (net of the partner fee) at oracle prices is refused (`PRICE_OFF_MARKET`) and alerts the operator. When either side has no price, the quote only warns. The swap tools read the production oracle in both environments, since canary swaps run on mainnet chains.
+- For a wallet that batches (EIP-5792), the quote returns the `wallet_sendCalls` envelope and which steps it replaces; the agent builds the calls from those steps, so the calldata appears once.
 - The partner fee comes from the connection, never from tool input:
   - the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers;
   - or `partnerAddress` and `partnerFeeBps` in the URL query, for clients that only take a URL;
@@ -135,7 +137,7 @@ What shapes the design:
 - The backend keys a swap on its transaction, so a transaction holding more than one deposit isn't submitted. The server alerts the operator instead, and the next step asks for one swap per transaction.
 - A deposit for this quote sent from another address, or a deposit from this sender for another quote, isn't submitted either, and alerts the operator.
 - A quoted source chain is read from the SDK config, so a deposit stays trackable if the live chain config drops that chain.
-- Then it calls `submit-tx` once and reports progress in plain words until a final state. `solved` means the solver filled the intent on the hub; to any chain but Sonic, the output arrives one cross-chain hop later.
+- Then it calls `submit-tx` once and reports progress in plain words until a final state. Agents usually can't wait between calls, so each call waits up to 20 seconds for the swap to move on before it answers. `solved` means the solver filled the intent on the hub; to any chain but Sonic, the output arrives one cross-chain hop later.
 - If `submit-tx` refuses the deposit before its deadline, the server alerts and doesn't resubmit. It relays the deposit to the hub on the first call after the deadline, or at once when the deadline is only minutes away. The backend refunds it there like any expired intent, since nothing posts it to a solver.
 - A transaction the chain hasn't seen may have been sped up or replaced in the wallet. The answer says to track the new hash with the same `quoteId`, and to quote again only if the wallet shows nothing was sent.
 - A backend status this server doesn't know is polled only while the quote can still be filled.
@@ -143,6 +145,7 @@ What shapes the design:
 ### Cancel
 
 - The first call checks the status. If the swap is already solved, it says so. Otherwise it returns the unsigned cancel transaction.
+- A deposit that was never submitted has no hub intent to cancel. Cancel then reads the receipt: nothing sent means nothing to cancel; a deposit before its deadline won't be swapped unless tracked, so the answer is not to track it and to call cancel again after the deadline; after the deadline the deposit is relayed for refund, as `track` does.
 - The second call, with `cancelTxHash`, checks the receipt and relays it through `/swaps/intents/submit`, because the cancel endpoint only builds the transaction.
 - The intent comes from the hub or the quote cache, never from model input. A cached quote is compared with the hub intent only for the deposit `track` checked as that quote's. Without a quote, the hub intent must come from the transaction's sender and that sender's hub wallet.
 - The cancel the backend builds is checked before it is returned: its message payload must equal the SDK's own cancel for that intent, so the user's hub wallet runs nothing else.
@@ -166,6 +169,7 @@ What shapes the design:
 - Every unsigned transaction names its chain, so it can't be sent on another network.
 - Slippage and deadline outside their bounds are rejected, not clamped.
 - Above a configurable USD value, the quote warns but doesn't block. The user's signature is the real check.
+- A quote whose output is far below market value at oracle prices is refused (see [Quote](#quote)).
 - `SODAX_ENV` chooses production or canary once, at boot. There's no per-request switch.
 - No keys or secrets in logs. Analytics carry the `quoteId`, the chains and a USD bucket, never addresses.
 - No caller-supplied RPC URLs. A hosted server shouldn't fetch arbitrary URLs, and paid RPC URLs embed their own keys.

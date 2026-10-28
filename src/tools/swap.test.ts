@@ -68,8 +68,10 @@ describe("resolveNextStep", () => {
   const catalog = fixtureCatalog();
   const nextStep = (chain: string, query: string) => resolveNextStep(resolveToken(catalog, chain, query));
 
-  it("names the native token in a wrapped-native suggestion", () => {
-    expect(nextStep("Arbitrum", "WETH")).toContain("ETH (the native token)");
+  it("names the native token in a wrapped-native suggestion, beside the chains listing the symbol", () => {
+    expect(nextStep("Arbitrum", "WETH")).toBe(
+      "No swap token on Arbitrum matches that; it is listed as WETH on Sonic, and the nearest on Arbitrum is ETH (the native token). Ask the user which they mean, then call sodax_resolve_token again with that chain.",
+    );
   });
 
   it("tells the agent which side a restricted token may be used on", () => {

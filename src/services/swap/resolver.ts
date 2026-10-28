@@ -3,7 +3,7 @@
  *
  * First rule that matches wins: contract address → `native` or an exact symbol →
  * a fuzzy match (always `ambiguous`: USDT0 is not USDT) → `not_found` with suggestions,
- * and any other chains that list the query as a non-native token address.
+ * and any other chains that list the query as a non-native token address or a symbol.
  * Returns structure only; each tool words its own next step.
  */
 
@@ -28,11 +28,30 @@ const MAX_SUGGESTIONS = 5;
 // What many wallets and aggregators pass for an EVM chain's gas token.
 const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
+/** The chains within two typos of the query, by name or key, closest first. */
+function nearestChains(chains: ChainInfo[], query: string): ChainInfo[] {
+  const needle = normalize(query);
+  if (needle.length < 3) return [];
+  const scored = chains.map(chain => {
+    const names = [chain.name, chain.key.split(".").pop() ?? chain.key].map(normalize);
+    return { chain, distance: Math.min(...names.map(name => editDistance(name, needle))) };
+  });
+  const best = Math.min(...scored.map(({ distance }) => distance));
+  return best <= 2 ? scored.filter(({ distance }) => distance === best).map(({ chain }) => chain) : [];
+}
+
 export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string): Resolution {
   const key = findChainKey(catalog, chainQuery);
   if (!key) {
+    const supported = Object.keys(catalog.tokens).map(toChain);
+    const near = nearestChains(supported, chainQuery);
+    const names = near.map(chain => chain.name).join(" or ");
     throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
-      details: { supportedChains: Object.keys(catalog.tokens).map(toChain) },
+      details: { supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
+      nextStep:
+        near.length > 0
+          ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
+          : undefined,
     });
   }
 
@@ -73,12 +92,17 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
     if (fuzzy.length > 0) return { status: "ambiguous", chain, query: q, candidates: fuzzy.slice(0, MAX_CANDIDATES) };
   }
 
-  // At most one per chain, never a native token: the zero address is each chain's own gas token, not one token.
+  // At most one per chain, by address or else by exact symbol. Never a native token by address: the zero
+  // address is each chain's own gas token, not one token.
   const otherChains = Object.keys(catalog.tokens)
     .filter(other => other !== key)
     .flatMap(other => {
-      const token = findToken(catalog, other, q);
-      return token && !token.isNative ? [{ chain: toChain(other), token }] : [];
+      const byAddress = findToken(catalog, other, q);
+      const token =
+        byAddress && !byAddress.isNative
+          ? byAddress
+          : catalog.tokens[other].find(listed => listed.symbol.toLowerCase() === q.toLowerCase());
+      return token ? [{ chain: toChain(other), token }] : [];
     });
   return { ...notFound(suggest(tokens, needle)), ...(otherChains.length > 0 && { otherChains }) };
 }

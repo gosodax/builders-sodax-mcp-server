@@ -132,6 +132,18 @@ describe("resolveToken", () => {
     );
   });
 
+  it.each([
+    ["Arbitrm", [{ key: "0xa4b1.arbitrum", name: "Arbitrum" }]],
+    ["avalanch", [{ key: "0xa86a.avax", name: "Avalanche" }]],
+  ])("suggests the chain a typo %j is nearest to", (chain, didYouMean) => {
+    expect(() => resolve(chain, "USDC")).toThrow(
+      expect.objectContaining({
+        details: expect.objectContaining({ didYouMean }),
+        nextStep: `Ask the user whether they mean ${didYouMean[0].name}, or else which chain in error.supportedChains, and pass its key.`,
+      }),
+    );
+  });
+
   it.each(["0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"])(
     "resolves the native placeholder %s to an EVM chain's native token",
     placeholder => {
@@ -171,7 +183,7 @@ describe("resolveToken", () => {
       status: "not_found",
       otherChains: [{ chain: { key: "0xa4b1.arbitrum", name: "Arbitrum" }, token: { symbol: "USDC" } }],
     });
-    expect(resolve("Arbitrum", "WETH")).not.toHaveProperty("otherChains");
+    expect(resolve("Avalanche", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toMatchObject({ suggestions: [] });
   });
 
   it("never names another chain's native token for an address this chain doesn't list", () => {

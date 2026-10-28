@@ -75,14 +75,18 @@ export function resolveNextStep(resolution: Resolution): string {
       return `Ask the user ${ask}, then call sodax_resolve_token again with its address.`;
     }
     case "not_found": {
+      const [first] = resolution.suggestions;
+      const nearest = first && `${first.symbol}${first.isNative ? " (the native token)" : ""}`;
       if (resolution.otherChains) {
         const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
+        // A symbol listed elsewhere may still be a near miss here: WETH on Arbitrum is most likely its ETH.
+        if (nearest) {
+          return `No swap token on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
+        }
         return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
       }
-      const [first] = resolution.suggestions;
-      if (!first) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
-      const native = first.isNative ? " (the native token)" : "";
-      return `No swap token matches on ${chain}; ask the user whether they mean ${first.symbol}${native} or another suggestion.`;
+      if (!nearest) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
+      return `No swap token matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
     }
   }
 }

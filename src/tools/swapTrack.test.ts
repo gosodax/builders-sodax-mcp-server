@@ -1,0 +1,701 @@
+import { randomUUID } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../services/logger.js";
+import { setFallbackRequestContext } from "../services/requestContext.js";
+import { getEvmReceipt, isTxKnown } from "../services/sodax.js";
+import { clearCache } from "../services/sodaxApi.js";
+import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { clearAlerts } from "../services/swap/alerts.js";
+import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
+import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { trackWait } from "../services/swap/track.js";
+import {
+  ARBITRUM,
+  CREATOR,
+  DEADLINE,
+  DEPOSIT_RECEIPT,
+  INTENT,
+  NOW,
+  TX,
+  USER,
+  cacheQuote,
+  callTool,
+  stubBackend,
+} from "./__fixtures__/swapBackend.js";
+import { swapClient } from "./__fixtures__/swapClient.js";
+
+// Unit tests don't reach a chain: receipts are scripted per test.
+vi.mock("../services/sodax.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/sodax.js")>();
+  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn() };
+});
+
+const HUB_TX = `0x${"b".repeat(64)}`;
+const OTHER_TX = `0x${"e".repeat(64)}`;
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
+
+beforeEach(() => {
+  // A call returns at once here; the waiting has its own tests.
+  Object.assign(trackWait, { stepMs: 1, maxMs: 0 });
+  vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+  clearSwapCatalogCache();
+  clearCache();
+  clearQuoteCache();
+  clearAlerts();
+  vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
+  vi.mocked(isTxKnown).mockResolvedValue(true);
+  vi.spyOn(logger, "error").mockImplementation(() => undefined);
+  vi.spyOn(logger, "info").mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000 });
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.mocked(getEvmReceipt).mockReset();
+  vi.mocked(isTxKnown).mockReset();
+  setFallbackRequestContext({});
+});
+
+describe("sodax_swap_track", () => {
+  it("checks the deposit, submits the quoted intent once, and reports it queued", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
+    expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
+    const [submit] = submits(calls);
+    expect(submit.body).toEqual({
+      txHash: TX,
+      srcChainKey: ARBITRUM,
+      walletAddress: USER,
+      intent: INTENT,
+      relayData: expect.stringMatching(/^0x[0-9a-f]+$/),
+    });
+    expect(Object.keys(submit.body?.intent ?? {})).toHaveLength(14);
+  });
+
+  it("submits a deposit already sent though the live config's chain id now differs from the SDK's", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs[ARBITRUM].chain.chainId = 8453;
+    const calls = stubBackend({ configs: JSON.stringify(configs) });
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("queued");
+    expect(getEvmReceipt).toHaveBeenCalledWith(ARBITRUM, TX);
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it.each([{}, { chain: "arb" }, { chain: "42161" }])(
+    "submits a quoted deposit from a chain the live config no longer lists (%o)",
+    async args => {
+      const configs = JSON.parse(fixtureText("chain-configs.json"));
+      delete configs[ARBITRUM];
+      const calls = stubBackend({ configs: JSON.stringify(configs) });
+      const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId, ...args });
+      expect(out.status).toBe("queued");
+      expect(submits(calls)).toHaveLength(1);
+    },
+  );
+
+  it("waits within one call until the swap moves on", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+    const rows = [{ status: "pending" }, { status: "pending" }, { status: "relaying" }, { status: "solved" }];
+    const calls = stubBackend({
+      status: () => Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, ...rows.shift() } }),
+    });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "in_progress", stage: "relaying" });
+    expect(out.nextStep).toContain("it waits up to 20 seconds");
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(3);
+  });
+
+  it("stops waiting once its time is up, with the swap still waiting", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 5_000 });
+    const calls = stubBackend({
+      status: () => {
+        vi.setSystemTime(Date.now() + 2_000);
+        return Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, status: "pending" } });
+      },
+    });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out.status).toBe("queued");
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(3);
+  });
+
+  it("submits once over five calls, and once for two at the same time", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    for (let i = 0; i < 5; i++) await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(1);
+
+    clearQuoteCache();
+    const again = stubBackend();
+    const second = cacheQuote();
+    await Promise.all([track({ txHash: TX, quoteId: second.quoteId }), track({ txHash: TX, quoteId: second.quoteId })]);
+    expect(submits(again)).toHaveLength(1);
+  });
+
+  it("reports a tx it already submitted as queued while the backend has no row yet, without reading or submitting again", async () => {
+    const calls = stubBackend({ row: null });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    vi.mocked(getEvmReceipt).mockClear();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).toBe("queued");
+    expect(submits(calls)).toHaveLength(1);
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+  });
+
+  it("takes a duplicate as submitted, and asks for one spelling of the hash", async () => {
+    const calls = stubBackend({ submit: () => Response.json({ success: true, data: { status: "duplicate" } }) });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX.toUpperCase().replace("0X", "0x"), quoteId });
+    expect(out.status).toBe("queued");
+    expect(calls[0].path).toContain(`txHash=${TX}`);
+  });
+
+  it.each([
+    [true, "isn't confirmed on Arbitrum yet"],
+    [false, "Arbitrum hasn't seen this transaction. Check that the user's wallet really broadcast it"],
+  ])("waits for an unmined tx (seen: %s)", async (seen, hint) => {
+    const calls = stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(seen);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: 15 });
+    expect(out.nextStep).toContain("don't resend it");
+    expect(out.nextStep).toContain(hint);
+    expect(out.nextStep.includes("if it was never sent, stop tracking it")).toBe(!seen);
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it.each([
+    ["without a quote", () => ({ chain: ARBITRUM })],
+    ["whose quote is gone", () => ({ quoteId: randomUUID(), chain: ARBITRUM })],
+    [
+      "over 5 minutes past its quote's deadline",
+      () => {
+        const { quoteId } = cacheQuote();
+        vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
+        return { quoteId };
+      },
+    ],
+  ])("stops waiting for a tx the chain hasn't seen %s", async (_case, args) => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { out } = await track({ txHash: TX, ...args() });
+    expect(out.status).toBe("source_not_found");
+    expect(out).not.toHaveProperty("retryAfterSec");
+    expect(out.nextStep).toContain("If the user's wallet sped it up or replaced it, call sodax_swap_track");
+    expect(out.nextStep).toContain("Only if the wallet shows it was never sent: nothing was swapped");
+  });
+
+  it("keeps waiting for an unseen tx until 5 minutes past its quote's deadline", async () => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000 - 1);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, retryAfterSec: 15 });
+  });
+
+  it("reports a reverted tx as failed at the source", async () => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue({ ...DEPOSIT_RECEIPT, reverted: true });
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("source_failed");
+    expect(out.nextStep).toContain("nothing was swapped");
+  });
+
+  it("refuses a tx that isn't a deposit (an approve), or another quote's deposit", async () => {
+    const calls = stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValueOnce({ reverted: false, logs: [] });
+    const approve = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(approve.out).toMatchObject({ status: "not_submitted", reason: "not_a_deposit" });
+
+    const other = cacheQuote({ relayData: { address: USER, payload: "0x01" } });
+    const mismatch = await track({ txHash: TX, quoteId: other.quoteId });
+    expect(mismatch.out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch" });
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("alerts on another quote's deposit from the same sender, for an agent that has no other quoteId", async () => {
+    stubBackend();
+    const other = cacheQuote({ relayData: { address: USER, payload: "0x01" } });
+    const { out } = await track({ txHash: TX, quoteId: other.quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch" });
+    expect(out.nextStep).toContain("track it with the quoteId it was made from. Without that quoteId, tell the user");
+    expect(out.nextStep).toContain("SODAX has been alerted to recover it, and they must not send it again");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "other_quote_deposit", txHash: TX, quoteId: other.quoteId }),
+      expect.any(String),
+    );
+  });
+
+  it("alerts on this quote's deposit sent from another address, and won't submit it", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote({ srcAddress: CREATOR });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "other_sender" });
+    expect(out.nextStep).toContain("from another address than its fromAddress");
+    expect(out.nextStep).toContain("SODAX has been alerted");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "other_sender_deposit", txHash: TX, quoteId }),
+      expect.any(String),
+    );
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("calls someone else's deposit in the tx (a bundle's) not this quote's swap, without alerting", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote({ srcAddress: CREATOR, relayData: { address: CREATOR, payload: "0x01" } });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "not_a_deposit" });
+    expect(out.nextStep).toContain("isn't this quote's swap");
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("won't submit a tx that holds other deposits besides this swap's, and alerts", async () => {
+    const calls = stubBackend();
+    const logs = [...DEPOSIT_RECEIPT.logs, ...DEPOSIT_RECEIPT.logs];
+    vi.mocked(getEvmReceipt).mockResolvedValue({ ...DEPOSIT_RECEIPT, logs });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits" });
+    expect(out.nextStep).toContain("send each swap as its own transaction");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "multiple_deposits", txHash: TX, quoteId }),
+      expect.any(String),
+    );
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("won't submit a second deposit for a used quote, and alerts", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, OTHER_TX);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "quote_used" });
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "quote_used" }), expect.any(String));
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("treats a quote dropped from the cache while its deposit was read as gone, not as used", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    vi.mocked(getEvmReceipt).mockImplementation(async () => {
+      clearQuoteCache();
+      return DEPOSIT_RECEIPT;
+    });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: true });
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "unknown_quote" }), expect.any(String));
+    expect(logger.error).not.toHaveBeenCalledWith(expect.objectContaining({ alert: "quote_used" }), expect.any(String));
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("relays an expired deposit for refund once, then reports it without calling again", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    const first = await track({ txHash: TX, quoteId });
+    expect(first.out.status).toBe("expired_refunding");
+    expect(calls.find(call => call.path === "/intents/submit")?.body).toEqual({ chainId: "23", txHash: TX });
+
+    vi.mocked(getEvmReceipt).mockClear();
+    const second = await track({ txHash: TX, quoteId });
+    expect(second.out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(1);
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("alerts when an expired deposit can't be relayed, and tries again on the next call", async () => {
+    const calls = stubBackend({ relay: () => Response.json({ result: { success: false, message: "" } }) });
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
+    expect(out.nextStep).toContain("To retry the refund, call sodax_swap_track again in about 60 seconds");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
+      expect.any(String),
+    );
+    await track({ txHash: TX, quoteId });
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(2);
+  });
+
+  it("alerts on a checked deposit refused in its last minute, and hands it to the hub for refund", async () => {
+    const calls = stubBackend({
+      submit: () => Response.json({ message: "intent must be an object" }, { status: 400 }),
+    });
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 - 30_000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).toBe("expired_refunding");
+    expect(calls.find(call => call.path === "/intents/submit")?.body).toEqual({ chainId: "23", txHash: TX });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "submit_rejected", deadline: DEADLINE }),
+      expect.any(String),
+    );
+  });
+
+  it("alerts on a refusal long before the deadline, and relays for refund on the first call after it", async () => {
+    const calls = stubBackend({
+      row: null,
+      submit: () => Response.json({ message: "intent must be an object" }, { status: 400 }),
+    });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "submit_refused", alerted: true, retryAfterSec: 15 * 60 + 15 });
+    expect(out.nextStep).toContain("the deposit is on chain and safe");
+    expect(out.nextStep).toContain("must not send it again");
+    expect(out.nextStep).toContain("call sodax_swap_track again in about 915 seconds");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "submit_rejected" }),
+      expect.any(String),
+    );
+    expect(calls.some(call => call.path === "/intents/submit")).toBe(false);
+
+    vi.setSystemTime(NOW + 60_000);
+    const repeat = await track({ txHash: TX, quoteId });
+    expect(repeat.out).toMatchObject({ status: "submit_refused", retryAfterSec: 14 * 60 + 15 });
+    expect(submits(calls)).toHaveLength(1);
+
+    vi.setSystemTime(Number(DEADLINE) * 1000);
+    expect((await track({ txHash: TX, quoteId })).out.status).toBe("expired_refunding");
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  // The backend's clock may be ahead of ours by as much as a quote's deadline may be off it (300 s).
+  it.each([
+    [359, "expired_refunding"],
+    [361, "submit_refused"],
+  ])("relays a deposit refused %i s before its deadline for refund (%s)", async (secondsLeft, status) => {
+    const calls = stubBackend({
+      row: null,
+      submit: () => Response.json({ message: "deadline has passed" }, { status: 400 }),
+    });
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime((Number(DEADLINE) - secondsLeft) * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).toBe(status);
+    expect(calls.some(call => call.path === "/intents/submit")).toBe(status === "expired_refunding");
+  });
+
+  it("keeps the quote for a deposit whose submit may have reached the backend, and submits it again", async () => {
+    let attempt = 0;
+    const calls = stubBackend({
+      row: null,
+      submit: () =>
+        ++attempt === 1
+          ? new Response("", { status: 504 })
+          : Response.json({ success: true, data: { status: "duplicate" } }),
+    });
+    const { quoteId } = cacheQuote();
+    expect((await track({ txHash: TX, quoteId })).out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+
+    const second = await track({ txHash: OTHER_TX, quoteId });
+    expect(second.out).toMatchObject({ status: "not_submitted", reason: "quote_used" });
+    expect((await track({ txHash: TX, quoteId })).out.status).toBe("queued");
+    expect(submits(calls).map(call => call.body?.txHash)).toEqual([TX, TX]);
+  });
+
+  it("retries a relay the service is rate-limiting, without alerting", async () => {
+    const calls = stubBackend({ relay: () => new Response("", { status: 429, headers: { "Retry-After": "9" } }) });
+    const { quoteId } = cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 9 });
+    expect(logger.error).not.toHaveBeenCalledWith(
+      expect.objectContaining({ alert: expect.anything() }),
+      expect.anything(),
+    );
+    await track({ txHash: TX, quoteId });
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(2);
+  });
+
+  it("submits only one of two deposits tracked at the same time for one quote", async () => {
+    const calls = stubBackend({ row: null });
+    const { quoteId } = cacheQuote();
+    const results = await Promise.all([track({ txHash: TX, quoteId }), track({ txHash: OTHER_TX, quoteId })]);
+    expect(submits(calls)).toHaveLength(1);
+    expect(results.map(({ out }) => out.status).sort()).toEqual(["not_submitted", "queued"]);
+  });
+
+  it("waits for a pending tx whose quote is gone before deciding whether to alert", async () => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    const pending = await track({ txHash: TX, quoteId: randomUUID(), chain: "arb" });
+    expect(pending.out.status).toBe("awaiting_source_confirmation");
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("alerts on a deposit whose quote is gone, and tells the agent it's safe", async () => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: randomUUID(), chain: "arb" });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: true });
+    expect(out.nextStep).toContain("SODAX has been alerted");
+    expect(out.nextStep).toContain("must not send it again");
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "unknown_quote" }), expect.any(String));
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("asks for the quoteId of a deposit tracked without one, without alerting", async () => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash: TX, chain: "Arbitrum" });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
+    expect(out.nextStep).toBe(
+      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it.each([
+    ["without a quoteId", { chain: ARBITRUM }],
+    ["whose quote is gone", { quoteId: randomUUID(), chain: ARBITRUM }],
+  ])("doesn't alert on a tx that isn't a deposit, %s", async (_case, args) => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockResolvedValue({ reverted: false, logs: [] });
+    const { out } = await track({ txHash: TX, ...args });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: false, alerted: false });
+    expect(out.nextStep).toBe(
+      "That transaction isn't a SODAX swap deposit on Arbitrum; ask for the swap transaction's hash.",
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ status: "pending" }, { status: "queued" }],
+    ...["relaying", "relayed", "posting_execution", "posted_execution"].map(stage => [
+      { status: stage, result: { dstIntentTxHash: HUB_TX } },
+      { status: "in_progress", stage, hubTxHash: HUB_TX },
+    ]),
+    [{ status: "paused" }, { status: "unknown" }],
+    [
+      { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } },
+      { status: "solved", hubTxHash: HUB_TX, fillTxHash: "0xfill" },
+    ],
+  ])("reports a submitted swap's status %o without checking or submitting again", async (row, expected) => {
+    const calls = stubBackend({ row });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject(expected);
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("polls a status it doesn't know only while the quote can still be filled", async () => {
+    stubBackend({ row: { status: "paused" } });
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, TX);
+    const live = await track({ txHash: TX, quoteId });
+    expect(live.out).toMatchObject({ status: "in_progress", stage: "unknown", retryAfterSec: 15 });
+
+    vi.setSystemTime(Number(DEADLINE) * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).toBe("unknown");
+    expect(out).not.toHaveProperty("retryAfterSec");
+    expect(out.nextStep).toContain("stop tracking it");
+    expect(out.nextStep).toContain("must not send it again");
+  });
+
+  it("says what the user received once solved, from the quote this server submitted it for", async () => {
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, TX);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.minimumReceived).toEqual({ amount: "4.941968", symbol: "USDC", chainName: "Sonic" });
+    expect(out.delivery).toBe("complete");
+    expect(out.nextStep).toBe("The swap is complete on Sonic: the user received at least 4.941968 USDC.");
+  });
+
+  it("calls a solved swap without its quote filled on the hub, not delivered", async () => {
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } } });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out.delivery).toBeUndefined();
+    expect(out.nextStep).toBe(
+      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.",
+    );
+  });
+
+  it("calls a solved swap to another chain filled, its tokens one cross-chain hop away", async () => {
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+    const minimumReceived = { amount: "4.9", symbol: "USDC", chainName: "Base" };
+    const { quoteId } = cacheQuote({ dstChainKey: "0x2105.base", minimumReceived });
+    claimDeposit(quoteId, TX);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.delivery).toBe("in_transit");
+    expect(out.nextStep).toBe(
+      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop. Don't send it again.",
+    );
+  });
+
+  it("doesn't report another swap's backend record as the quote's", async () => {
+    const calls = stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+    const { quoteId } = cacheQuote({ relayData: { address: USER, payload: "0x01" } });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch" });
+    expect(out.minimumReceived).toBeUndefined();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("takes a backend record as the quote's once the tx is checked as its deposit, and holds the quote to it", async () => {
+    const calls = stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "solved", minimumReceived: { amount: "4.941968" } });
+    expect((await track({ txHash: OTHER_TX, quoteId })).out).toMatchObject({ reason: "quote_used" });
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("checks one tx tracked at the same time under two quotes against each", async () => {
+    const calls = stubBackend({ row: null });
+    const mine = cacheQuote();
+    const other = cacheQuote({ srcAddress: CREATOR });
+    const [first, second] = await Promise.all([
+      track({ txHash: TX, quoteId: mine.quoteId }),
+      track({ txHash: TX, quoteId: other.quoteId }),
+    ]);
+    expect(first.out.status).toBe("queued");
+    expect(second.out).toMatchObject({ status: "not_submitted", reason: "other_sender" });
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it.each([
+    [{ intentCancelled: true }, "cancelled", false],
+    [{ relayedForRefundAt: "2026-10-26T12:00:00Z" }, "refunding", false],
+    [{ abandonedAt: "2026-10-26T12:00:00Z" }, "abandoned", true],
+    [{}, "cancel_to_recover", true],
+  ])("words a failure from its flags %o", async (flags, outcome, canCancel) => {
+    stubBackend({
+      row: {
+        status: "failed",
+        failedAtStep: "posting_execution",
+        userMessage: "Upstream text\nwith a link",
+        failureReason: "internal detail",
+        result: { dstIntentTxHash: HUB_TX },
+        ...flags,
+      },
+    });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "failed", failedAtStep: "posting_execution", outcome, canCancel });
+    expect(JSON.stringify(out)).not.toMatch(/Upstream text|internal detail/);
+    expect(out.nextStep.includes("sodax_swap_cancel")).toBe(canCancel);
+  });
+
+  it("can't offer a cancel before the swap reached the hub, and says the deposit is safe", async () => {
+    stubBackend({ row: { status: "failed", failedAtStep: "made-up" } });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "failed", outcome: "unknown", canCancel: false });
+    expect(out.failedAtStep).toBeUndefined();
+    expect(out.nextStep).toBe(
+      "The swap failed. The deposit is safe on chain and SODAX operators will recover it; the user must not send it again.",
+    );
+  });
+
+  it("refuses another key's quote before reading anything", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    setFallbackRequestContext({ apiKey: "sodax_someone_else" });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.error.code).toBe("QUOTE_KEY_MISMATCH");
+    // The model can't set the connection's key: the user has to know it changed.
+    expect(out.nextStep).toBe(
+      "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
+    );
+    expect(calls).toEqual([]);
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{}, "QUOTE_NOT_FOUND"],
+    [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
+    [{ chain: "sonic" }, "UNSUPPORTED_SOURCE"],
+    [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
+    [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
+  ])("refuses %o", async (args, code) => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash: TX, ...args });
+    expect(out.error.code).toBe(code);
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("suggests a misspelled source chain, listing only chains a swap can start from", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, chain: "Arbitrm" });
+    expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
+    expect((out.error.supportedChains as { key: string }[]).map(chain => chain.key)).not.toContain("sonic");
+  });
+
+  it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: randomUUID() });
+    expect(out.nextStep).toBe("Call again with the same arguments plus chain set to the swap's source chain key.");
+  });
+
+  it("refuses a quoteId for another source chain", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId, chain: "avalanche" });
+    expect(out.error.code).toBe("QUOTE_MISMATCH");
+  });
+
+  it("asks for a retry, not a resend, when the chain or the backend is unavailable", async () => {
+    stubBackend();
+    vi.mocked(getEvmReceipt).mockRejectedValue(new Error("SDK call failed"));
+    const chain = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
+    expect(chain.out.nextStep).toBe(
+      "Call sodax_swap_track again in 30 seconds with the same arguments; don't send the swap again meanwhile.",
+    );
+
+    stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });
+    const limited = await track({ txHash: TX, chain: ARBITRUM });
+    expect(limited.out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 7 });
+    expect(limited.out.nextStep).toContain("again in 7 seconds");
+  });
+
+  it.each([
+    ["a refused submit", { submit: () => Response.json({ success: false }) }],
+    ["a status of another shape", { status: () => Response.json({ success: true, data: { state: "solved" } }) }],
+  ])("reports %s as the service being unavailable", async (_case, backend) => {
+    stubBackend(backend);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.nextStep).toContain("don't send the swap again");
+  });
+
+  it("needs a valid key to submit", async () => {
+    stubBackend({ submit: () => new Response("", { status: 401 }) });
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.error.code).toBe("API_KEY_REQUIRED");
+  });
+
+  it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
+    const client = await swapClient();
+    const { tools } = await client.listTools();
+    await client.close();
+    expect(tools.find(tool => tool.name === "sodax_swap_track")?.description).toContain(
+      "A successful result without retryAfterSec is final; after an error, follow its nextStep.",
+    );
+    for (const tool of tools) expect(tool.description).not.toContain("same API key");
+  });
+
+  it("refuses a hash that isn't a tx hash, saying what one looks like", async () => {
+    const calls = stubBackend();
+    const client = await swapClient();
+    const result = await client.callTool({
+      name: "sodax_swap_track",
+      arguments: { txHash: "0x1234", chain: ARBITRUM },
+    });
+    await client.close();
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
+    expect(calls).toEqual([]);
+  });
+});

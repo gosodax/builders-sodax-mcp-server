@@ -40,7 +40,7 @@ import {
   runWithRequestContext,
   setFallbackRequestContext,
 } from "./services/requestContext.js";
-import { initSodax } from "./services/sodax.js";
+import { initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
@@ -377,8 +377,8 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
-  // The SDK is only loaded for the swap tools.
-  if (swapToolsEnabled) await initSodax();
+  // The SDK is only loaded for the swap tools, with any RPC overrides track reads through.
+  if (swapToolsEnabled) await initSodax(parseRpcOverrides(process.env));
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
     await runStdio(swapToolsEnabled);

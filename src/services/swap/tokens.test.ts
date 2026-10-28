@@ -35,10 +35,12 @@ describe("getSwapCatalog", () => {
     expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
   });
 
-  it("sends the caller's key on the Swaps API call", async () => {
+  it("loads the shared catalog without the caller's key", async () => {
     await runWithRequestContext({ apiKey: "sodax_k1" }, () => getSwapCatalog());
-    const tokensCall = fetchSpy.mock.calls.find(([input]) => String(input).endsWith("/v1/swaps/tokens"));
-    expect((tokensCall?.[1] as RequestInit).headers).toMatchObject({ "x-api-key": "sodax_k1" });
+    expect(fetchSpy).toHaveBeenCalled();
+    for (const [, init] of fetchSpy.mock.calls) {
+      expect((init as RequestInit).headers).not.toHaveProperty("x-api-key");
+    }
   });
 
   it.each([
@@ -47,6 +49,18 @@ describe("getSwapCatalog", () => {
   ])("reports UPSTREAM_UNAVAILABLE when %s", async (_case, setUp) => {
     setUp();
     await expect(getSwapCatalog()).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+  });
+
+  it.each([
+    [429, { "Retry-After": "12" }, { code: "RATE_LIMITED", details: { retryAfterSec: 12 } }],
+    [401, {}, { code: "UPSTREAM_UNAVAILABLE" }],
+    [500, {}, { code: "UPSTREAM_UNAVAILABLE" }],
+  ])("maps a %i on the token list to what the agent can act on", async (status, headers, error) => {
+    const serve = catalogFetch();
+    fetchSpy.mockImplementation(async (input, init) =>
+      isConfigCall(input) ? serve(input, init) : new Response("", { status, headers }),
+    );
+    await expect(getSwapCatalog()).rejects.toMatchObject(error);
   });
 
   it.each([

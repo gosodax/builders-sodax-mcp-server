@@ -1,0 +1,56 @@
+{
+  "sonic": {
+    "chain": {
+      "id": "sonic",
+      "chainId": 146,
+      "name": "Sonic",
+      "type": "EVM"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000"
+  },
+  "hyper": {
+    "chain": {
+      "id": "hyper",
+      "chainId": 999,
+      "name": "Hyper",
+      "type": "EVM"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000"
+  },
+  "0x1.icon": {
+    "chain": {
+      "id": "0x1.icon",
+      "chainId": "0x1.icon",
+      "name": "ICON",
+      "type": "ICON"
+    },
+    "nativeToken": "cx0000000000000000000000000000000000000000"
+  },
+  "0xa4b1.arbitrum": {
+    "chain": {
+      "id": "0xa4b1.arbitrum",
+      "chainId": 42161,
+      "name": "Arbitrum",
+      "type": "EVM"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000"
+  },
+  "0xa86a.avax": {
+    "chain": {
+      "id": "0xa86a.avax",
+      "chainId": 43114,
+      "name": "Avalanche",
+      "type": "EVM"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000"
+  },
+  "sui": {
+    "chain": {
+      "id": "sui",
+      "chainId": "sui",
+      "name": "SUI",
+      "type": "SUI"
+    },
+    "nativeToken": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+  }
+}

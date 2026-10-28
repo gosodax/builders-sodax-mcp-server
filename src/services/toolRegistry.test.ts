@@ -38,7 +38,6 @@ describe("tool registry", () => {
   it("has at least one tool in every static module", () => {
     const counts = getToolCountsByModule();
     for (const [module, count] of Object.entries(counts)) {
-      if (module === "swap") continue; // empty until swap tools exist
       expect(count, `module "${module}" has no tools`).toBeGreaterThan(0);
     }
   });
@@ -112,10 +111,9 @@ describe("landing page template", () => {
     expect(html).toBe(String(total + 5));
   });
 
-  // No swap tools exist yet; once they do, this flips to the visible card.
-  it("hides the Swaps card while the registry has no swap tools", () => {
-    expect(getStaticToolCounts().swap).toBe(0);
+  it("shows the Swaps card once the registry has swap tools", () => {
+    expect(getStaticToolCounts().swap).toBeGreaterThan(0);
     const html = renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0 });
-    expect(html).toBe("<details hidden>");
+    expect(html).toBe("<details >");
   });
 });

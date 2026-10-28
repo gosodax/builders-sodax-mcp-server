@@ -46,8 +46,8 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ### API Key
 
 Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header. The builder
-tools work without one; the swap tools need it. The server forwards it on its calls to the SODAX data API and solver,
-and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY` instead. A value that isn't a SODAX key
+tools work without one; the swap tools need it. The server forwards it on its calls to the SODAX data API, solver and
+Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY` instead. A value that isn't a SODAX key
 (`sodax_…`) is ignored.
 
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
@@ -194,6 +194,7 @@ Once connected, try asking your AI coding assistant:
 | SODAX Backend API (api.sodax.com/v1/be) | Live cross-network data | 2 min |
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
+| SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list (swap tools) | 2 min (up to 30 min while the API is down) |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 

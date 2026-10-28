@@ -1,0 +1,102 @@
+/**
+ * Swap tools: the `swap` profile. Registered only while the rollout switch is
+ * on and the connection sent an API key (see services/profiles.ts).
+ */
+
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { type Resolution, resolveToken } from "../services/swap/resolver.js";
+import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
+import { registerActionTool } from "./actionTool.js";
+
+export function registerSwapTools(server: McpServer): void {
+  registerActionTool(
+    server,
+    "sodax_resolve_token",
+    "Resolve a token on a chain to the address, decimals and hub asset the swap tools need. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
+    {
+      chain: z
+        .string()
+        .trim()
+        .min(1)
+        .max(64)
+        .describe(
+          'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+        ),
+      query: z
+        .string()
+        .trim()
+        .min(1)
+        .max(128)
+        .describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async ({ chain, query }) => {
+      const resolution = resolveToken(await getSwapCatalog(), chain, query);
+      return { ...resolution, nextStep: resolveNextStep(resolution) };
+    },
+  );
+}
+
+// A swap deposits the token the user sends into its hub vault and withdraws the one they receive.
+const RESTRICTED = {
+  withdrawOnly: "is withdraw-only: use it only as the token the user receives",
+  depositOnly: "is deposit-only: use it only as the token the user sends",
+} as const;
+
+const USE_RESOLVED = "Use chain.key and token.address for this side of the swap; amounts stay in human units.";
+
+/**
+ * Built from catalog symbols, addresses and chain names only, never from the caller's
+ * query or a token's free-text name.
+ */
+export function resolveNextStep(resolution: Resolution): string {
+  const chain = resolution.chain.name;
+  switch (resolution.status) {
+    case "resolved": {
+      const { token } = resolution;
+      const named = `${token.symbol} on ${chain}`;
+      // The same address can be a different token on each chain.
+      const found = resolution.matchedBy === "address" ? `That address is ${named}. ` : "";
+      const restricted = token.access ? `${named} ${RESTRICTED[token.access]}. ` : "";
+      return `${found}${restricted}${USE_RESOLVED}`;
+    }
+    case "ambiguous": {
+      // Two candidates can share a symbol in any case (bridged and native USDC); the address tells them apart.
+      const { candidates } = resolution;
+      const labels = candidates.map(token => {
+        const twins = candidates.filter(other => other.symbol.toLowerCase() === token.symbol.toLowerCase());
+        return twins.length > 1 ? `${token.symbol} (${twinAddress(token, twins)})` : token.symbol;
+      });
+      const ask =
+        labels.length === 1
+          ? `whether they mean ${labels[0]} on ${chain}`
+          : `which of ${labels.join(", ")} on ${chain} they mean`;
+      return `Ask the user ${ask}, then call sodax_resolve_token again with its address.`;
+    }
+    case "not_found": {
+      const [first] = resolution.suggestions;
+      const nearest = first && `${first.symbol}${first.isNative ? " (the native token)" : ""}`;
+      if (resolution.otherChains) {
+        const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
+        // A symbol listed elsewhere may still be a near miss here: WETH on Arbitrum is most likely its ETH.
+        if (nearest) {
+          return `No swap token on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
+        }
+        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
+      }
+      if (!nearest) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
+      return `No swap token matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
+    }
+  }
+}
+
+/** Head and tail, as a prefix alone repeats (every Hedera address starts `0x00000000`); in full when those collide. */
+function twinAddress(token: SwapsApiToken, twins: SwapsApiToken[]): string {
+  const short = shortAddress(token.address);
+  return twins.some(other => other !== token && shortAddress(other.address) === short) ? token.address : short;
+}
+
+function shortAddress(address: string): string {
+  return address.length > 16 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
+}

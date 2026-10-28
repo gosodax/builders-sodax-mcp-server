@@ -53,7 +53,7 @@ jobs:
         run: pnpm check:docs
 
       # The swap tools against the live production Swaps API and chains, without a key: quotes for
-      # 0x…dEaD and balance reads, nothing signed or sent. Advisory on PRs; authoritative on push/cron.
+      # 0x…dEaD and balance reads, nothing signed or sent.
       - name: Swap contract tests
         if: ${{ !cancelled() }}
         # Advisory: a slow upstream can time a live test out.

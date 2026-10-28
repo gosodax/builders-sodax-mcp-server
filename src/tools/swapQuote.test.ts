@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
-import { type IntentJson, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
+import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { checkRecipient } from "../services/swap/destination.js";
@@ -13,12 +13,14 @@ import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callQuote as quote } from "./__fixtures__/swapClient.js";
 
-// Unit tests don't reach the hub RPC: the user's hub wallet is the stub's, and recipient checks are scripted.
+// Unit tests don't reach an RPC: the user's hub wallet is the stub's, the source chain answers, and
+// recipient checks are scripted.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
   return {
     ...actual,
     userHubWallet: vi.fn(async () => `0x${"c".repeat(40)}`),
+    blockNumber: vi.fn(async () => 1n),
     recipientReady: vi.fn(actual.recipientReady),
     rebuildSwapTx: vi.fn(actual.rebuildSwapTx),
   };
@@ -514,6 +516,26 @@ describe("sodax_swap_quote", () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+  });
+
+  it("reads the source chain for a ready quote only", async () => {
+    vi.mocked(blockNumber).mockClear();
+    stubSwaps();
+    await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(blockNumber).not.toHaveBeenCalled();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(blockNumber).toHaveBeenCalledWith("0xa4b1.arbitrum");
+  });
+
+  it("fails as CHAIN_UNAVAILABLE, with no steps, when the source chain can't be read", async () => {
+    vi.mocked(blockNumber).mockRejectedValueOnce(new Error("SDK call failed"));
+    const calls = stubSwaps();
+    const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(isError).toBe(true);
+    expect(out.error).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Couldn't read Arbitrum right now." });
+    expect(out.steps).toBeUndefined();
+    expect(calls.map(call => call.path)).not.toContain("/intents");
   });
 
   it("refuses a swap the SDK can't rebuild", async () => {

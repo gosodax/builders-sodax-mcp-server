@@ -6,7 +6,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
+import { type EvmReceipt, blockNumber, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
@@ -75,7 +75,7 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
   if (!input.chain) {
     if (!input.quoteId) throw new ActionError("QUOTE_NOT_FOUND", "Pass the quoteId or the source chain.");
     // With the chain the tx is still checked, and a stranded deposit reported.
-    throw new ActionError("QUOTE_NOT_FOUND", "That quote has expired or isn't known here.", {
+    throw new ActionError("QUOTE_NOT_FOUND", "That quote has expired, or was lost when this server restarted.", {
       nextStep: "Call again with the same arguments plus chain set to the swap's source chain key.",
     });
   }
@@ -99,6 +99,11 @@ export function readReceipt(chain: ChainInfo, txHash: string): Promise<EvmReceip
 /** Whether the chain's node knows the tx at all, mined or pending. */
 export function seenOnChain(chain: ChainInfo, txHash: string): Promise<boolean> {
   return chainRead(chain, "transaction", () => isTxKnown(chain.key, txHash));
+}
+
+/** The chain's latest block: a ready quote reads it to check the RPC its track will need. */
+export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
+  return chainRead(chain, "block", () => blockNumber(chain.key));
 }
 
 /** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. */

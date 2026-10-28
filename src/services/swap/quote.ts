@@ -26,7 +26,7 @@ import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { checkQuoteRoom, putQuote } from "./quoteCache.js";
 import { resolveToken } from "./resolver.js";
-import { configDisagrees, sourceChainFor } from "./source.js";
+import { configDisagrees, readBlockNumber, sourceChainFor } from "./source.js";
 import {
   type Approval,
   type BuiltIntent,
@@ -131,6 +131,8 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       partnerFee,
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
+    // A dead source RPC fails the quote before any steps, not the track after the user has sent them.
+    ready ? readBlockNumber(from.chain) : undefined,
   ]);
   const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
   if (minOutput === 0n) {

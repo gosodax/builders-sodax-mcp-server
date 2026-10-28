@@ -192,6 +192,14 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   }, RPC_CALL_TIMEOUT_MS);
 }
 
+/** An EVM spoke's latest block number: proof its RPC answers. Fails as a bare error. */
+export function blockNumber(chainKey: string): Promise<bigint> {
+  return bounded(() => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    return client.getBlockNumber();
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
 /** Whether an EVM spoke's node knows the tx at all, mined or pending. */
 export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   return bounded(async () => {

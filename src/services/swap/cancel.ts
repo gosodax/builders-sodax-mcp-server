@@ -9,6 +9,7 @@ import { logger } from "../logger.js";
 import { cancelPayload, intentChainId, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
+import { type CachedQuote, claimDeposit } from "./quoteCache.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,
@@ -20,9 +21,14 @@ import {
 } from "./source.js";
 import { HUB_RELAY_ID, decodeSendMessage, holdsCancel, holdsDeposit } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
+import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
 
 export type CancelState =
-  | { status: "not_cancellable"; reason: NotCancellable }
+  | { status: "not_cancellable"; reason: NotCancellable | "not_sent" }
+  /** The quote's deposit is on chain, never submitted: from its deadline on, a cancel call refunds it. */
+  | { status: "deposit_unsubmitted"; retryAfterSec: number }
+  /** That refund's relay failed; the next call tries again. */
+  | { status: "expired_unsubmitted"; alerted: true; retryAfterSec: number }
   | { status: "ready"; steps: [{ kind: "cancel"; chainId: number; tx: StepTx }] }
   | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
   | { status: "cancel_failed" }
@@ -51,6 +57,10 @@ export async function cancelSwap(input: {
   // A deposit this server relayed for refund has no backend row; its quote is the record.
   if (!row && quote?.handedOver === "relayed_for_refund" && quote.depositTxHash === txHash) {
     return { ...base, status: "not_cancellable", reason: "refunding" };
+  }
+  if (!row && quote && !quote.handedOver) {
+    const unsubmitted = await unsubmittedDeposit(base, source, quote);
+    if (unsubmitted) return unsubmitted;
   }
   const hubTxHash = row?.result?.dstIntentTxHash;
   const reason = whyNotCancellable(row);
@@ -104,6 +114,27 @@ export async function cancelSwap(input: {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
   }
   return { ...base, status: "cancel_relayed" };
+}
+
+/**
+ * A quote's tx with no backend row: nothing reached the hub to cancel. Its deposit stays on chain unswapped;
+ * only track would submit it, and from its deadline on it's relayed for refund as track does. `undefined`
+ * for a mined tx that isn't this quote's deposit, which track reports on.
+ */
+async function unsubmittedDeposit(
+  base: SwapRef,
+  source: SwapSource,
+  quote: CachedQuote,
+): Promise<CancelResult | undefined> {
+  const receipt = await readReceipt(source.chain, base.txHash);
+  if (!receipt || receipt.reverted) return { ...base, status: "not_cancellable", reason: "not_sent" };
+  if (checkQuoteDeposit(receipt, source, quote) !== "match") return undefined;
+  if (Date.now() < deadlineMs(quote)) {
+    return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
+  }
+  if (claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
+  const refund = await relayForRefund(base, quote);
+  return refund.status === "expired_refunding" ? { ...base, status: "not_cancellable", reason: "refunding" } : refund;
 }
 
 const quoteMismatch = (message: string) =>

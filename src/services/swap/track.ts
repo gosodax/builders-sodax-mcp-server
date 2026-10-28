@@ -82,6 +82,28 @@ export type TrackResult = SwapRef & TrackState;
 // One check per caller, quote and tx at a time: submit-tx allows 10 a minute for this server's whole IP.
 const inFlight = new Map<string, Promise<TrackResult>>();
 
+// Agents can't wait between calls, so a call waits briefly for the swap to move on. Mutable for tests.
+export const trackWait = { stepMs: 5_000, maxMs: 20_000 };
+const WAITABLE: readonly string[] = ["awaiting_source_confirmation", "queued", "in_progress"];
+
+/** `trackSwap`, repeated every few seconds while the swap waits, until its state changes or `maxMs` passes. */
+export async function trackSwapWaiting(input: {
+  txHash: string;
+  quoteId?: string;
+  chain?: string;
+}): Promise<TrackResult> {
+  const started = Date.now();
+  const stateOf = (result: TrackResult) => `${result.status}:${"stage" in result ? result.stage : ""}`;
+  let result = await trackSwap(input);
+  const first = stateOf(result);
+  while (WAITABLE.includes(result.status) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
+    await new Promise(resolve => setTimeout(resolve, trackWait.stepMs));
+    result = await trackSwap(input);
+    if (stateOf(result) !== first) break;
+  }
+  return result;
+}
+
 export async function trackSwap(input: { txHash: string; quoteId?: string; chain?: string }): Promise<TrackResult> {
   // The backend keys rows on the exact string, so one spelling per hash.
   const txHash = input.txHash.toLowerCase();
@@ -124,19 +146,12 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };
   if (!quote) return withoutQuote(base, source, receipt);
-  const deposit = checkDeposit(receipt, {
-    connection: source.connection,
-    assetManager: source.assetManager,
-    srcChain: quote.intent.srcChain,
-    srcAddress: quote.srcAddress,
-    relayData: quote.relayData,
-  });
-  if (deposit !== "match") return notThisDeposit(base, deposit, quote);
-  // The backend keys a swap on its tx and relays its first deposit, so it can't tell this one from another.
-  if (depositMessages(receipt, source.connection, source.assetManager).length > 1) {
+  const deposit = checkQuoteDeposit(receipt, source, quote);
+  if (deposit === "multiple_deposits") {
     alertOperator("multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "multiple_deposits" };
   }
+  if (deposit !== "match") return notThisDeposit(base, deposit, quote);
   const claim = claimDeposit(quote.quoteId, txHash);
   // Dropped from the cache during the reads above.
   if (claim === "gone") return withoutQuote(base, source, receipt);
@@ -173,11 +188,33 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "submit_refused", alerted: true, retryAfterSec: untilRefundSec(quote) };
   }
   markSubmitted(quote.quoteId);
+  logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Submitted a swap deposit");
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 
-const deadlineMs = (quote: CachedQuote) => Number(quote.intent.deadline) * 1000;
-const untilRefundSec = (quote: CachedQuote) => Math.ceil((deadlineMs(quote) - Date.now()) / 1000) + RETRY_AFTER_SEC;
+export const deadlineMs = (quote: CachedQuote) => Number(quote.intent.deadline) * 1000;
+export const untilRefundSec = (quote: CachedQuote) =>
+  Math.ceil((deadlineMs(quote) - Date.now()) / 1000) + RETRY_AFTER_SEC;
+
+/**
+ * Whether the receipt holds this quote's deposit, and no other: the backend keys a swap on its tx and
+ * relays its first deposit, so it can't tell one from another.
+ */
+export function checkQuoteDeposit(
+  receipt: EvmReceipt,
+  source: SwapSource,
+  quote: CachedQuote,
+): DepositCheck | "multiple_deposits" {
+  const deposit = checkDeposit(receipt, {
+    connection: source.connection,
+    assetManager: source.assetManager,
+    srcChain: quote.intent.srcChain,
+    srcAddress: quote.srcAddress,
+    relayData: quote.relayData,
+  });
+  if (deposit !== "match") return deposit;
+  return depositMessages(receipt, source.connection, source.assetManager).length > 1 ? "multiple_deposits" : "match";
+}
 
 /**
  * A mined tx that isn't this quote's deposit. A deposit the agent may have no other quoteId for alerts:
@@ -201,7 +238,11 @@ function withoutQuote(base: SwapRef, source: SwapSource, receipt: EvmReceipt): T
   return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
 }
 
-async function relayForRefund(base: SwapRef, quote: CachedQuote): Promise<TrackResult> {
+/** Relays a claimed deposit past its deadline, so the hub intent it creates is refunded. */
+export async function relayForRefund(
+  base: SwapRef,
+  quote: CachedQuote,
+): Promise<SwapRef & Extract<TrackState, { status: "expired_refunding" | "expired_unsubmitted" }>> {
   const { txHash, chain } = base;
   let relayed: boolean;
   try {

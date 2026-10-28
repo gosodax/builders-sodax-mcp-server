@@ -8,6 +8,7 @@ import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { trackWait } from "../services/swap/track.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -35,6 +36,8 @@ const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", ar
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
 
 beforeEach(() => {
+  // A call returns at once here; the waiting has its own tests.
+  Object.assign(trackWait, { stepMs: 1, maxMs: 0 });
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   clearSwapCatalogCache();
   clearCache();
@@ -43,9 +46,11 @@ beforeEach(() => {
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
+  vi.spyOn(logger, "info").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
+  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000 });
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.mocked(getEvmReceipt).mockReset();
@@ -59,7 +64,8 @@ describe("sodax_swap_track", () => {
     const { quoteId } = cacheQuote();
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
-    expect(out.nextStep).toContain("call sodax_swap_track again in about 15 seconds");
+    expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
     const [submit] = submits(calls);
     expect(submit.body).toEqual({
       txHash: TX,
@@ -92,6 +98,31 @@ describe("sodax_swap_track", () => {
       expect(submits(calls)).toHaveLength(1);
     },
   );
+
+  it("waits within one call until the swap moves on", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+    const rows = [{ status: "pending" }, { status: "pending" }, { status: "relaying" }, { status: "solved" }];
+    const calls = stubBackend({
+      status: () => Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, ...rows.shift() } }),
+    });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "in_progress", stage: "relaying" });
+    expect(out.nextStep).toContain("it waits up to 20 seconds");
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(3);
+  });
+
+  it("stops waiting once its time is up, with the swap still waiting", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 5_000 });
+    const calls = stubBackend({
+      status: () => {
+        vi.setSystemTime(Date.now() + 2_000);
+        return Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, status: "pending" } });
+      },
+    });
+    const { out } = await track({ txHash: TX, chain: ARBITRUM });
+    expect(out.status).toBe("queued");
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(3);
+  });
 
   it("submits once over five calls, and once for two at the same time", async () => {
     const calls = stubBackend();

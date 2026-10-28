@@ -34,40 +34,89 @@ function forwardedApiKey(url: string): string | undefined {
 }
 
 /**
- * Extract a human-readable message from an error response body so callers
- * see *why* a request failed, not just the status code. Handles the SODAX /
- * FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
- * `{ detail: [{ msg }] }`) plus `{ message }` / `{ error }`.
+ * A non-2xx response. The message is the one callers already show; the parts ride along for
+ * callers that map them. The raw body is not kept, so logging the error stays small.
  */
-function extractApiErrorMessage(rawBody: string): string | null {
-  const text = rawBody.trim();
-  if (!text) return null;
+export class HttpError extends Error {
+  readonly apiMessage?: string;
+  readonly apiCode?: unknown;
+  readonly retryAfterSec?: number;
 
+  constructor(
+    message: string,
+    readonly status: number,
+    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number } = {},
+  ) {
+    super(message);
+    this.name = "HttpError";
+    this.apiMessage = parts.apiMessage;
+    this.apiCode = parts.apiCode;
+    this.retryAfterSec = parts.retryAfterSec;
+  }
+}
+
+const MAX_RETRY_AFTER_SEC = 3600;
+// IMF-fixdate, the HTTP-date form servers send: "Sun, 06 Nov 1994 08:49:37 GMT".
+const HTTP_DATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/** `Retry-After` as seconds from now (delta-seconds or an HTTP date), 1 s to an hour; anything else is ignored. */
+function retryAfterSeconds(value: string | null): number | undefined {
+  const text = value?.trim() ?? "";
+  let seconds: number;
+  if (/^\d+$/.test(text)) seconds = Number(text);
+  else if (HTTP_DATE.test(text)) seconds = Math.ceil((Date.parse(text) - Date.now()) / 1000);
+  else return undefined;
+  // An unparseable date ("Feb 30") is ignored; anything shorter than a second still means wait.
+  if (Number.isNaN(seconds)) return undefined;
+  return Math.min(Math.max(seconds, 1), MAX_RETRY_AFTER_SEC);
+}
+
+/**
+ * Extract a human-readable message (and the API's error `code`, if any) from an error
+ * response body so callers see *why* a request failed, not just the status code. Handles
+ * the SODAX / FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
+ * `{ detail: [{ msg }] }`) plus `{ message }` (a string or NestJS's string list) / `{ error }`.
+ */
+function parseApiError(rawBody: string): { message?: string; code?: unknown } {
+  const text = rawBody.trim();
+  if (!text) return {};
+
+  let code: unknown;
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
-      const detail = obj.detail;
-
-      if (typeof detail === "string") return detail;
-      if (Array.isArray(detail)) {
-        const msgs = detail
-          .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
-          .filter((m): m is string => typeof m === "string");
-        if (msgs.length > 0) return msgs.join("; ");
-      } else if (detail && typeof detail === "object") {
-        const msg = (detail as Record<string, unknown>).message;
-        if (typeof msg === "string") return msg;
-      }
-
-      if (typeof obj.message === "string") return obj.message;
-      if (typeof obj.error === "string") return obj.error;
+      code = obj.code;
+      const message = extractApiErrorMessage(obj);
+      if (message) return { message: snippet(message), code };
     }
   } catch {
     // Body wasn't JSON; fall through to the raw-text snippet below.
   }
 
-  return text.length > 300 ? `${text.slice(0, 300)}...` : text;
+  return { message: snippet(text), code };
+}
+
+const snippet = (text: string) => (text.length > 300 ? `${text.slice(0, 300)}...` : text);
+
+function extractApiErrorMessage(obj: Record<string, unknown>): string | undefined {
+  const detail = obj.detail;
+
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
+      .filter((m): m is string => typeof m === "string");
+    if (msgs.length > 0) return msgs.join("; ");
+  } else if (detail && typeof detail === "object") {
+    const msg = (detail as Record<string, unknown>).message;
+    if (typeof msg === "string") return msg;
+  }
+
+  if (typeof obj.message === "string") return obj.message;
+  if (Array.isArray(obj.message) && obj.message.every(m => typeof m === "string")) return obj.message.join("; ");
+  if (typeof obj.error === "string") return obj.error;
+  return undefined;
 }
 
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
@@ -88,10 +137,14 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   }
 
   if (!response.ok) {
-    const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
+    const { message: apiMessage, code: apiCode } = parseApiError(await response.text().catch(() => ""));
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
-    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
+    throw new HttpError(apiMessage ? `${base} - ${apiMessage}` : base, response.status, {
+      apiMessage,
+      apiCode,
+      retryAfterSec: retryAfterSeconds(response.headers.get("Retry-After")),
+    });
   }
 
   // 204 No Content / empty body: response.json() would throw a cryptic

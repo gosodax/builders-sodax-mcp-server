@@ -78,6 +78,13 @@ A connection picks which tools it gets with `?profile=<name>` on the URL or the 
 An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403. The swap tools are not enabled on
 the public server yet.
 
+### Partner fee
+
+A builder can take a fee on the swaps its agent quotes: `?partnerAddress=<EVM address>&partnerFeeBps=<1-100>` on the
+URL, or the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers (stdio: `SODAX_PARTNER_FEE_ADDRESS` and
+`SODAX_PARTNER_FEE_BPS`). Set both or neither; anything else is refused with HTTP 400. The fee is taken from the
+amount sent, is part of the quote, and is never a tool input.
+
 ## Tools
 
 ### Network Configuration (9 tools)
@@ -194,7 +201,8 @@ Once connected, try asking your AI coding assistant:
 | SODAX Backend API (api.sodax.com/v1/be) | Live cross-network data | 2 min |
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
-| SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list (swap tools) | 2 min (up to 30 min while the API is down) |
+| SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list, quotes and transactions (swap tools) | 2 min for the token list (up to 30 min while the API is down) |
+| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 
@@ -227,6 +235,7 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
 | `pnpm test` | Runs the Vitest suite (currently covers the drift-check logic in `src/services/apiDriftCheck.ts`). |
+| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. |
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -246,7 +255,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 ### Environment Variables
 
 The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
-flag — requires Node ≥ 22.9.0). Copy `.env.example` to `.env` for local development;
+flag; the SODAX SDK needs Node ≥ 22.12.0). Copy `.env.example` to `.env` for local development;
 if no `.env` exists, every variable falls back to the default below. In production,
 Coolify injects these directly into the process environment.
 
@@ -258,6 +267,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
+| `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |

@@ -204,16 +204,14 @@ describe("sodax_swap_quote", () => {
         { kind: "approve", chainId: 42161, tx: { to: ARB_USDC } },
         { kind: "swap", chainId: 42161, tx: { to: ASSET_MANAGER } },
       ],
-      batch: {
-        replaces: ["approve", "swap"],
-        method: "wallet_sendCalls",
-        params: [{ version: "2.0.0", chainId: "0xa4b1", from: USER, atomicRequired: true }],
-      },
     });
-    expect(out.batch?.params[0].calls).toEqual([
-      { to: ARB_USDC, value: "0x0", data: approveData(ASSET_MANAGER, 5000000n) },
-      { to: ASSET_MANAGER, value: "0x0", data: out.steps?.[1].tx.data },
-    ]);
+    // The calls are the replaced steps' own fields: the agent builds them, so the calldata isn't sent twice.
+    expect(out.batch).toEqual({
+      replaces: ["approve", "swap"],
+      method: "wallet_sendCalls",
+      params: [{ version: "2.0.0", chainId: "0xa4b1", from: USER, atomicRequired: true }],
+    });
+    expect(out.steps?.[0].tx).toMatchObject({ to: ARB_USDC, value: "0x0", data: approveData(ASSET_MANAGER, 5000000n) });
     // In each tx too: Arbitrum, Base, Optimism and Polygon share the asset manager these steps call.
     expect(out.steps?.map(step => step.tx.chainId)).toEqual(["0xa4b1", "0xa4b1"]);
     const intents = calls.find(call => call.path === "/intents");

@@ -76,19 +76,14 @@ export interface SwapStep {
 /** `value` and `chainId` are hex quantities. */
 export type StepTx = EvmTx & { chainId: string };
 
-/** EIP-5792 `wallet_sendCalls`, for wallets that batch: it replaces the steps it lists. */
+/**
+ * EIP-5792 `wallet_sendCalls`, for wallets that batch: it replaces the steps it lists. Its `calls` are
+ * those steps' `{to, value, data}` in order, left to the agent so the calldata isn't returned twice.
+ */
 export interface SwapBatch {
   replaces: SwapStep["kind"][];
   method: "wallet_sendCalls";
-  params: [
-    {
-      version: "2.0.0";
-      chainId: string;
-      from: string;
-      atomicRequired: true;
-      calls: { to: string; value: string; data: string }[];
-    },
-  ];
+  params: [{ version: "2.0.0"; chainId: string; from: string; atomicRequired: true }];
 }
 
 export type SwapQuote =
@@ -388,7 +383,6 @@ function toSteps(
           chainId: `0x${chainId.toString(16)}`,
           from,
           atomicRequired: true,
-          calls: [approve, swap].map(({ tx }) => ({ to: tx.to, value: tx.value, data: tx.data })),
         },
       ],
     },

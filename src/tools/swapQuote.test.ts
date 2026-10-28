@@ -418,6 +418,53 @@ describe("sodax_swap_quote", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each([
+    ["fromChain", "Arbitrm", "0xa4b1.arbitrum", false],
+    ["toChain", "sonci", "sonic", true],
+  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsSonic) => {
+    const calls = stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, [side]: typo, amount: "5" });
+    expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key }] });
+    const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
+    expect(listed).toContain("0xa4b1.arbitrum");
+    expect(listed.includes("sonic")).toBe(listsSonic);
+    expect(calls).toEqual([]);
+  });
+
+  it("names the field of a bad amount or address, and says an amount takes no commas or units", async () => {
+    stubSwaps();
+    const amount = await quote({ ...USDC_TO_SONIC, amount: "1,000" });
+    expect(amount.out.error).toMatchObject({
+      code: "INVALID_AMOUNT",
+      field: "amount",
+      message: "Give the amount as a plain decimal, with no commas or units and at most 6 digits after the point.",
+    });
+    const address = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, toAddress: "0x1234" });
+    expect(address.out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress" });
+  });
+
+  it.each([
+    [5, "5"],
+    [0.5, "0.5"],
+    [123456.789012, "123456.789012"],
+  ])("takes the number %d as the amount %s", async (amount, sent) => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount });
+    expect(out).toMatchObject({ status: "price_only", from: { amount: sent } });
+  });
+
+  // With an exponent or past 15 significant digits, a number may not be the decimal the agent wrote.
+  it.each([1e21, 1e-7, 0.1234567890123456, 2 ** 60])(
+    "asks for the number %d as a string, as it may not be exact",
+    async amount => {
+      const calls = stubSwaps();
+      const { out } = await quote({ ...USDC_TO_SONIC, amount });
+      expect(out.error).toMatchObject({ code: "INVALID_AMOUNT", field: "amount" });
+      expect(out.nextStep).toBe("Call sodax_swap_quote again with amount as a string holding the user's exact amount.");
+      expect(calls).toEqual([]);
+    },
+  );
+
   it.each([{ slippageBps: 0 }, { slippageBps: 501 }, { deadlineMinutes: 4 }, { deadlineMinutes: 61 }])(
     "rejects %o instead of clamping it",
     async bounds => {

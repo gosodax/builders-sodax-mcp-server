@@ -15,6 +15,7 @@ import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwapWaiting } from "../services/swap/track.js";
+import { amountText } from "../services/swap/units.js";
 import { registerActionTool } from "./actionTool.js";
 
 /**
@@ -100,9 +101,9 @@ export function registerSwapTools(server: McpServer): void {
       fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
       toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
       toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
-      amount: textArg(96, 1).describe(
-        'Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".',
-      ),
+      amount: z
+        .union([textArg(96, 1), z.number()])
+        .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
       fromAddress: addressArg().describe(
         "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
       ),
@@ -126,7 +127,7 @@ export function registerSwapTools(server: McpServer): void {
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async args => {
-      const quote = await quoteSwap(args, getRequestContext().partnerFee);
+      const quote = await quoteSwap({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
       // Nothing submits the deposit unless track is called; a field is harder to miss than a sentence.
       const afterSend =
         quote.status === "ready"

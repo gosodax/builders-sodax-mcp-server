@@ -258,7 +258,7 @@ function resolveSide(
   token: string,
   side: "from" | "to",
 ): { chain: ChainInfo; token: SwapsApiToken; config: SwapChain } {
-  const resolution = resolveExactly(catalog, chain, token, `${side}Token`, { side });
+  const resolution = resolveExactly(catalog, chain, token, `${side}Token`, side);
   if (!canUseAs(resolution.token, side)) {
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`);

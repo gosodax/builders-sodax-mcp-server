@@ -155,6 +155,20 @@ describe("resolveToken", () => {
     );
   });
 
+  it("lists only the chains a swap can start from for a swap's source", () => {
+    const chainsOf = (sourcesOnly: boolean) => {
+      try {
+        resolveToken(catalog, "Fantom", "USDC", "fromToken", sourcesOnly);
+      } catch (error) {
+        return (error as { details: { supportedChains: { key: string }[] } }).details.supportedChains.map(c => c.key);
+      }
+    };
+    expect(chainsOf(true)).toEqual(expect.arrayContaining(["0xa4b1.arbitrum", "0xa86a.avax", "hyper"]));
+    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sonic"]));
+    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sui"]));
+    expect(chainsOf(false)).toEqual(expect.arrayContaining(["sonic", "sui", "0xa4b1.arbitrum"]));
+  });
+
   it.each(["0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"])(
     "resolves the native placeholder %s to an EVM chain's native token",
     placeholder => {

@@ -38,7 +38,7 @@ export function checkAddress(address: string, chain: ChainInfo, field = "address
   const encoded = encodeRecipient(chain.key, address);
   if (!encoded) rejectHex64(address, field, chain.name, "address");
   if (!encoded || /^0x0*$/.test(encoded)) {
-    throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
+    throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`, { details: { field } });
   }
   return address;
 }
@@ -81,23 +81,34 @@ function nearestChains(chains: ChainInfo[], query: string): ChainInfo[] {
   return best <= 2 ? scored.filter(({ distance }) => distance === best).map(({ chain }) => chain) : [];
 }
 
-/** The one token a query names, or `UNKNOWN_TOKEN` (ambiguous or not found: `sodax_resolve_token` explains which). */
+/**
+ * The one token a query names, or `UNKNOWN_TOKEN` (ambiguous or not found: `sodax_resolve_token` explains which).
+ * A swap's `from` side takes only chains a swap can start from.
+ */
 export function resolveExactly(
   catalog: SwapCatalog,
   chainQuery: string,
   query: string,
   field: string,
-  details?: Record<string, unknown>,
+  side?: "from" | "to",
 ): Extract<Resolution, { status: "resolved" }> {
-  const resolution = resolveToken(catalog, chainQuery, query, field);
+  const resolution = resolveToken(catalog, chainQuery, query, field, side === "from");
   if (resolution.status !== "resolved") {
-    throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", { details });
+    throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", {
+      details: side && { side },
+    });
   }
   return resolution;
 }
 
-export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string, field = "query"): Resolution {
-  const chain = resolveSwapChain(catalog, chainQuery);
+export function resolveToken(
+  catalog: SwapCatalog,
+  chainQuery: string,
+  query: string,
+  field = "query",
+  sourcesOnly = false,
+): Resolution {
+  const chain = resolveSwapChain(catalog, chainQuery, sourcesOnly);
   const tokens = catalog.tokens[chain.key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {

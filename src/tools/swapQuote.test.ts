@@ -266,7 +266,9 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.steps?.map(step => step.kind)).toEqual(["reset_approve", "approve", "swap"]);
     expect(out.batch?.replaces).toEqual(["approve", "swap"]);
-    expect(out.nextStep).toContain("(or the batch for the steps it replaces)");
+    expect(out.nextStep).toContain(
+      "(or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order)",
+    );
   });
 
   it.each<[string, SwapsStub, string]>([

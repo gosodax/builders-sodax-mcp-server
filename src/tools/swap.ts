@@ -304,12 +304,14 @@ function quoteNextStep(quote: SwapQuote): string {
     from.chain.key !== to.chain.key && quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
       ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
       : "";
-  const batch = quote.batch ? " (or the batch for the steps it replaces)" : "";
+  const batch = quote.batch
+    ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order)"
+    : "";
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
-    `Once they confirm, have their wallet send the steps in order, each confirmed before the next${batch}, then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.`,
+    `Once they confirm, have their wallet send the steps in order, each mined before the next (a swap sent before its approve is mined fails)${batch}, then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.`,
   ].join(" ");
 }
 

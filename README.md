@@ -21,6 +21,7 @@ Add the MCP server URL to your AI coding assistant's configuration:
 {
   "mcpServers": {
     "sodax-builders": {
+      "type": "http",
       "url": "https://builders.sodax.com/mcp"
     }
   }
@@ -37,6 +38,7 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 {
   "mcpServers": {
     "sodax-builders": {
+      "type": "sse",
       "url": "https://builders.sodax.com/sse"
     }
   }
@@ -58,12 +60,15 @@ already send their headers on both.
 {
   "mcpServers": {
     "sodax-builders": {
+      "type": "http",
       "url": "https://builders.sodax.com/mcp",
       "headers": { "x-api-key": "<your key>" }
     }
   }
 }
 ```
+
+In Claude Code: `claude mcp add --transport http sodax-builders https://builders.sodax.com/mcp --header "x-api-key: <your key>"`.
 
 ### Profiles
 
@@ -96,7 +101,8 @@ every transaction; the server never signs.
    `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
-   steps its `replaces` lists; a `reset_approve` still goes first.
+   steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
+   `reset_approve` still goes first.
 3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` refunds the deposit instead. While
@@ -117,6 +123,7 @@ The swap tools never sign or move funds. They also:
 - trust only their own quote cache and chain data when tracking or cancelling;
 - reject slippage and deadlines outside their bounds instead of clamping them;
 - warn, never block, when a quote is worth more than `SODAX_SWAP_USD_WARN` USD;
+- refuse a quote whose output is worth under 90% of the amount sent (net of any partner fee) at the oracle's prices;
 - pick canary or production once, at startup (`SODAX_ENV`), never per request;
 - take no RPC URL and no partner fee as a tool input;
 - keep keys and RPC URLs out of logs, and addresses out of analytics and alerts.

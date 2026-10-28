@@ -21,6 +21,14 @@ import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analy
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
+import {
+  type SseLease,
+  SseSessionLimiter,
+  asyncHandler,
+  createMcpLimiter,
+  jsonErrorHandler,
+  mcpGetNotAllowed,
+} from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
@@ -203,14 +211,8 @@ async function runHTTP(): Promise<void> {
   });
   app.use(limiter);
 
-  // Stricter rate limit for MCP endpoint
-  const mcpLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 60, // 60 MCP requests per minute
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many MCP requests, please try again later." },
-  });
+  // Stricter rate limit for MCP endpoints (60 per minute; a batch counts per message)
+  const mcpLimiter = createMcpLimiter();
 
   app.use(express.json({ limit: "100kb" }));
 
@@ -296,45 +298,74 @@ async function runHTTP(): Promise<void> {
     });
   });
 
-  app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    const clientId = hashClientIp(req.ip || "unknown");
-    const requestServer = await createServer(clientId);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    res.on("close", () => transport.close());
-    await requestServer.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  });
+  app.get("/mcp", mcpGetNotAllowed);
+
+  app.all(
+    "/mcp",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const clientId = hashClientIp(req.ip || "unknown");
+      const requestServer = await createServer(clientId);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      res.on("close", () => transport.close());
+      await requestServer.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    }),
+  );
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
-  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
+  const sseLimiter = new SseSessionLimiter();
+  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; lease: SseLease }>();
 
-  app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
-    const clientId = hashClientIp(req.ip || "unknown");
-    const sseServer = await createServer(clientId);
-    const transport = new SSEServerTransport("/messages", res);
-    sseSessions.set(transport.sessionId, { transport, server: sseServer });
+  app.get(
+    "/sse",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const ip = req.ip || "unknown";
+      // An idle session ends its stream; the close handlers below clean up.
+      const lease = sseLimiter.open(ip, () => res.end());
+      if (!lease) {
+        res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
+        return;
+      }
+      let closed = false;
+      res.on("close", () => {
+        closed = true;
+        lease.release();
+      });
 
-    res.on("close", () => {
-      sseSessions.delete(transport.sessionId);
-      transport.close();
-    });
+      const sseServer = await createServer(hashClientIp(ip));
+      if (closed) return;
+      const transport = new SSEServerTransport("/messages", res);
+      sseSessions.set(transport.sessionId, { transport, server: sseServer, lease });
 
-    // connect() starts the transport; a second start() throws.
-    await sseServer.connect(transport);
-  });
+      res.on("close", () => {
+        sseSessions.delete(transport.sessionId);
+        transport.close();
+      });
 
-  app.post("/messages", mcpLimiter, async (req: Request, res: Response) => {
-    const sessionId = req.query.sessionId as string;
-    const session = sseSessions.get(sessionId);
-    if (!session) {
-      res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
-      return;
-    }
-    await session.transport.handlePostMessage(req, res, req.body);
-  });
+      // connect() starts the transport; a second start() throws.
+      await sseServer.connect(transport);
+    }),
+  );
+
+  app.post(
+    "/messages",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const sessionId = req.query.sessionId as string;
+      const session = sseSessions.get(sessionId);
+      if (!session) {
+        res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
+        return;
+      }
+      session.lease.touch();
+      await session.transport.handlePostMessage(req, res, req.body);
+    }),
+  );
 
   app.get("/api", async (_req: Request, res: Response) => {
     // Non-blocking: docs tool list from the warmed cache (see /health) so a cold
@@ -374,6 +405,9 @@ async function runHTTP(): Promise<void> {
       },
     });
   });
+
+  // Last: malformed or oversized bodies and unexpected errors get a JSON body.
+  app.use(jsonErrorHandler);
 
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {

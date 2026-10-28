@@ -1,10 +1,11 @@
 /**
- * What a swap is worth in USD, from the solver's oracle (cached, keyless). Only ever a warning to
- * the agent, never a reason to refuse: the user's signature is the real check. Anything doubtful
- * (no price, an old price, a slow or failing oracle) is `null`.
+ * What a swap is worth in USD, from the solver's oracle (cached, keyless; production's on canary too,
+ * as its swaps run on mainnet chains). The quote warns on the input's value and refuses an output
+ * worth far less than the input. Anything doubtful (no price, an old price, a slow or failing oracle)
+ * is `null`, which never refuses.
  */
 
-import { sameHex } from "../../constants.js";
+import { SODAX_SWAP_ORACLE_BASE_URL, sameHex } from "../../constants.js";
 import type { OraclePrice } from "../../types.js";
 import { bounded } from "../sodax.js";
 import { getSolverOracle } from "../solver.js";
@@ -21,7 +22,7 @@ let skipUntil = 0;
 async function oraclePrices(): Promise<OraclePrice[] | null> {
   if (Date.now() < skipUntil) return null;
   try {
-    return await bounded(getSolverOracle, ORACLE_WAIT_MS);
+    return await bounded(() => getSolverOracle(SODAX_SWAP_ORACLE_BASE_URL), ORACLE_WAIT_MS);
   } catch {
     skipUntil = Date.now() + SKIP_AFTER_FAILURE_MS;
     return null;

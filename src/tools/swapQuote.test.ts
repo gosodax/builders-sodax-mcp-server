@@ -502,10 +502,65 @@ describe("sodax_swap_quote", () => {
   it("quotes without a USD value when the oracle has none, and says so", async () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(out).toMatchObject({ status: "price_only", usdValue: null });
+    expect(out).toMatchObject({ status: "price_only", usdValue: null, usdOut: null });
     expect(out.nextStep).toContain(
       "Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.",
     );
+  });
+
+  describe("against market prices", () => {
+    const ARB_USDC_HUB = "0xdb7bda65c3a1c51d64dc4444e418684677334109";
+    const price = (address: string) => ({
+      address,
+      chainId: "146",
+      symbol: "USDC",
+      priceUsd: 1,
+      decimals: 6,
+      updatedAt: NOW,
+    });
+    const quoted = (amount: string) => ({ quote: () => Response.json({ quotedAmount: amount }) });
+
+    beforeEach(() => {
+      clearAlerts();
+      vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB), price(SONIC_USDC)]);
+    });
+
+    it("prices what the user receives too, and builds a swap quoted near the market", async () => {
+      stubSwaps();
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(out).toMatchObject({ status: "ready", usdValue: "5.00", usdOut: "4.99" });
+    });
+
+    it("refuses and alerts on an output worth under 90% of the input, before building anything", async () => {
+      const calls = stubSwaps(quoted("4400000"));
+      const error = vi.spyOn(logger, "error");
+      const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(isError).toBe(true);
+      expect(out.error).toMatchObject({ code: "PRICE_OFF_MARKET", usdValue: "5.00", usdOut: "4.40" });
+      expect(out.nextStep).toContain("quoted far below market prices");
+      expect(calls.map(call => call.path)).not.toContain("/intents");
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ alert: "swap_error", code: "PRICE_OFF_MARKET", chainKey: "0xa4b1.arbitrum" }),
+        expect.any(String),
+      );
+    });
+
+    it.each([
+      ["4460000", "price_only"],
+      ["4450000", "error"],
+    ])("takes the partner fee off the input first: %s out of 5 less 1%", async (amount, status) => {
+      setFallbackRequestContext({ partnerFee: { address: USER, bps: 100 } });
+      stubSwaps(quoted(amount));
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+      expect(out.status).toBe(status);
+    });
+
+    it("only warns when the output has no price", async () => {
+      vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB)]);
+      stubSwaps(quoted("1000000"));
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+      expect(out).toMatchObject({ status: "price_only", usdValue: "5.00", usdOut: null });
+    });
   });
 
   it("asks for toAddress when the destination isn't EVM", async () => {

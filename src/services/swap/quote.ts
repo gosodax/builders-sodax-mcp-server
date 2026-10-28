@@ -68,6 +68,8 @@ interface QuoteSummary {
   partnerFee?: { bps: number; amount: string; symbol: string };
   /** The amount sent in USD (2 decimals), or null when no recent price is known. */
   usdValue: string | null;
+  /** The expected amount received in USD, likewise. */
+  usdOut: string | null;
 }
 
 export interface SwapStep {
@@ -104,6 +106,9 @@ export type SwapQuote =
       steps: SwapStep[];
       batch?: SwapBatch;
     });
+
+// The least share of the input's market value (net of the partner fee) a quote's output may be worth.
+const MIN_MARKET_SHARE = 0.9;
 
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
@@ -147,6 +152,16 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     throw new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
   }
   const fee = partnerFee ? (amount * BigInt(partnerFee.bps)) / 10_000n : 0n;
+  // The solver's amount passes through the Swaps API unchecked. The oracle was just read, so no added wait.
+  const usdOut = await usdValue(to.token.hubAsset, formatUnits(quoted, to.token.decimals));
+  const usdNet = usd === null ? null : usd * (1 - (partnerFee?.bps ?? 0) / 10_000);
+  if (usdNet !== null && usdOut !== null && usdOut < usdNet * MIN_MARKET_SHARE) {
+    const tokens = { inputToken: from.token.address, outputToken: to.token.address };
+    logger.warn({ srcChainKey: from.chain.key, dstChainKey: to.chain.key, ...tokens }, "A swap quote is off market");
+    throw new ActionError("PRICE_OFF_MARKET", "The quoted amount is worth far less than the amount sent.", {
+      details: { chainKey: from.chain.key, usdValue: usd?.toFixed(2), usdOut: usdOut.toFixed(2) },
+    });
+  }
 
   const summary: QuoteSummary = {
     from: { ...describe(from), amount: formatUnits(amount, from.token.decimals) },
@@ -157,6 +172,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     },
     slippageBps: input.slippageBps,
     usdValue: usd?.toFixed(2) ?? null,
+    usdOut: usdOut?.toFixed(2) ?? null,
     ...(partnerFee && {
       partnerFee: { bps: partnerFee.bps, amount: formatUnits(fee, from.token.decimals), symbol: from.token.symbol },
     }),

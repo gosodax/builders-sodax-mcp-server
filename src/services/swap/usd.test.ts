@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SODAX_SWAP_ORACLE_BASE_URL } from "../../constants.js";
 import { getSolverOracle } from "../solver.js";
 import { clearUsdBackoff, usdValue } from "./usd.js";
 
@@ -28,6 +29,12 @@ describe("usdValue", () => {
     vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
     vi.mocked(getSolverOracle).mockResolvedValue([price({ chainId: "1", priceUsd: 99 }), price()]);
     await expect(usdValue(HUB_USDC, "12.5")).resolves.toBeCloseTo(12.4975);
+  });
+
+  it("reads production's oracle, which prices the mainnet tokens canary swaps too", async () => {
+    vi.mocked(getSolverOracle).mockResolvedValue([]);
+    await usdValue(HUB_USDC, "1");
+    expect(getSolverOracle).toHaveBeenCalledWith(SODAX_SWAP_ORACLE_BASE_URL);
   });
 
   it.each([

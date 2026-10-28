@@ -50,6 +50,10 @@ export const SODAX_API_BASE_URL = `${SODAX_API_ORIGIN}/v1/be`;
 // SODAX Solver API Base URL (intent oracle + quote)
 export const SODAX_SOLVER_BASE_URL = `${SODAX_API_ORIGIN}/v1/intent`;
 
+// The solver API whose oracle prices swaps. Production in both envs, like the relay: canary's swaps
+// run on mainnet chains, whose tokens production's oracle prices.
+export const SODAX_SWAP_ORACLE_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/intent`;
+
 // SODAX Intent Relay API Base URL. Production in both envs: canary's /v1/relay is the testnet
 // relay, while canary's data API and swaps run on mainnet chains.
 export const SODAX_RELAY_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/relay`;

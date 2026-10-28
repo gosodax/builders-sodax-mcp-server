@@ -24,7 +24,7 @@ describe("base URLs on SODAX_ENV=canary", () => {
     vi.resetModules();
   });
 
-  it("use the canary host, except the relay, which stays on production", async () => {
+  it("use the canary host, except the relay and the swap oracle, which stay on production", async () => {
     vi.stubEnv("SODAX_ENV", "canary");
     vi.resetModules();
     const constants = await import("./constants.js");
@@ -33,10 +33,12 @@ describe("base URLs on SODAX_ENV=canary", () => {
       api: constants.SODAX_API_BASE_URL,
       solver: constants.SODAX_SOLVER_BASE_URL,
       relay: constants.SODAX_RELAY_BASE_URL,
+      swapOracle: constants.SODAX_SWAP_ORACLE_BASE_URL,
     }).toEqual({
       api: "https://canary-api.sodax.com/v1/be",
       solver: "https://canary-api.sodax.com/v1/intent",
       relay: "https://api.sodax.com/v1/relay",
+      swapOracle: "https://api.sodax.com/v1/intent",
     });
   });
 });

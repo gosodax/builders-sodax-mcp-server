@@ -14,6 +14,7 @@ export type ActionErrorCode =
   | "DESTINATION_NOT_READY"
   | "SWAP_REJECTED"
   | "SWAP_MISMATCH"
+  | "PRICE_OFF_MARKET"
   | "SECRET_REJECTED"
   | "QUOTE_NOT_FOUND"
   | "QUOTE_MISMATCH"
@@ -32,8 +33,8 @@ export const RETRYABLE_CODES: readonly ActionErrorCode[] = [
   "INTERNAL",
 ];
 
-/** Failures that point at a bug or at the swap service building something other than asked: someone should look. */
-export const ALERTED_CODES: readonly ActionErrorCode[] = ["INTERNAL", "SWAP_MISMATCH"];
+/** Failures that point at a bug, or at the swap service building or pricing a swap wrong: someone should look. */
+export const ALERTED_CODES: readonly ActionErrorCode[] = ["INTERNAL", "SWAP_MISMATCH", "PRICE_OFF_MARKET"];
 
 const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SODAX swap service is unavailable.";
 
@@ -52,6 +53,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
   SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
+  PRICE_OFF_MARKET:
+    "Tell the user the swap service quoted far below market prices (error.usdValue sent, error.usdOut received), so the swap wasn't prepared; try again later.",
   SECRET_REJECTED:
     "Tell the user to treat it as exposed and move their funds, and never to paste it into a chat; ask for the wallet's public address instead.",
   QUOTE_NOT_FOUND:

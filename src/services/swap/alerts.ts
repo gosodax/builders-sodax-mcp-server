@@ -29,7 +29,7 @@ const TITLES: Record<AlertKind, string> = {
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
-  swap_error: "Swap tool error: a bug, or the swap service built something other than asked",
+  swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;

@@ -561,6 +561,41 @@ describe("sodax_swap_quote", () => {
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
       expect(out).toMatchObject({ status: "price_only", usdValue: "5.00", usdOut: null });
     });
+
+    describe("an amount too low", () => {
+      const tooLow = { quote: () => Response.json({ message: "Input amount too low", code: -23 }, { status: 422 }) };
+
+      it.each([
+        ["refused by the swap service", tooLow],
+        ["with a minimum received of zero", quoted("1")],
+      ])("names an amount worth about $1.5 when %s", async (_, stub) => {
+        stubSwaps(stub);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
+        expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", suggestedAmount: "1.5" });
+        expect(out.nextStep).toBe(
+          "The swap service usually quotes swaps worth about $1.5 or more: ask the user to send at least 1.5 USDC.",
+        );
+      });
+
+      it("rounds the amount up to three significant digits", async () => {
+        vi.mocked(getSolverOracle).mockResolvedValue([{ ...price(ARB_USDC_HUB), priceUsd: 0.9999 }]);
+        stubSwaps(tooLow);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
+        expect(out.error).toMatchObject({ suggestedAmount: "1.51" });
+      });
+
+      it.each([
+        ["already worth that much", "5", [price(ARB_USDC_HUB)]],
+        ["without a price", "0.5", []],
+      ])("keeps the plain advice when the amount is %s", async (_, amount, prices) => {
+        vi.mocked(getSolverOracle).mockResolvedValue(prices);
+        stubSwaps(tooLow);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount });
+        expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW" });
+        expect(out.error.suggestedAmount).toBeUndefined();
+        expect(out.nextStep).toBe("Ask the user for a larger amount.");
+      });
+    });
   });
 
   it("asks for toAddress when the destination isn't EVM", async () => {

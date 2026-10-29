@@ -109,6 +109,29 @@ export type SwapQuote =
 
 // The least share of the input's market value (net of the partner fee) a quote's output may be worth.
 const MIN_MARKET_SHARE = 0.9;
+// The swap service doesn't say how much it needs; swaps worth this much in USD are usually quoted.
+const USUAL_MIN_USD = 1.5;
+
+/**
+ * AMOUNT_TOO_LOW names an amount of the token worth about USUAL_MIN_USD, so the agent asks once
+ * instead of guessing. Only a hint: unpriced, or already worth that much, keeps the plain advice.
+ */
+function suggestAmount(
+  error: ActionError,
+  token: { decimals: number; symbol: string },
+  amount: bigint,
+  usd: number | null,
+): ActionError {
+  if (usd === null || usd <= 0 || usd >= USUAL_MIN_USD) return error;
+  const base = BigInt(Math.ceil((USUAL_MIN_USD / usd) * Number(amount)));
+  // Up to three significant digits, so the agent quotes a round figure.
+  const step = 10n ** BigInt(Math.max(base.toString().length - 3, 0));
+  const suggestedAmount = formatUnits(((base + step - 1n) / step) * step, token.decimals);
+  return new ActionError("AMOUNT_TOO_LOW", error.message, {
+    nextStep: `The swap service usually quotes swaps worth about $${USUAL_MIN_USD} or more: ask the user to send at least ${suggestedAmount} ${token.symbol}.`,
+    details: { suggestedAmount },
+  });
+}
 
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
@@ -133,6 +156,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
+  const usdSent = usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals));
   const [quoted, deadline, usd] = await Promise.all([
     getQuote({
       tokenSrc: from.token.address,
@@ -141,15 +165,20 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       tokenDstChainKey: to.chain.key,
       amount,
       partnerFee,
+    }).catch(async (error: unknown) => {
+      throw error instanceof ActionError && error.code === "AMOUNT_TOO_LOW"
+        ? suggestAmount(error, from.token, amount, await usdSent)
+        : error;
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
-    usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals)),
+    usdSent,
     // A dead source RPC fails the quote before any steps, not the track after the user has sent them.
     ready ? readBlockNumber(from.chain) : undefined,
   ]);
   const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
   if (minOutput === 0n) {
-    throw new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
+    const error = new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
+    throw suggestAmount(error, from.token, amount, usd);
   }
   const fee = partnerFee ? (amount * BigInt(partnerFee.bps)) / 10_000n : 0n;
   // The solver's amount passes through the Swaps API unchecked. The oracle was just read, so no added wait.

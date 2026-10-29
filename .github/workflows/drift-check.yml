@@ -17,7 +17,7 @@ on:
 jobs:
   drift:
     name: API Drift Check
-    timeout-minutes: 5
+    timeout-minutes: 10
     runs-on: ubuntu-latest
 
     steps:
@@ -51,3 +51,13 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: pnpm check:docs
+
+      # The swap tools against the live production Swaps API and chains, without a key: quotes for
+      # 0x…dEaD and balance reads, nothing signed or sent.
+      - name: Swap contract tests
+        if: ${{ !cancelled() }}
+        # Advisory: a slow upstream can time a live test out.
+        continue-on-error: true
+        env:
+          SODAX_ENV: production
+        run: pnpm test:contract

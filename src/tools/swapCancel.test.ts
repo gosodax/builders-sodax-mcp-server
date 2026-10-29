@@ -137,7 +137,7 @@ describe("sodax_swap_cancel", () => {
   ])("refuses a built cancel with %s", async (_case, change) => {
     stubBackend({ row: OPEN, cancelTx: { ...CANCEL_TX_BUILT, ...change } });
     const { out } = await cancel({ txHash: TX, chain: ARBITRUM });
-    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: ARBITRUM });
   });
 
   it.each([
@@ -149,7 +149,7 @@ describe("sodax_swap_cancel", () => {
   ])("refuses a hub intent that isn't the quoted one (%o)", async change => {
     const calls = stubBackend({ row: OPEN, hubIntent: { ...INTENT, ...change }, cancelTx: CANCEL_TX_BUILT });
     const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
-    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: ARBITRUM });
     expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 

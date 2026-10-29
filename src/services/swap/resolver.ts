@@ -11,6 +11,7 @@ import { chainDisplayName } from "../../constants.js";
 import { encodeRecipient, evmSpokeFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
+import { rejectHex64 } from "./secrets.js";
 import { type SwapCatalog, type SwapsApiToken, findToken, nativeToken } from "./tokens.js";
 
 export type Resolution =
@@ -33,10 +34,11 @@ const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
  * An address valid on the chain (EIP-55 for EVM), as typed. An all-zero address in any family (EVM
  * `0x0…0`, Sui `0x0`, Solana's system program) burns what it receives, so it's refused too.
  */
-export function checkAddress(address: string, chain: ChainInfo): string {
+export function checkAddress(address: string, chain: ChainInfo, field = "address"): string {
   const encoded = encodeRecipient(chain.key, address);
+  if (!encoded) rejectHex64(address, field, chain.name, "address");
   if (!encoded || /^0x0*$/.test(encoded)) {
-    throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
+    throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`, { details: { field } });
   }
   return address;
 }
@@ -79,22 +81,34 @@ function nearestChains(chains: ChainInfo[], query: string): ChainInfo[] {
   return best <= 2 ? scored.filter(({ distance }) => distance === best).map(({ chain }) => chain) : [];
 }
 
-/** The one token a query names, or `UNKNOWN_TOKEN` (ambiguous or not found: `sodax_resolve_token` explains which). */
+/**
+ * The one token a query names, or `UNKNOWN_TOKEN` (ambiguous or not found: `sodax_resolve_token` explains which).
+ * A swap's `from` side takes only chains a swap can start from.
+ */
 export function resolveExactly(
   catalog: SwapCatalog,
   chainQuery: string,
   query: string,
-  details?: Record<string, unknown>,
+  field: string,
+  side?: "from" | "to",
 ): Extract<Resolution, { status: "resolved" }> {
-  const resolution = resolveToken(catalog, chainQuery, query);
+  const resolution = resolveToken(catalog, chainQuery, query, field, side === "from");
   if (resolution.status !== "resolved") {
-    throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", { details });
+    throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", {
+      details: side && { side },
+    });
   }
   return resolution;
 }
 
-export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: string): Resolution {
-  const chain = resolveSwapChain(catalog, chainQuery);
+export function resolveToken(
+  catalog: SwapCatalog,
+  chainQuery: string,
+  query: string,
+  field = "query",
+  sourcesOnly = false,
+): Resolution {
+  const chain = resolveSwapChain(catalog, chainQuery, sourcesOnly);
   const tokens = catalog.tokens[chain.key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {
@@ -110,6 +124,8 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
 
   const byAddress = findToken(catalog, chain.key, q);
   if (byAddress) return { status: "resolved", chain, matchedBy: "address", token: byAddress };
+  // A 64-hex value that isn't a token here (NEAR's are matched above) may be a pasted private key.
+  rejectHex64(q, field, chain.name, "token");
 
   const isEvm = catalog.chains[chain.key]?.type === "EVM";
   if (q.toLowerCase() === "native" || (isEvm && q.toLowerCase() === EVM_NATIVE_PLACEHOLDER)) {

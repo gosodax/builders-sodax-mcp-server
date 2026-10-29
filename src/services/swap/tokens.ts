@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { CACHE_DURATION_MS, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
+import { CACHE_DURATION_MS, CHAIN_KEY_PATTERN, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
 import { runWithRequestContext } from "../requestContext.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
@@ -15,8 +15,6 @@ import { ActionError } from "./errors.js";
 import { getSwapTokens } from "./swapsApi.js";
 
 const SYMBOL_PATTERN = /^[A-Za-z0-9 ._()+-]{1,32}$/;
-// Live keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
-const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
 const tokenSchema = z.object({
   symbol: z.string().regex(SYMBOL_PATTERN),

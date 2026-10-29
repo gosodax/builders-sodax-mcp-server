@@ -41,6 +41,7 @@ import {
 } from "./swapsApi.js";
 import { type SwapCatalog, type SwapChain, type SwapsApiToken, canUseAs, getSwapCatalog } from "./tokens.js";
 import { formatUnits, parseUnits } from "./units.js";
+import { usdValue } from "./usd.js";
 
 export interface QuoteInput {
   fromChain: string;
@@ -65,6 +66,10 @@ interface QuoteSummary {
   to: Side & { expectedAmount: string; minimumAmount: string };
   slippageBps: number;
   partnerFee?: { bps: number; amount: string; symbol: string };
+  /** The amount sent in USD (2 decimals), or null when no recent price is known. */
+  usdValue: string | null;
+  /** The expected amount received in USD, likewise. */
+  usdOut: string | null;
 }
 
 export interface SwapStep {
@@ -102,6 +107,32 @@ export type SwapQuote =
       batch?: SwapBatch;
     });
 
+// The least share of the input's market value (net of the partner fee) a quote's output may be worth.
+const MIN_MARKET_SHARE = 0.9;
+// The swap service doesn't say how much it needs; swaps worth this much in USD are usually quoted.
+const USUAL_MIN_USD = 1.5;
+
+/**
+ * AMOUNT_TOO_LOW names an amount of the token worth about USUAL_MIN_USD, so the agent asks once
+ * instead of guessing. Only a hint: unpriced, or already worth that much, keeps the plain advice.
+ */
+function suggestAmount(
+  error: ActionError,
+  token: { decimals: number; symbol: string },
+  amount: bigint,
+  usd: number | null,
+): ActionError {
+  if (usd === null || usd <= 0 || usd >= USUAL_MIN_USD) return error;
+  const base = BigInt(Math.ceil((USUAL_MIN_USD / usd) * Number(amount)));
+  // Up to three significant digits, so the agent quotes a round figure.
+  const step = 10n ** BigInt(Math.max(base.toString().length - 3, 0));
+  const suggestedAmount = formatUnits(((base + step - 1n) / step) * step, token.decimals);
+  return new ActionError("AMOUNT_TOO_LOW", error.message, {
+    nextStep: `The swap service usually quotes swaps worth about $${USUAL_MIN_USD} or more: ask the user to send at least ${suggestedAmount} ${token.symbol}.`,
+    details: { suggestedAmount },
+  });
+}
+
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
@@ -114,14 +145,19 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const dstEvm = to.config.type === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
-  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain) : undefined;
+  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
   // An EVM recipient defaults to the sender.
-  const toAddress = input.toAddress ? checkAddress(input.toAddress, to.chain) : dstEvm ? fromAddress : undefined;
+  const toAddress = input.toAddress
+    ? checkAddress(input.toAddress, to.chain, "toAddress")
+    : dstEvm
+      ? fromAddress
+      : undefined;
   const ready = fromAddress !== undefined && toAddress !== undefined;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
-  const [quoted, deadline] = await Promise.all([
+  const usdSent = usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals));
+  const [quoted, deadline, usd] = await Promise.all([
     getQuote({
       tokenSrc: from.token.address,
       tokenSrcChainKey: from.chain.key,
@@ -129,16 +165,32 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       tokenDstChainKey: to.chain.key,
       amount,
       partnerFee,
+    }).catch(async (error: unknown) => {
+      throw error instanceof ActionError && error.code === "AMOUNT_TOO_LOW"
+        ? suggestAmount(error, from.token, amount, await usdSent)
+        : error;
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
+    usdSent,
     // A dead source RPC fails the quote before any steps, not the track after the user has sent them.
     ready ? readBlockNumber(from.chain) : undefined,
   ]);
   const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
   if (minOutput === 0n) {
-    throw new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
+    const error = new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
+    throw suggestAmount(error, from.token, amount, usd);
   }
   const fee = partnerFee ? (amount * BigInt(partnerFee.bps)) / 10_000n : 0n;
+  // The solver's amount passes through the Swaps API unchecked. The oracle was just read, so no added wait.
+  const usdOut = await usdValue(to.token.hubAsset, formatUnits(quoted, to.token.decimals));
+  const usdNet = usd === null ? null : usd * (1 - (partnerFee?.bps ?? 0) / 10_000);
+  if (usdNet !== null && usdOut !== null && usdOut < usdNet * MIN_MARKET_SHARE) {
+    const tokens = { inputToken: from.token.address, outputToken: to.token.address };
+    logger.warn({ srcChainKey: from.chain.key, dstChainKey: to.chain.key, ...tokens }, "A swap quote is off market");
+    throw new ActionError("PRICE_OFF_MARKET", "The quoted amount is worth far less than the amount sent.", {
+      details: { chainKey: from.chain.key, usdValue: usd?.toFixed(2), usdOut: usdOut.toFixed(2) },
+    });
+  }
 
   const summary: QuoteSummary = {
     from: { ...describe(from), amount: formatUnits(amount, from.token.decimals) },
@@ -148,6 +200,8 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       minimumAmount: formatUnits(minOutput, to.token.decimals),
     },
     slippageBps: input.slippageBps,
+    usdValue: usd?.toFixed(2) ?? null,
+    usdOut: usdOut?.toFixed(2) ?? null,
     ...(partnerFee && {
       partnerFee: { bps: partnerFee.bps, amount: formatUnits(fee, from.token.decimals), symbol: from.token.symbol },
     }),
@@ -214,7 +268,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       { mismatch, srcChainKey, dstChainKey, txTo: built.tx.to, dataSha256 },
       "The Swaps API built a swap that doesn't match the quote",
     );
-    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.");
+    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.", {
+      details: { chainKey: srcChainKey },
+    });
   }
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {
@@ -247,7 +303,7 @@ function resolveSide(
   token: string,
   side: "from" | "to",
 ): { chain: ChainInfo; token: SwapsApiToken; config: SwapChain } {
-  const resolution = resolveExactly(catalog, chain, token, { side });
+  const resolution = resolveExactly(catalog, chain, token, `${side}Token`, side);
   if (!canUseAs(resolution.token, side)) {
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`);

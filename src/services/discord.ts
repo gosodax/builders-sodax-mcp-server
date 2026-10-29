@@ -11,7 +11,7 @@
  * fire-and-forget (or await the bounded promise on shutdown / crash paths).
  */
 
-import { logger } from "./logger.js";
+import { logger, withoutUrls } from "./logger.js";
 
 const DISCORD_TIMEOUT_MS = 5000;
 const DISCORD_USERNAME = "SODAX MCP Server";
@@ -50,7 +50,7 @@ export function isDiscordConfigured(): boolean {
  * mid-surrogate-pair, which would otherwise leak a lone surrogate (rendered as
  * `�`) into the Discord payload.
  */
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
@@ -118,9 +118,11 @@ export async function notifyServerStopping(signal: string): Promise<void> {
 
 /** Notify a significant / unexpected error, with the stack in a fenced block. */
 export async function notifyError(context: string, error: unknown): Promise<void> {
-  const detail =
-    error instanceof Error ? `${error.name}: ${error.message}` : typeof error === "string" ? error : String(error);
-  const stack = error instanceof Error && error.stack ? error.stack : "";
+  // Errors can carry RPC URLs, and an RPC override can embed a paid key.
+  const detail = withoutUrls(
+    error instanceof Error ? `${error.name}: ${error.message}` : typeof error === "string" ? error : String(error),
+  );
+  const stack = withoutUrls(error instanceof Error && error.stack ? error.stack : "");
 
   await postToDiscord({
     content: stack ? `\`\`\`\n${truncate(stack, DISCORD_CONTENT_LIMIT - 10)}\n\`\`\`` : undefined,

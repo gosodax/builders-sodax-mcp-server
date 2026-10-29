@@ -1,13 +1,13 @@
 /**
- * Operator alerts for deposits on chain that this server can't move on its own: an operator can
- * relay or refund them by hand. Logged, and posted to Discord when configured, at most once a day
- * per kind and tx. They carry the chain, tx hash, quote id, deadline and a short hash of the
- * caller's key, never an address or the key.
+ * Operator alerts: deposits on chain this server can't move on its own (an operator can relay or
+ * refund them by hand), and swap tool errors that point at a bug or a broken upstream. Logged, and
+ * posted to Discord when configured, at most once a day per kind and fields. They carry enums, chain
+ * keys, hashes, ids and a short hash of the caller's key: never an address, the key or error text.
  */
 
 import { SODAX_ENV } from "../../constants.js";
-import { COLOR, postToDiscord } from "../discord.js";
-import { logger } from "../logger.js";
+import { COLOR, postToDiscord, truncate } from "../discord.js";
+import { logger, withoutUrls } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 
 export type AlertKind =
@@ -17,7 +17,8 @@ export type AlertKind =
   | "quote_used"
   | "multiple_deposits"
   | "refund_relay_failed"
-  | "submit_rejected";
+  | "submit_rejected"
+  | "swap_error";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
@@ -28,10 +29,13 @@ const TITLES: Record<AlertKind, string> = {
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
+  swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
+// Discord allows 1024; a hash or a fixed reason fits well within this.
+const FIELD_VALUE_MAX = 256;
 // Past this many posts an hour the rest are only logged, and one post at the end of the hour counts
 // them. Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
 // alerts have their own small budget and can't crowd out the alerts on deposits this server checked.
@@ -50,9 +54,23 @@ let summary: NodeJS.Timeout | undefined;
 
 export function alertOperator(
   kind: AlertKind,
-  fields: { chainKey: string; txHash: string; quoteId?: string; deadline?: string },
+  fields: {
+    chainKey?: string;
+    txHash?: string;
+    quoteId?: string;
+    deadline?: string;
+    tool?: string;
+    code?: string;
+    /** Which failure: a fixed message or an error class, never input or upstream text. */
+    reason?: string;
+  },
 ): void {
-  const key = `${kind}:${fields.chainKey}:${fields.txHash}`;
+  // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
+  const key = JSON.stringify(
+    kind === "swap_error"
+      ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
+      : [kind, fields.chainKey, fields.txHash],
+  );
   const now = Date.now();
   const last = sent.get(key);
   if (last !== undefined && now - last < DEDUPE_MS) return;
@@ -67,7 +85,12 @@ export function alertOperator(
   sent.set(key, now);
   const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
     .filter(([, value]) => value !== undefined)
-    .map(([name, value]) => ({ name, value: String(value), inline: name !== "txHash" }));
+    // Fields carry no error text by contract; this keeps a slip from posting a URL or a wall of text.
+    .map(([name, value]) => ({
+      name,
+      value: truncate(withoutUrls(String(value)), FIELD_VALUE_MAX),
+      inline: name !== "txHash",
+    }));
   post(`🚨 ${TITLES[kind]}`, embedFields);
 }
 

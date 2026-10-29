@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@scure/bip39": "1.6.0",
     "@sodax/sdk": "2.2.0",
     "@sodax/types": "2.2.0",
     "express": "^4.22.1",

@@ -6,10 +6,13 @@ import { logger } from "../services/logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
 import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { clearAlerts } from "../services/swap/alerts.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { clearUsdBackoff } from "../services/swap/usd.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callQuote as quote } from "./__fixtures__/swapClient.js";
 
@@ -25,6 +28,11 @@ vi.mock("../services/sodax.js", async importOriginal => {
     rebuildSwapTx: vi.fn(actual.rebuildSwapTx),
   };
 });
+
+// No oracle unless a test gives one: the quote then has no USD value.
+vi.mock("../services/solver.js", () => ({
+  getSolverOracle: vi.fn(async () => Promise.reject(new Error("no oracle"))),
+}));
 
 // The stub builds with the real SDK; only the server's own calls go through the mocks above.
 const sdk = await vi.importActual<typeof import("../services/sodax.js")>("../services/sodax.js");
@@ -140,6 +148,7 @@ function stubSwaps(stub: SwapsStub = {}) {
 
 beforeEach(() => {
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+  clearUsdBackoff();
   clearSwapCatalogCache();
   clearCache();
   clearQuoteCache();
@@ -409,6 +418,53 @@ describe("sodax_swap_quote", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each([
+    ["fromChain", "Arbitrm", "0xa4b1.arbitrum", false],
+    ["toChain", "sonci", "sonic", true],
+  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsSonic) => {
+    const calls = stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, [side]: typo, amount: "5" });
+    expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key }] });
+    const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
+    expect(listed).toContain("0xa4b1.arbitrum");
+    expect(listed.includes("sonic")).toBe(listsSonic);
+    expect(calls).toEqual([]);
+  });
+
+  it("names the field of a bad amount or address, and says an amount takes no commas or units", async () => {
+    stubSwaps();
+    const amount = await quote({ ...USDC_TO_SONIC, amount: "1,000" });
+    expect(amount.out.error).toMatchObject({
+      code: "INVALID_AMOUNT",
+      field: "amount",
+      message: "Give the amount as a plain decimal, with no commas or units and at most 6 digits after the point.",
+    });
+    const address = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, toAddress: "0x1234" });
+    expect(address.out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress" });
+  });
+
+  it.each([
+    [5, "5"],
+    [0.5, "0.5"],
+    [123456.789012, "123456.789012"],
+  ])("takes the number %d as the amount %s", async (amount, sent) => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount });
+    expect(out).toMatchObject({ status: "price_only", from: { amount: sent } });
+  });
+
+  // With an exponent or past 15 significant digits, a number may not be the decimal the agent wrote.
+  it.each([1e21, 1e-7, 0.1234567890123456, 2 ** 60])(
+    "asks for the number %d as a string, as it may not be exact",
+    async amount => {
+      const calls = stubSwaps();
+      const { out } = await quote({ ...USDC_TO_SONIC, amount });
+      expect(out.error).toMatchObject({ code: "INVALID_AMOUNT", field: "amount" });
+      expect(out.nextStep).toBe("Call sodax_swap_quote again with amount as a string holding the user's exact amount.");
+      expect(calls).toEqual([]);
+    },
+  );
+
   it.each([{ slippageBps: 0 }, { slippageBps: 501 }, { deadlineMinutes: 4 }, { deadlineMinutes: 61 }])(
     "rejects %o instead of clamping it",
     async bounds => {
@@ -418,6 +474,129 @@ describe("sodax_swap_quote", () => {
       expect(calls).toEqual([]);
     },
   );
+
+  it("shows the USD value, and warns above the server's level without refusing", async () => {
+    vi.mocked(getSolverOracle).mockResolvedValue([
+      {
+        address: "0xdb7bda65c3a1c51d64dc4444e418684677334109",
+        chainId: "146",
+        symbol: "USDC",
+        priceUsd: 1,
+        decimals: 6,
+        updatedAt: NOW,
+      },
+    ]);
+    stubSwaps();
+    const small = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(small.out).toMatchObject({ status: "price_only", usdValue: "5.00" });
+    expect(small.out.nextStep).not.toContain("warning level");
+
+    stubSwaps();
+    const large = await quote({ ...USDC_TO_SONIC, amount: "50000", fromAddress: USER });
+    expect(large.out).toMatchObject({ status: "ready", usdValue: "50000.00" });
+    expect(large.out.nextStep).toContain(
+      "This swap is worth about $50,000, above this server's warning level of $10,000: confirm the amount with the user before anything is signed.",
+    );
+  });
+
+  it("quotes without a USD value when the oracle has none, and says so", async () => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(out).toMatchObject({ status: "price_only", usdValue: null, usdOut: null });
+    expect(out.nextStep).toContain(
+      "Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.",
+    );
+  });
+
+  describe("against market prices", () => {
+    const ARB_USDC_HUB = "0xdb7bda65c3a1c51d64dc4444e418684677334109";
+    const price = (address: string) => ({
+      address,
+      chainId: "146",
+      symbol: "USDC",
+      priceUsd: 1,
+      decimals: 6,
+      updatedAt: NOW,
+    });
+    const quoted = (amount: string) => ({ quote: () => Response.json({ quotedAmount: amount }) });
+
+    beforeEach(() => {
+      clearAlerts();
+      vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB), price(SONIC_USDC)]);
+    });
+
+    it("prices what the user receives too, and builds a swap quoted near the market", async () => {
+      stubSwaps();
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(out).toMatchObject({ status: "ready", usdValue: "5.00", usdOut: "4.99" });
+    });
+
+    it("refuses and alerts on an output worth under 90% of the input, before building anything", async () => {
+      const calls = stubSwaps(quoted("4400000"));
+      const error = vi.spyOn(logger, "error");
+      const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+      expect(isError).toBe(true);
+      expect(out.error).toMatchObject({ code: "PRICE_OFF_MARKET", usdValue: "5.00", usdOut: "4.40" });
+      expect(out.nextStep).toContain("quoted far below market prices");
+      expect(calls.map(call => call.path)).not.toContain("/intents");
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ alert: "swap_error", code: "PRICE_OFF_MARKET", chainKey: "0xa4b1.arbitrum" }),
+        expect.any(String),
+      );
+    });
+
+    it.each([
+      ["4460000", "price_only"],
+      ["4450000", "error"],
+    ])("takes the partner fee off the input first: %s out of 5 less 1%", async (amount, status) => {
+      setFallbackRequestContext({ partnerFee: { address: USER, bps: 100 } });
+      stubSwaps(quoted(amount));
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+      expect(out.status).toBe(status);
+    });
+
+    it("only warns when the output has no price", async () => {
+      vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB)]);
+      stubSwaps(quoted("1000000"));
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+      expect(out).toMatchObject({ status: "price_only", usdValue: "5.00", usdOut: null });
+    });
+
+    describe("an amount too low", () => {
+      const tooLow = { quote: () => Response.json({ message: "Input amount too low", code: -23 }, { status: 422 }) };
+
+      it.each([
+        ["refused by the swap service", tooLow],
+        ["with a minimum received of zero", quoted("1")],
+      ])("names an amount worth about $1.5 when %s", async (_, stub) => {
+        stubSwaps(stub);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
+        expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", suggestedAmount: "1.5" });
+        expect(out.nextStep).toBe(
+          "The swap service usually quotes swaps worth about $1.5 or more: ask the user to send at least 1.5 USDC.",
+        );
+      });
+
+      it("rounds the amount up to three significant digits", async () => {
+        vi.mocked(getSolverOracle).mockResolvedValue([{ ...price(ARB_USDC_HUB), priceUsd: 0.9999 }]);
+        stubSwaps(tooLow);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
+        expect(out.error).toMatchObject({ suggestedAmount: "1.51" });
+      });
+
+      it.each([
+        ["already worth that much", "5", [price(ARB_USDC_HUB)]],
+        ["without a price", "0.5", []],
+      ])("keeps the plain advice when the amount is %s", async (_, amount, prices) => {
+        vi.mocked(getSolverOracle).mockResolvedValue(prices);
+        stubSwaps(tooLow);
+        const { out } = await quote({ ...USDC_TO_SONIC, amount });
+        expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW" });
+        expect(out.error.suggestedAmount).toBeUndefined();
+        expect(out.nextStep).toBe("Ask the user for a larger amount.");
+      });
+    });
+  });
 
   it("asks for toAddress when the destination isn't EVM", async () => {
     stubSwaps();
@@ -618,9 +797,16 @@ describe("sodax_swap_quote", () => {
     clearCache();
     configs["0xa4b1.arbitrum"].addresses = { assetManager: `0x${"e".repeat(40)}` };
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
+    clearAlerts();
+    const error = vi.spyOn(logger, "error");
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" });
     expect(calls.map(call => call.path)).not.toContain("/intents");
+    // The alert names the chain, so another chain's disagreement alerts too.
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "swap_error", code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" }),
+      expect.any(String),
+    );
   });
 
   it("refuses a live chain id that differs from the SDK config's", async () => {
@@ -630,8 +816,9 @@ describe("sodax_swap_quote", () => {
     const calls = stubSwaps({ configs: JSON.stringify(configs) });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error).toMatchObject({
-      code: "UPSTREAM_UNAVAILABLE",
+      code: "SWAP_MISMATCH",
       message: "The SODAX config doesn't agree with the SDK's.",
+      chainKey: "0xa4b1.arbitrum",
     });
     expect(calls).toEqual([]);
   });
@@ -649,7 +836,7 @@ describe("sodax_swap_quote", () => {
       const calls = stubSwaps({ tokens: JSON.stringify(tokens) });
       const error = vi.spyOn(logger, "error");
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-      expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+      expect(out.error.code).toBe("SWAP_MISMATCH");
       expect(calls).toEqual([]);
       // Which token's packaged config is stale.
       expect(error).toHaveBeenCalledWith(expect.objectContaining({ chainKey, token: address }), expect.any(String));

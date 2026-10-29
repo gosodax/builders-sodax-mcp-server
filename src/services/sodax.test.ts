@@ -295,6 +295,15 @@ describe("sdkLogger", () => {
     expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
     expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
   });
+
+  it("passes the message on without URLs", () => {
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+    sdkLogger.warn("read from https://rpc.example/KEY failed");
+    sdkLogger.error("socket wss://rpc.example/KEY closed");
+    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "read from <url> failed");
+    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "socket <url> closed");
+  });
 });
 
 describe("parseRpcOverrides", () => {

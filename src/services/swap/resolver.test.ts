@@ -93,6 +93,16 @@ describe("resolveToken", () => {
     });
   });
 
+  // NEAR's USDC is a 64-hex account: it must match before a 64-hex query is refused as a possible key.
+  it("resolves a NEAR token given by its 64-hex address", () => {
+    const address = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+    const near = parseCatalog({ near: [{ ...catalog.tokens.hyper[0], chainKey: "near", address }] }, {});
+    expect(resolveToken(near, "near", address)).toMatchObject({ status: "resolved", matchedBy: "address" });
+    expect(() => resolveToken(near, "near", "ab".repeat(32))).toThrow(
+      expect.objectContaining({ code: "SECRET_REJECTED" }),
+    );
+  });
+
   it("reports a chain whose tokens all failed validation as unavailable, not as unknown tokens", () => {
     const broken = parseCatalog({ hyper: [{ symbol: "bad\n" }] }, {});
     expect(() => resolveToken(broken, "hyper", "HYPE")).toThrow(
@@ -143,6 +153,20 @@ describe("resolveToken", () => {
         nextStep: `Ask the user whether they mean ${didYouMean[0].name}, or else which chain in error.supportedChains, and pass its key.`,
       }),
     );
+  });
+
+  it("lists only the chains a swap can start from for a swap's source", () => {
+    const chainsOf = (sourcesOnly: boolean) => {
+      try {
+        resolveToken(catalog, "Fantom", "USDC", "fromToken", sourcesOnly);
+      } catch (error) {
+        return (error as { details: { supportedChains: { key: string }[] } }).details.supportedChains.map(c => c.key);
+      }
+    };
+    expect(chainsOf(true)).toEqual(expect.arrayContaining(["0xa4b1.arbitrum", "0xa86a.avax", "hyper"]));
+    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sonic"]));
+    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sui"]));
+    expect(chainsOf(false)).toEqual(expect.arrayContaining(["sonic", "sui", "0xa4b1.arbitrum"]));
   });
 
   it.each(["0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"])(

@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PostHog } from "posthog-node";
+import { CHAIN_KEY_PATTERN } from "../constants.js";
 import { getToolModule, toolGroup } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -54,13 +55,7 @@ export function hashClientIp(ip: string): string {
 }
 
 // ── Core tracking function ───────────────────────────────────────────
-function trackToolCall(
-  toolName: string,
-  durationMs: number,
-  success: boolean,
-  clientId?: string,
-  error?: string,
-): void {
+function trackToolCall(toolName: string, durationMs: number, outcome: Outcome, clientId?: string): void {
   const ph = getClient();
   if (!ph) return;
 
@@ -72,11 +67,62 @@ function trackToolCall(
       tool_name: toolName,
       tool_group: resolveToolGroup(toolName),
       duration_ms: durationMs,
-      success,
-      ...(error && { error_message: error }),
+      ...outcome,
       transport: process.env.TRANSPORT || "http",
     },
   });
+}
+
+// ── What a returned result may tell PostHog ──────────────────────────
+type Outcome = Record<string, unknown> & { success: boolean };
+
+const ERROR_CODE = /^[A-Z_]{1,40}$/;
+const STATUS = /^[a-z_]{1,40}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const matching = (value: unknown, pattern: RegExp) =>
+  typeof value === "string" && pattern.test(value) ? value : undefined;
+
+/** The fields of a swap tool's output analytics may read; anything else is never looked at. */
+interface SwapOutput {
+  status?: unknown;
+  quoteId?: unknown;
+  usdValue?: unknown;
+  chain?: { key?: unknown };
+  from?: { chain?: { key?: unknown } };
+  to?: { chain?: { key?: unknown } };
+  error?: { code?: unknown };
+}
+
+/**
+ * A returned result's outcome: tools report failures as `isError`, not by throwing. Swap tools add a
+ * whitelist of fields, so a new output field never leaks: no addresses, amounts, tx hashes or queries.
+ * Undefined fields are dropped when the event is serialized.
+ */
+function resultOutcome(toolName: string, result: unknown): Outcome {
+  const { isError, structuredContent } = (result ?? {}) as { isError?: boolean; structuredContent?: SwapOutput };
+  const out = structuredContent ?? {};
+  return {
+    success: isError !== true,
+    error_code: matching(out.error?.code, ERROR_CODE),
+    ...(resolveToolGroup(toolName) === "swap" && {
+      status: matching(out.status, STATUS),
+      quote_id: matching(out.quoteId, UUID),
+      src_chain: matching(out.from?.chain?.key ?? out.chain?.key, CHAIN_KEY_PATTERN),
+      dst_chain: matching(out.to?.chain?.key, CHAIN_KEY_PATTERN),
+      usd_bucket: usdBucket(out.usdValue),
+    }),
+  };
+}
+
+function usdBucket(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const usd = typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(usd)) return "unknown";
+  if (usd < 100) return "<100";
+  if (usd < 1_000) return "100-1k";
+  if (usd < 10_000) return "1k-10k";
+  return usd < 100_000 ? "10k-100k" : "100k+";
 }
 
 // ── Server wrapper ───────────────────────────────────────────────────
@@ -103,10 +149,10 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
         const start = Date.now();
         try {
           const result = await (handler as (...args: unknown[]) => unknown)(...handlerArgs);
-          trackToolCall(toolName, Date.now() - start, true, clientId);
+          trackToolCall(toolName, Date.now() - start, resultOutcome(toolName, result), clientId);
           return result;
         } catch (err) {
-          trackToolCall(toolName, Date.now() - start, false, clientId, String(err));
+          trackToolCall(toolName, Date.now() - start, { success: false, error_message: String(err) }, clientId);
           throw err;
         }
       };

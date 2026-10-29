@@ -115,4 +115,13 @@ describe("notifyError", () => {
     expect(embed.description).toContain("boom");
     expect(payload.content).toContain("```");
   });
+
+  it("posts no URL from the message or the stack", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await notifyError("Uncaught exception", new Error("request to https://rpc.example/KEY failed"));
+    const body = fetchSpy.mock.calls[0][1].body as string;
+    expect(body).toContain("request to <url> failed");
+    expect(body).not.toContain("KEY");
+  });
 });

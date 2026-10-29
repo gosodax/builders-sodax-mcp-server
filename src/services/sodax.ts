@@ -1,6 +1,6 @@
 /**
- * The SODAX SDK, behind narrow functions. The SDK itself is loaded only when the swap tools are
- * on (it pulls in every chain's client library): `initSodax()` runs once at boot. Its packaged
+ * The SODAX SDK, behind narrow functions. The SDK itself is loaded only for the swap tools (it
+ * pulls in every chain's client library): `initSodax()` runs once at boot (see index.ts). Its packaged
  * config (`@sodax/types`) is plain data and is read directly.
  *
  * Every call here keeps SDK errors in: their text can carry RPC URLs (paid ones embed keys),
@@ -62,7 +62,7 @@ export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, string
 }
 
 function sdk() {
-  if (!loaded) throw new Error("The SODAX SDK isn't loaded: initSodax() runs at boot when the swap tools are on");
+  if (!loaded) throw new Error("The SODAX SDK isn't loaded: initSodax() runs at boot when the server has swap tools");
   return loaded;
 }
 

@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./server.js";
-import { type ToolSelection, type Toolsets, selectToolsets } from "./services/profiles.js";
+import { PROFILE_DESCRIPTIONS, type ToolSelection, type Toolsets, selectToolsets } from "./services/profiles.js";
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
 beforeEach(() => {
@@ -79,14 +80,35 @@ describe("instructions", () => {
 
   it("tell a keyless default connection, last, that the swap tools need a key", async () => {
     const builder = await instructions({ builder: true, swap: false });
-    const keyless = selectToolsets(undefined, { apiKey: "missing", swapToolsEnabled: true });
+    const keyless = selectToolsets(undefined, "missing");
     expect(builder).not.toContain("x-api-key");
     expect(await instructions(keyless)).toBe(`${builder}\n\n${keyless.keyHint}`);
   });
 
   it("tell a builder connection, last, that its malformed key is dropped", async () => {
     const builder = await instructions({ builder: true, swap: false });
-    const malformed = selectToolsets("builder", { apiKey: "malformed", swapToolsEnabled: false });
+    const malformed = selectToolsets("builder", "malformed");
     expect(await instructions(malformed)).toBe(`${builder}\n\n${malformed.keyHint}`);
+  });
+});
+
+// The MCP Registry entry: its tool list is ours and hand-written, so it is checked against what a client gets.
+describe("server.json", () => {
+  const meta = JSON.parse(readFileSync(new URL("../server.json", import.meta.url), "utf-8")) as {
+    description: string;
+    remotes: { headers: { name: string; choices?: string[] }[] }[];
+    tools: { name: string }[];
+  };
+
+  // The proxied docs tools change with docs.sodax.com, so only the docs meta-tools are listed.
+  it("lists every static tool a keyed default connection gets, and nothing else", async () => {
+    const served = (await toolList({ builder: true, swap: true })).map(tool => tool.name);
+    expect(meta.tools.map(tool => tool.name).sort()).toEqual(served.sort());
+  });
+
+  it("offers every profile, under a description within the registry's 100 characters", () => {
+    const profile = meta.remotes[0].headers.find(header => header.name === "x-sodax-profile");
+    expect(profile?.choices?.slice().sort()).toEqual(Object.keys(PROFILE_DESCRIPTIONS).sort());
+    expect(meta.description.length).toBeLessThanOrEqual(100);
   });
 });

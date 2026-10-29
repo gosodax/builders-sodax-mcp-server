@@ -22,10 +22,10 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML_PATH = join(__dirname, "..", "public", "index.html");
+const README_PATH = join(__dirname, "..", "..", "README.md");
 
 beforeAll(() => {
-  // Every static toolset, the way the HTTP server seeds the registry.
-  seedToolRegistry({ builder: true, swap: true });
+  seedToolRegistry();
 });
 
 describe("tool registry", () => {
@@ -74,6 +74,20 @@ describe("landing page template", () => {
     expect(literalCount, `hardcoded count "${literalCount?.[0]}" found in index.html`).toBeNull();
   });
 
+  it("names every registered tool, and no other sodax_ tool, as the README does", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const registered = getRegisteredTools().map(t => t.name);
+    for (const name of registered) {
+      expect(template, `${name} missing from index.html`).toContain(`<code>${name}</code>`);
+      expect(readme, `${name} missing from README.md`).toContain(`| \`${name}\` |`);
+    }
+    const listed = [
+      ...template.matchAll(/<code>(sodax_\w+)<\/code>/g),
+      ...readme.matchAll(/^\| `(sodax_\w+)` \|/gm),
+    ].map(match => match[1]);
+    expect(listed.filter(name => !registered.includes(name))).toEqual([]);
+  });
+
   it("contains the expected placeholders", () => {
     for (const key of [
       "NETWORK_COUNT",
@@ -85,7 +99,6 @@ describe("landing page template", () => {
       "MONEY_MARKET_TOOLS",
       "PARTNERS_TOOLS",
       "SWAP_TOOLS",
-      "SWAP_CARD_HIDDEN",
       "SDK_DOCS_TOOLS",
     ]) {
       expect(template, `missing {{${key}}} in index.html`).toContain(`{{${key}}}`);
@@ -109,11 +122,5 @@ describe("landing page template", () => {
     expect(total).toBe(api + relay + swap);
     const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5 });
     expect(html).toBe(String(total + 5));
-  });
-
-  it("shows the Swaps card once the registry has swap tools", () => {
-    expect(getStaticToolCounts().swap).toBeGreaterThan(0);
-    const html = renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0 });
-    expect(html).toBe("<details >");
   });
 });

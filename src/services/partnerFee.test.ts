@@ -60,7 +60,7 @@ describe("partnerFeeFromEnv", () => {
   });
 });
 
-describe("with the swap tools on", () => {
+describe("with the SDK loaded", () => {
   beforeAll(() => initSodax());
 
   // A typo there would send the fees to an address nobody holds.

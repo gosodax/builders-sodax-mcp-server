@@ -120,7 +120,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
  * `registerDocsProxyTools()`, whose blocking SDK docs fetch (up to 30s) would otherwise delay HTTP boot when
  * the docs MCP is unavailable and `warmDocsCache()` left the cache empty.
  */
-export function seedToolRegistry(toolsets: Toolsets): void {
+export function seedToolRegistry(): void {
   const recordingServer = { tool: () => ({}) } as unknown as McpServer;
-  for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(recordingServer);
+  for (const register of Object.values(STATIC_REGISTRARS).flat()) register(recordingServer);
 }

@@ -5,6 +5,9 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
+import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
+import { getRequestContext } from "./requestContext.js";
+
 interface FetchJsonOptions {
   timeout?: number;
   method?: string;
@@ -17,6 +20,18 @@ const DEFAULT_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
   Accept: "application/json",
 };
+
+// Routes that take the caller's key: the data API and the solver. Other routes on the
+// same host reach other origins; the relay, for one, must never get it.
+const KEYED_BASE_URLS = [SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL].map(base => `${base}/`);
+
+/** The caller's key, if `url` may carry it. `href` has `..` segments resolved. */
+function forwardedApiKey(url: string): string | undefined {
+  const { apiKey } = getRequestContext();
+  if (!apiKey) return undefined;
+  const { href } = new URL(url);
+  return KEYED_BASE_URLS.some(base => href.startsWith(base)) ? apiKey : undefined;
+}
 
 /**
  * Extract a human-readable message from an error response body so callers
@@ -58,10 +73,13 @@ function extractApiErrorMessage(rawBody: string): string | null {
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
+  const apiKey = forwardedApiKey(url);
   const response = await fetch(url, {
     method,
-    headers: { ...DEFAULT_HEADERS, ...headers },
+    headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
+    redirect: apiKey ? "error" : "follow",
     signal: AbortSignal.timeout(timeout),
   });
 

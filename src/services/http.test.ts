@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SODAX_API_BASE_URL, SODAX_API_ORIGIN, SODAX_RELAY_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
 import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
@@ -115,5 +117,38 @@ describe("headers", () => {
     await fetchJson("http://example.com/x", { headers: { "Content-Type": "text/plain" } });
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     expect(init.headers).toMatchObject({ "Content-Type": "text/plain" });
+  });
+});
+
+describe("API key forwarding", () => {
+  const dataUrl = `${SODAX_API_BASE_URL}/config/spoke/chains`;
+  const sentInit = () => fetchSpy.mock.calls[0]?.[1] as RequestInit;
+  const sentKey = () => (sentInit().headers as Record<string, string>)["x-api-key"];
+  const fetchWithKey = (url: string) => runWithRequestContext({ apiKey: "sodax_k1" }, () => fetchJson(url));
+
+  beforeEach(() => {
+    fetchSpy.mockImplementation(async () => jsonResponse("{}", { status: 200 }));
+  });
+
+  it.each([dataUrl, `${SODAX_SOLVER_BASE_URL}/quote`])("sends the caller's key to %s", async url => {
+    await fetchWithKey(url);
+    expect(sentKey()).toBe("sodax_k1");
+    expect(sentInit().redirect).toBe("error");
+  });
+
+  it.each([
+    `${SODAX_RELAY_BASE_URL}/`,
+    `${SODAX_API_ORIGIN}/v1/sponsorships/x`,
+    `${SODAX_API_BASE_URL}/intent/tx/../../../sponsorships/x`,
+    "https://docs.sodax.com/mcp",
+  ])("never sends the key to %s", async url => {
+    await fetchWithKey(url);
+    expect(sentKey()).toBeUndefined();
+  });
+
+  it("sends no key and follows redirects when the caller has none", async () => {
+    await fetchJson(dataUrl);
+    expect(sentKey()).toBeUndefined();
+    expect(sentInit().redirect).toBe("follow");
   });
 });

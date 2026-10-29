@@ -2,14 +2,40 @@
  * Constants for the SODAX Builders MCP Server
  */
 
+const SODAX_API_ORIGINS = {
+  production: "https://api.sodax.com",
+  canary: "https://canary-api.sodax.com",
+} as const;
+
+export type SodaxEnv = keyof typeof SODAX_API_ORIGINS;
+
+const SODAX_ENVS = Object.keys(SODAX_API_ORIGINS) as SodaxEnv[];
+
+/** `SODAX_ENV` picks the SODAX API host once, at boot. Unset means production; undefined means invalid. */
+export function parseSodaxEnv(value: string | undefined): SodaxEnv | undefined {
+  const env = value?.trim().toLowerCase() || "production";
+  return SODAX_ENVS.find(known => known === env);
+}
+
+const parsedSodaxEnv = parseSodaxEnv(process.env.SODAX_ENV);
+
+// Checked in main() rather than thrown here, so a bad value goes through the fatal-exit
+// path (log + Discord alert). The production fallback below is never used: main() stops first.
+export const SODAX_ENV_ERROR = parsedSodaxEnv
+  ? undefined
+  : `SODAX_ENV must be one of ${SODAX_ENVS.join(", ")}, got "${process.env.SODAX_ENV}"`;
+export const SODAX_ENV: SodaxEnv = parsedSodaxEnv ?? "production";
+export const SODAX_API_ORIGIN = SODAX_API_ORIGINS[SODAX_ENV];
+
 // SODAX API Base URL (Backend API)
-export const SODAX_API_BASE_URL = "https://api.sodax.com/v1/be";
+export const SODAX_API_BASE_URL = `${SODAX_API_ORIGIN}/v1/be`;
 
 // SODAX Solver API Base URL (intent oracle + quote)
-export const SODAX_SOLVER_BASE_URL = "https://api.sodax.com/v1/intent";
+export const SODAX_SOLVER_BASE_URL = `${SODAX_API_ORIGIN}/v1/intent`;
 
-// SODAX Intent Relay API Base URL (xCall relay hosted by ICON)
-export const SODAX_RELAY_BASE_URL = "https://xcall-relay.nw.iconblockchain.xyz";
+// SODAX Intent Relay API Base URL. Production in both envs: canary's /v1/relay is the testnet
+// relay, while canary's data API and swaps run on mainnet chains.
+export const SODAX_RELAY_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/relay`;
 
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;

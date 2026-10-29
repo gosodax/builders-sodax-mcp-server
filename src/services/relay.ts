@@ -1,8 +1,8 @@
 /**
  * SODAX Intent Relay Service
  *
- * Client for the cross-chain message relayer used by SODAX intents.
- * Hosted on ICON's xCall infrastructure at xcall-relay.nw.iconblockchain.xyz.
+ * Client for the cross-chain message relayer used by SODAX intents,
+ * served by the SODAX API at /v1/relay.
  *
  * All requests are POST / with `{ action, params }` in the body; the
  * action dispatches to one of three operations:
@@ -43,8 +43,12 @@ const RELAY_TIMEOUT_MS = 30_000;
 /**
  * The relay returns a JSON body for every outcome, including 404 (used for
  * "packet not found" responses on get_packet / get_transaction_packets).
- * We parse the body regardless of status — only HTTP 5xx and unparseable
- * responses are treated as errors.
+ * We parse the body regardless of status. HTTP 5xx is an error, and so is any
+ * body that isn't a relay answer (every relay answer has a boolean `success`),
+ * such as the SODAX API edge's own 429.
+ *
+ * Never send the caller's API key here: the relay takes none, and the gateway
+ * passes this route on to an origin outside the SODAX API.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
   const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
@@ -61,7 +65,12 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  return (await response.json()) as T;
+  const body = (await response.json().catch(() => undefined)) as { success?: unknown } | undefined;
+  if (typeof body?.success !== "boolean") {
+    const retryAfter = response.headers.get("Retry-After");
+    throw new Error(`HTTP ${response.status}${retryAfter ? `, retry after ${retryAfter}s` : ""}`);
+  }
+  return body as T;
 }
 
 /**

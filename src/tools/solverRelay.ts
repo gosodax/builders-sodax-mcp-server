@@ -5,7 +5,7 @@
  * cross-chain intent relay (submit, get_transaction_packets, get_packet).
  *
  * Solver lives at https://api.sodax.com/v1/intent (separate from /v1/be).
- * Relay lives at https://xcall-relay.nw.iconblockchain.xyz (ICON xCall).
+ * Relay lives at https://api.sodax.com/v1/relay.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

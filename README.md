@@ -115,6 +115,13 @@ every transaction; the server never signs.
 chain for now (not Sonic, the hub); the destination can be any SODAX swap chain. Every result the tools return carries
 a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 
+The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
+
+- give the user's address on the source chain, for `fromAddress`;
+- switch to the chain a step's `tx.chainId` names, then send that `tx` (`to`, `value`, `data`) and return its hash;
+- tell when a transaction is mined, since each step must be mined before the next;
+- optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
+
 ### Safety
 
 The swap tools never sign or move funds. They also:

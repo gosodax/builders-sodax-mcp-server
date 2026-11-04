@@ -189,6 +189,19 @@ describe("sodax_swap_cancel", () => {
     expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 
+  it("refuses, without a quote, a tx holding two deposits, even when one is the hub intent's", async () => {
+    const other = { ...INTENT, intentId: "8" };
+    const second = messageReceipt({
+      payload: rlpList([INTENT.inputToken, USER, CREATOR, "0x4c4b40", createIntentPayload(other) ?? ""]),
+    });
+    const both = { reverted: false, logs: [...DEPOSIT.logs, ...second.logs] };
+    vi.mocked(getEvmReceipt).mockImplementation(async (_chainKey, hash) => (hash === TX ? both : null));
+    const calls = stubBackend({ row: OPEN, hubIntent: INTENT, cancelTx: CANCEL_TX_BUILT });
+    const { out } = await cancel({ txHash: TX, chain: ARBITRUM });
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: ARBITRUM });
+    expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
+  });
+
   it("takes the hub's copy of the quoted intent in another hex case", async () => {
     stubBackend({
       row: OPEN,

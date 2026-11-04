@@ -8,6 +8,7 @@
  */
 
 import { readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -482,10 +483,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-/** Run as a script (node, tsx), not imported by a test. */
+/** Run as a script (node, tsx), not imported by a test. Resolved as node does, so `node .` counts too. */
 function isEntryPoint(): boolean {
+  if (process.argv[1] === undefined) return false;
   try {
-    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === __filename;
+    return realpathSync(createRequire(import.meta.url).resolve(process.argv[1])) === __filename;
   } catch {
     return false;
   }

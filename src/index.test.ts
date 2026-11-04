@@ -1,10 +1,11 @@
 import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHttpApp } from "./index.js";
 import { hashClientIp } from "./services/analytics.js";
-import { MCP_MAX_BATCH_SIZE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
+import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
 
 // The guards are unit-tested in httpGuards.test.ts; this checks index.ts wires them to the routes.
 
@@ -37,6 +38,7 @@ beforeAll(async () => {
 afterEach(() => {
   for (const stream of streams.splice(0)) stream.abort();
   held.length = 0;
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -70,6 +72,14 @@ async function openSse(ip: string): Promise<Response> {
   const res = await fetch(`${base}/sse`, { headers: { "X-Forwarded-For": ip }, signal: stream.signal });
   held.push(res);
   return res;
+}
+
+/** Opens an SSE session and returns its reader and message endpoint. */
+async function sseSession(ip: string) {
+  const sse = await openSse(ip);
+  const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
+  const [, endpoint] = await readUntil(reader, /event: endpoint\ndata: (\S+)\n/);
+  return { sse, reader, endpoint };
 }
 
 /** Reads the SSE stream until `match` shows up; the test times out if it never does. */
@@ -106,10 +116,11 @@ describe("HTTP routes", () => {
   });
 
   it("refuses a batch over the cap on /mcp", async () => {
-    const batch = Array.from({ length: MCP_MAX_BATCH_SIZE + 1 }, (_, i) => initialize(i));
+    // Not initialize: the MCP SDK refuses a batch holding one by itself, with the same code.
+    const batch = Array.from({ length: MCP_MAX_BATCH_SIZE + 1 }, (_, id) => ({ jsonrpc: "2.0", id, method: "ping" }));
     const res = await post("/mcp", JSON.stringify(batch), "198.51.100.4");
     expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe(-32600);
+    expect((await res.json()).error.message).toContain(`at most ${MCP_MAX_BATCH_SIZE} messages`);
   });
 
   it("turns a throwing /mcp handler into a JSON 500 and keeps serving", async () => {
@@ -127,15 +138,46 @@ describe("HTTP routes", () => {
 
   it("keeps an SSE session open and answers its messages over the stream", async () => {
     const ip = "198.51.100.6";
-    const sse = await openSse(ip);
+    const { sse, reader, endpoint } = await sseSession(ip);
     expect(sse.status).toBe(200);
     expect(sse.headers.get("content-type")).toContain("text/event-stream");
-    const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
-    const [, endpoint] = await readUntil(reader, /event: endpoint\ndata: (\S+)\n/);
 
     const res = await post(endpoint, JSON.stringify(initialize(7)), ip);
     expect(res.status).toBe(202);
     await readUntil(reader, /event: message\ndata: .*"id":7/);
+  });
+
+  it("turns a throwing /sse handler into a JSON 500 and keeps serving", async () => {
+    const ip = "198.51.100.8";
+    vi.mocked(hashClientIp).mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    const failed = await openSse(ip);
+    expect(failed.status).toBe(500);
+    expect((await failed.json()).error).toBe("Internal Server Error");
+    expect((await sseSession(ip)).sse.status).toBe(200);
+  });
+
+  it("turns a throwing /messages handler into a JSON 500 and keeps the session", async () => {
+    const ip = "198.51.100.9";
+    const { reader, endpoint } = await sseSession(ip);
+    vi.spyOn(SSEServerTransport.prototype, "handlePostMessage").mockRejectedValueOnce(new Error("boom"));
+    const failed = await post(endpoint, JSON.stringify(initialize(8)), ip);
+    expect(failed.status).toBe(500);
+    expect((await failed.json()).error).toBe("Internal Server Error");
+
+    expect((await post(endpoint, JSON.stringify(initialize(9)), ip)).status).toBe(202);
+    await readUntil(reader, /event: message\ndata: .*"id":9/);
+  });
+
+  it("counts /messages and /sse against the MCP rate limit", async () => {
+    const ip = "198.51.100.10";
+    // Under the global limit (100), so only the MCP limiter can refuse.
+    for (let i = 0; i < MCP_REQUESTS_PER_MINUTE; i++) {
+      expect((await post("/messages?sessionId=none", "{}", ip)).status).toBe(400);
+    }
+    expect((await post("/messages?sessionId=none", "{}", ip)).status).toBe(429);
+    expect((await openSse(ip)).status).toBe(429);
   });
 
   it("caps open SSE sessions per IP", async () => {

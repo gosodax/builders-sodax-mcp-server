@@ -19,7 +19,7 @@ import {
   resolveSource,
   whyNotCancellable,
 } from "./source.js";
-import { HUB_RELAY_ID, checkDeposit, decodeSendMessage, holdsCancel } from "./sourceTx.js";
+import { HUB_RELAY_ID, checkDeposit, decodeSendMessage, depositMessages, holdsCancel } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
 import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
 
@@ -157,6 +157,8 @@ async function isDepositsIntent(source: SwapSource, txHash: string, intent: Inte
   // The deposit reached the hub, so it's mined: a node without its receipt is behind.
   if (!receipt) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${source.chain.name} right now.`);
   const { connection, assetManager } = source;
+  // As track: the backend relays a tx's first deposit only, so it can't tell two apart.
+  if (depositMessages(receipt, connection, assetManager).length > 1) return false;
   const relayData = { address: intent.creator, payload };
   const want = { connection, assetManager, srcChain: intent.srcChain, srcAddress: intent.srcAddress, relayData };
   if (checkDeposit(receipt, want) !== "match") return false;

@@ -307,6 +307,22 @@ export function cancelPayload(intent: IntentJson): string | undefined {
   }
 }
 
+/**
+ * What a spoke deposit for `intent` carries to the user's hub wallet: the calls that create it, as the
+ * SDK builds them (byte for byte, `intentId` included). `undefined` if the SDK can't.
+ */
+export function createIntentPayload(intent: IntentJson): string | undefined {
+  try {
+    return sdk().sdk.EvmSolverService.reconstructCreateIntentData(
+      toSdkIntent(intent),
+      solverConfig.intentsContract,
+      false,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 type SdkIntent = Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
 
 /** The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned. */

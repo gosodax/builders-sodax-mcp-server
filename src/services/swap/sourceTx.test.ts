@@ -17,7 +17,6 @@ import {
   decodeRlpList,
   decodeSendMessage,
   holdsCancel,
-  holdsDeposit,
 } from "./sourceTx.js";
 
 const WANT = {
@@ -92,26 +91,6 @@ describe("checkDeposit", () => {
     const otherEvent = { reverted: false, logs: [{ ...RECEIPT.logs[0], topics: [`0x${"1".repeat(64)}`] }] };
     expect(checkDeposit(otherEvent, WANT)).toBe("not_a_deposit");
     expect(checkDeposit({ reverted: false, logs: [] }, WANT)).toBe("not_a_deposit");
-  });
-});
-
-describe("holdsDeposit", () => {
-  const want = {
-    connection: CONNECTION,
-    assetManager: ASSET_MANAGER,
-    srcChain: "23",
-    from: USER,
-    to: RELAY_DATA.address,
-  };
-
-  it("finds the sender's deposit to that hub wallet", () => {
-    expect(holdsDeposit(RECEIPT, want)).toBe(true);
-  });
-
-  it("refuses another sender, hub wallet or source chain", () => {
-    expect(holdsDeposit(RECEIPT, { ...want, from: CREATOR })).toBe(false);
-    expect(holdsDeposit(RECEIPT, { ...want, to: CREATOR })).toBe(false);
-    expect(holdsDeposit(RECEIPT, { ...want, srcChain: "30" })).toBe(false);
   });
 });
 

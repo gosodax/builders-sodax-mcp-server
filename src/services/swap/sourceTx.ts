@@ -68,14 +68,6 @@ export function checkDeposit(
   return transfers.some(fromUser) ? "mismatch" : "not_a_deposit";
 }
 
-/** Whether the receipt holds a deposit to the hub from `from` (its RLP sender) to the hub wallet `to`. */
-export function holdsDeposit(
-  receipt: EvmReceipt,
-  want: { connection: string; assetManager: string; srcChain: string; from: string; to: string },
-): boolean {
-  return hubTransfers(receipt, want).some(transfer => same(transfer.from, want.from) && same(transfer.to, want.to));
-}
-
 interface Transfer {
   from: string;
   to: string;

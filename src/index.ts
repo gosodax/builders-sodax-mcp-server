@@ -42,6 +42,7 @@ import {
 } from "./services/requestContext.js";
 import { initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
+import { openQuotes } from "./services/swap/quoteCache.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
 
@@ -258,6 +259,8 @@ async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolea
         healthy: docsHealth.healthy,
         toolCount: docsHealth.toolCount,
       },
+      // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
+      swapQuotes: openQuotes(),
     });
   });
 
@@ -428,7 +431,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal);
+  await notifyServerStopping(signal, openQuotes().open);
   await shutdownAnalytics();
   process.exit(0);
 }

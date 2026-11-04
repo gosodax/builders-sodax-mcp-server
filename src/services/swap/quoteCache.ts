@@ -161,6 +161,21 @@ export function markRelayedForRefund(quote: CachedQuote): void {
   if (!quotes.has(quote.quoteId)) quotes.set(quote.quoteId, quote);
 }
 
+/**
+ * The quotes a restart would lose before their deposit reached the backend: not handed over, not expired.
+ * `/health` shows them so a deploy can wait until `open` is 0 or `openUntil` has passed.
+ */
+export function openQuotes(now = Date.now()): { open: number; openUntil: string | null } {
+  let open = 0;
+  let until = 0;
+  for (const quote of quotes.values()) {
+    if (quote.handedOver || quote.expiresAt <= now) continue;
+    open++;
+    until = Math.max(until, quote.expiresAt);
+  }
+  return { open, openUntil: open > 0 ? new Date(until).toISOString() : null };
+}
+
 export function clearQuoteCache(): void {
   quotes.clear();
   openByKey.clear();

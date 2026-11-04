@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isDiscordConfigured, notifyError, notifyServerStarted, postToDiscord } from "./discord.js";
+import {
+  isDiscordConfigured,
+  notifyError,
+  notifyServerStarted,
+  notifyServerStopping,
+  postToDiscord,
+} from "./discord.js";
 
 const WEBHOOK = "https://discord.test/webhook";
 const originalWebhook = process.env.DISCORD_WEBHOOK_URL;
@@ -100,6 +106,20 @@ describe("notifyServerStarted", () => {
     const fetchSpy = stubFetch();
     await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production", sodaxEnv: "production" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("notifyServerStopping", () => {
+  it("says how many open swap quotes the stop loses, and nothing about quotes when there are none", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await notifyServerStopping("SIGTERM", 2);
+    await notifyServerStopping("SIGTERM");
+    const [lost, clean] = fetchSpy.mock.calls.map(call => JSON.parse(call[1].body as string).embeds[0].description);
+    expect(lost).toBe(
+      'Received `SIGTERM`\n2 open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".',
+    );
+    expect(clean).toBe("Received `SIGTERM`");
   });
 });
 

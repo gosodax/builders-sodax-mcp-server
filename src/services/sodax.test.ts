@@ -9,6 +9,7 @@ import {
   cancelPayload,
   checksumValid,
   connectionFor,
+  createIntentPayload,
   encodeRecipient,
   evmChainIdFor,
   initSodax,
@@ -99,6 +100,22 @@ describe("cancelPayload", () => {
     const { intent } = recorded("built-intent-eth.json");
     expect(cancelPayload({ ...intent, srcChain: "999" })).toBeUndefined();
     expect(cancelPayload({ ...intent, intentId: "not a number" })).toBeUndefined();
+  });
+});
+
+describe("createIntentPayload", () => {
+  it.each(["built-intent-usdc-fee.json", "built-intent-eth.json"] as const)(
+    "is the payload a live spoke swap (%s) carries, byte for byte",
+    name => {
+      const { intent, relayData } = recorded(name);
+      expect(createIntentPayload(intent)?.toLowerCase()).toBe(relayData.payload.toLowerCase());
+    },
+  );
+
+  it("differs for another intent of the same wallet, and gives up on one the SDK can't encode", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    expect(createIntentPayload({ ...intent, intentId: "8" })).not.toBe(createIntentPayload(intent));
+    expect(createIntentPayload({ ...intent, intentId: "not a number" })).toBeUndefined();
   });
 });
 

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { callerKeyHash } from "../services/requestContext.js";
-import { type EvmReceipt, cancelPayload, getEvmReceipt, initSodax, userHubWallet } from "../services/sodax.js";
+import {
+  type EvmReceipt,
+  cancelPayload,
+  createIntentPayload,
+  getEvmReceipt,
+  initSodax,
+  userHubWallet,
+} from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
@@ -50,8 +57,10 @@ const CANCEL_TX_BUILT = {
   data: `${SEND_MESSAGE_SELECTOR}${abiEncode([146n, CREATOR, PAYLOAD]).slice(2)}`,
 };
 const cancel = (args: Record<string, unknown>) => callTool("sodax_swap_cancel", args);
-/** The swap's deposit: the user's transfer to their hub wallet, which created INTENT. */
-const DEPOSIT = messageReceipt({ payload: rlpList([INTENT.inputToken, USER, CREATOR, "0x4c4b40", "0x01"]) });
+/** The swap's deposit: the user's transfer to their hub wallet, carrying the calls that create INTENT. */
+const DEPOSIT = messageReceipt({
+  payload: rlpList([INTENT.inputToken, USER, CREATOR, "0x4c4b40", createIntentPayload(INTENT) ?? ""]),
+});
 
 /** The deposit for TX, and `cancelTx` (the user's cancel unless given) for any other hash. */
 function receipts(cancelTx: EvmReceipt | null = cancelReceipt(PAYLOAD)) {
@@ -170,6 +179,8 @@ describe("sodax_swap_cancel", () => {
     ["from another chain", { srcChain: "30" }, CREATOR],
     ["from a sender with no deposit in the tx", { srcAddress: CREATOR }, CREATOR],
     ["created by a hub wallet its sender doesn't own", {}, USER],
+    // Same chain, sender and hub wallet: only the deposit's payload tells the two intents apart.
+    ["the same wallet made in another deposit", { intentId: "8" }, CREATOR],
   ])("refuses, without a quote, a hub intent %s", async (_case, change, hubWallet) => {
     vi.mocked(userHubWallet).mockResolvedValue(hubWallet);
     const calls = stubBackend({ row: OPEN, hubIntent: { ...INTENT, ...change }, cancelTx: CANCEL_TX_BUILT });

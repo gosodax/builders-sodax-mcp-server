@@ -6,7 +6,7 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { cancelPayload, intentChainId, userHubWallet } from "../sodax.js";
+import { cancelPayload, createIntentPayload, intentChainId, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
 import { type CachedQuote, claimDeposit } from "./quoteCache.js";
@@ -19,7 +19,7 @@ import {
   resolveSource,
   whyNotCancellable,
 } from "./source.js";
-import { HUB_RELAY_ID, decodeSendMessage, holdsCancel, holdsDeposit } from "./sourceTx.js";
+import { HUB_RELAY_ID, checkDeposit, decodeSendMessage, holdsCancel } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
 import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
 
@@ -143,17 +143,21 @@ const quoteMismatch = (message: string) =>
   });
 
 /**
- * Without a quote, the hub intent must be the tracked deposit's: from this chain, created by the hub
- * wallet of an address that deposited to it in that tx, so that address's cancel reaches it.
+ * Without a quote, the hub intent must be the tracked deposit's: from this chain, sent in that tx by the
+ * intent's source address to its creator with the calls that create this very intent, and the creator
+ * must be that address's hub wallet, so its cancel reaches it.
  */
 async function isDepositsIntent(source: SwapSource, txHash: string, intent: Intent): Promise<boolean> {
   if (intent.srcChain !== intentChainId(source.chain.key)) return false;
+  const payload = createIntentPayload(intent);
+  if (!payload) return false;
   const receipt = await readReceipt(source.chain, txHash);
   // The deposit reached the hub, so it's mined: a node without its receipt is behind.
   if (!receipt) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${source.chain.name} right now.`);
   const { connection, assetManager } = source;
-  const want = { connection, assetManager, srcChain: intent.srcChain, from: intent.srcAddress, to: intent.creator };
-  if (!holdsDeposit(receipt, want)) return false;
+  const relayData = { address: intent.creator, payload };
+  const want = { connection, assetManager, srcChain: intent.srcChain, srcAddress: intent.srcAddress, relayData };
+  if (checkDeposit(receipt, want) !== "match") return false;
   const hubWallet = await userHubWallet(source.chain.key, intent.srcAddress).catch(() => {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
   });

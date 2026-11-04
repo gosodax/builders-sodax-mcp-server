@@ -309,11 +309,11 @@ export async function rebuildSwapTx(params: {
   intent: IntentJson;
 }): Promise<SwapTx | undefined> {
   const { srcChainKey, srcAddress, token, amount, intent } = params;
+  const hub = isHubChain(srcChainKey);
+  const payload = createIntentPayload(intent, hub);
+  if (!payload) return undefined;
   try {
-    const { sdk: lib, sodax } = sdk();
-    const hub = isHubChain(srcChainKey);
-    const sdkIntent = toSdkIntent(intent);
-    const payload = lib.EvmSolverService.reconstructCreateIntentData(sdkIntent, solverConfig.intentsContract, hub);
+    const { sodax } = sdk();
     if (hub) {
       // As the SDK's Sonic path does: value only when the hub asset is the hub's native token.
       const native = intent.inputToken.toLowerCase() === spokeChainConfig.sonic.nativeToken.toLowerCase();
@@ -325,7 +325,7 @@ export async function rebuildSwapTx(params: {
       token: token as `0x${string}`,
       to: intent.creator as `0x${string}`,
       amount,
-      data: payload,
+      data: payload as `0x${string}`,
       raw: true,
     });
     return { to: tx.to, value: BigInt(tx.value), data: tx.data, payload };
@@ -348,15 +348,16 @@ export function cancelPayload(intent: IntentJson): string | undefined {
 }
 
 /**
- * What a spoke deposit for `intent` carries to the user's hub wallet: the calls that create it, as the
- * SDK builds them (byte for byte, `intentId` included). `undefined` if the SDK can't.
+ * The calls that create `intent`, as the SDK builds them (byte for byte, `intentId` included): what a spoke
+ * deposit carries to the user's hub wallet, or from the hub (`hubSource`) the tx's own calldata.
+ * `undefined` if the SDK can't.
  */
-export function createIntentPayload(intent: IntentJson): string | undefined {
+export function createIntentPayload(intent: IntentJson, hubSource = false): string | undefined {
   try {
     return sdk().sdk.EvmSolverService.reconstructCreateIntentData(
       toSdkIntent(intent),
       solverConfig.intentsContract,
-      false,
+      hubSource,
     );
   } catch {
     return undefined;

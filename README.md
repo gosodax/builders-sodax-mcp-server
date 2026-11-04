@@ -391,10 +391,10 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
-- Before a deploy or restart, check `GET /health`: `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet. Deploy when it's 0, or once `swapQuotes.openUntil` has passed. Otherwise those quotes are lost, and a deposit made from one stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message says how many quotes a stop lost. When an agent then tracks such a deposit with its quoteId, Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash.
+- Before a deploy or restart, check `GET /health`. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its quoteId, Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
-- `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback.
+- `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 
 ## API Endpoints
 

@@ -404,7 +404,9 @@ function fatalExit(context: string, error: unknown): void {
   logger.fatal({ err: error }, context);
   if (exiting) return;
   exiting = true;
-  void notifyError(context, error).finally(() => {
+  const open = openQuotes().open;
+  const alert = open > 0 ? `${context} (${open} open swap quote(s) lost)` : context;
+  void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
       clearTimeout(force);

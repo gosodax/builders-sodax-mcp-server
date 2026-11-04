@@ -27,7 +27,13 @@ import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { partnerFeeFromEnv } from "./services/partnerFee.js";
-import { PROFILE_DESCRIPTIONS, apiKeyStatus, profileFromArgs, selectToolsets } from "./services/profiles.js";
+import {
+  apiKeyStatus,
+  describeProfiles,
+  parseSwapToolsEnabled,
+  profileFromArgs,
+  selectToolsets,
+} from "./services/profiles.js";
 import {
   type RequestContext,
   parseApiKey,
@@ -89,12 +95,15 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
 }
 
 /** `rpcUrls`: the RPC overrides the swap tools read through, already checked. */
-async function runStdio(rpcUrls: Record<string, string>): Promise<void> {
+async function runStdio(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
   // Before the docs warm-up, so a refused profile or partner fee fails fast.
-  const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), keyStatus);
+  const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
+    apiKey: keyStatus,
+    swapToolsEnabled,
+  });
   // The SDK only for the swap tools, and before the partner fee: its checksum check needs it.
   if (toolsets.swap) await initSodax(rpcUrls);
   const partnerFee = partnerFeeFromEnv(process.env);
@@ -112,7 +121,7 @@ async function runStdio(rpcUrls: Record<string, string>): Promise<void> {
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
-async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
+async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
   if (profileFromArgs(process.argv.slice(2), process.env) !== undefined) {
     logger.warn(
       "--profile and MCP_PROFILE are ignored over HTTP: each client picks its profile with ?profile= or x-sodax-profile",
@@ -124,11 +133,11 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
   if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
     logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
-  // Warm the SDK docs cache, and load the SDK: any keyed connection can get the swap tools.
+  // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
-  await Promise.all([initSodax(rpcUrls), warmDocsCache()]);
+  await Promise.all([swapToolsEnabled ? initSodax(rpcUrls) : undefined, warmDocsCache()]);
 
-  seedToolRegistry();
+  seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
   const app = express();
 
@@ -253,7 +262,7 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
   });
 
   app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res);
+    const connection = resolveConnection(req, res, swapToolsEnabled);
     if (!connection) return;
     const clientId = hashClientIp(req.ip || "unknown");
     const requestServer = await createServer(connection.toolsets, clientId);
@@ -271,7 +280,7 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
   const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; context: RequestContext }>();
 
   app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res);
+    const connection = resolveConnection(req, res, swapToolsEnabled);
     if (!connection) return;
     const clientId = hashClientIp(req.ip || "unknown");
     const sseServer = await createServer(connection.toolsets, clientId);
@@ -319,12 +328,12 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
     res.json({
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
-      description: `Live cross-network DeFi API data, AMM analytics, money market insights, swap tools, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
+      description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       profiles: {
         default: "all",
         select: "?profile=<name> or the x-sodax-profile header",
-        ...PROFILE_DESCRIPTIONS,
+        ...describeProfiles(swapToolsEnabled),
       },
       // Tool lists derived from the tool registry; sdkDocs reflects the live
       // SDK docs proxy list.
@@ -346,7 +355,10 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
 
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info({ port, sodaxEnv: SODAX_ENV }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info(
+      { port, sodaxEnv: SODAX_ENV, swapToolsEnabled },
+      `SODAX Builders MCP server running on http://0.0.0.0:${port}`,
+    );
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,
@@ -368,12 +380,13 @@ async function runHTTP(rpcUrls: Record<string, string>): Promise<void> {
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
+  const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
   const rpcUrls = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
-    await runStdio(rpcUrls);
+    await runStdio(rpcUrls, swapToolsEnabled);
   } else {
-    await runHTTP(rpcUrls);
+    await runHTTP(rpcUrls, swapToolsEnabled);
   }
 }
 

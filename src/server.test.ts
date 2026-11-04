@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./server.js";
-import { PROFILE_DESCRIPTIONS, type ToolSelection, type Toolsets, selectToolsets } from "./services/profiles.js";
+import { type ToolSelection, type Toolsets, describeProfiles, selectToolsets } from "./services/profiles.js";
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
 beforeEach(() => {
@@ -80,14 +80,14 @@ describe("instructions", () => {
 
   it("tell a keyless default connection, last, that the swap tools need a key", async () => {
     const builder = await instructions({ builder: true, swap: false });
-    const keyless = selectToolsets(undefined, "missing");
+    const keyless = selectToolsets(undefined, { apiKey: "missing", swapToolsEnabled: true });
     expect(builder).not.toContain("x-api-key");
     expect(await instructions(keyless)).toBe(`${builder}\n\n${keyless.keyHint}`);
   });
 
   it("tell a builder connection, last, that its malformed key is dropped", async () => {
     const builder = await instructions({ builder: true, swap: false });
-    const malformed = selectToolsets("builder", "malformed");
+    const malformed = selectToolsets("builder", { apiKey: "malformed", swapToolsEnabled: false });
     expect(await instructions(malformed)).toBe(`${builder}\n\n${malformed.keyHint}`);
   });
 });
@@ -108,7 +108,7 @@ describe("server.json", () => {
 
   it("offers every profile, under a description within the registry's 100 characters", () => {
     const profile = meta.remotes[0].headers.find(header => header.name === "x-sodax-profile");
-    expect(profile?.choices?.slice().sort()).toEqual(Object.keys(PROFILE_DESCRIPTIONS).sort());
+    expect(profile?.choices?.slice().sort()).toEqual(Object.keys(describeProfiles(true)).sort());
     expect(meta.description.length).toBeLessThanOrEqual(100);
   });
 });

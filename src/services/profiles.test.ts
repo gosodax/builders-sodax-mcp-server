@@ -1,19 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
-  type ApiKeyStatus,
   ConnectionError,
   apiKeyStatus,
+  describeProfiles,
+  parseSwapToolsEnabled,
   profileFromArgs,
   profileFromRequest,
   selectToolsets,
 } from "./profiles.js";
 
+const on = { swapToolsEnabled: true };
+const off = { swapToolsEnabled: false };
+const keyed = { apiKey: "valid" } as const;
+const keyless = { apiKey: "missing" } as const;
+const malformed = { apiKey: "malformed" } as const;
 const DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 const NOT_A_SODAX_KEY = "isn't a SODAX API key (a sodax_… key alone, at most 128 characters)";
 
-function refusal(requested: unknown, apiKey: ApiKeyStatus): ConnectionError {
+function refusal(requested: unknown, opts: Parameters<typeof selectToolsets>[1]): ConnectionError {
   try {
-    selectToolsets(requested, apiKey);
+    selectToolsets(requested, opts);
   } catch (error) {
     if (error instanceof ConnectionError) return error;
     throw error;
@@ -23,58 +29,80 @@ function refusal(requested: unknown, apiKey: ApiKeyStatus): ConnectionError {
 
 describe("selectToolsets", () => {
   it.each([undefined, "all", " ALL "])("serves both to a keyed default connection (%j)", profile => {
-    expect(selectToolsets(profile, "valid")).toEqual({ builder: true, swap: true });
+    expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true });
   });
 
   it("gives a keyless default connection the builder tools only, and says the swap tools need a key", () => {
-    const selection = selectToolsets(undefined, "missing");
+    const selection = selectToolsets(undefined, { ...keyless, ...on });
     expect(selection).toEqual({ builder: true, swap: false, keyHint: expect.any(String) });
     expect(selection.keyHint).toContain("x-api-key header");
     expect(selection.keyHint).toContain(DOCS_URL);
   });
 
   it("tells a default connection with a malformed key that the value isn't a SODAX key", () => {
-    const selection = selectToolsets("all", "malformed");
+    const selection = selectToolsets("all", { ...malformed, ...on });
     expect([selection.builder, selection.swap]).toEqual([true, false]);
     expect(selection.keyHint).toBe(
       `This connection has no swap tools: they need a SODAX API key. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
     );
   });
 
-  it("tells a builder connection its malformed key is dropped", () => {
-    const selection = selectToolsets("builder", "malformed");
+  it.each([
+    ["builder", on],
+    ["builder", off],
+    ["all", off],
+  ] as const)("tells a %s connection (switch %j) its malformed key is dropped", (profile, switchOpts) => {
+    const selection = selectToolsets(profile, { ...malformed, ...switchOpts });
     expect([selection.builder, selection.swap]).toEqual([true, false]);
     expect(selection.keyHint).toBe(
       `The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
     );
   });
 
-  it.each(["valid", "missing"] as const)(
-    "never gives a builder connection (key %s) the swap tools or a hint",
-    apiKey => {
-      expect(selectToolsets("builder", apiKey)).toEqual({ builder: true, swap: false });
-    },
-  );
+  it("adds no key hint where a key wouldn't bring the swap tools", () => {
+    expect(selectToolsets("all", { ...keyed, ...on }).keyHint).toBeUndefined();
+    expect(selectToolsets("builder", { ...keyless, ...on }).keyHint).toBeUndefined();
+    expect(selectToolsets("all", { ...keyless, ...off }).keyHint).toBeUndefined();
+  });
+
+  it("keeps the swap tools out of every profile while the switch is off", () => {
+    expect(selectToolsets("all", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
+    expect(selectToolsets("builder", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
+  });
+
+  it("never gives a builder connection the swap tools", () => {
+    expect(selectToolsets("builder", { ...keyed, ...on })).toEqual({ builder: true, swap: false });
+  });
 
   it("serves only the swap tools to a keyed swap connection", () => {
-    expect(selectToolsets(" Swap ", "valid")).toEqual({ builder: false, swap: true });
+    expect(selectToolsets(" Swap ", { ...keyed, ...on })).toEqual({ builder: false, swap: true });
   });
 
   it.each(["bogus", ["swap", "all"], { swap: "1" }])("refuses an unknown profile (%j) without echoing it", profile => {
-    const error = refusal(profile, "valid");
+    const error = refusal(profile, { ...keyed, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([400, -32602]);
     expect(error.message).toBe("Unknown profile. Use builder, swap, all.");
   });
 
+  it("lists only the enabled profiles while the switch is off", () => {
+    expect(refusal("bogus", { ...keyed, ...off }).message).toBe("Unknown profile. Use builder, all.");
+  });
+
+  it("refuses swap while the switch is off, before asking for a key", () => {
+    const error = refusal("swap", { ...keyless, ...off });
+    expect([error.httpStatus, error.rpcCode]).toEqual([400, -32602]);
+    expect(error.message).toContain("turned off");
+  });
+
   it("refuses a keyless swap connection with 403 and where to get a key", () => {
-    const error = refusal("swap", "missing");
+    const error = refusal("swap", { ...keyless, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
     expect(error.message).toMatch(/^API key required for the swap profile\. Send it in the x-api-key header/);
     expect(error.message).toContain(DOCS_URL);
   });
 
   it("refuses a swap connection whose key isn't a SODAX key, saying so", () => {
-    const error = refusal("swap", "malformed");
+    const error = refusal("swap", { ...malformed, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
     expect(error.message).toBe(
       `A SODAX API key is required for the swap profile. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}: ${DOCS_URL}`,
@@ -96,6 +124,18 @@ describe("apiKeyStatus", () => {
     ["  ", "missing"],
   ])("%j → %s", (value, expected) => {
     expect(apiKeyStatus(value)).toBe(expected);
+  });
+});
+
+describe("describeProfiles", () => {
+  it("describes swap as off while the switch is off", () => {
+    expect(describeProfiles(false).swap).toBe("Turned off on this server");
+    expect(describeProfiles(true).swap).toContain("x-api-key");
+  });
+
+  it("offers the swap tools in all only while the switch is on", () => {
+    expect(describeProfiles(false).all).toBe("The builder tools; the swap tools are turned off on this server");
+    expect(describeProfiles(true).all).toContain("x-api-key");
   });
 });
 
@@ -124,5 +164,22 @@ describe("profileFromArgs", () => {
 
   it("treats a blank --profile as unset", () => {
     expect(profileFromArgs(["--profile="], { MCP_PROFILE: "builder" })).toBe("builder");
+  });
+});
+
+describe("parseSwapToolsEnabled", () => {
+  it.each([
+    [undefined, true],
+    ["", true],
+    ["true", true],
+    [" TRUE ", true],
+    ["false", false],
+    [" False ", false],
+  ])("%j → %j", (value, expected) => {
+    expect(parseSwapToolsEnabled(value)).toBe(expected);
+  });
+
+  it("stops on anything else, so a typo can't flip the gate", () => {
+    expect(() => parseSwapToolsEnabled("yes")).toThrow("SODAX_SWAP_TOOLS_ENABLED");
   });
 });

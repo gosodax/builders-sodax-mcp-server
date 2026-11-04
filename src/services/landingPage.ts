@@ -43,6 +43,8 @@ export function renderLandingPage(template: string, data: LandingPageData): stri
     MONEY_MARKET_TOOLS: String(moduleCounts.moneyMarket),
     PARTNERS_TOOLS: String(moduleCounts.partnersAndToken),
     SWAP_TOOLS: String(moduleCounts.swap),
+    // No swap tools registered (the kill switch is off): no card.
+    SWAP_CARD_HIDDEN: moduleCounts.swap > 0 ? "" : "hidden",
     SDK_DOCS_TOOLS: String(data.sdkDocsToolCount),
   };
 

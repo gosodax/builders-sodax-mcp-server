@@ -35,10 +35,10 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
   # Publishes server.json to the MCP Registry (registry.modelcontextprotocol.io)
-  # for every release, so the registry and the directories that mirror it always
-  # show the current version and tool list. Auth is GitHub OIDC: the
-  # io.github.gosodax/* namespace is granted to workflows in the gosodax org,
-  # no secrets needed.
+  # for every release, so the registry entry carries the current version. The
+  # registry keeps no tool list; it drops server.json's `tools` on publish.
+  # Auth is GitHub OIDC: the io.github.gosodax/* namespace is granted to
+  # workflows in the gosodax org, no secrets needed.
   publish-mcp-registry:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
@@ -47,7 +47,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 

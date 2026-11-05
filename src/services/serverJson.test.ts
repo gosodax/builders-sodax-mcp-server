@@ -1,7 +1,8 @@
 /**
  * Guardrails for server.json, the manifest published to the MCP Registry
- * (registry.modelcontextprotocol.io). Directories that mirror the registry show
- * its tool list and version, so both must match what this server actually ships.
+ * (registry.modelcontextprotocol.io). The registry keeps the version but drops
+ * `tools` on publish, so the tool list is hand-written docs; both are checked
+ * against what this server actually ships.
  */
 
 import { readFileSync } from "node:fs";

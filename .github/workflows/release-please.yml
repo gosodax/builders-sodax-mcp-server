@@ -35,14 +35,14 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
   # Publishes server.json to the MCP Registry (registry.modelcontextprotocol.io)
-  # for every release, so the registry entry carries the current version. The
-  # registry keeps no tool list; it drops server.json's `tools` on publish.
+  # for every release, so the registry entry carries the current version.
   # Auth is GitHub OIDC: the io.github.gosodax/* namespace is granted to
   # workflows in the gosodax org, no secrets needed.
   publish-mcp-registry:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -50,6 +50,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
 
       - name: Install mcp-publisher
         run: .github/scripts/install-mcp-publisher.sh

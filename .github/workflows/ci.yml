@@ -46,8 +46,8 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # server.json is what the MCP Registry publishes; validate it against the
-      # registry schema on every PR so a release can't ship an unpublishable manifest.
+      # Checks server.json with the live registry's validator (schema and semantic
+      # rules). Publish can still fail on namespace auth or an existing version.
       - name: Validate server.json (MCP Registry)
         run: |
           .github/scripts/install-mcp-publisher.sh

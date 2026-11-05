@@ -4,9 +4,11 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
 import { EVM_TX_HASH_PATTERN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
+import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
@@ -17,7 +19,8 @@ import { registerActionTool } from "./actionTool.js";
 // zod schemas are immutable, so each tool adds its own description to these.
 const chainArg = z.string().trim().min(1).max(64);
 const tokenArg = z.string().trim().min(1).max(128);
-const addressArg = z.string().trim().max(128).optional();
+const addressText = z.string().trim().max(128);
+const addressArg = addressText.optional();
 const txHashArg = z
   .string()
   .trim()
@@ -37,7 +40,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_resolve_token",
-    "Look up a token on a chain: its address, decimals and hub asset. sodax_swap_quote takes symbols itself; use this when it returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
+    "Look up a token on a chain: its address, decimals and hub asset. The other swap tools take symbols themselves; use this when one returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
     {
       chain: chainArg.describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
@@ -48,6 +51,24 @@ export function registerSwapTools(server: McpServer): void {
     async ({ chain, query }) => {
       const resolution = resolveToken(await getSwapCatalog(), chain, query);
       return { ...resolution, nextStep: resolveNextStep(resolution) };
+    },
+  );
+
+  registerActionTool(
+    server,
+    "sodax_get_balance",
+    "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_track rather than re-reading balances.",
+    {
+      chain: chainArg.describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
+      address: addressText.min(1).describe("The wallet's address on that chain."),
+      token: tokenArg
+        .optional()
+        .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async args => {
+      const balances = await readBalances(args);
+      return { ...balances, nextStep: balanceNextStep(balances) };
     },
   );
 
@@ -146,7 +167,33 @@ const RESTRICTED = {
   depositOnly: "is deposit-only: use it only as the token the user sends",
 } as const;
 
-const USE_RESOLVED = "Pass chain.key and token.address to sodax_swap_quote for this side; amounts stay in token units.";
+// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
+const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_quote if there was none)";
+const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL}; a quote's amount stays in token units.`;
+
+/** Built from catalog symbols, chain names and formatted amounts only. */
+function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
+  if (accountExists === false) {
+    return `The wallet has no account on ${chain.name} yet, so it holds nothing there; it needs ${native.symbol} sent to it first.`;
+  }
+  const isNative = token?.address === native.address;
+  // The SDK reads Stellar's native balance less the minimum reserve and selling liabilities.
+  const spendable =
+    chain.key === ChainKeys.STELLAR_MAINNET ? " spendable (after the account's reserve and open offers)" : "";
+  const held = token && !isNative ? ` and ${token.amount} ${token.symbol}` : "";
+  const sentences = [`The wallet's balance on ${chain.name}: ${native.amount} ${native.symbol}${spendable}${held}.`];
+  if (token && trustline === false) {
+    sentences.push(
+      `It has no ${token.symbol} trustline; the wallet must add one before it can receive ${token.symbol}.`,
+    );
+  }
+  if (native.baseUnits === "0") {
+    sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
+  } else if (isNative) {
+    sentences.push(`Swapping ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
+  }
+  return sentences.join(" ");
+}
 
 /**
  * Built from catalog symbols, addresses and chain names only, never from the caller's
@@ -174,7 +221,7 @@ export function resolveNextStep(resolution: Resolution): string {
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
           : `which of ${labels.join(", ")} on ${chain} they mean`;
-      return `Ask the user ${ask}, then pass its address to sodax_swap_quote.`;
+      return `Ask the user ${ask}, then pass its address to ${UNKNOWN_TOKEN_CALL}.`;
     }
     case "not_found": {
       const [first] = resolution.suggestions;
@@ -222,7 +269,7 @@ function quoteNextStep(quote: SwapQuote): string {
       : "";
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.`,
-    "Balances aren't checked here.",
+    "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
     "Once they confirm, have their wallet send the steps in order, each confirmed before the next (or the batch), before it expires, then call sodax_swap_track with the quoteId and the swap transaction's hash.",
   ].join(" ");
@@ -291,7 +338,7 @@ export function trackNextStep(result: TrackResult): string {
       const atLeast = `at least ${promised.amount} ${promised.symbol}`;
       return result.delivery === "complete"
         ? `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`
-        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop. Don't send it again.`;
+        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.`;
     }
     case "failed":
       return `${OUTCOME[result.outcome]} ${failedNextStep(result)}`;

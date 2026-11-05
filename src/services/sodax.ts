@@ -12,6 +12,7 @@ import {
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
+  isNativeToken,
   isSuiChainKey,
   solverConfig,
   spokeChainConfig,
@@ -73,7 +74,11 @@ export function encodeRecipient(chainKey: string, address: string): string | und
     // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
     if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
     // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
-    return sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
+    const encoded = sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
+    // The SDK encodes any Stacks version, testnet (ST…, St…, SN…) included: only mainnet single- or multi-sig
+    // (0x16, 0x14) is taken, in a standard (0x05) or contract (0x06) principal.
+    if (chainConfigs[chainKey]?.chain?.type === "STACKS" && !/^0x0[56]1[46]/.test(encoded)) return undefined;
+    return encoded;
   } catch {
     return undefined;
   }
@@ -211,6 +216,41 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
       if (isNotFound(error)) return false;
       throw error;
     }
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
+// Whether a failed native read says the account doesn't exist yet (unfunded), per family; told apart
+// without the messages, which carry the RPC URL.
+function isMissingAccount(chainKey: string, error: unknown): boolean {
+  switch (chainConfigs[chainKey]?.chain?.type) {
+    case "STELLAR":
+      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+      return (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+    case "NEAR":
+      return error instanceof Error && error.name === "AccountDoesNotExistError";
+    default:
+      return false;
+  }
+}
+
+/**
+ * A wallet's balance of a catalog token in base units, the native coin included (Hedera's scaled by the
+ * SDK). `null` only from a native read on Stellar or NEAR whose account doesn't exist yet: a NEAR token
+ * read fails the same way for a token contract that doesn't exist. A failed read fails as a bare error:
+ * never reported as 0. One read per token: the SDK's batch read reports a failed token as 0.
+ */
+export function walletBalance(chainKey: string, address: string, token: { address: string }): Promise<bigint | null> {
+  return bounded(async () => {
+    const result = await sdk().sodax.spoke.getWalletBalance({
+      srcChainKey: chainKey as SpokeChainKey,
+      srcAddress: address as never,
+      // Only the address is read, to tell the native coin from a token contract.
+      token: token as never,
+    });
+    if (result.ok) return result.value;
+    if (isNativeToken(chainKey as SpokeChainKey, token.address) && isMissingAccount(chainKey, result.error))
+      return null;
+    throw new Error("balance read failed");
   }, RPC_CALL_TIMEOUT_MS);
 }
 

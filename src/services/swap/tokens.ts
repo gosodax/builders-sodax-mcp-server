@@ -186,6 +186,11 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
   return catalog;
 }
 
+/** The chain's native coin as the catalog lists it, if it marks one. */
+export function nativeToken(catalog: SwapCatalog, chainKey: string): SwapsApiToken | undefined {
+  return catalog.tokens[chainKey]?.find(token => token.isNative);
+}
+
 /** The token at `address` on `chainKey`, if the catalog lists it, however the address is spelled. */
 export function findToken(catalog: SwapCatalog, chainKey: string, address: string): SwapsApiToken | undefined {
   const wanted = canonicalAddress(address);

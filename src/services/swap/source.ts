@@ -1,7 +1,7 @@
 /**
  * Where a swap started and what's known about it, shared by quote, track and cancel: which chains
- * a swap can start from, the caller's quote, chain reads, and whether a submitted swap can be
- * cancelled.
+ * a swap can start from, the caller's quote, and whether a submitted swap can be cancelled. Also
+ * the one way to read a chain (`chainRead`), which the balance tool uses too.
  */
 
 import { logger } from "../logger.js";
@@ -107,7 +107,7 @@ export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
 }
 
 /** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. */
-async function chainRead<T>(chain: ChainInfo, op: string, read: () => Promise<T>): Promise<T> {
+export async function chainRead<T>(chain: ChainInfo, op: string, read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch {

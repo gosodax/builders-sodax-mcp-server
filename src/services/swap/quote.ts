@@ -25,7 +25,7 @@ import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { checkQuoteRoom, putQuote } from "./quoteCache.js";
-import { resolveToken } from "./resolver.js";
+import { checkAddress, resolveExactly } from "./resolver.js";
 import { configDisagrees, readBlockNumber, sourceChainFor } from "./source.js";
 import {
   type Approval,
@@ -247,12 +247,7 @@ function resolveSide(
   token: string,
   side: "from" | "to",
 ): { chain: ChainInfo; token: SwapsApiToken; config: SwapChain } {
-  const resolution = resolveToken(catalog, chain, token);
-  if (resolution.status !== "resolved") {
-    throw new ActionError("UNKNOWN_TOKEN", `The ${side} token doesn't resolve to exactly one swap token.`, {
-      details: { side },
-    });
-  }
+  const resolution = resolveExactly(catalog, chain, token, { side });
   if (!canUseAs(resolution.token, side)) {
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`);
@@ -272,17 +267,9 @@ function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }):
   return { chain, symbol: token.symbol, address: token.address };
 }
 
-// An all-zero address in any family (EVM `0x0…0`, Sui `0x0`, Solana's system program) burns what it receives.
-function checkAddress(address: string, chain: ChainInfo): string {
-  const encoded = encodeRecipient(chain.key, address);
-  if (!encoded || /^0x0*$/.test(encoded)) {
-    throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`);
-  }
-  return address;
-}
-
 /** A token as an intent names it: a hub token (native S included) as is, else by its hub asset. */
 const intentToken = (chainKey: string, token: SwapsApiToken) => (isHubChain(chainKey) ? token.address : token.hubAsset);
+
 /** A value as a 32-byte ABI word (hex, no prefix). */
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");

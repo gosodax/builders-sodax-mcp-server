@@ -129,11 +129,11 @@ export function registerSwapTools(server: McpServer): void {
     async args => {
       const quote = await quoteSwap({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
       // Nothing submits the deposit unless track is called; a field is harder to miss than a sentence.
-      const afterSend =
+      const afterSend: AfterSend | undefined =
         quote.status === "ready"
-          ? { afterSend: { tool: "sodax_swap_track", args: { quoteId: quote.quoteId }, needs: "txHash" } }
-          : {};
-      return { ...quote, ...afterSend, nextStep: quoteNextStep(quote) };
+          ? { tool: "sodax_swap_track", args: { quoteId: quote.quoteId }, needs: "txHash" }
+          : undefined;
+      return { ...quote, ...(afterSend && { afterSend }), nextStep: quoteNextStep(quote) };
     },
   );
 
@@ -169,6 +169,13 @@ export function registerSwapTools(server: McpServer): void {
     },
     retryWithoutResend("sodax_swap_cancel", "cancel"),
   );
+}
+
+/** What a ready quote tells the agent to call once the wallet has sent the swap. */
+export interface AfterSend {
+  tool: "sodax_swap_track";
+  args: { quoteId: string };
+  needs: "txHash";
 }
 
 /**

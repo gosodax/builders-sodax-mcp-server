@@ -10,12 +10,13 @@
     "build": "pnpm exec tsc && cp -r src/public dist/",
     "check:drift": "tsx --env-file-if-exists=.env src/scripts/checkDrift.ts",
     "check:docs": "tsx --env-file-if-exists=.env src/scripts/checkDocs.ts",
-    "checkTs": "tsc --noEmit",
+    "checkTs": "tsc --noEmit && tsc --noEmit -p scripts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
     "test:contract": "vitest run --config vitest.contract.config.ts",
+    "e2e:canary": "tsx scripts/e2e/swapCanary.ts",
     "prepare": "husky",
     "clean": "rm -rf dist"
   },
@@ -47,6 +48,7 @@
     "pino-pretty": "^13.1.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "viem": "2.57.4",
     "vitest": "^3.2.6"
   },
   "commitlint": {

@@ -20,7 +20,7 @@ const DISCORD_USERNAME = "SODAX MCP Server";
 export const DISCORD_CONTENT_LIMIT = 1800;
 
 /** Embed accent colors (decimal RGB, as Discord expects). */
-const COLOR = {
+export const COLOR = {
   green: 0x2ecc71,
   red: 0xe74c3c,
 } as const;

@@ -17,11 +17,16 @@ afterEach(() => {
 });
 
 describe("sodax_resolve_token", () => {
-  it("comes with sodax_swap_quote, and nothing else, on a swap connection", async () => {
+  it("comes with the other swap tools, and nothing else, on a swap connection", async () => {
     const client = await swapClient();
     const { tools } = await client.listTools();
     await client.close();
-    expect(tools.map(tool => tool.name).sort()).toEqual(["sodax_resolve_token", "sodax_swap_quote"]);
+    expect(tools.map(tool => tool.name).sort()).toEqual([
+      "sodax_resolve_token",
+      "sodax_swap_cancel",
+      "sodax_swap_quote",
+      "sodax_swap_track",
+    ]);
   });
 
   it("returns the resolution with a next step, as structured content and the same JSON as text", async () => {

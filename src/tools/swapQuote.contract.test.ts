@@ -3,9 +3,9 @@
  * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
-import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
+import { callerKeyHash, parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { getCachedQuote } from "../services/swap/quoteCache.js";
 import { formatUnits } from "../services/swap/units.js";
@@ -37,14 +37,14 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     ]);
     const configs = (await getAllChainsConfigs()) as Record<string, { addresses: { assetManager: string } }>;
     expect(out.steps?.[1].tx.to.toLowerCase()).toBe(configs["0xa4b1.arbitrum"].addresses.assetManager.toLowerCase());
-    const cached = getCachedQuote(String(out.quoteId));
+    const cached = getCachedQuote(String(out.quoteId), callerKeyHash());
     expect(out.to?.minimumAmount).toBe(formatUnits(BigInt(String(cached?.intent.minOutputAmount)), 6));
     const minutes = (Date.parse(String(out.expiresAt)) - before) / 60_000;
     expect(minutes).toBeGreaterThan(14);
     expect(minutes).toBeLessThan(16);
   });
 
-  it("builds a swap from Sonic as createIntent on the pinned hub intents contract", async () => {
+  it("refuses a swap from Sonic, whose deposit track can't check yet", async () => {
     const { out } = await callQuote({
       fromChain: "sonic",
       fromToken: "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
@@ -52,16 +52,18 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       amount: "5",
       fromAddress: USER,
     });
-    expect(out.status).toBe("ready");
-    expect(out.steps?.at(-1)).toMatchObject({ kind: "swap", chainId: 146, tx: { to: solverConfig.intentsContract } });
+    expect(out.error?.code).toBe("UNSUPPORTED_SOURCE");
   });
 
   // The intent names a hub token as is, so native S is the zero address there, not wS.
-  it.each([
-    ["to native S", { ...ARB_USDC, toChain: "sonic", toToken: "native", amount: "5" }],
-    ["from native S", { fromChain: "sonic", fromToken: "native", ...TO_BASE_USDC, amount: "100" }],
-  ])("builds a swap %s", async (_case, args) => {
-    const { out } = await callQuote({ ...args, fromAddress: USER });
+  it("builds a swap to native S", async () => {
+    const { out } = await callQuote({
+      ...ARB_USDC,
+      toChain: "sonic",
+      toToken: "native",
+      amount: "5",
+      fromAddress: USER,
+    });
     expect(out.status).toBe("ready");
   });
 

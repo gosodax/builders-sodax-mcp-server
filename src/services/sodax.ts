@@ -18,18 +18,18 @@ import {
   spokeChainConfig,
 } from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
-import { logger } from "./logger.js";
+import { logger, withoutUrls } from "./logger.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
 let loaded: { sdk: Sdk; sodax: InstanceType<Sdk["Sodax"]> } | undefined;
 
-// The SDK logs raw errors and data; only its own message gets through.
+// The SDK logs raw errors and data; only its own message gets through, without URLs.
 export const sdkLogger = {
   debug: () => {},
   info: () => {},
-  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, message),
-  error: (message: string) => logger.error({ source: "sodax-sdk" }, message),
+  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, withoutUrls(String(message))),
+  error: (message: string) => logger.error({ source: "sodax-sdk" }, withoutUrls(String(message))),
 };
 
 /** `rpcUrls` overrides the packaged RPC per chain key (see `parseRpcOverrides`). */
@@ -149,8 +149,8 @@ const asEvmAddress = (value: unknown) =>
 const SDK_CALL_TIMEOUT_MS = 15_000;
 const RPC_CALL_TIMEOUT_MS = 8_000;
 
-/** A bounded SDK call whose failure (timeout included) carries no SDK text. */
-async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TIMEOUT_MS): Promise<T> {
+/** A bounded call whose failure (timeout included) carries no text of its own. */
+export async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TIMEOUT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([

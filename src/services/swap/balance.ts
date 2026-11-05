@@ -48,7 +48,7 @@ export async function readBalances(input: { chain: string; address: string; toke
   if (!native)
     throw new ActionError("UPSTREAM_UNAVAILABLE", `The swap token list has no native token for ${chain.name}.`);
   const address = checkAddress(input.address, chain);
-  const asked = input.token ? resolveExactly(catalog, chain.key, input.token).token : undefined;
+  const asked = input.token ? resolveExactly(catalog, chain.key, input.token, "token").token : undefined;
   const token = asked?.isNative ? undefined : asked;
   // The SDK reads only BTC on Bitcoin, and would report any other token there as 0.
   if (token && chainType === "BITCOIN") {

@@ -6,33 +6,49 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
-import { EVM_TX_HASH_PATTERN } from "../constants.js";
+import { EVM_TX_HASH_PATTERN, SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
+import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import { DEPOSIT_SAFE, type TrackOutcome, type TrackResult, trackSwapWaiting } from "../services/swap/track.js";
+import { amountText } from "../services/swap/units.js";
 import { registerActionTool } from "./actionTool.js";
 
-// zod schemas are immutable, so each tool adds its own description to these.
-const chainArg = z.string().trim().min(1).max(64);
-const tokenArg = z.string().trim().min(1).max(128);
-const addressText = z.string().trim().max(128);
-const addressArg = addressText.optional();
-const txHashArg = z
-  .string()
-  .trim()
-  .regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters.");
+/**
+ * `schema`, plus the SECRET_REJECTED refusal for a value that fails it and looks like a secret: the
+ * handler's own screening never sees a value zod rejects.
+ */
+function screened(schema: z.ZodString, field: SecretField = {}) {
+  return schema.superRefine((value, ctx) => {
+    const refusal = schema.safeParse(value).success ? undefined : secretRefusalText(value, field);
+    if (refusal) ctx.addIssue({ code: "custom", message: refusal });
+  });
+}
+
+// Functions, so each field gets its own schema: one reused within a tool becomes a `$ref` in its JSON schema.
+const textArg = (max: number, min = 0) => screened(z.string().trim().min(min).max(max));
+const chainArg = () => textArg(64, 1);
+const tokenArg = () => textArg(128, 1);
+const addressArg = () => textArg(128).optional();
+const txHashArg = () =>
+  screened(z.string().trim().regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters."), {
+    txHash: true,
+  });
+const quoteIdArg = () => screened(z.string().trim().uuid(), { notHex64: "a quoteId" });
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
-  txHash: txHashArg.describe(
+  txHash: txHashArg().describe(
     "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
-  quoteId: z.string().trim().uuid().optional().describe("The quoteId from sodax_swap_quote."),
-  chain: chainArg.optional().describe("Source chain name or key; needed only without quoteId."),
+  quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_quote."),
+  chain: chainArg()
+    .optional()
+    .describe('Source chain name, key or EVM chain id ("42161"); needed only without quoteId.'),
 };
 const swapActionHints = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
@@ -42,10 +58,10 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_resolve_token",
     "Look up a token on a chain: its address, decimals and hub asset. The other swap tools take symbols themselves; use this when one returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
     {
-      chain: chainArg.describe(
+      chain: chainArg().describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
       ),
-      query: tokenArg.describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
+      query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async ({ chain, query }) => {
@@ -59,9 +75,11 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_get_balance",
     "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_track rather than re-reading balances.",
     {
-      chain: chainArg.describe('Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
-      address: addressText.min(1).describe("The wallet's address on that chain."),
-      token: tokenArg
+      chain: chainArg().describe(
+        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
+      address: textArg(128, 1).describe("The wallet's address on that chain."),
+      token: tokenArg()
         .optional()
         .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
     },
@@ -77,20 +95,19 @@ export function registerSwapTools(server: McpServer): void {
     "sodax_swap_quote",
     "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
-      fromChain: chainArg.describe('Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum".'),
-      fromToken: tokenArg.describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
-      toChain: chainArg.describe("Destination chain name, ticker or key."),
-      toToken: tokenArg.describe('Token the user receives: symbol, contract address, or "native".'),
+      fromChain: chainArg().describe(
+        'Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
+      fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
+      toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
+      toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
       amount: z
-        .string()
-        .trim()
-        .min(1)
-        .max(96)
-        .describe('Amount the user sends, in token units as a plain decimal: "0.5", not "1,000" or "1e6".'),
-      fromAddress: addressArg.describe(
+        .union([textArg(96, 1), z.number()])
+        .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
+      fromAddress: addressArg().describe(
         "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
       ),
-      toAddress: addressArg.describe(
+      toAddress: addressArg().describe(
         "Recipient on the destination chain. Defaults to fromAddress when the destination is EVM.",
       ),
       slippageBps: z
@@ -110,7 +127,7 @@ export function registerSwapTools(server: McpServer): void {
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async args => {
-      const quote = await quoteSwap(args, getRequestContext().partnerFee);
+      const quote = await quoteSwap({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
       // Nothing submits the deposit unless track is called; a field is harder to miss than a sentence.
       const afterSend =
         quote.status === "ready"
@@ -139,7 +156,7 @@ export function registerSwapTools(server: McpServer): void {
     "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it. This server never signs or moves funds.",
     {
       ...swapArgs,
-      cancelTxHash: txHashArg
+      cancelTxHash: txHashArg()
         .optional()
         .describe(
           "Hash of the cancel transaction (0x and 64 hex characters), once the user's wallet has sent the cancel step.",
@@ -250,17 +267,30 @@ function shortAddress(address: string): string {
   return address.length > 16 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
 }
 
+const usd = (value: number) => `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+/** Warns, never refuses: an agent passing base units as token units shows up as a huge value. */
+function usdWarning(usdValue: string | null): string {
+  if (usdValue === null) {
+    return " Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.";
+  }
+  const value = Number(usdValue);
+  if (value <= SWAP_USD_WARN) return "";
+  return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.`;
+}
+
 function quoteNextStep(quote: SwapQuote): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name} (at least ${to.minimumAmount})`;
+  const warning = usdWarning(quote.usdValue);
   if (quote.status === "price_only") {
     const needed = quote.missing.map(field =>
       field === "fromAddress"
         ? `fromAddress (their wallet on ${from.chain.name})`
         : `toAddress (their address on ${to.chain.name})`,
     );
-    return `${show}. To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
+    return `${show}.${warning} To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
   }
   // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
   const sameAddress =
@@ -268,7 +298,7 @@ function quoteNextStep(quote: SwapQuote): string {
       ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
       : "";
   return [
-    `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.`,
+    `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
     "Once they confirm, have their wallet send the steps in order, each confirmed before the next (or the batch), before it expires, then call sodax_swap_track with the quoteId and the swap transaction's hash.",

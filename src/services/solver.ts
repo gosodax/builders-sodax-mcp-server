@@ -22,13 +22,14 @@ function solverUrl(path: string): string {
  * Get the solver's oracle prices for all tokens it can quote on.
  * Returns one entry per (chainId, token) the solver tracks.
  */
-export async function getSolverOracle(): Promise<OraclePrice[]> {
-  const cacheKey = "solver-oracle";
+export async function getSolverOracle(baseUrl = SODAX_SOLVER_BASE_URL): Promise<OraclePrice[]> {
+  // One entry per host: on canary the swap tools read production's prices.
+  const cacheKey = baseUrl === SODAX_SOLVER_BASE_URL ? "solver-oracle" : `solver-oracle:${baseUrl}`;
   const cached = cache.get<OraclePrice[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const data = await fetchJson<unknown>(solverUrl("/oracle"));
+    const data = await fetchJson<unknown>(`${baseUrl}/oracle`);
     if (!Array.isArray(data)) {
       // Surface contract drift loudly rather than silently caching an empty
       // list — a 2xx response with an unexpected shape is almost certainly
@@ -39,7 +40,7 @@ export async function getSolverOracle(): Promise<OraclePrice[]> {
     cache.set(cacheKey, prices);
     return prices;
   } catch (error) {
-    logger.error({ err: error }, "Error fetching solver oracle");
+    logger.warn({ err: error }, "Error fetching solver oracle");
     throw new Error(
       `Failed to fetch solver oracle prices: ${error instanceof Error ? error.message : "Unknown error"}`,
     );

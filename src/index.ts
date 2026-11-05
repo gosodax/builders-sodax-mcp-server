@@ -18,7 +18,7 @@ import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { messageContext, resolveConnection } from "./connection.js";
-import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
+import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
@@ -376,6 +376,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
 
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
+  if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
   // The SDK is only loaded for the swap tools, with any RPC overrides track reads through.
   if (swapToolsEnabled) await initSodax(parseRpcOverrides(process.env));

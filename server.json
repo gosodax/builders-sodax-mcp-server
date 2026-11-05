@@ -11,7 +11,15 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://builders.sodax.com/mcp"
+      "url": "https://builders.sodax.com/mcp",
+      "headers": [
+        {
+          "name": "x-api-key",
+          "description": "Optional SODAX API key, forwarded on the server's data API and solver calls",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
     }
   ],
   "tools": [

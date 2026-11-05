@@ -6,7 +6,6 @@
  */
 
 import {
-  CACHE_DURATION_MS,
   CHAIN_ALIASES,
   NETWORK_COUNT_EXCLUDED_CHAIN_KEYS,
   SODAX_API_BASE_URL,
@@ -25,28 +24,9 @@ import type {
 } from "../types.js";
 import { fetchJson, fetchJsonOrNull } from "./http.js";
 import { logger } from "./logger.js";
+import { TtlCache } from "./ttlCache.js";
 
-// Cache for API responses
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
-
-const cache = new Map<string, CacheEntry<unknown>>();
-
-function getCached<T>(key: string): T | null {
-  const entry = cache.get(key) as CacheEntry<T> | undefined;
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_DURATION_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-function setCache<T>(key: string, data: T): void {
-  cache.set(key, { data, timestamp: Date.now() });
-}
+const cache = new TtlCache();
 
 function apiUrl(path: string): string {
   return `${SODAX_API_BASE_URL}${path}`;
@@ -61,14 +41,14 @@ function apiUrl(path: string): string {
  */
 export async function getSupportedChains(): Promise<string[]> {
   const cacheKey = "chains";
-  const cached = getCached<string[]>(cacheKey);
+  const cached = cache.get<string[]>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    setCache(cacheKey, chains);
+    cache.set(cacheKey, chains);
     return chains;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch supported chains");
@@ -112,7 +92,7 @@ export async function getIntegratedNetworksCount(): Promise<number> {
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
   const cacheKey = `tokens-${chainId || "all"}`;
-  const cached = getCached<SwapToken[]>(cacheKey);
+  const cached = cache.get<SwapToken[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -135,7 +115,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
         tokens = (dataObj.data as SwapToken[]) || [];
       }
     }
-    setCache(cacheKey, tokens);
+    cache.set(cacheKey, tokens);
     return tokens;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch swap tokens");
@@ -309,7 +289,7 @@ export async function getVolume(options: {
 }): Promise<VolumeData> {
   // Build cache key from significant params
   const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
-  const cached = getCached<VolumeData>(cacheKey);
+  const cached = cache.get<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -332,7 +312,7 @@ export async function getVolume(options: {
     const queryString = params.toString();
     const url = apiUrl(`/solver/volume${queryString ? `?${queryString}` : ""}`);
     const volumeData = await fetchJson<VolumeData>(url);
-    setCache(cacheKey, volumeData);
+    cache.set(cacheKey, volumeData);
     return volumeData;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch volume");
@@ -346,12 +326,12 @@ export async function getVolume(options: {
  */
 export async function getVolumeStats(): Promise<VolumeStats> {
   const cacheKey = "volume-stats";
-  const cached = getCached<VolumeStats>(cacheKey);
+  const cached = cache.get<VolumeStats>(cacheKey);
   if (cached) return cached;
 
   try {
     const stats = await fetchJson<VolumeStats>(apiUrl("/solver/volume/stats"));
-    setCache(cacheKey, stats);
+    cache.set(cacheKey, stats);
     return stats;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch volume stats");
@@ -403,7 +383,7 @@ export async function getOrderbook(options: {
  */
 export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
   const cacheKey = `mm-assets-${chainId || "all"}`;
-  const cached = getCached<MoneyMarketAsset[]>(cacheKey);
+  const cached = cache.get<MoneyMarketAsset[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -413,7 +393,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     const assets = Array.isArray(data)
       ? (data as MoneyMarketAsset[])
       : (data as { data?: MoneyMarketAsset[] })?.data || [];
-    setCache(cacheKey, assets);
+    cache.set(cacheKey, assets);
     return assets;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market assets");
@@ -442,7 +422,7 @@ export async function getUserPosition(userAddress: string): Promise<UserPosition
  */
 export async function getPartners(chainId?: number): Promise<Partner[]> {
   const cacheKey = `partners-${chainId ?? "all"}`;
-  const cached = getCached<Partner[]>(cacheKey);
+  const cached = cache.get<Partner[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -453,7 +433,7 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     const data = await fetchJson<unknown>(url);
     const dataObj = data as { data?: Partner[]; partners?: Partner[] } | Partner[];
     const partners = Array.isArray(dataObj) ? dataObj : dataObj?.data || dataObj?.partners || [];
-    setCache(cacheKey, partners);
+    cache.set(cacheKey, partners);
     return partners;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch partners");
@@ -466,14 +446,14 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
  */
 export async function getTokenSupply(): Promise<TokenSupply> {
   const cacheKey = "token-supply";
-  const cached = getCached<TokenSupply>(cacheKey);
+  const cached = cache.get<TokenSupply>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<{ data?: TokenSupply } | TokenSupply>(apiUrl("/sodax/supply"));
     // API returns data directly
     const supply = (data as { data?: TokenSupply })?.data || (data as TokenSupply);
-    setCache(cacheKey, supply);
+    cache.set(cacheKey, supply);
     return supply;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch token supply");
@@ -486,12 +466,12 @@ export async function getTokenSupply(): Promise<TokenSupply> {
  */
 export async function getAllConfig(): Promise<unknown> {
   const cacheKey = "config-all";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/all"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch all config");
@@ -504,12 +484,12 @@ export async function getAllConfig(): Promise<unknown> {
  */
 export async function getRelayChainIdMap(): Promise<unknown> {
   const cacheKey = "relay-chain-id-map";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/relay/chain-id-map"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch relay chain ID map");
@@ -522,12 +502,12 @@ export async function getRelayChainIdMap(): Promise<unknown> {
  */
 export async function getAllChainsConfigs(): Promise<unknown> {
   const cacheKey = "all-chains-configs";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/all-chains-configs"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch all chains configs");
@@ -540,13 +520,13 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
   const cacheKey = `hub-assets-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const endpoint = chainId ? `/config/hub/${chainId}/assets` : "/config/hub/assets";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch hub assets");
@@ -559,13 +539,13 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
   const cacheKey = `mm-tokens-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : "/config/money-market/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market tokens");
@@ -578,12 +558,12 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
  */
 export async function getMoneyMarketReserveAssets(): Promise<unknown> {
   const cacheKey = "mm-reserve-assets";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/money-market/reserve-assets"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch money market reserve assets");
@@ -795,8 +775,5 @@ export function clearCache(): void {
  * Get cache statistics
  */
 export function getCacheStats(): { size: number; keys: string[] } {
-  return {
-    size: cache.size,
-    keys: Array.from(cache.keys()),
-  };
+  return cache.stats();
 }

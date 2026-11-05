@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SODAX_API_BASE_URL, SODAX_API_ORIGIN, SODAX_RELAY_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
+import {
+  SODAX_API_BASE_URL,
+  SODAX_API_ORIGIN,
+  SODAX_RELAY_BASE_URL,
+  SODAX_SOLVER_BASE_URL,
+  SODAX_SWAPS_BASE_URL,
+} from "../constants.js";
 import { fetchJson, fetchJsonOrNull } from "./http.js";
 import { runWithRequestContext } from "./requestContext.js";
 
@@ -130,11 +136,14 @@ describe("API key forwarding", () => {
     fetchSpy.mockImplementation(async () => jsonResponse("{}", { status: 200 }));
   });
 
-  it.each([dataUrl, `${SODAX_SOLVER_BASE_URL}/quote`])("sends the caller's key to %s", async url => {
-    await fetchWithKey(url);
-    expect(sentKey()).toBe("sodax_k1");
-    expect(sentInit().redirect).toBe("error");
-  });
+  it.each([dataUrl, `${SODAX_SOLVER_BASE_URL}/quote`, `${SODAX_SWAPS_BASE_URL}/tokens`])(
+    "sends the caller's key to %s",
+    async url => {
+      await fetchWithKey(url);
+      expect(sentKey()).toBe("sodax_k1");
+      expect(sentInit().redirect).toBe("error");
+    },
+  );
 
   it.each([
     `${SODAX_RELAY_BASE_URL}/`,

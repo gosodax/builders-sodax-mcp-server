@@ -37,6 +37,9 @@ export const SODAX_SOLVER_BASE_URL = `${SODAX_API_ORIGIN}/v1/intent`;
 // relay, while canary's data API and swaps run on mainnet chains.
 export const SODAX_RELAY_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/relay`;
 
+// SODAX Swaps API Base URL
+export const SODAX_SWAPS_BASE_URL = `${SODAX_API_ORIGIN}/v1/swaps`;
+
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;
 

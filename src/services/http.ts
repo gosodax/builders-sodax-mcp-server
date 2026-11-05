@@ -5,7 +5,7 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
-import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL } from "../constants.js";
+import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { getRequestContext } from "./requestContext.js";
 
 interface FetchJsonOptions {
@@ -21,9 +21,9 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
-// Routes that take the caller's key: the data API and the solver. Other routes on the
+// Routes that take the caller's key: the data API, the solver and the Swaps API. Other routes on the
 // same host reach other origins; the relay, for one, must never get it.
-const KEYED_BASE_URLS = [SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL].map(base => `${base}/`);
+const KEYED_BASE_URLS = [SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL].map(base => `${base}/`);
 
 /** The caller's key, if `url` may carry it. `href` has `..` segments resolved. */
 function forwardedApiKey(url: string): string | undefined {

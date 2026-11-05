@@ -6,31 +6,13 @@
  * API (/v1/be) and the relay service.
  */
 
-import { CACHE_DURATION_MS, SODAX_SOLVER_BASE_URL } from "../constants.js";
+import { SODAX_SOLVER_BASE_URL } from "../constants.js";
 import type { OraclePrice, QuoteRequest, QuoteResponse } from "../types.js";
 import { fetchJson } from "./http.js";
 import { logger } from "./logger.js";
+import { TtlCache } from "./ttlCache.js";
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
-
-const cache = new Map<string, CacheEntry<unknown>>();
-
-function getCached<T>(key: string): T | null {
-  const entry = cache.get(key) as CacheEntry<T> | undefined;
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_DURATION_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-function setCache<T>(key: string, data: T): void {
-  cache.set(key, { data, timestamp: Date.now() });
-}
+const cache = new TtlCache();
 
 function solverUrl(path: string): string {
   return `${SODAX_SOLVER_BASE_URL}${path}`;
@@ -42,7 +24,7 @@ function solverUrl(path: string): string {
  */
 export async function getSolverOracle(): Promise<OraclePrice[]> {
   const cacheKey = "solver-oracle";
-  const cached = getCached<OraclePrice[]>(cacheKey);
+  const cached = cache.get<OraclePrice[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -54,7 +36,7 @@ export async function getSolverOracle(): Promise<OraclePrice[]> {
       throw new Error(`Unexpected oracle response shape: expected array, got ${typeof data}`);
     }
     const prices = data as OraclePrice[];
-    setCache(cacheKey, prices);
+    cache.set(cacheKey, prices);
     return prices;
   } catch (error) {
     logger.error({ err: error }, "Error fetching solver oracle");
@@ -103,8 +85,5 @@ export function clearSolverCache(): void {
  * Get solver cache statistics.
  */
 export function getSolverCacheStats(): { size: number; keys: string[] } {
-  return {
-    size: cache.size,
-    keys: Array.from(cache.keys()),
-  };
+  return cache.stats();
 }

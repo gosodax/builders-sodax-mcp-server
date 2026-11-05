@@ -9,6 +9,7 @@
     "dev": "NODE_ENV=development tsx watch --env-file-if-exists=.env src/index.ts",
     "build": "pnpm exec tsc && cp -r src/public dist/",
     "check:drift": "tsx --env-file-if-exists=.env src/scripts/checkDrift.ts",
+    "check:docs": "tsx --env-file-if-exists=.env src/scripts/checkDocs.ts",
     "checkTs": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

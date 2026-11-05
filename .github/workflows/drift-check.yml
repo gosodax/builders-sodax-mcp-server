@@ -43,3 +43,11 @@ jobs:
       - name: Check API drift
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: pnpm check:drift
+
+      # Fails loudly if the SDK docs proxy registers zero tools (e.g. the docs
+      # platform moved again). Advisory on PRs; authoritative on push/cron.
+      # Runs even when the drift step failed, so one monitor can't mask the other.
+      - name: Check SDK docs proxy
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: pnpm check:docs

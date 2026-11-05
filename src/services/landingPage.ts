@@ -15,7 +15,7 @@ import { getStaticToolCounts, getToolCountsByModule } from "./toolRegistry.js";
 export interface LandingPageData {
   /** Live integrated-networks count, or null when the backend fetch failed. */
   networks: number | null;
-  /** Runtime count of docs_* tools (GitBook proxies + meta-tools). */
+  /** Runtime count of docs_* tools (SDK docs proxies + meta-tools). */
   sdkDocsToolCount: number;
 }
 

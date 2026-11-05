@@ -25,7 +25,13 @@ describe("getSwapCatalog", () => {
     expect(first).toBe(second);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(first.tokens.hyper.filter(token => token.isNative).map(token => token.symbol)).toEqual(["HYPE"]);
-    expect(first.chains["0xa4b1.arbitrum"]).toEqual({ type: "EVM", chainId: 42161 });
+    expect(first.chains["0xa4b1.arbitrum"]).toEqual({
+      type: "EVM",
+      chainId: 42161,
+      swapContract: "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3",
+    });
+    // Sonic is the hub: no asset manager, so no swap contract from this config.
+    expect(first.chains.sonic).toEqual({ type: "EVM", chainId: 146 });
     expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
   });
 
@@ -78,6 +84,16 @@ describe("getSwapCatalog", () => {
     const catalog = await getSwapCatalog();
     expect(catalog.chains).not.toHaveProperty("hyper");
     expect(warn).toHaveBeenCalledWith({ chains: ["hyper", "sui"] }, "No valid chain config for these swap chains");
+  });
+
+  it("still serves a catalog whose config names no asset manager, and logs it", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    for (const config of Object.values<{ addresses?: unknown }>(configs)) delete config.addresses;
+    fetchSpy.mockImplementation(catalogFetch(undefined, JSON.stringify(configs)));
+    const error = vi.spyOn(logger, "error");
+    const catalog = await getSwapCatalog();
+    expect(catalog.tokens.hyper.length).toBeGreaterThan(0);
+    expect(error).toHaveBeenCalledWith("No EVM chain config names an asset manager");
   });
 
   it("serves the last catalog at once while a refresh fails, for up to 30 minutes", async () => {

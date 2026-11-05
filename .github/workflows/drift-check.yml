@@ -35,7 +35,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       # Advisory on PRs: upstream API drift shouldn't red-X (or block) an
       # otherwise-unrelated PR. The push (development/master), scheduled, and

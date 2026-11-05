@@ -1,5 +1,5 @@
 /**
- * Per-request context (the caller's API key) for outbound SODAX API calls.
+ * Per-request context (the caller's API key and partner fee) for outbound SODAX API calls.
  *
  * HTTP: each MCP request runs inside `runWithRequestContext`, so concurrent
  * callers never see each other's key. stdio serves one client per process, so
@@ -7,9 +7,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { PartnerFee } from "./partnerFee.js";
 
 export interface RequestContext {
   apiKey?: string;
+  partnerFee?: PartnerFee;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

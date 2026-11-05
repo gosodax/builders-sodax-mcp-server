@@ -5,6 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
+import { API_KEYS_DOCS_URL } from "../constants.js";
 import { MAX_API_KEY_LENGTH, parseApiKey } from "./requestContext.js";
 
 const PROFILES = ["builder", "swap", "all"] as const;
@@ -55,8 +56,6 @@ export class ConnectionError extends Error {
     this.rpcCode = httpStatus === 400 ? -32602 : -32000;
   }
 }
-
-const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
 /** `SODAX_SWAP_TOOLS_ENABLED`: `true` turns the swap tools on; unset, empty or `false` keeps them off. */
 export function parseSwapToolsEnabled(value: string | undefined): boolean {
@@ -118,9 +117,14 @@ function keyHintFor(profile: Profile, opts: SelectOptions): string | undefined {
   return opts.apiKey === "malformed" ? KEY_DROPPED : undefined;
 }
 
-/** The first value that is set. A blank string counts as unset, so `?profile=` can't override the header. */
+/** A connection parameter is set unless it is absent or a blank string. */
+export function isSet(value: unknown): boolean {
+  return typeof value === "string" ? value.trim() !== "" : value !== undefined;
+}
+
+/** The first value that is set, so a blank `?profile=` can't override the header. */
 function firstSet(...values: unknown[]): unknown {
-  return values.find(value => (typeof value === "string" ? value.trim() !== "" : value !== undefined));
+  return values.find(isSet);
 }
 
 /** HTTP: `?profile=` wins over the `x-sodax-profile` header, since URL-only clients can only set the query. */

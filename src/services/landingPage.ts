@@ -43,7 +43,7 @@ export function renderLandingPage(template: string, data: LandingPageData): stri
     MONEY_MARKET_TOOLS: String(moduleCounts.moneyMarket),
     PARTNERS_TOOLS: String(moduleCounts.partnersAndToken),
     SWAP_TOOLS: String(moduleCounts.swap),
-    // Swap tools are only registered while the rollout switch is on, so no swap tools = no card.
+    // No swap tools registered (the kill switch is off): no card.
     SWAP_CARD_HIDDEN: moduleCounts.swap > 0 ? "" : "hidden",
     SDK_DOCS_TOOLS: String(data.sdkDocsToolCount),
   };

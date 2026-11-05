@@ -27,9 +27,12 @@ afterEach(() => {
 });
 
 describe("resolveConnection", () => {
-  it("forwards a SODAX key and serves its profile", () => {
-    const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }));
-    expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: false, swap: true } });
+  it.each([
+    [{ profile: "swap" }, { builder: false, swap: true }],
+    [{}, { builder: true, swap: true }],
+  ])("forwards a SODAX key and serves its profile (%j)", (query, toolsets) => {
+    const { connection, res } = resolve(fakeReq(query, { "x-api-key": KEY }));
+    expect(connection).toEqual({ context: { apiKey: KEY }, toolsets });
     expect(res.status).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -105,7 +108,7 @@ describe("resolveConnection", () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({
         jsonrpc: "2.0",
-        error: { code: -32602, message: "The swap profile is not enabled on this server yet. Use builder or all." },
+        error: { code: -32602, message: "The swap profile is turned off on this server. Use builder or all." },
         id: null,
       });
     });

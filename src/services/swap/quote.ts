@@ -96,7 +96,7 @@ export type SwapQuote =
   | (QuoteSummary & {
       status: "ready";
       quoteId: string;
-      /** ISO time; the swap step must be mined before it. */
+      /** ISO time; the swap step must be mined, and tracked, before it. */
       expiresAt: string;
       /** Seconds from now to `expiresAt`, for agents that can't do time arithmetic. */
       expiresInSec: number;

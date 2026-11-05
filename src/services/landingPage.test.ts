@@ -8,7 +8,7 @@ beforeAll(() => {
 });
 
 describe("Swaps card", () => {
-  it("is hidden while the server has no swap tools (the rollout switch is off)", () => {
+  it("is hidden while the server has no swap tools (the kill switch is off)", () => {
     const html = renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0 });
     expect(html).toBe("<details hidden>");
   });

@@ -6,6 +6,7 @@ import {
   getCachedQuote,
   markRelayedForRefund,
   markSubmitted,
+  openQuotes,
   putQuote,
 } from "./quoteCache.js";
 
@@ -151,6 +152,19 @@ describe("quoteCache", () => {
     expect(() => checkQuoteRoom(KEY)).toThrow("too many open swap quotes");
     vi.setSystemTime(NOW + 45 * 60_000);
     expect(quoteDue(15).quoteId).toEqual(expect.any(String));
+  });
+
+  it("counts as open, for /health, every quote not handed over and not expired, until the last one expires", () => {
+    expect(openQuotes()).toEqual({ open: 0, openUntil: null });
+    quoteDue(15);
+    const late = quoteDue(20);
+    claimDeposit(quoteDue(10).quoteId, "0x01"); // claimed, not yet submitted: a restart still loses it
+    const submitted = quoteDue(25);
+    markSubmitted(submitted.quoteId);
+    markRelayedForRefund(quoteDue(25));
+    expect(openQuotes()).toEqual({ open: 3, openUntil: new Date(late.expiresAt).toISOString() });
+    vi.setSystemTime(late.expiresAt);
+    expect(openQuotes()).toEqual({ open: 0, openUntil: null });
   });
 
   it("doesn't count a quote a deposit claimed toward its key's cap", () => {

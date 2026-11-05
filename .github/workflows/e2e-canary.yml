@@ -57,7 +57,6 @@ jobs:
       - name: Start the server
         env:
           SODAX_ENV: canary
-          SODAX_SWAP_TOOLS_ENABLED: "true"
           LOG_LEVEL: info
           PORT: "3000"
           SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}

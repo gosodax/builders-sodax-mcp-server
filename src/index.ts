@@ -42,6 +42,7 @@ import {
 } from "./services/requestContext.js";
 import { initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
+import { openQuotes } from "./services/swap/quoteCache.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
 
@@ -94,7 +95,8 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
   return false;
 }
 
-async function runStdio(swapToolsEnabled: boolean): Promise<void> {
+/** `rpcUrls`: the RPC overrides the swap tools read through, already checked. */
+async function runStdio(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
@@ -103,11 +105,15 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
     apiKey: keyStatus,
     swapToolsEnabled,
   });
+  // The SDK only for the swap tools, and before the partner fee: its checksum check needs it.
+  if (toolsets.swap) await initSodax(rpcUrls);
   const partnerFee = partnerFeeFromEnv(process.env);
 
-  // Warm SDK docs cache before creating server
-  logger.info("Initializing SODAX docs proxy...");
-  await warmDocsCache();
+  // Warm SDK docs cache before creating server; a swap-only server has no docs tools.
+  if (toolsets.builder) {
+    logger.info("Initializing SODAX docs proxy...");
+    await warmDocsCache();
+  }
 
   setFallbackRequestContext({ apiKey, partnerFee });
   const server = await createServer(toolsets);
@@ -116,7 +122,7 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
-async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
+async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
   if (profileFromArgs(process.argv.slice(2), process.env) !== undefined) {
     logger.warn(
       "--profile and MCP_PROFILE are ignored over HTTP: each client picks its profile with ?profile= or x-sodax-profile",
@@ -128,12 +134,10 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
     logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
-
-  // Warm SDK docs cache before starting HTTP server
+  // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
-  await warmDocsCache();
+  await Promise.all([swapToolsEnabled ? initSodax(rpcUrls) : undefined, warmDocsCache()]);
 
-  // The swap tools only count while the rollout switch is on.
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
   const app = express();
@@ -255,6 +259,8 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
         healthy: docsHealth.healthy,
         toolCount: docsHealth.toolCount,
       },
+      // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
+      swapQuotes: openQuotes(),
     });
   });
 
@@ -325,7 +331,7 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     res.json({
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
-      description: `Live cross-network DeFi API data, AMM analytics, money market insights, and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
+      description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       profiles: {
         default: "all",
@@ -378,13 +384,12 @@ async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
-  // The SDK is only loaded for the swap tools, with any RPC overrides track reads through.
-  if (swapToolsEnabled) await initSodax(parseRpcOverrides(process.env));
+  const rpcUrls = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
-    await runStdio(swapToolsEnabled);
+    await runStdio(rpcUrls, swapToolsEnabled);
   } else {
-    await runHTTP(swapToolsEnabled);
+    await runHTTP(rpcUrls, swapToolsEnabled);
   }
 }
 
@@ -399,7 +404,9 @@ function fatalExit(context: string, error: unknown): void {
   logger.fatal({ err: error }, context);
   if (exiting) return;
   exiting = true;
-  void notifyError(context, error).finally(() => {
+  const open = openQuotes().open;
+  const alert = open > 0 ? `${context} (${open} open swap quote(s) lost)` : context;
+  void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
       clearTimeout(force);
@@ -426,7 +433,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal);
+  await notifyServerStopping(signal, openQuotes().open);
   await shutdownAnalytics();
   process.exit(0);
 }

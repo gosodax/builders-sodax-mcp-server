@@ -289,7 +289,7 @@ function registerDocsMetaTools(server: McpServer): void {
 }
 
 /** The three docs_* meta-tools that are always registered, even if the docs MCP is down. */
-export const DOCS_META_TOOL_NAMES = ["docs_health", "docs_refresh", "docs_list_tools"];
+const DOCS_META_TOOL_NAMES = ["docs_health", "docs_refresh", "docs_list_tools"];
 
 /**
  * Get list of registered docs tool names for API response

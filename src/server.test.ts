@@ -92,18 +92,31 @@ describe("instructions", () => {
   });
 });
 
-// The MCP Registry entry: its tool list is ours and hand-written, so it is checked against what a client gets.
+// The MCP Registry manifest. The registry drops `tools` on publish; the list is hand-written docs, so it is
+// checked against what a client gets.
 describe("server.json", () => {
-  const meta = JSON.parse(readFileSync(new URL("../server.json", import.meta.url), "utf-8")) as {
+  const readJson = (file: string) => JSON.parse(readFileSync(new URL(`../${file}`, import.meta.url), "utf-8"));
+  const meta = readJson("server.json") as {
+    version: string;
     description: string;
     remotes: { headers: { name: string; choices?: string[] }[] }[];
-    tools: { name: string }[];
+    tools: { name: string; description: string }[];
   };
 
   // The proxied docs tools change with docs.sodax.com, so only the docs meta-tools are listed.
   it("lists every static tool a keyed default connection gets, and nothing else", async () => {
     const served = (await toolList({ builder: true, swap: true })).map(tool => tool.name);
     expect(meta.tools.map(tool => tool.name).sort()).toEqual(served.sort());
+  });
+
+  it("gives every tool a description", () => {
+    for (const tool of meta.tools) {
+      expect(tool.description.trim(), `${tool.name} has no description`).not.toBe("");
+    }
+  });
+
+  it("carries the package.json version (release-please bumps both)", () => {
+    expect(meta.version).toBe(readJson("package.json").version);
   });
 
   it("offers every profile, under a description within the registry's 100 characters", () => {

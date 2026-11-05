@@ -295,8 +295,8 @@ async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolea
       transport.close();
     });
 
+    // connect() starts the transport; a second start() throws.
     await sseServer.connect(transport);
-    await transport.start();
   });
 
   app.post("/messages", mcpLimiter, async (req: Request, res: Response) => {

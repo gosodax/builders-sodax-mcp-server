@@ -15,6 +15,7 @@
       "**/dist/**",
       "**/public/**",
       "**/logs/**",
+      "**/__snapshots__/**",
       "**/.history",
       "**/.vscode",
       "**/.git",

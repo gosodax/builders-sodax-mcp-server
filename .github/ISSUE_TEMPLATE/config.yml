@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/gosodax/builders-sodax-mcp-server/security/advisories/new
+    about: Report it privately (see SECURITY.md), never as a public issue.

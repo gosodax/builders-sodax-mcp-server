@@ -1,0 +1,62 @@
+name: New token
+description: Add support for a new token (asset) in this repo.
+title: "feat: add <symbol> token"
+labels: [new-token]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per repo. When a token touches several repos, link the parent cross-repo issue and keep this one to this repo's part.
+        Take addresses from the deployment record, never from another repo's hand-copied table. Don't post unannounced addresses in a public repo.
+  - type: input
+    id: token
+    attributes:
+      label: Token
+      description: Symbol and name, e.g. "USDC (USD Coin)".
+    validations:
+      required: true
+  - type: textarea
+    id: deployments
+    attributes:
+      label: Chains and addresses
+      description: One line per chain, with the address and decimals.
+      placeholder: |
+        Sonic: 0x... (6 decimals)
+        Arbitrum: 0x... (6 decimals)
+    validations:
+      required: true
+  - type: checkboxes
+    id: features
+    attributes:
+      label: Used for
+      options:
+        - label: Swaps
+        - label: Money market (supply / borrow)
+        - label: Bridging
+        - label: Staking
+        - label: Other (say which below)
+  - type: input
+    id: price
+    attributes:
+      label: Price source
+      description: Oracle or price feed, and the fallback if it fails.
+  - type: input
+    id: parent
+    attributes:
+      label: Parent issue
+      description: The cross-repo issue or Epic this belongs to (owner/repo#N), if any.
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs to be done
+      description: What changes in this repo, e.g. token config, limits, logo, UI, tests.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        - [ ]
+    validations:
+      required: true

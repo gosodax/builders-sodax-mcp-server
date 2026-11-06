@@ -1,0 +1,42 @@
+name: Bug
+description: Something in this repo is broken.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A security issue, or funds at risk?** Don't file it here: follow SECURITY.md.
+  - type: textarea
+    id: bug
+    attributes:
+      label: Describe the bug
+      description: What happens, and where (service, endpoint, page, contract).
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce
+      description: Numbered steps. Add tx hashes, request IDs or log lines if you have them (never keys or tokens).
+      value: |
+        1.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options: [user-facing outage, degraded, cosmetic]
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: Additional Information
+      description: Environment (prod, staging, local), commit or version, screenshots.

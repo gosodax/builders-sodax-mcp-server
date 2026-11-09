@@ -5,12 +5,16 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  cancelPayload,
   checksumValid,
+  connectionFor,
+  createIntentPayload,
   encodeRecipient,
   evmChainIdFor,
   initSodax,
   intentChainId,
   packagedToken,
+  parseRpcOverrides,
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
@@ -77,6 +81,39 @@ describe("rebuildSwapTx", () => {
         intent: broken,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("cancelPayload", () => {
+  it("is one cancelIntent call on the pinned intents contract, for exactly this intent", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    const payload = cancelPayload(intent) ?? "";
+    expect(payload).toContain(solverConfig.intentsContract.slice(2).toLowerCase());
+    expect(payload).toContain(BigInt(intent.intentId).toString(16));
+    expect(cancelPayload(intent)).toBe(payload);
+    expect(cancelPayload({ ...intent, minOutputAmount: "2" })).not.toBe(payload);
+  });
+
+  it("gives up quietly on an intent the SDK can't encode", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    expect(cancelPayload({ ...intent, srcChain: "999" })).toBeUndefined();
+    expect(cancelPayload({ ...intent, intentId: "not a number" })).toBeUndefined();
+  });
+});
+
+describe("createIntentPayload", () => {
+  it.each(["built-intent-usdc-fee.json", "built-intent-eth.json"] as const)(
+    "is the payload a live spoke swap (%s) carries, byte for byte",
+    name => {
+      const { intent, relayData } = recorded(name);
+      expect(createIntentPayload(intent)?.toLowerCase()).toBe(relayData.payload.toLowerCase());
+    },
+  );
+
+  it("differs for another intent of the same wallet, and gives up on one the SDK can't encode", () => {
+    const { intent } = recorded("built-intent-eth.json");
+    expect(createIntentPayload({ ...intent, intentId: "8" })).not.toBe(createIntentPayload(intent));
+    expect(createIntentPayload({ ...intent, intentId: "not a number" })).toBeUndefined();
   });
 });
 
@@ -212,5 +249,97 @@ describe("sdkLogger", () => {
     sdkLogger.error("rpc failed");
     expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
     expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
+  });
+});
+
+describe("parseRpcOverrides", () => {
+  it("maps SODAX_RPC_URL_<chainId> and SODAX_RPC_URL_<family> to the chain's field, ignoring everything else", () => {
+    const env = {
+      SODAX_RPC_URL_42161: "https://arb.example/key",
+      SODAX_RPC_URL_146: "https://sonic.example/key",
+      SODAX_RPC_URL_137: "",
+      SODAX_RPC_URL_SOLANA: "https://solana.example/key",
+      SODAX_RPC_URL_SUI: "https://sui.example/key",
+      SODAX_RPC_URL_STELLAR_HORIZON: "https://horizon.example",
+      SODAX_RPC_URL_STELLAR_SOROBAN: "https://soroban.example/key",
+      SODAX_RPC_URL: "https://no-id.example",
+      PATH: "/bin",
+    };
+    expect(parseRpcOverrides(env)).toEqual({
+      "0xa4b1.arbitrum": { rpcUrl: "https://arb.example/key" },
+      sonic: { rpcUrl: "https://sonic.example/key" },
+      solana: { rpcUrl: "https://solana.example/key" },
+      sui: { grpc_url: "https://sui.example/key" },
+      stellar: { horizonRpcUrl: "https://horizon.example", sorobanRpcUrl: "https://soroban.example/key" },
+    });
+  });
+
+  it("covers every non-EVM family in the packaged config, on a field that config has", () => {
+    // One chain per family: a second one would make the family name ambiguous.
+    const families = Object.values(spokeChainConfig).flatMap(config =>
+      config.chain.type === "EVM" ? [] : [config.chain.type],
+    );
+    expect(new Set(families).size).toBe(families.length);
+    for (const [chainKey, config] of Object.entries(spokeChainConfig)) {
+      // Injective's SDK provider ignores its config's RPC, so it is refused (see the error rows).
+      if (config.chain.type === "EVM" || config.chain.type === "INJECTIVE") continue;
+      const suffixes = config.chain.type === "STELLAR" ? ["STELLAR_HORIZON", "STELLAR_SOROBAN"] : [config.chain.type];
+      for (const suffix of suffixes) {
+        const [field, ...more] = Object.keys(
+          parseRpcOverrides({ [`SODAX_RPC_URL_${suffix}`]: "https://x.example" })[chainKey] ?? {},
+        );
+        expect(more, suffix).toEqual([]);
+        expect(config, `${suffix} sets ${field}`).toHaveProperty(field);
+      }
+    }
+  });
+
+  it.each([
+    ["SODAX_RPC_URL_42161", "http://arb.example/secret-key", "must be an https URL"],
+    ["SODAX_RPC_URL_42161", "not a url secret-key", "must be an https URL"],
+    ["SODAX_RPC_URL_999999", "https://nowhere.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_INJECTIVE", "https://inj.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_constructor", "https://proto.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_STELLAR", "https://horizon.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_EVM", "https://evm.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_solana", "https://solana.example/secret-key", "doesn't name a SODAX chain"],
+  ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
+    expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
+    expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
+  });
+
+  it("names what a bad variable could have meant", () => {
+    const bare = () => parseRpcOverrides({ SODAX_RPC_URL_STELLAR: "https://horizon.example" });
+    expect(bare).toThrow("42161");
+    expect(bare).toThrow("STELLAR_HORIZON, STELLAR_SOROBAN");
+  });
+});
+
+describe("initSodax", () => {
+  it("sends the hub's reads through a Sonic override too", async () => {
+    vi.resetModules();
+    const fresh = await import("./sodax.js");
+    await fresh.initSodax({ sonic: { rpcUrl: "https://sonic.example/key" } });
+    // A 400, which viem doesn't retry.
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
+    await expect(fresh.userHubWallet("0xa4b1.arbitrum", USER)).rejects.toThrow("SDK call failed");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://sonic.example/key");
+  });
+
+  it("sends a non-EVM chain's reads through its override", async () => {
+    vi.resetModules();
+    const fresh = await import("./sodax.js");
+    await fresh.initSodax({ near: { rpcUrl: "https://near.example/key" } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
+    await expect(fresh.recipientReady("NEAR", "usdc.near", "alice.near", 1n)).rejects.toThrow("SDK call failed");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://near.example/key");
+  });
+});
+
+describe("connectionFor", () => {
+  it("pins a spoke's connection from the packaged config, and has none for the hub", () => {
+    expect(connectionFor("0xa4b1.arbitrum")).toBe("0x4555aC13D7338D9E671584C1D118c06B2a3C88eD");
+    expect(connectionFor("sonic")).toBeUndefined();
+    expect(connectionFor("not-a-chain")).toBeUndefined();
   });
 });

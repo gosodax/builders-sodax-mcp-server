@@ -65,8 +65,16 @@ describe("instructions", () => {
     expect(builder).toContain("sodax_check_chain_support");
     expect(builder).not.toContain("sodax_resolve_token");
     expect(swap).toContain("sodax_resolve_token");
+    expect(swap).toContain("sodax_swap_track");
+    expect(swap).toContain("sodax_swap_cancel");
+    expect(swap).toContain(
+      "again after retryAfterSec seconds while the result has one; after an error, follow its nextStep",
+    );
     expect(swap).not.toContain("sodax_check_chain_support");
-    expect(await instructions({ builder: true, swap: true })).toBe(`${builder}\n\n${swap}`);
+    expect(swap).not.toContain("sodax_relay_submit_tx");
+    expect(await instructions({ builder: true, swap: true })).toBe(
+      `${builder}\n\n${swap}\n\nFor a user's swap use the \`sodax_swap_*\` tools, not \`sodax_relay_submit_tx\`, \`sodax_get_transaction\` or \`sodax_get_solver_quote\`.`,
+    );
   });
 
   it("tell a keyless default connection, last, that the swap tools need a key", async () => {

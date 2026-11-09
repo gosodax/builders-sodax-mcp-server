@@ -15,6 +15,8 @@ import { registerAppTool } from "../services/toolRegistry.js";
 
 type ActionOutput = Record<string, unknown> & { status: string; nextStep: string };
 
+const DEFAULT_RETRY_AFTER_SEC = 30;
+
 export function registerActionTool<Args extends ZodRawShapeCompat>(
   server: McpServer,
   name: string,
@@ -22,6 +24,8 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   input: Args,
   annotations: ToolAnnotations,
   run: (args: ShapeOutput<Args>) => Promise<ActionOutput>,
+  /** The next step on any failure instead of the code's default, for a tool called after a wallet sent something. */
+  failureAdvice?: (failure: ActionError, retryAfterSec: number) => string,
 ): void {
   const handler = async (args: ShapeOutput<Args>): Promise<CallToolResult> => {
     try {
@@ -31,7 +35,10 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       const failure =
         error instanceof ActionError ? error : new ActionError("INTERNAL", "The tool failed unexpectedly.");
       const out = { error: { ...failure.details, code: failure.code, message: failure.message } };
-      return toResult({ status: "error", ...out, nextStep: failure.nextStep }, true);
+      const nextStep = failureAdvice
+        ? failureAdvice(failure, Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC))
+        : failure.nextStep;
+      return toResult({ status: "error", ...out, nextStep }, true);
     }
   };
   // ToolCallback<Args> is a conditional type TypeScript can't narrow while Args is generic;

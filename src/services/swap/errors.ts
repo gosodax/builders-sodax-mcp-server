@@ -14,17 +14,29 @@ export type ActionErrorCode =
   | "DESTINATION_NOT_READY"
   | "SWAP_REJECTED"
   | "SWAP_MISMATCH"
+  | "QUOTE_NOT_FOUND"
+  | "QUOTE_MISMATCH"
+  | "QUOTE_KEY_MISMATCH"
   | "API_KEY_REQUIRED"
   | "RATE_LIMITED"
+  | "CHAIN_UNAVAILABLE"
   | "UPSTREAM_UNAVAILABLE"
   | "INTERNAL";
+
+/** Failures that may pass on their own: calling again with the same arguments can work. */
+export const RETRYABLE_CODES: readonly ActionErrorCode[] = [
+  "RATE_LIMITED",
+  "CHAIN_UNAVAILABLE",
+  "UPSTREAM_UNAVAILABLE",
+  "INTERNAL",
+];
 
 const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SODAX swap service is unavailable.";
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
   UNSUPPORTED_SOURCE:
-    "Swaps can only start from an EVM chain such as Arbitrum or Base for now; ask the user to send from one.",
+    "Swaps can only start from an EVM spoke chain such as Arbitrum or Base for now, not from Sonic or non-EVM chains; ask the user to send from one.",
   UNKNOWN_TOKEN: "Call sodax_resolve_token for that side (error.side) and follow its nextStep.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
@@ -35,8 +47,14 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
   SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
+  QUOTE_NOT_FOUND:
+    "Call again with chain set to the swap's source chain key, or with the quoteId from sodax_swap_quote.",
+  QUOTE_MISMATCH: "That quoteId is for another source chain: pass the quoteId this transaction was made from.",
+  QUOTE_KEY_MISMATCH:
+    "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
   API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header: ${API_KEYS_DOCS_URL}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
+  CHAIN_UNAVAILABLE: RETRY_LATER,
   UPSTREAM_UNAVAILABLE: RETRY_LATER,
   INTERNAL: RETRY_LATER,
 };

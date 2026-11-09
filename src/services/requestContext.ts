@@ -7,6 +7,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import type { PartnerFee } from "./partnerFee.js";
 
 export interface RequestContext {
@@ -23,6 +24,13 @@ export function runWithRequestContext<T>(context: RequestContext, fn: () => T): 
 
 export function getRequestContext(): RequestContext {
   return storage.getStore() ?? fallback;
+}
+
+/** Who the caller is, without keeping their key: what a quote is bound to. */
+export function callerKeyHash(): string {
+  return createHash("sha256")
+    .update(getRequestContext().apiKey ?? "")
+    .digest("hex");
 }
 
 /** stdio only. In HTTP mode a caller without a key stays keyless. */

@@ -48,9 +48,17 @@ const SWAP_INSTRUCTIONS = [
   "If the quote returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
   "token or an address.",
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
+  "After the user's wallet sends the swap, call `sodax_swap_track` with the quoteId and the swap's tx hash: it submits",
+  "the swap, so call it at least once, and again after retryAfterSec seconds while the result has one; after an error,",
+  "follow its nextStep. Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted",
+  "swap, use `sodax_swap_cancel`.",
 ].join(" ");
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };
+
+// With both toolsets, builder tools that relay, quote and look up intents compete with the swap tools.
+const BOTH_INSTRUCTIONS =
+  "For a user's swap use the `sodax_swap_*` tools, not `sodax_relay_submit_tx`, `sodax_get_transaction` or `sodax_get_solver_quote`.";
 
 // The static tools of each toolset, in registration order. createServer registers them on a real
 // server and seedToolRegistry records them for the counts, so the two can't drift.
@@ -75,7 +83,15 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
       name: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
     },
-    { instructions: [...enabled(toolsets, INSTRUCTIONS), toolsets.keyHint].filter(Boolean).join("\n\n") },
+    {
+      instructions: [
+        ...enabled(toolsets, INSTRUCTIONS),
+        toolsets.builder && toolsets.swap ? BOTH_INSTRUCTIONS : undefined,
+        toolsets.keyHint,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    },
   );
 
   // Wrap server.tool() so every tool call is tracked in PostHog

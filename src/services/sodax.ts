@@ -8,6 +8,8 @@
  */
 
 import {
+  type ChainType,
+  type EvmSpokeOnlyChainKey,
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
@@ -32,10 +34,71 @@ export const sdkLogger = {
   error: (message: string) => logger.error({ source: "sodax-sdk" }, message),
 };
 
-export async function initSodax(): Promise<void> {
+/** The RPC fields of a chain's packaged config that `SODAX_RPC_URL_*` may replace (see `parseRpcOverrides`). */
+type RpcField = "rpcUrl" | "grpc_url" | "horizonRpcUrl" | "sorobanRpcUrl";
+export type RpcOverride = Partial<Record<RpcField, string>>;
+
+/** `chains` overrides the packaged RPC per chain key; the SDK deep-merges each patch into that chain's config. */
+export async function initSodax(chains: Record<string, RpcOverride> = {}): Promise<void> {
   if (loaded) return;
   const sdk = await import("@sodax/sdk");
-  loaded = { sdk, sodax: new sdk.Sodax({ api: { baseURL: `${SODAX_API_ORIGIN}/v1` }, logger: sdkLogger }) };
+  // The hub provider reads its own config, not the Sonic spoke's, so the override goes to both.
+  const hubRpcUrl = chains[HUB_CHAIN_KEY]?.rpcUrl;
+  const options = {
+    api: { baseURL: `${SODAX_API_ORIGIN}/v1` },
+    logger: sdkLogger,
+    chains,
+    ...(hubRpcUrl && { hub: { rpcUrl: hubRpcUrl } }),
+  };
+  loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
+}
+
+type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> } & RpcOverride;
+const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
+
+// Where a family's SDK provider reads its RPC when not the config's `rpcUrl`: Sui's gRPC endpoint, Stellar's two servers.
+const RPC_FIELD_EXCEPTIONS: Record<string, { type: ChainType; field: RpcField }> = {
+  SUI: { type: "SUI", field: "grpc_url" },
+  STELLAR_HORIZON: { type: "STELLAR", field: "horizonRpcUrl" },
+  STELLAR_SOROBAN: { type: "STELLAR", field: "sorobanRpcUrl" },
+};
+// Families whose SDK provider never reads the config's `rpcUrl` (Injective hard-codes its mainnet endpoints).
+const RPC_URL_UNREAD: ReadonlySet<ChainType> = new Set(["INJECTIVE"]);
+
+type RpcTarget = { chainKey: string; field: RpcField };
+
+/** What `SODAX_RPC_URL_<suffix>` replaces: an EVM chain by its id, a non-EVM family (one mainnet chain) by its type. */
+function rpcTargets(): Map<string, RpcTarget> {
+  const targets = new Map<string, RpcTarget>();
+  for (const [chainKey, config] of Object.entries(chainConfigs)) {
+    const evmChainId = evmChainIdFor(chainKey);
+    const type = config?.chain?.type as ChainType | undefined;
+    if (evmChainId !== undefined) targets.set(String(evmChainId), { chainKey, field: "rpcUrl" });
+    else if (type && config?.rpcUrl && !RPC_URL_UNREAD.has(type)) targets.set(type, { chainKey, field: "rpcUrl" });
+    for (const [suffix, exception] of Object.entries(RPC_FIELD_EXCEPTIONS)) {
+      if (exception.type === type) targets.set(suffix, { chainKey, field: exception.field });
+    }
+  }
+  return targets;
+}
+const RPC_TARGETS = rpcTargets();
+
+/**
+ * `SODAX_RPC_URL_<evmChainId>` and `SODAX_RPC_URL_<family>` (`RPC_TARGETS`) override by chain key; without one
+ * the SDK's packaged RPC is used. A bad one stops the boot, named by its variable, never its value (paid URLs
+ * embed keys).
+ */
+export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, RpcOverride> {
+  const overrides: Record<string, RpcOverride> = {};
+  for (const [name, value] of Object.entries(env)) {
+    const suffix = /^SODAX_RPC_URL_(\w+)$/.exec(name)?.[1];
+    if (!suffix || !value) continue;
+    const target = RPC_TARGETS.get(suffix);
+    if (!target) throw new Error(`${name} doesn't name a SODAX chain, one of ${[...RPC_TARGETS.keys()].join(", ")}`);
+    if (!URL.canParse(value) || new URL(value).protocol !== "https:") throw new Error(`${name} must be an https URL`);
+    overrides[target.chainKey] = { ...overrides[target.chainKey], [target.field]: value };
+  }
+  return overrides;
 }
 
 function sdk() {
@@ -66,15 +129,15 @@ export function encodeRecipient(chainKey: string, address: string): string | und
  * from the hub, else the spoke's asset manager.
  */
 export function swapContractFor(chainKey: string): string | undefined {
-  const config = spokeChainConfig as Record<string, { addresses?: { assetManager?: unknown } } | undefined>;
-  const contract = isHubChain(chainKey) ? solverConfig.intentsContract : config[chainKey]?.addresses?.assetManager;
-  return typeof contract === "string" && EVM_ADDRESS_PATTERN.test(contract) ? contract : undefined;
+  const contract = isHubChain(chainKey)
+    ? solverConfig.intentsContract
+    : chainConfigs[chainKey]?.addresses?.assetManager;
+  return asEvmAddress(contract);
 }
 
 /** A chain's EVM chain id, from the packaged config. */
 export function evmChainIdFor(chainKey: string): number | undefined {
-  const config = spokeChainConfig as Record<string, { chain?: { type?: unknown; chainId?: unknown } } | undefined>;
-  const chain = config[chainKey]?.chain;
+  const chain = chainConfigs[chainKey]?.chain;
   return chain?.type === "EVM" && typeof chain.chainId === "number" ? chain.chainId : undefined;
 }
 
@@ -103,16 +166,38 @@ export function checksumValid(address: string): boolean {
   return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
 }
 
+/**
+ * The spoke's `connection` contract, from the packaged config. Its `Message` log is the proof that a
+ * deposit or a cancel was sent to the hub. The hub has none.
+ */
+export function connectionFor(chainKey: string): string | undefined {
+  return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
+}
+
+/** An EVM spoke's chain id, `connection` and asset manager from the packaged config, if it has all three. */
+export function evmSpokeFor(
+  chainKey: string,
+): { chainId: number; connection: string; assetManager: string } | undefined {
+  const chainId = evmChainIdFor(chainKey);
+  const connection = connectionFor(chainKey);
+  const assetManager = swapContractFor(chainKey);
+  return chainId !== undefined && connection && assetManager ? { chainId, connection, assetManager } : undefined;
+}
+
+const asEvmAddress = (value: unknown) =>
+  typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
+
 const SDK_CALL_TIMEOUT_MS = 15_000;
+const RPC_CALL_TIMEOUT_MS = 8_000;
 
 /** A bounded SDK call whose failure (timeout included) carries no SDK text. */
-async function bounded<T>(call: () => Promise<T>): Promise<T> {
+async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TIMEOUT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       call(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), SDK_CALL_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
       }),
     ]);
   } catch {
@@ -125,6 +210,54 @@ async function bounded<T>(call: () => Promise<T>): Promise<T> {
 /** The user's own hub wallet for an address on a chain (an intent's creator). One hub RPC read, cached by the SDK. */
 export function userHubWallet(chainKey: string, address: string): Promise<string> {
   return bounded(() => sdk().sodax.hubProvider.getUserHubWalletAddress(address, chainKey as SpokeChainKey));
+}
+
+export interface EvmReceipt {
+  reverted: boolean;
+  logs: { address: string; topics: string[]; data: string }[];
+}
+
+// viem's not-found errors are told apart by name; their messages carry the RPC URL.
+const isNotFound = (error: unknown) =>
+  error instanceof Error && /^Transaction(Receipt)?NotFoundError$/.test(error.name);
+
+/** A mined tx's receipt on an EVM spoke, or `null` while it isn't mined. Fails as a bare error. */
+export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmReceipt | null> {
+  return bounded(async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
+      return {
+        reverted: status !== "success",
+        logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
+      };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
+/** An EVM spoke's latest block number: proof its RPC answers. Fails as a bare error. */
+export function blockNumber(chainKey: string): Promise<bigint> {
+  return bounded(() => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    return client.getBlockNumber();
+  }, RPC_CALL_TIMEOUT_MS);
+}
+
+/** Whether an EVM spoke's node knows the tx at all, mined or pending. */
+export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
+  return bounded(async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      await client.getTransaction({ hash: txHash as `0x${string}` });
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
+  }, RPC_CALL_TIMEOUT_MS);
 }
 
 /**
@@ -212,20 +345,11 @@ export async function rebuildSwapTx(params: {
   intent: IntentJson;
 }): Promise<SwapTx | undefined> {
   const { srcChainKey, srcAddress, token, amount, intent } = params;
+  const hub = isHubChain(srcChainKey);
+  const payload = createIntentPayload(intent, hub);
+  if (!payload) return undefined;
   try {
-    const { sdk: lib, sodax } = sdk();
-    const hub = isHubChain(srcChainKey);
-    // The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned.
-    const sdkIntent = {
-      ...intent,
-      intentId: BigInt(intent.intentId),
-      inputAmount: BigInt(intent.inputAmount),
-      minOutputAmount: BigInt(intent.minOutputAmount),
-      deadline: BigInt(intent.deadline),
-      srcChain: BigInt(intent.srcChain),
-      dstChain: BigInt(intent.dstChain),
-    } as unknown as Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
-    const payload = lib.EvmSolverService.reconstructCreateIntentData(sdkIntent, solverConfig.intentsContract, hub);
+    const { sodax } = sdk();
     if (hub) {
       // As the SDK's Sonic path does: value only when the hub asset is the hub's native token.
       const native = intent.inputToken.toLowerCase() === spokeChainConfig.sonic.nativeToken.toLowerCase();
@@ -237,13 +361,58 @@ export async function rebuildSwapTx(params: {
       token: token as `0x${string}`,
       to: intent.creator as `0x${string}`,
       amount,
-      data: payload,
+      data: payload as `0x${string}`,
       raw: true,
     });
     return { to: tx.to, value: BigInt(tx.value), data: tx.data, payload };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * What a cancel sends the user's hub wallet: one `cancelIntent(intent)` call on the intents contract,
+ * as the SDK builds it for its own cancels. `undefined` if the SDK can't.
+ */
+export function cancelPayload(intent: IntentJson): string | undefined {
+  try {
+    const result = sdk().sodax.swaps.getCancelIntentRelayData(toSdkIntent(intent));
+    return result.ok ? result.value.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The calls that create `intent`, as the SDK builds them (byte for byte, `intentId` included): what a spoke
+ * deposit carries to the user's hub wallet, or from the hub (`hubSource`) the tx's own calldata.
+ * `undefined` if the SDK can't.
+ */
+export function createIntentPayload(intent: IntentJson, hubSource = false): string | undefined {
+  try {
+    return sdk().sdk.EvmSolverService.reconstructCreateIntentData(
+      toSdkIntent(intent),
+      solverConfig.intentsContract,
+      hubSource,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+type SdkIntent = Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
+
+/** The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned. */
+function toSdkIntent(intent: IntentJson): SdkIntent {
+  return {
+    ...intent,
+    intentId: BigInt(intent.intentId),
+    inputAmount: BigInt(intent.inputAmount),
+    minOutputAmount: BigInt(intent.minOutputAmount),
+    deadline: BigInt(intent.deadline),
+    srcChain: BigInt(intent.srcChain),
+    dstChain: BigInt(intent.dstChain),
+  } as unknown as SdkIntent;
 }
 
 /** `approve(spender, amount)` calldata on an ERC-20, as the SDK encodes it. */

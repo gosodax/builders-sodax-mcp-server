@@ -6,7 +6,7 @@ import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SwapStep } from "../../src/services/swap/quote.js";
-import { sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
+import { minimumTooLow, sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.
 const ACCOUNT = privateKeyToAccount(`0x${"1".repeat(64)}`);
@@ -191,6 +191,14 @@ describe("sendSteps", () => {
     await expect(sent).rejects.toThrow(/reverted/);
     expect(methods.filter(method => method === "eth_estimateGas")).toHaveLength(3);
     expect(methods).not.toContain("eth_sendRawTransaction");
+  });
+});
+
+describe("minimumTooLow", () => {
+  it("refuses a minimum under 97% of the amount sent", () => {
+    expect(minimumTooLow("4.85", "5", 6)).toBe(false);
+    expect(minimumTooLow("4.849999", "5", 6)).toBe(true);
+    expect(minimumTooLow("0", "5", 6)).toBe(true);
   });
 });
 

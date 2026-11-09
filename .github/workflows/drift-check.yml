@@ -56,8 +56,9 @@ jobs:
       # 0x…dEaD and balance reads, nothing signed or sent.
       - name: Swap contract tests
         if: ${{ !cancelled() }}
-        # Advisory: a slow upstream can time a live test out.
-        continue-on-error: true
+        # Advisory on pull requests and manual runs, where a slow upstream can time a live test out;
+        # scheduled and push runs go red.
+        continue-on-error: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
         env:
           SODAX_ENV: production
         run: pnpm test:contract

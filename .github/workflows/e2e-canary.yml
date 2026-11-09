@@ -78,17 +78,45 @@ jobs:
           E2E_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}
           SODAX_RPC_URL_8453: ${{ secrets.SODAX_RPC_URL_8453 }}
-        run: pnpm e2e:canary
+        # To a file, not the log: it's printed once the check below finds no secret in it.
+        run: pnpm e2e:canary > e2e.log 2>&1
+
+      # GitHub masks a secret only as written: a key without its 0x, or an RPC URL's host or path, would show.
+      - name: Check the logs for secrets
+        id: leaks
+        if: always()
+        env:
+          SODAX_API_KEY: ${{ secrets.E2E_SODAX_API_KEY }}
+          E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
+          RPC_URLS: ${{ secrets.SODAX_RPC_URL_42161 }} ${{ secrets.SODAX_RPC_URL_8453 }}
+        run: |
+          check() {
+            if [ ${#1} -gt 8 ] && grep -qiF -- "$1" server.log e2e.log 2>/dev/null; then
+              echo "A secret reached the logs: they aren't printed"
+              exit 1
+            fi
+          }
+          check "$SODAX_API_KEY"
+          check "${E2E_WALLET_PRIVATE_KEY#0x}"
+          for url in $RPC_URLS; do
+            rest=${url#*://}
+            check "${rest%/}"
+            check "$(printf '%s' "$rest" | sed -E 's#^[^/?]*##')"
+          done
+
+      - name: Script output
+        if: always() && steps.leaks.outcome == 'success'
+        run: cat e2e.log || true
 
       - name: Server log
-        if: failure() || cancelled()
+        if: (failure() || cancelled()) && steps.leaks.outcome == 'success'
         run: cat server.log || true
 
       - name: Alert Discord
         if: failure() || cancelled()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          STAGE: ${{ steps.e2e.outputs.stage || 'setup' }}
+          STAGE: ${{ steps.leaks.outcome == 'failure' && 'a secret in the logs' || steps.e2e.outputs.stage || 'setup' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$DISCORD_WEBHOOK_URL" ]; then echo "No DISCORD_WEBHOOK_URL: not alerting"; exit 0; fi

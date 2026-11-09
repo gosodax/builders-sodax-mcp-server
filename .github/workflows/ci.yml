@@ -5,11 +5,12 @@ on:
     branches:
       - master
       - development
+  # Every base branch, so stacked PRs (based on another PR's branch) get CI too.
   pull_request:
-    branches:
-      - master
-      - development
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   build:

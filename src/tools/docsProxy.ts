@@ -13,6 +13,7 @@ import {
   callDocsTool,
   checkDocsHealth,
   fetchDocsTools,
+  getCachedDocsHealth,
   getCachedDocsToolNames as getCachedRawDocsToolNames,
   refreshDocsTools,
 } from "../services/docsProxy.js";
@@ -231,12 +232,16 @@ function registerDocsMetaTools(server: McpServer): void {
       }
 
       const toolList = tools.map(t => `- \`docs_${t.name}\`: ${t.description}`).join("\n");
-      const status = fetched ? "✅ Refreshed." : `${notRefreshed}.`;
+      const status = !fetched
+        ? `${notRefreshed}. ${tools.length} SDK documentation tools available`
+        : getCachedDocsHealth().healthy
+          ? `✅ Refreshed. ${tools.length} SDK documentation tools available`
+          : `⚠️ Refresh failed; serving ${tools.length} cached SDK documentation tools`;
       return {
         content: [
           {
             type: "text",
-            text: `${status} ${tools.length} SDK documentation tools available:\n\n${toolList}`,
+            text: `${status}:\n\n${toolList}`,
           },
         ],
       };

@@ -106,8 +106,10 @@ describe("docs_refresh", () => {
     const { fetchDocsTools, getCachedDocsHealth } = await import("../services/docsProxy.js");
     upstream.down = true;
 
-    await refresh();
+    const text = (await refresh()).content[0]?.text;
 
+    expect(text).toMatch(/^⚠️ Refresh failed; serving 2 cached SDK documentation tools/);
+    expect(text).not.toContain("Refreshed.");
     expect(await fetchDocsTools()).toHaveLength(UPSTREAM_TOOLS.length);
     expect(getCachedDocsHealth()).toEqual({ healthy: false, toolCount: UPSTREAM_TOOLS.length });
   });

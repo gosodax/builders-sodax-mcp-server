@@ -7,7 +7,7 @@
 Report privately, by either:
 
 1. **GitHub private vulnerability reporting:** [open a draft security advisory](https://github.com/gosodax/builders-sodax-mcp-server/security/advisories/new). This is preferred, because the report stays attached to the repository.
-2. **Email:** `tech-alerts@sodax.com` with **SECURITY** in the subject.
+2. **Email:** `security@sodax.com` with **SECURITY** in the subject.
 
 Include the affected component and version or commit, the impact, steps to reproduce, and any relevant chain or transaction references. Never include secrets, private keys or live credentials in a report.
 

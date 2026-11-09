@@ -93,11 +93,13 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
   }
 
   // At most one per chain, by address or else by exact symbol. Never a native token by address: the zero
-  // address is each chain's own gas token, not one token.
+  // address is each chain's own gas token, not one token. The sentinels are checked by value too, since
+  // `isNative` is unset on a chain whose config is missing.
+  const sentinel = /^0x0{40}$/i.test(q) || q.toLowerCase() === EVM_NATIVE_PLACEHOLDER;
   const otherChains = Object.keys(catalog.tokens)
     .filter(other => other !== key)
     .flatMap(other => {
-      const byAddress = findToken(catalog, other, q);
+      const byAddress = sentinel ? undefined : findToken(catalog, other, q);
       const token =
         byAddress && !byAddress.isNative
           ? byAddress

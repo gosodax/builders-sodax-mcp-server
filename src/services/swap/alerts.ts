@@ -36,22 +36,29 @@ const DEDUPE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
 // Discord allows 1024; a hash or a fixed reason fits well within this.
 const FIELD_VALUE_MAX = 256;
-// Past this many posts an hour the rest are only logged, and one post at the end of the hour counts
-// them. Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
+// Past this many posts an hour an alert is held, and the hour ends with one post listing the held ones.
+// Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
 // alerts have their own small budget and can't crowd out the alerts on deposits this server checked.
-const POSTS_PER_HOUR = { unknown_quote: 5, checked: 20 };
+const POSTS_PER_HOUR = { public: 5, checked: 20 };
+// Held alerts listed per budget in that post (it fits Discord's 4096-character description); past this, only logged.
+const MAX_HELD = 12;
 const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit"];
 const HOUR_MS = 60 * 60 * 1000;
 
 type Budget = keyof typeof POSTS_PER_HOUR;
 
-// Insertion order is age order; a repeat moves to the end.
-const sent = new Map<string, number>();
+// Insertion order is age order; a repeat moves to the end. `reached`: posted or held, not only logged.
+const sent = new Map<string, { at: number; reached: boolean }>();
 let hourStart = Number.NEGATIVE_INFINITY;
-let postsThisHour: Record<Budget, number> = { unknown_quote: 0, checked: 0 };
-let suppressed = 0;
+let postsThisHour: Record<Budget, number> = { public: 0, checked: 0 };
+let held: Record<Budget, string[]> = { public: [], checked: [] };
+let dropped = 0;
 let summary: NodeJS.Timeout | undefined;
 
+/**
+ * Logs the alert and posts it, or holds it for the hourly post when its budget is spent. False when
+ * it was neither posted nor held (that post is full): only the log has it.
+ */
 export function alertOperator(
   kind: AlertKind,
   fields: {
@@ -64,7 +71,7 @@ export function alertOperator(
     /** Which failure: a fixed message or an error class, never input or upstream text. */
     reason?: string;
   },
-): void {
+): boolean {
   // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
     kind === "swap_error"
@@ -73,16 +80,23 @@ export function alertOperator(
   );
   const now = Date.now();
   const last = sent.get(key);
-  if (last !== undefined && now - last < DEDUPE_MS) return;
+  // One that reached only the log is tried again after the hour, when the budget is new.
+  if (last && now - last.at < (last.reached ? DEDUPE_MS : HOUR_MS)) return last.reached;
 
   // Enough to tell callers apart, not to look a key up.
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   logger.error({ alert: kind, ...tagged }, TITLES[kind]);
-  // Only a posted alert is deduped, so one held back by the budget is posted on a later call.
-  if (!withinBudget(PUBLIC_KINDS.includes(kind) ? "unknown_quote" : "checked", now)) return;
+  const budget = PUBLIC_KINDS.includes(kind) ? "public" : "checked";
+  const verdict = spend(budget, now);
   sent.delete(key);
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
-  sent.set(key, now);
+  sent.set(key, { at: now, reached: verdict !== "drop" });
+  if (verdict === "drop") return false;
+  if (verdict === "hold") {
+    const deadline = fields.deadline && `deadline ${fields.deadline}`;
+    held[budget].push([kind, fields.chainKey, fields.txHash, fields.quoteId, deadline].filter(Boolean).join(" · "));
+    return true;
+  }
   const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
     .filter(([, value]) => value !== undefined)
     // Fields carry no error text by contract; this keeps a slip from posting a URL or a wall of text.
@@ -92,33 +106,43 @@ export function alertOperator(
       inline: name !== "txHash",
     }));
   post(`🚨 ${TITLES[kind]}`, embedFields);
+  return true;
 }
 
-function withinBudget(budget: Budget, now: number): boolean {
+function spend(budget: Budget, now: number): "post" | "hold" | "drop" {
   if (now - hourStart >= HOUR_MS) {
     hourStart = now;
-    postsThisHour = { unknown_quote: 0, checked: 0 };
+    postsThisHour = { public: 0, checked: 0 };
   }
   if (postsThisHour[budget] < POSTS_PER_HOUR[budget]) {
     postsThisHour[budget]++;
-    return true;
+    return "post";
   }
-  suppressed++;
-  summary ??= setTimeout(postSuppressed, hourStart + HOUR_MS - now).unref();
-  return false;
+  summary ??= setTimeout(postHeld, hourStart + HOUR_MS - now).unref();
+  if (held[budget].length < MAX_HELD) return "hold";
+  dropped++;
+  return "drop";
 }
 
-function postSuppressed(): void {
-  logger.error({ suppressed }, "Swap alerts over the hourly budget were only logged");
-  post(`🚨 ${suppressed} more swap alerts in the last hour, only logged`, [
-    { name: "env", value: SODAX_ENV, inline: true },
-  ]);
-  suppressed = 0;
+function postHeld(): void {
+  const lines = [...held.checked, ...held.public];
+  logger.error({ held: lines.length, dropped }, "Swap alerts over the hourly budget");
+  const count = lines.length + dropped;
+  if (dropped > 0) lines.push(`${dropped} more only in the logs (alert: <kind>)`);
+  post(
+    `🚨 ${count} more swap alerts in the last hour, held back by the hourly cap`,
+    [{ name: "env", value: SODAX_ENV, inline: true }],
+    lines.join("\n"),
+  );
+  held = { public: [], checked: [] };
+  dropped = 0;
   summary = undefined;
 }
 
-function post(title: string, fields: { name: string; value: string; inline: boolean }[]): void {
-  void postToDiscord({ embeds: [{ title, color: COLOR.red, fields, timestamp: new Date().toISOString() }] });
+function post(title: string, fields: { name: string; value: string; inline: boolean }[], description?: string): void {
+  void postToDiscord({
+    embeds: [{ title, description, color: COLOR.red, fields, timestamp: new Date().toISOString() }],
+  });
 }
 
 export function clearAlerts(): void {
@@ -126,6 +150,7 @@ export function clearAlerts(): void {
   clearTimeout(summary);
   summary = undefined;
   hourStart = Number.NEGATIVE_INFINITY;
-  postsThisHour = { unknown_quote: 0, checked: 0 };
-  suppressed = 0;
+  postsThisHour = { public: 0, checked: 0 };
+  held = { public: [], checked: [] };
+  dropped = 0;
 }

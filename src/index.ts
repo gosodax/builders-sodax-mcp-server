@@ -7,14 +7,15 @@
  * SDK documentation proxied from docs.sodax.com/mcp.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express, { Request, Response } from "express";
+import express, { type Express, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { messageContext, resolveConnection } from "./connection.js";
@@ -24,6 +25,15 @@ import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
+import {
+  type SseLease,
+  SseSessionLimiter,
+  asyncHandler,
+  createMcpLimiter,
+  jsonErrorHandler,
+  limitBody,
+  mcpGetNotAllowed,
+} from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
 import { partnerFeeFromEnv } from "./services/partnerFee.js";
@@ -136,6 +146,11 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   // The swap tools only count while the rollout switch is on.
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
+  listen(createHttpApp(swapToolsEnabled), swapToolsEnabled);
+}
+
+/** The routes and their guards, without the docs warm-up or a listener, so a test can serve them. */
+export function createHttpApp(swapToolsEnabled: boolean): Express {
   const app = express();
 
   // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
@@ -163,18 +178,12 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     max: 100, // 100 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many requests, please try again later." },
+    message: limitBody("Too many requests, please try again later."),
   });
   app.use(limiter);
 
-  // Stricter rate limit for MCP endpoint
-  const mcpLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 60, // 60 MCP requests per minute
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many MCP requests, please try again later." },
-  });
+  // Stricter rate limit for MCP endpoints (60 per minute; a batch on /mcp counts per message)
+  const mcpLimiter = createMcpLimiter();
 
   app.use(express.json({ limit: "100kb" }));
 
@@ -258,53 +267,86 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     });
   });
 
-  app.all("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res, swapToolsEnabled);
-    if (!connection) return;
-    const clientId = hashClientIp(req.ip || "unknown");
-    const requestServer = await createServer(connection.toolsets, clientId);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    res.on("close", () => transport.close());
-    await requestServer.connect(transport);
-    await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
-  });
+  app.get("/mcp", mcpGetNotAllowed);
+
+  app.all(
+    "/mcp",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const connection = resolveConnection(req, res, swapToolsEnabled);
+      if (!connection) return;
+      const clientId = hashClientIp(req.ip || "unknown");
+      const requestServer = await createServer(connection.toolsets, clientId);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      res.on("close", () => transport.close());
+      await requestServer.connect(transport);
+      await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
+    }),
+  );
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
+  const sseLimiter = new SseSessionLimiter();
   // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
-  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; context: RequestContext }>();
+  const sseSessions = new Map<
+    string,
+    { transport: SSEServerTransport; server: McpServer; context: RequestContext; lease: SseLease }
+  >();
 
-  app.get("/sse", mcpLimiter, async (req: Request, res: Response) => {
-    const connection = resolveConnection(req, res, swapToolsEnabled);
-    if (!connection) return;
-    const clientId = hashClientIp(req.ip || "unknown");
-    const sseServer = await createServer(connection.toolsets, clientId);
-    const transport = new SSEServerTransport("/messages", res);
-    sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context });
+  app.get(
+    "/sse",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      // Before taking a slot, so a refused connection never holds one.
+      const connection = resolveConnection(req, res, swapToolsEnabled);
+      if (!connection) return;
+      const ip = req.ip || "unknown";
+      // An idle session ends its stream; the close handlers below clean up.
+      const lease = sseLimiter.open(ip, () => res.end());
+      if (!lease) {
+        res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
+        return;
+      }
+      let closed = false;
+      res.on("close", () => {
+        closed = true;
+        lease.release();
+      });
 
-    res.on("close", () => {
-      sseSessions.delete(transport.sessionId);
-      transport.close();
-    });
+      const sseServer = await createServer(connection.toolsets, hashClientIp(ip));
+      if (closed) return;
+      const transport = new SSEServerTransport("/messages", res);
+      sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
 
-    // connect() starts the transport; a second start() throws.
-    await sseServer.connect(transport);
-  });
+      res.on("close", () => {
+        sseSessions.delete(transport.sessionId);
+        transport.close();
+      });
 
-  app.post("/messages", mcpLimiter, async (req: Request, res: Response) => {
-    const sessionId = req.query.sessionId as string;
-    const session = sseSessions.get(sessionId);
-    if (!session) {
-      res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
-      return;
-    }
-    // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-    const context = messageContext(session.context, req, res);
-    if (!context) return;
-    await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
-  });
+      // connect() starts the transport; a second start() throws.
+      await sseServer.connect(transport);
+    }),
+  );
+
+  app.post(
+    "/messages",
+    mcpLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const sessionId = req.query.sessionId as string;
+      const session = sseSessions.get(sessionId);
+      if (!session) {
+        res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
+        return;
+      }
+      // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
+      const context = messageContext(session.context, req, res);
+      if (!context) return;
+      session.lease.touch();
+      await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
+    }),
+  );
 
   app.get("/api", async (_req: Request, res: Response) => {
     // Non-blocking: docs tool list from the warmed cache (see /health) so a cold
@@ -350,6 +392,12 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
     });
   });
 
+  // Last: malformed or oversized bodies and unexpected errors get a JSON body.
+  app.use(jsonErrorHandler);
+  return app;
+}
+
+function listen(app: Express, swapToolsEnabled: boolean): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     logger.info(
@@ -408,13 +456,6 @@ function fatalExit(context: string, error: unknown): void {
   });
 }
 
-main().catch(error => fatalExit("Server failed to start", error));
-
-// #38: surface unexpected runtime failures to Discord, then exit — preserving
-// Node's default crash semantics for uncaught errors / unhandled rejections.
-process.on("uncaughtException", error => fatalExit("Uncaught exception", error));
-process.on("unhandledRejection", reason => fatalExit("Unhandled promise rejection", reason));
-
 /**
  * Graceful shutdown: announce to Discord (#38), flush pending PostHog events,
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
@@ -430,5 +471,24 @@ async function gracefulShutdown(signal: string): Promise<void> {
   await shutdownAnalytics();
   process.exit(0);
 }
-process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
-process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+
+/** Run as a script (node, tsx), not imported by a test. Resolved as node does, so `node .` counts too. */
+function isEntryPoint(): boolean {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(createRequire(import.meta.url).resolve(process.argv[1])) === __filename;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main().catch(error => fatalExit("Server failed to start", error));
+
+  // #38: surface unexpected runtime failures to Discord, then exit — preserving
+  // Node's default crash semantics for uncaught errors / unhandled rejections.
+  process.on("uncaughtException", error => fatalExit("Uncaught exception", error));
+  process.on("unhandledRejection", reason => fatalExit("Unhandled promise rejection", reason));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+}

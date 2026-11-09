@@ -136,7 +136,7 @@ export const BRAND_COLORS = {
 export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/;
+export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 // A SODAX API key is `sodax_` + base64url. Global: use with match/replace, which reset it, never test.
 export const SODAX_KEY_PATTERN = /sodax_[A-Za-z0-9_-]{24,}/g;

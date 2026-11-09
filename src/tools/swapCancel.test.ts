@@ -91,6 +91,8 @@ afterEach(() => {
   vi.mocked(userHubWallet).mockReset();
 });
 
+const NEVER = " The user must not send the swap again.";
+
 describe("sodax_swap_cancel", () => {
   it.each([
     [null, "not_submitted"],
@@ -275,7 +277,7 @@ describe("sodax_swap_cancel", () => {
       stubBackend({ row: null, relay: () => Response.json({ result: { success: false } }) });
       const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
       expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
-      expect(out.nextStep).toContain("call sodax_swap_cancel again in about 60 seconds");
+      expect(out.nextStep).toContain("call sodax_swap_cancel again in about 60 seconds, at most 10 times, then stop.");
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({ alert: "refund_relay_failed" }),
         expect.any(String),
@@ -312,7 +314,7 @@ describe("sodax_swap_cancel", () => {
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out.error.code).toBe("QUOTE_MISMATCH");
     expect(out.nextStep).toBe(
-      "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
+      `Call again with the quoteId this transaction was made from, or with chain instead of quoteId.${NEVER}`,
     );
     expect(calls).toEqual([]);
     expect(logger.error).not.toHaveBeenCalled();

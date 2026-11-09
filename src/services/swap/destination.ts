@@ -26,8 +26,8 @@ const NOT_READY = {
     nextStep: `Tell the user the recipient must register storage for ${symbol} on NEAR before receiving it, then quote again.`,
   }),
   STELLAR: (symbol: string) => ({
-    message: `The recipient's Stellar account has no trustline for this much ${symbol}.`,
-    nextStep: `Tell the user the recipient must add (or raise) a trustline for ${symbol} on Stellar before receiving it, then quote again.`,
+    message: `The recipient's Stellar account doesn't exist yet, or has no trustline for this much ${symbol}.`,
+    nextStep: `Tell the user the recipient's Stellar account must exist and add (or raise) a trustline for ${symbol} before receiving it, then quote again.`,
   }),
 };
 

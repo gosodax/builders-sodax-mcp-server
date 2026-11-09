@@ -28,7 +28,7 @@ export type CancelState =
   /** The quote's deposit is on chain, never submitted: from its deadline on, a cancel call refunds it. */
   | { status: "deposit_unsubmitted"; retryAfterSec: number }
   /** That refund's relay failed; the next call tries again. */
-  | { status: "expired_unsubmitted"; alerted: true; retryAfterSec: number }
+  | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
   | { status: "ready"; steps: [{ kind: "cancel"; chainId: number; tx: StepTx }] }
   | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
   | { status: "cancel_failed" }

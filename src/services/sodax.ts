@@ -36,7 +36,14 @@ export async function initSodax(rpcUrls: Record<string, string> = {}): Promise<v
   if (loaded) return;
   const sdk = await import("@sodax/sdk");
   const chains = Object.fromEntries(Object.entries(rpcUrls).map(([chainKey, rpcUrl]) => [chainKey, { rpcUrl }]));
-  const options = { api: { baseURL: `${SODAX_API_ORIGIN}/v1` }, logger: sdkLogger, chains };
+  // The hub provider reads its own config, not the Sonic spoke's, so the override goes to both.
+  const hubRpcUrl = rpcUrls[HUB_CHAIN_KEY];
+  const options = {
+    api: { baseURL: `${SODAX_API_ORIGIN}/v1` },
+    logger: sdkLogger,
+    chains,
+    ...(hubRpcUrl && { hub: { rpcUrl: hubRpcUrl } }),
+  };
   loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
 }
 

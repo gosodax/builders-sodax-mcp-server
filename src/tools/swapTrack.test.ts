@@ -407,6 +407,7 @@ describe("sodax_swap_track", () => {
 
     const second = await track({ txHash: OTHER_TX, quoteId });
     expect(second.out).toMatchObject({ status: "not_submitted", reason: "quote_used" });
+    vi.setSystemTime(Date.now() + 15_000);
     expect((await track({ txHash: TX, quoteId })).out.status).toBe("queued");
     expect(submits(calls).map(call => call.body?.txHash)).toEqual([TX, TX]);
   });
@@ -705,6 +706,44 @@ describe("sodax_swap_track", () => {
     expect(first.out.nextStep).toContain("don't send the swap again");
     expect(first.out.nextStep).not.toContain("API key");
     // Not marked refused: the next call submits again.
+    vi.setSystemTime(Date.now() + 15_000);
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("finds the quote whatever the case of its quoteId", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId: quoteId.toUpperCase() });
+    expect(out).toMatchObject({ status: "queued", quoteId });
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it("waits out a retry sooner than told instead of spending another submit", async () => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    vi.setSystemTime(Date.now() + 5_000);
+    const early = await track({ txHash: TX, quoteId });
+    expect(early.out.error).toMatchObject({ code: "UPSTREAM_UNAVAILABLE", retryAfterSec: 10 });
+    expect(early.out.nextStep).toContain("don't send the swap again");
+    expect(submits(calls)).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 10_000);
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("lets a retry through as soon as the swap service's own Retry-After allows", async () => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status: 429, headers: { "Retry-After": "5" } }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    expect((await track({ txHash: TX, quoteId })).out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 5 });
+    vi.setSystemTime(Date.now() + 5_000);
     await track({ txHash: TX, quoteId });
     expect(submits(calls)).toHaveLength(2);
   });

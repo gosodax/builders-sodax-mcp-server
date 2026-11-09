@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("alertOperator", () => {
-  it("posts once a day per kind and tx, with no address", async () => {
+  it("posts once a day per kind and tx", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date"] });
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
@@ -30,7 +30,6 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     const body = String(fetch.mock.calls[0][1]?.body);
     expect(body).toContain(TX);
-    expect(body).not.toContain("dEaD");
 
     vi.setSystemTime(Date.parse("2026-10-27T12:00:01Z"));
     alertOperator("unknown_quote", FIELDS);

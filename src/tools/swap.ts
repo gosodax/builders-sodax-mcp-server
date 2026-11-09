@@ -35,7 +35,7 @@ const swapArgs = {
   txHash: txHashArg.describe(
     "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
-  quoteId: z.string().trim().uuid().optional().describe("The quoteId from sodax_swap_quote."),
+  quoteId: z.string().trim().toLowerCase().uuid().optional().describe("The quoteId from sodax_swap_quote."),
   chain: chainArg.optional().describe("Source chain name or key; needed only without quoteId."),
 };
 const swapActionHints = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };

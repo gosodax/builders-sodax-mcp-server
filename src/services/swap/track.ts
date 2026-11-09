@@ -15,6 +15,7 @@ import {
   type CachedQuote,
   claimDeposit,
   markRelayedForRefund,
+  markSubmitFailed,
   markSubmitRefused,
   markSubmitted,
 } from "./quoteCache.js";
@@ -179,6 +180,13 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
   // backend's canceller, as its own expired rows are.
   if (Date.now() >= deadlineMs(quote)) return relayForRefund(base, quote);
+  // Each submit costs one of the 10 a minute this server's IP gets: a retry sooner than told waits.
+  const waitMs = (quote.submitRetryAt ?? 0) - Date.now();
+  if (waitMs > 0) {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "This deposit was submitted moments ago.", {
+      details: { retryAfterSec: Math.ceil(waitMs / 1000) },
+    });
+  }
 
   try {
     await submitTx({
@@ -190,7 +198,12 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     });
   } catch (error) {
     // A failure that may pass may also have reached the backend, so the claim stays and a repeat submits again.
-    if (!isRefusal(error)) throw retryable(error);
+    if (!isRefusal(error)) {
+      const failure = retryable(error);
+      const told = failure instanceof ActionError ? Number(failure.details?.retryAfterSec ?? RETRY_AFTER_SEC) : 0;
+      markSubmitFailed(quote.quoteId, Math.min(told, RETRY_AFTER_SEC));
+      throw failure;
+    }
     // A refusal of the swap itself, an amount one too, comes after the deposit: never the quote-time advice.
     const alerted = alertOperator("submit_rejected", {
       chainKey: chain.key,

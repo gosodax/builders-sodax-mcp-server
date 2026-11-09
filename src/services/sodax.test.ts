@@ -213,11 +213,15 @@ describe("parseRpcOverrides", () => {
   it("maps SODAX_RPC_URL_<chainId> to the chain key, ignoring everything else", () => {
     const env = {
       SODAX_RPC_URL_42161: "https://arb.example/key",
+      SODAX_RPC_URL_146: "https://sonic.example/key",
       SODAX_RPC_URL_137: "",
       SODAX_RPC_URL: "https://no-id.example",
       PATH: "/bin",
     };
-    expect(parseRpcOverrides(env)).toEqual({ "0xa4b1.arbitrum": "https://arb.example/key" });
+    expect(parseRpcOverrides(env)).toEqual({
+      "0xa4b1.arbitrum": "https://arb.example/key",
+      sonic: "https://sonic.example/key",
+    });
   });
 
   it.each([
@@ -227,6 +231,18 @@ describe("parseRpcOverrides", () => {
   ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
     expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
     expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
+  });
+});
+
+describe("initSodax", () => {
+  it("sends the hub's reads through a Sonic override too", async () => {
+    vi.resetModules();
+    const fresh = await import("./sodax.js");
+    await fresh.initSodax({ sonic: "https://sonic.example/key" });
+    // A 400, which viem doesn't retry.
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
+    await expect(fresh.userHubWallet("0xa4b1.arbitrum", USER)).rejects.toThrow("SDK call failed");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://sonic.example/key");
   });
 });
 

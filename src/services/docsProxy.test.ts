@@ -151,8 +151,8 @@ describe("docsProxy allowlist", () => {
 
     const slow = fetchDocsTools(); // in flight, will fail
     await vi.waitFor(() => expect(first).toBe(false));
-    clearDocsCache(); // docs_refresh
-    expect(await fetchDocsTools()).toHaveLength(2); // the refresh's own fetch succeeds
+    clearDocsCache();
+    expect(await fetchDocsTools()).toHaveLength(2); // the fetch after the reset succeeds
     rejectSlow(new Error("timeout")); // the stale fetch fails afterwards
     await slow;
 
@@ -182,7 +182,7 @@ describe("docsProxy allowlist", () => {
       vi.advanceTimersByTime(61_000);
       expect(await fetchDocsTools()).toHaveLength(2);
 
-      // clearDocsCache (docs_refresh) also resets the back-off.
+      // clearDocsCache also resets the back-off.
       globalThis.fetch = failing as unknown as typeof fetch;
       clearDocsCache();
       await fetchDocsTools();

@@ -105,7 +105,8 @@ every transaction; the server never signs.
    `reset_approve` still goes first.
 3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
-   submits the swap to SODAX until this call, and a first call after `expiresAt` refunds the deposit instead. While
+   submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
+   deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. While
    the result has `retryAfterSec`, call it again after that many seconds.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`.
@@ -130,7 +131,8 @@ The swap tools never sign or move funds. They also:
 - trust only their own quote cache and chain data when tracking or cancelling;
 - reject slippage and deadlines outside their bounds instead of clamping them;
 - warn, never block, when a quote is worth more than `SODAX_SWAP_USD_WARN` USD;
-- refuse a quote whose output is worth under 90% of the amount sent (net of any partner fee) at the oracle's prices;
+- refuse a quote whose output is worth under 90% of the amount sent (net of any partner fee) at the oracle's prices,
+  and warn when the oracle can't price both sides;
 - pick canary or production once, at startup (`SODAX_ENV`), never per request;
 - take no RPC URL and no partner fee as a tool input;
 - keep keys and RPC URLs out of logs, and addresses out of analytics and alerts.
@@ -345,7 +347,7 @@ Coolify injects these directly into the process environment.
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
-| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`). `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |
+| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`), Ethereum (`1`) and Hedera (`295`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
@@ -391,7 +393,7 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
-- Before a deploy or restart, check `GET /health`. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
+- A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
 - Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its quoteId, Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.

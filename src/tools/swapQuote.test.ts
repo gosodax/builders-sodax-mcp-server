@@ -267,7 +267,7 @@ describe("sodax_swap_quote", () => {
     expect(out.steps?.map(step => step.kind)).toEqual(["reset_approve", "approve", "swap"]);
     expect(out.batch?.replaces).toEqual(["approve", "swap"]);
     expect(out.nextStep).toContain(
-      "(or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order)",
+      "(or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)",
     );
   });
 

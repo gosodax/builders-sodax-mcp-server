@@ -305,7 +305,7 @@ function quoteNextStep(quote: SwapQuote): string {
       ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
       : "";
   const batch = quote.batch
-    ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order)"
+    ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)"
     : "";
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,

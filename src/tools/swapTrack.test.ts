@@ -58,6 +58,8 @@ afterEach(() => {
   setFallbackRequestContext({});
 });
 
+const NEVER = " The user must not send the swap again.";
+
 describe("sodax_swap_track", () => {
   it("checks the deposit, submits the quoted intent once, and reports it queued", async () => {
     const calls = stubBackend();
@@ -65,6 +67,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
     expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
     const [submit] = submits(calls);
     expect(submit.body).toEqual({
@@ -607,7 +610,7 @@ describe("sodax_swap_track", () => {
     expect(out.error.code).toBe("QUOTE_KEY_MISMATCH");
     // The model can't set the connection's key: the user has to know it changed.
     expect(out.nextStep).toBe(
-      "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
+      `This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.${NEVER}`,
     );
     expect(calls).toEqual([]);
     expect(getEvmReceipt).not.toHaveBeenCalled();
@@ -636,7 +639,9 @@ describe("sodax_swap_track", () => {
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
     stubBackend();
     const { out } = await track({ txHash: TX, quoteId: randomUUID() });
-    expect(out.nextStep).toBe("Call again with the same arguments plus chain set to the swap's source chain key.");
+    expect(out.nextStep).toBe(
+      `Call again with the same arguments plus chain set to the swap's source chain key.${NEVER}`,
+    );
   });
 
   it("refuses a quoteId for another source chain", async () => {
@@ -651,7 +656,7 @@ describe("sodax_swap_track", () => {
     const chain = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(chain.out.nextStep).toBe(
-      "Call sodax_swap_track again in 30 seconds with the same arguments; don't send the swap again meanwhile.",
+      "Call sodax_swap_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
     );
 
     stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });
@@ -670,10 +675,36 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("don't send the swap again");
   });
 
-  it("needs a valid key to submit", async () => {
-    stubBackend({ submit: () => new Response("", { status: 401 }) });
-    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
-    expect(out.error.code).toBe("API_KEY_REQUIRED");
+  it("treats an amount refusal after the deposit is checked as refused: alerted, deposit safe, never quote again", async () => {
+    stubBackend({ submit: () => Response.json({ code: -23, message: "too low" }, { status: 400 }) });
+    const { isError, out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({ status: "submit_refused", alerted: true });
+    expect(out.nextStep).toContain("must not send it again");
+    expect(out.nextStep).not.toContain("larger amount");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "submit_rejected" }),
+      expect.any(String),
+    );
+  });
+
+  it.each([
+    ["a refused key", 401],
+    ["a WAF's 403", 403],
+  ])("retries %s after the deposit is checked, never asking for a new key", async (_, status) => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status }),
+      // The refused submit left no row.
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    const first = await track({ txHash: TX, quoteId });
+    expect(first.out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(first.out.nextStep).toContain("don't send the swap again");
+    expect(first.out.nextStep).not.toContain("API key");
+    // Not marked refused: the next call submits again.
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {

@@ -91,6 +91,8 @@ afterEach(() => {
   vi.mocked(userHubWallet).mockReset();
 });
 
+const NEVER = " The user must not send the swap again.";
+
 describe("sodax_swap_cancel", () => {
   it.each([
     [null, "not_submitted"],
@@ -312,7 +314,7 @@ describe("sodax_swap_cancel", () => {
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out.error.code).toBe("QUOTE_MISMATCH");
     expect(out.nextStep).toBe(
-      "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
+      `Call again with the quoteId this transaction was made from, or with chain instead of quoteId.${NEVER}`,
     );
     expect(calls).toEqual([]);
     expect(logger.error).not.toHaveBeenCalled();

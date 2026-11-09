@@ -10,7 +10,7 @@ import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/m
 import type { ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "../services/logger.js";
-import { ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
+import { ActionError } from "../services/swap/errors.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 
 type ActionOutput = Record<string, unknown> & { status: string; nextStep: string };
@@ -24,8 +24,8 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   input: Args,
   annotations: ToolAnnotations,
   run: (args: ShapeOutput<Args>) => Promise<ActionOutput>,
-  /** What to tell the agent on a retryable failure instead of the code's default (e.g. funds are on chain). */
-  retryAdvice?: (retryAfterSec: number) => string,
+  /** The next step on any failure instead of the code's default, for a tool called after a wallet sent something. */
+  failureAdvice?: (failure: ActionError, retryAfterSec: number) => string,
 ): void {
   const handler = async (args: ShapeOutput<Args>): Promise<CallToolResult> => {
     try {
@@ -35,10 +35,9 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       const failure =
         error instanceof ActionError ? error : new ActionError("INTERNAL", "The tool failed unexpectedly.");
       const out = { error: { ...failure.details, code: failure.code, message: failure.message } };
-      const nextStep =
-        retryAdvice && RETRYABLE_CODES.includes(failure.code)
-          ? retryAdvice(Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC))
-          : failure.nextStep;
+      const nextStep = failureAdvice
+        ? failureAdvice(failure, Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC))
+        : failure.nextStep;
       return toResult({ status: "error", ...out, nextStep }, true);
     }
   };

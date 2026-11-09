@@ -174,6 +174,9 @@ const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL};
 /** Built from catalog symbols, chain names and formatted amounts only. */
 function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
   if (accountExists === false) {
+    if (token && token.baseUnits !== "0") {
+      return `The wallet has no account on ${chain.name} yet (0 ${native.symbol}) but holds ${token.amount} ${token.symbol}; it needs ${native.symbol} sent to it to pay gas there.`;
+    }
     return `The wallet has no account on ${chain.name} yet, so it holds nothing there; it needs ${native.symbol} sent to it first.`;
   }
   const isNative = token?.address === native.address;

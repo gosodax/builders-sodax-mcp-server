@@ -19,6 +19,9 @@ const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const XLM = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 const STELLAR_USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const STELLAR_USER = "GDYUTHY75A7WUZJQDPOP66FB32BOYGZRXHWTWO4Q6LQTANT5X3V5HNFA";
+const NEAR_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+// An implicit account: it exists on chain only once NEAR is sent to it.
+const NEAR_USER = "ab".repeat(32);
 const balance = (args: Record<string, unknown>) => callTool("sodax_get_balance", args);
 const holding = (balances: Record<string, bigint | null>) =>
   vi
@@ -38,6 +41,18 @@ function withStellar() {
     chain: { id: "stellar", chainId: "stellar", name: "Stellar", type: "STELLAR" },
     nativeToken: XLM,
   };
+  vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch(JSON.stringify(tokens), JSON.stringify(configs)));
+}
+
+/** The recorded catalog plus NEAR, with NEAR and USDC as the live list has them. */
+function withNear() {
+  const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+  const configs = JSON.parse(fixtureText("chain-configs.json"));
+  tokens.near = [
+    { decimals: 24, chainKey: "near", hubAsset: ARB_USDC, symbol: "NEAR", name: "NEAR", address: "NEAR" },
+    { decimals: 6, chainKey: "near", hubAsset: ARB_USDC, symbol: "USDC", name: "USD Coin", address: NEAR_USDC },
+  ];
+  configs.near = { chain: { id: "near", chainId: "near", name: "Near", type: "NEAR" }, nativeToken: "NEAR" };
   vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch(JSON.stringify(tokens), JSON.stringify(configs)));
 }
 
@@ -130,7 +145,7 @@ describe("sodax_get_balance", () => {
     expect(walletBalance).not.toHaveBeenCalled();
   });
 
-  it("says an account that doesn't exist yet holds nothing, even when its token read fails", async () => {
+  it("says a Stellar account that doesn't exist yet holds nothing, even when its token read fails", async () => {
     withStellar();
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
@@ -144,6 +159,32 @@ describe("sodax_get_balance", () => {
       "The wallet has no account on Stellar yet, so it holds nothing there; it needs XLM sent to it first.",
     );
     expect(recipientReady).not.toHaveBeenCalled();
+  });
+
+  it("reads a NEAR token held by an account that doesn't exist yet: the balance is in the token's contract", async () => {
+    withNear();
+    holding({ NEAR: null, [NEAR_USDC]: 25_000_100_000n });
+    const { isError, out } = await balance({ chain: "near", address: NEAR_USER, token: "USDC" });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({
+      accountExists: false,
+      native: { baseUnits: "0" },
+      token: { baseUnits: "25000100000" },
+    });
+    expect(out.nextStep).toBe(
+      "The wallet has no account on NEAR yet (0 NEAR) but holds 25000.1 USDC; it needs NEAR sent to it to pay gas there.",
+    );
+  });
+
+  it("fails a NEAR token read for an account that doesn't exist yet, never reading it as 0", async () => {
+    withNear();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
+      if (token.address === "NEAR") return null;
+      throw new Error("rpc down");
+    });
+    const { out } = await balance({ chain: "near", address: NEAR_USER, token: "USDC" });
+    expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
   });
 
   it.each([

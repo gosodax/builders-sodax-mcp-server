@@ -26,7 +26,10 @@ export interface BalanceResult {
   native: Holding;
   /** The token asked for; the native coin's holding when that's the one. */
   token?: Holding;
-  /** False when the account doesn't exist on the chain yet (Stellar, NEAR): it holds nothing there. */
+  /**
+   * False when the account doesn't exist on the chain yet (Stellar, NEAR): it holds no native coin. A
+   * NEAR token can still be held, since its balance lives in the token's contract.
+   */
   accountExists?: false;
   /** False when the Stellar account has no trustline for the token: it holds none and can't receive it yet. */
   trustline?: false;
@@ -66,18 +69,17 @@ export async function readBalances(input: { chain: string; address: string; toke
       if (units === null) throw new Error("no balance for the token");
       return units;
     });
-  // Settled together: a failed token read counts only once the account is known to exist.
+  // Settled together: a failed token read doesn't count for a Stellar account that doesn't exist.
   const [nativeRead] = await Promise.allSettled([
     chainRead(chain, "balance", () => cachedBalance(chain.key, address, native)),
     tokenUnits,
   ]);
   if (nativeRead.status === "rejected") throw nativeRead.reason;
-  const base = { status: "ok" as const, chain, address };
-  if (nativeRead.value === null) {
-    // An account that doesn't exist holds nothing; Stellar fails its token reads rather than say so.
-    return { ...base, native: holding(native, 0n), ...(asked && { token: holding(asked, 0n) }), accountExists: false };
-  }
-  const held = holding(native, nativeRead.value);
+  const missing = nativeRead.value === null;
+  const base = { status: "ok" as const, chain, address, ...(missing && { accountExists: false as const }) };
+  const held = holding(native, nativeRead.value ?? 0n);
+  // A Stellar account that doesn't exist has no trustlines, and its token reads fail rather than say so.
+  if (missing && chainType === "STELLAR") return { ...base, native: held, ...(asked && { token: holding(asked, 0n) }) };
   if (!token || !tokenUnits) return { ...base, native: held, ...(asked && { token: held }) };
   try {
     return { ...base, native: held, token: holding(token, await tokenUnits) };

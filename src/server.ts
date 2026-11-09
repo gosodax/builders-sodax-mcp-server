@@ -12,6 +12,7 @@ import type { ToolSelection, Toolsets } from "./services/profiles.js";
 import { registerDocsProxyTools } from "./tools/docsProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
+import { registerSwapTools } from "./tools/swap.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -19,11 +20,11 @@ export const { version: SERVER_VERSION } = JSON.parse(readFileSync(join(__dirnam
   version: string;
 };
 
-// Server-level instructions sent on `initialize`. They steer clients to answer
+// Instructions sent on `initialize`, one block per toolset. The builder block steers clients to answer
 // support questions ("does SODAX support chain/token X?") from the live tools
 // rather than the model's training priors, which predate newer chains such as
 // Hedera, Robinhood and Stacks and otherwise produce confidently wrong "no"s.
-const SERVER_INSTRUCTIONS = [
+const BUILDER_INSTRUCTIONS = [
   [
     "This server exposes LIVE SODAX protocol data. It is authoritative and current;",
     "your training data is not. For any question about what SODAX supports —",
@@ -41,17 +42,23 @@ const SERVER_INSTRUCTIONS = [
   ].join(" "),
 ].join("\n\n");
 
+const SWAP_INSTRUCTIONS = [
+  "To prepare a swap, resolve each side with `sodax_resolve_token` (a chain plus a symbol, an address",
+  'or "native"). When it returns ambiguous or not_found, ask the user; never guess a token or an address.',
+].join(" ");
+
+const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };
+
 // The static tools of each toolset, in registration order. createServer registers them on a real
 // server and seedToolRegistry records them for the counts, so the two can't drift.
 const STATIC_REGISTRARS: Record<keyof Toolsets, ((server: McpServer) => void)[]> = {
   builder: [registerSodaxApiTools, registerSolverRelayTools],
-  swap: [],
+  swap: [registerSwapTools],
 };
 
-function enabledRegistrars(toolsets: Toolsets): ((server: McpServer) => void)[] {
-  return (Object.keys(STATIC_REGISTRARS) as (keyof Toolsets)[])
-    .filter(toolset => toolsets[toolset])
-    .flatMap(toolset => STATIC_REGISTRARS[toolset]);
+/** The entries of a per-toolset map for the toolsets that are on, in map order. */
+function enabled<T>(toolsets: Toolsets, perToolset: Record<keyof Toolsets, T>): T[] {
+  return (Object.keys(perToolset) as (keyof Toolsets)[]).filter(toolset => toolsets[toolset]).map(t => perToolset[t]);
 }
 
 /**
@@ -65,14 +72,14 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
       name: "builders-sodax-mcp-server",
       version: SERVER_VERSION,
     },
-    { instructions: [SERVER_INSTRUCTIONS, toolsets.keyHint].filter(Boolean).join("\n\n") },
+    { instructions: [...enabled(toolsets, INSTRUCTIONS), toolsets.keyHint].filter(Boolean).join("\n\n") },
   );
 
   // Wrap server.tool() so every tool call is tracked in PostHog
   // ⚠️  Must be called BEFORE registering any tools
   withAnalytics(server, clientId);
 
-  for (const register of enabledRegistrars(toolsets)) register(server);
+  for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(server);
   // The SDK docs proxy tools are dynamic (fetched from the docs MCP), so they're never seeded.
   if (toolsets.builder) await registerDocsProxyTools(server);
 
@@ -94,5 +101,5 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
  */
 export function seedToolRegistry(toolsets: Toolsets): void {
   const recordingServer = { tool: () => ({}) } as unknown as McpServer;
-  for (const register of enabledRegistrars(toolsets)) register(recordingServer);
+  for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(recordingServer);
 }

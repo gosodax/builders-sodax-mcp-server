@@ -43,6 +43,7 @@ import {
   resolveChainSupport,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { expireSwapCatalog } from "../services/swap/tokens.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
@@ -1263,6 +1264,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       const solverBefore = getSolverCacheStats();
       clearCache();
       clearSolverCache();
+      expireSwapCatalog();
       const total = apiBefore.size + solverBefore.size;
       return {
         content: [

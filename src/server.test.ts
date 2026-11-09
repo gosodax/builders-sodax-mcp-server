@@ -37,6 +37,14 @@ describe("builder tools", () => {
     const swapOnly = (await toolList({ builder: false, swap: true })).map(tool => tool.name);
     expect(swapOnly.filter(name => builder.includes(name))).toEqual([]);
   });
+
+  it("come with the swap tools on a connection that gets both", async () => {
+    const builder = (await toolList({ builder: true, swap: false })).map(tool => tool.name);
+    const swapOnly = (await toolList({ builder: false, swap: true })).map(tool => tool.name);
+    const both = (await toolList({ builder: true, swap: true })).map(tool => tool.name);
+    expect(swapOnly.length).toBeGreaterThan(0);
+    expect(both.sort()).toEqual([...builder, ...swapOnly].sort());
+  });
 });
 
 describe("instructions", () => {
@@ -50,6 +58,16 @@ describe("instructions", () => {
     await client.close();
     return text;
   }
+
+  it("name only tools the connection has", async () => {
+    const builder = await instructions({ builder: true, swap: false });
+    const swap = await instructions({ builder: false, swap: true });
+    expect(builder).toContain("sodax_check_chain_support");
+    expect(builder).not.toContain("sodax_resolve_token");
+    expect(swap).toContain("sodax_resolve_token");
+    expect(swap).not.toContain("sodax_check_chain_support");
+    expect(await instructions({ builder: true, swap: true })).toBe(`${builder}\n\n${swap}`);
+  });
 
   it("tell a keyless default connection, last, that the swap tools need a key", async () => {
     const builder = await instructions({ builder: true, swap: false });

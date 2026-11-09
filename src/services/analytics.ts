@@ -11,7 +11,7 @@
 import { createHash, createHmac } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PostHog } from "posthog-node";
-import { getToolModule } from "./toolRegistry.js";
+import { getToolModule, toolGroup } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
@@ -27,11 +27,8 @@ const CLIENT_ID_SECRET = process.env.POSTHOG_CLIENT_ID_SECRET || "";
  */
 function resolveToolGroup(toolName: string): string {
   const module = getToolModule(toolName);
-  if (module === "relay") return "relay";
-  if (module === "sdkDocs") return "sdk-docs";
-  if (module) return "api";
-  if (toolName.startsWith("docs_")) return "sdk-docs";
-  return "unknown";
+  const group = module ? toolGroup(module) : toolName.startsWith("docs_") ? "sdkDocs" : "unknown";
+  return group === "sdkDocs" ? "sdk-docs" : group;
 }
 
 // ── PostHog client (lazy singleton) ──────────────────────────────────

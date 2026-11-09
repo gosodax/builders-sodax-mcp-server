@@ -31,7 +31,7 @@ const streams: AbortController[] = [];
 const held: Response[] = [];
 
 beforeAll(async () => {
-  server = createHttpApp().listen(0, "127.0.0.1");
+  server = createHttpApp(true).listen(0, "127.0.0.1");
   await once(server, "listening");
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -216,6 +216,15 @@ describe("HTTP routes", () => {
     const res = await post("/mcp", JSON.stringify(initialize(1)), ip);
     expect(res.status).toBe(429);
     expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
+  });
+
+  it("doesn't count refused /sse connections against the per-IP cap", async () => {
+    const ip = "198.51.100.50";
+    for (let i = 0; i <= SSE_MAX_SESSIONS_PER_IP; i++) {
+      const refused = await fetch(`${base}/sse?profile=bogus`, { headers: { "X-Forwarded-For": ip } });
+      expect(refused.status).toBe(400);
+    }
+    expect((await openSse(ip)).status).toBe(200);
   });
 
   it("caps open SSE sessions per IP", async () => {

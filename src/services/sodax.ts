@@ -8,6 +8,7 @@
  */
 
 import {
+  type ChainType,
   type EvmSpokeOnlyChainKey,
   HUB_CHAIN_KEY,
   type SpokeChainKey,
@@ -34,13 +35,16 @@ export const sdkLogger = {
   error: (message: string) => logger.error({ source: "sodax-sdk" }, message),
 };
 
-/** `rpcUrls` overrides the packaged RPC per chain key (see `parseRpcOverrides`). */
-export async function initSodax(rpcUrls: Record<string, string> = {}): Promise<void> {
+/** The RPC fields of a chain's packaged config that `SODAX_RPC_URL_*` may replace (see `parseRpcOverrides`). */
+type RpcField = "rpcUrl" | "grpc_url" | "horizonRpcUrl" | "sorobanRpcUrl";
+export type RpcOverride = Partial<Record<RpcField, string>>;
+
+/** `chains` overrides the packaged RPC per chain key; the SDK deep-merges each patch into that chain's config. */
+export async function initSodax(chains: Record<string, RpcOverride> = {}): Promise<void> {
   if (loaded) return;
   const sdk = await import("@sodax/sdk");
-  const chains = Object.fromEntries(Object.entries(rpcUrls).map(([chainKey, rpcUrl]) => [chainKey, { rpcUrl }]));
   // The hub provider reads its own config, not the Sonic spoke's, so the override goes to both.
-  const hubRpcUrl = rpcUrls[HUB_CHAIN_KEY];
+  const hubRpcUrl = chains[HUB_CHAIN_KEY]?.rpcUrl;
   const options = {
     api: { baseURL: `${SODAX_API_ORIGIN}/v1` },
     logger: sdkLogger,
@@ -50,22 +54,50 @@ export async function initSodax(rpcUrls: Record<string, string> = {}): Promise<v
   loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
 }
 
-type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> };
+type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> } & RpcOverride;
 const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
 
+// Where a family's SDK provider reads its RPC when not the config's `rpcUrl`: Sui's gRPC endpoint, Stellar's two servers.
+const RPC_FIELD_EXCEPTIONS: Record<string, { type: ChainType; field: RpcField }> = {
+  SUI: { type: "SUI", field: "grpc_url" },
+  STELLAR_HORIZON: { type: "STELLAR", field: "horizonRpcUrl" },
+  STELLAR_SOROBAN: { type: "STELLAR", field: "sorobanRpcUrl" },
+};
+// Families whose SDK provider never reads the config's `rpcUrl` (Injective hard-codes its mainnet endpoints).
+const RPC_URL_UNREAD: ReadonlySet<ChainType> = new Set(["INJECTIVE"]);
+
+type RpcTarget = { chainKey: string; field: RpcField };
+
+/** What `SODAX_RPC_URL_<suffix>` replaces: an EVM chain by its id, a non-EVM family (one mainnet chain) by its type. */
+function rpcTargets(): Map<string, RpcTarget> {
+  const targets = new Map<string, RpcTarget>();
+  for (const [chainKey, config] of Object.entries(chainConfigs)) {
+    const evmChainId = evmChainIdFor(chainKey);
+    const type = config?.chain?.type as ChainType | undefined;
+    if (evmChainId !== undefined) targets.set(String(evmChainId), { chainKey, field: "rpcUrl" });
+    else if (type && config?.rpcUrl && !RPC_URL_UNREAD.has(type)) targets.set(type, { chainKey, field: "rpcUrl" });
+    for (const [suffix, exception] of Object.entries(RPC_FIELD_EXCEPTIONS)) {
+      if (exception.type === type) targets.set(suffix, { chainKey, field: exception.field });
+    }
+  }
+  return targets;
+}
+const RPC_TARGETS = rpcTargets();
+
 /**
- * `SODAX_RPC_URL_<evmChainId>` overrides by chain key; without one the SDK's packaged RPC is used.
- * A bad one stops the boot, named by its variable, never its value (paid URLs embed keys).
+ * `SODAX_RPC_URL_<evmChainId>` and `SODAX_RPC_URL_<family>` (`RPC_TARGETS`) override by chain key; without one
+ * the SDK's packaged RPC is used. A bad one stops the boot, named by its variable, never its value (paid URLs
+ * embed keys).
  */
-export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, string> {
-  const overrides: Record<string, string> = {};
+export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, RpcOverride> {
+  const overrides: Record<string, RpcOverride> = {};
   for (const [name, value] of Object.entries(env)) {
-    const chainId = /^SODAX_RPC_URL_(\d+)$/.exec(name)?.[1];
-    if (!chainId || !value) continue;
-    const chainKey = Object.keys(chainConfigs).find(key => evmChainIdFor(key) === Number(chainId));
-    if (!chainKey) throw new Error(`${name} doesn't name a SODAX EVM chain id`);
+    const suffix = /^SODAX_RPC_URL_(\w+)$/.exec(name)?.[1];
+    if (!suffix || !value) continue;
+    const target = RPC_TARGETS.get(suffix);
+    if (!target) throw new Error(`${name} doesn't name a SODAX chain, one of ${[...RPC_TARGETS.keys()].join(", ")}`);
     if (!URL.canParse(value) || new URL(value).protocol !== "https:") throw new Error(`${name} must be an https URL`);
-    overrides[chainKey] = value;
+    overrides[target.chainKey] = { ...overrides[target.chainKey], [target.field]: value };
   }
   return overrides;
 }

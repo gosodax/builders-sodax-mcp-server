@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAP_ORACLE_BASE_URL } from "../../constants.js";
+import { getRequestContext, runWithRequestContext } from "../requestContext.js";
 import { getSolverOracle } from "../solver.js";
 import { clearUsdBackoff, usdValue } from "./usd.js";
 
@@ -35,6 +36,16 @@ describe("usdValue", () => {
     vi.mocked(getSolverOracle).mockResolvedValue([]);
     await usdValue(HUB_USDC, "1");
     expect(getSolverOracle).toHaveBeenCalledWith(SODAX_SWAP_ORACLE_BASE_URL);
+  });
+
+  it("reads the oracle without the caller's key, since every caller shares its prices and back-off", async () => {
+    let keyOnRead: string | undefined = "unread";
+    vi.mocked(getSolverOracle).mockImplementation(async () => {
+      keyOnRead = getRequestContext().apiKey;
+      return [];
+    });
+    await runWithRequestContext({ apiKey: "sodax_caller_key" }, () => usdValue(HUB_USDC, "1"));
+    expect(keyOnRead).toBeUndefined();
   });
 
   it.each([

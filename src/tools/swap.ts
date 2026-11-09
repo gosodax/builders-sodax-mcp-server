@@ -269,21 +269,28 @@ function shortAddress(address: string): string {
 
 const usd = (value: number) => `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 
-/** Warns, never refuses: an agent passing base units as token units shows up as a huge value. */
-function usdWarning(usdValue: string | null): string {
+/**
+ * Warns, never refuses: an agent passing base units as token units shows up as a huge value, and an
+ * output with no price skips the off-market check.
+ */
+function usdWarning(usdValue: string | null, usdOut: string | null): string {
   if (usdValue === null) {
     return " Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.";
   }
+  const unpriced =
+    usdOut === null
+      ? " What they receive has no USD price here, so the rate wasn't checked against the market: confirm the amounts with the user before anything is signed."
+      : "";
   const value = Number(usdValue);
-  if (value <= SWAP_USD_WARN) return "";
-  return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.`;
+  if (value <= SWAP_USD_WARN) return unpriced;
+  return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.${unpriced}`;
 }
 
 function quoteNextStep(quote: SwapQuote): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name} (at least ${to.minimumAmount})`;
-  const warning = usdWarning(quote.usdValue);
+  const warning = usdWarning(quote.usdValue, quote.usdOut);
   if (quote.status === "price_only") {
     const needed = quote.missing.map(field =>
       field === "fromAddress"

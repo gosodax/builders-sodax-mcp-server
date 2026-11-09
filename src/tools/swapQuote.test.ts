@@ -555,11 +555,17 @@ describe("sodax_swap_quote", () => {
       expect(out.status).toBe(status);
     });
 
-    it("only warns when the output has no price", async () => {
+    it.each([
+      ["price_only", {}],
+      ["ready", { fromAddress: USER }],
+    ])("only warns, in a %s quote, when the output has no price", async (status, args) => {
       vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB)]);
       stubSwaps(quoted("1000000"));
-      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
-      expect(out).toMatchObject({ status: "price_only", usdValue: "5.00", usdOut: null });
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", ...args });
+      expect(out).toMatchObject({ status, usdValue: "5.00", usdOut: null });
+      expect(out.nextStep).toContain(
+        "What they receive has no USD price here, so the rate wasn't checked against the market: confirm the amounts with the user before anything is signed.",
+      );
     });
 
     describe("an amount too low", () => {

@@ -267,7 +267,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
-| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`). `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |
+| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Other chain families (Solana, Sui, Stellar, NEAR, …) always use the SDK's public RPCs, which can rate-limit balance reads. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
@@ -318,6 +318,27 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
+
+### Errors and limits
+
+`/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
+Read `error.message`; `error` is an object here.
+
+| Status | On `/mcp` | `error.code` |
+|--------|-----------|--------------|
+| 400 | Invalid JSON | -32700 |
+| 400 | A batch of more than 10 messages | -32600 |
+| 405 | `GET /mcp`: there is no standalone stream | -32000 |
+| 413 | A body over 100 kB | -32600 |
+| 429 | A rate limit | -32000 |
+| 500 | A server error | -32603 |
+
+On `/sse` and `/messages`, the rate limits, an unknown session and server errors answer `{"error":"…"}`; the SSE
+transport's own errors (a message it can't parse, for one) are plain text.
+
+Limits are per client IP (IPv6 per /56): 100 requests a minute on all routes, and 60 a minute on `/mcp`, `/sse` and
+`/messages`, where each message of a `/mcp` batch counts. A rate-limit 429 carries `Retry-After` and `RateLimit-*`
+headers. SSE allows 10 open sessions per client and 200 in all, and closes a session after an hour without a message.
 
 ## Related
 

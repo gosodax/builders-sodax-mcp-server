@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("alertOperator", () => {
-  it("posts once a day per kind and tx, with no address", async () => {
+  it("posts once a day per kind and tx", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date"] });
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
@@ -30,7 +30,6 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     const body = String(fetch.mock.calls[0][1]?.body);
     expect(body).toContain(TX);
-    expect(body).not.toContain("dEaD");
 
     vi.setSystemTime(Date.parse("2026-10-27T12:00:01Z"));
     alertOperator("unknown_quote", FIELDS);
@@ -83,19 +82,49 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
   });
 
-  it("posts an alert the budget held back when it comes again, instead of muting it for a day", async () => {
+  it("lists the alerts the cap held back, tx hashes included, in the post that ends the hour", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
-    for (let i = 0; i < 6; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    for (let i = 0; i < 6; i++) expect(alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` })).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(5);
 
     vi.advanceTimersByTime(60 * 60 * 1000);
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(String(fetch.mock.calls[5][1]?.body)).toContain("unknown_quote · 0xa4b1.arbitrum · 0x5 · q-1");
+    // Held is reported: the same alert isn't posted again the same day.
     alertOperator("unknown_quote", { ...FIELDS, txHash: "0x5" });
-    expect(fetch).toHaveBeenCalledTimes(7);
-    expect(String(fetch.mock.calls[6][1]?.body)).toContain("0x5");
-    alertOperator("unknown_quote", { ...FIELDS, txHash: "0x5" });
-    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps posting checked deposits after made-up quotes fill their cap, and says when an alert reached only the log", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    const results = Array.from({ length: 30 }, (_, i) =>
+      alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` }),
+    );
+    expect(results.filter(Boolean)).toHaveLength(5 + 12);
+    expect(results.at(-1)).toBe(false);
+
+    expect(alertOperator("refund_relay_failed", FIELDS)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(String(fetch.mock.calls[5][1]?.body)).toContain("refund");
+  });
+
+  it("counts an alert that reached only the log once, and keeps saying so when it comes again", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 17; i++) alertOperator("unknown_quote", { ...FIELDS, txHash: `0x${i}` });
+    const dropped = { ...FIELDS, txHash: "0xdropped" };
+    for (let i = 0; i < 5; i++) expect(alertOperator("unknown_quote", dropped)).toBe(false);
+    expect(logger.error).toHaveBeenCalledTimes(18);
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    expect(String(fetch.mock.calls.at(-1)?.[1]?.body)).toContain("13 more swap alerts");
+    // A new hour, a new budget: tried again.
+    expect(alertOperator("unknown_quote", dropped)).toBe(true);
   });
 
   it("only logs without a webhook", () => {

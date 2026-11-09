@@ -7,7 +7,7 @@
  * Returns structure only; each tool words its own next step.
  */
 
-import { chainDisplayName } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
 import { encodeRecipient, evmSpokeFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
@@ -132,11 +132,13 @@ export function resolveToken(catalog: SwapCatalog, chainQuery: string, query: st
   }
 
   // At most one per chain, by address or else by exact symbol. Never a native token by address: the zero
-  // address is each chain's own gas token, not one token.
+  // address is each chain's own gas token, not one token. The sentinels are checked by value too, since
+  // `isNative` is unset on a chain whose config is missing.
+  const sentinel = ZERO_ADDRESS_PATTERN.test(q) || q.toLowerCase() === EVM_NATIVE_PLACEHOLDER;
   const otherChains = Object.keys(catalog.tokens)
     .filter(other => other !== chain.key)
     .flatMap(other => {
-      const byAddress = findToken(catalog, other, q);
+      const byAddress = sentinel ? undefined : findToken(catalog, other, q);
       const token =
         byAddress && !byAddress.isNative
           ? byAddress

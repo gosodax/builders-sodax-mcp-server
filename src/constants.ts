@@ -115,7 +115,7 @@ export const BRAND_COLORS = {
 export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/;
+export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */

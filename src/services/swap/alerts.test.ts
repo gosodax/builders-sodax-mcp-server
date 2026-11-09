@@ -97,6 +97,21 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
   });
 
+  it("lists a held tool error by tool, code and reason, with no URL in it", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 5; i++)
+      alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL", reason: `r${i}` });
+    const slip = "TypeError at https://rpc.example/secret-key";
+    alertOperator("swap_error", { tool: "sodax_swap_track", code: "INTERNAL", reason: slip, chainKey: "sonic" });
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    const post = String(fetch.mock.calls.at(-1)?.[1]?.body);
+    expect(post).toContain("swap_error · sodax_swap_track · INTERNAL · TypeError at");
+    expect(post).not.toContain("secret-key");
+  });
+
   it("keeps posting checked deposits after made-up quotes fill their cap, and says when an alert reached only the log", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -127,13 +142,17 @@ describe("alertOperator", () => {
     expect(alertOperator("unknown_quote", dropped)).toBe(true);
   });
 
-  it("counts tool errors toward the same hourly cap", () => {
+  it("gives tool errors their own hourly budget, so they and the deposits can't crowd each other out", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     for (let i = 0; i < 20; i++) alertOperator("submit_rejected", { ...FIELDS, txHash: `0x${i}` });
     alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
-    expect(fetch).toHaveBeenCalledTimes(20);
-    expect(logger.error).toHaveBeenCalledTimes(21);
+    expect(fetch).toHaveBeenCalledTimes(21);
+    for (const reason of ["a", "b", "c", "d", "e"]) {
+      alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL", reason });
+    }
+    // Four more fill the budget of 5; the fifth is held for the hourly post.
+    expect(fetch).toHaveBeenCalledTimes(25);
   });
 
   it("treats one stranded deposit as one alert whatever quoteId comes with it, and a tool error per tool and code", () => {

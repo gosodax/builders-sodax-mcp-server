@@ -38,10 +38,13 @@ const MAX_ENTRIES = 1_000;
 const FIELD_VALUE_MAX = 256;
 // Past this many posts an hour an alert is held, and the hour ends with one post listing the held ones.
 // Any key can name a made-up quoteId, or a quote for any sender, with a public deposit, so those
-// alerts have their own small budget and can't crowd out the alerts on deposits this server checked.
-const POSTS_PER_HOUR = { public: 5, checked: 20 };
-// Held alerts listed per budget in that post (it fits Discord's 4096-character description); past this, only logged.
+// alerts have their own small budget and can't crowd out the alerts on deposits this server checked;
+// so do tool errors.
+const POSTS_PER_HOUR = { public: 5, checked: 20, tools: 5 };
+// Held alerts listed per budget in that post; past this, only logged.
 const MAX_HELD = 12;
+// Discord's limit on that post's description; the deposits this server checked are listed first.
+const HELD_TEXT_MAX = 4096;
 const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit"];
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -50,8 +53,8 @@ type Budget = keyof typeof POSTS_PER_HOUR;
 // Insertion order is age order; a repeat moves to the end. `reached`: posted or held, not only logged.
 const sent = new Map<string, { at: number; reached: boolean }>();
 let hourStart = Number.NEGATIVE_INFINITY;
-let postsThisHour: Record<Budget, number> = { public: 0, checked: 0 };
-let held: Record<Budget, string[]> = { public: [], checked: [] };
+let postsThisHour: Record<Budget, number> = { public: 0, checked: 0, tools: 0 };
+let held: Record<Budget, string[]> = { public: [], checked: [], tools: [] };
 let dropped = 0;
 let summary: NodeJS.Timeout | undefined;
 
@@ -86,15 +89,19 @@ export function alertOperator(
   // Enough to tell callers apart, not to look a key up.
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   logger.error({ alert: kind, ...tagged }, TITLES[kind]);
-  const budget = PUBLIC_KINDS.includes(kind) ? "public" : "checked";
+  const budget: Budget = kind === "swap_error" ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
   const verdict = spend(budget, now);
   sent.delete(key);
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
   sent.set(key, { at: now, reached: verdict !== "drop" });
   if (verdict === "drop") return false;
   if (verdict === "hold") {
-    const deadline = fields.deadline && `deadline ${fields.deadline}`;
-    held[budget].push([kind, fields.chainKey, fields.txHash, fields.quoteId, deadline].filter(Boolean).join(" · "));
+    const parts =
+      kind === "swap_error"
+        ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
+        : [kind, fields.chainKey, fields.txHash, fields.quoteId, fields.deadline && `deadline ${fields.deadline}`];
+    // As the embed fields: a slip can't put a URL or a wall of text in the post.
+    held[budget].push(truncate(redact(parts.filter(Boolean).join(" · ")), FIELD_VALUE_MAX));
     return true;
   }
   const embedFields = Object.entries({ env: SODAX_ENV, ...tagged })
@@ -112,7 +119,7 @@ export function alertOperator(
 function spend(budget: Budget, now: number): "post" | "hold" | "drop" {
   if (now - hourStart >= HOUR_MS) {
     hourStart = now;
-    postsThisHour = { public: 0, checked: 0 };
+    postsThisHour = { public: 0, checked: 0, tools: 0 };
   }
   if (postsThisHour[budget] < POSTS_PER_HOUR[budget]) {
     postsThisHour[budget]++;
@@ -125,16 +132,16 @@ function spend(budget: Budget, now: number): "post" | "hold" | "drop" {
 }
 
 function postHeld(): void {
-  const lines = [...held.checked, ...held.public];
+  const lines = [...held.checked, ...held.public, ...held.tools];
   logger.error({ held: lines.length, dropped }, "Swap alerts over the hourly budget");
   const count = lines.length + dropped;
   if (dropped > 0) lines.push(`${dropped} more only in the logs (alert: <kind>)`);
   post(
     `🚨 ${count} more swap alerts in the last hour, held back by the hourly cap`,
     [{ name: "env", value: SODAX_ENV, inline: true }],
-    lines.join("\n"),
+    truncate(lines.join("\n"), HELD_TEXT_MAX),
   );
-  held = { public: [], checked: [] };
+  held = { public: [], checked: [], tools: [] };
   dropped = 0;
   summary = undefined;
 }
@@ -150,7 +157,7 @@ export function clearAlerts(): void {
   clearTimeout(summary);
   summary = undefined;
   hourStart = Number.NEGATIVE_INFINITY;
-  postsThisHour = { public: 0, checked: 0 };
-  held = { public: [], checked: [] };
+  postsThisHour = { public: 0, checked: 0, tools: 0 };
+  held = { public: [], checked: [], tools: [] };
   dropped = 0;
 }

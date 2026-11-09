@@ -253,27 +253,65 @@ describe("sdkLogger", () => {
 });
 
 describe("parseRpcOverrides", () => {
-  it("maps SODAX_RPC_URL_<chainId> to the chain key, ignoring everything else", () => {
+  it("maps SODAX_RPC_URL_<chainId> and SODAX_RPC_URL_<family> to the chain's field, ignoring everything else", () => {
     const env = {
       SODAX_RPC_URL_42161: "https://arb.example/key",
       SODAX_RPC_URL_146: "https://sonic.example/key",
       SODAX_RPC_URL_137: "",
+      SODAX_RPC_URL_SOLANA: "https://solana.example/key",
+      SODAX_RPC_URL_SUI: "https://sui.example/key",
+      SODAX_RPC_URL_STELLAR_HORIZON: "https://horizon.example",
+      SODAX_RPC_URL_STELLAR_SOROBAN: "https://soroban.example/key",
       SODAX_RPC_URL: "https://no-id.example",
       PATH: "/bin",
     };
     expect(parseRpcOverrides(env)).toEqual({
-      "0xa4b1.arbitrum": "https://arb.example/key",
-      sonic: "https://sonic.example/key",
+      "0xa4b1.arbitrum": { rpcUrl: "https://arb.example/key" },
+      sonic: { rpcUrl: "https://sonic.example/key" },
+      solana: { rpcUrl: "https://solana.example/key" },
+      sui: { grpc_url: "https://sui.example/key" },
+      stellar: { horizonRpcUrl: "https://horizon.example", sorobanRpcUrl: "https://soroban.example/key" },
     });
+  });
+
+  it("covers every non-EVM family in the packaged config, on a field that config has", () => {
+    // One chain per family: a second one would make the family name ambiguous.
+    const families = Object.values(spokeChainConfig).flatMap(config =>
+      config.chain.type === "EVM" ? [] : [config.chain.type],
+    );
+    expect(new Set(families).size).toBe(families.length);
+    for (const [chainKey, config] of Object.entries(spokeChainConfig)) {
+      // Injective's SDK provider ignores its config's RPC, so it is refused (see the error rows).
+      if (config.chain.type === "EVM" || config.chain.type === "INJECTIVE") continue;
+      const suffixes = config.chain.type === "STELLAR" ? ["STELLAR_HORIZON", "STELLAR_SOROBAN"] : [config.chain.type];
+      for (const suffix of suffixes) {
+        const [field, ...more] = Object.keys(
+          parseRpcOverrides({ [`SODAX_RPC_URL_${suffix}`]: "https://x.example" })[chainKey] ?? {},
+        );
+        expect(more, suffix).toEqual([]);
+        expect(config, `${suffix} sets ${field}`).toHaveProperty(field);
+      }
+    }
   });
 
   it.each([
     ["SODAX_RPC_URL_42161", "http://arb.example/secret-key", "must be an https URL"],
     ["SODAX_RPC_URL_42161", "not a url secret-key", "must be an https URL"],
-    ["SODAX_RPC_URL_999999", "https://nowhere.example/secret-key", "doesn't name a SODAX EVM chain id"],
+    ["SODAX_RPC_URL_999999", "https://nowhere.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_INJECTIVE", "https://inj.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_constructor", "https://proto.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_STELLAR", "https://horizon.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_EVM", "https://evm.example/secret-key", "doesn't name a SODAX chain"],
+    ["SODAX_RPC_URL_solana", "https://solana.example/secret-key", "doesn't name a SODAX chain"],
   ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
     expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
     expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
+  });
+
+  it("names what a bad variable could have meant", () => {
+    const bare = () => parseRpcOverrides({ SODAX_RPC_URL_STELLAR: "https://horizon.example" });
+    expect(bare).toThrow("42161");
+    expect(bare).toThrow("STELLAR_HORIZON, STELLAR_SOROBAN");
   });
 });
 
@@ -281,11 +319,20 @@ describe("initSodax", () => {
   it("sends the hub's reads through a Sonic override too", async () => {
     vi.resetModules();
     const fresh = await import("./sodax.js");
-    await fresh.initSodax({ sonic: "https://sonic.example/key" });
+    await fresh.initSodax({ sonic: { rpcUrl: "https://sonic.example/key" } });
     // A 400, which viem doesn't retry.
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
     await expect(fresh.userHubWallet("0xa4b1.arbitrum", USER)).rejects.toThrow("SDK call failed");
     expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://sonic.example/key");
+  });
+
+  it("sends a non-EVM chain's reads through its override", async () => {
+    vi.resetModules();
+    const fresh = await import("./sodax.js");
+    await fresh.initSodax({ near: { rpcUrl: "https://near.example/key" } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
+    await expect(fresh.recipientReady("NEAR", "usdc.near", "alice.near", 1n)).rejects.toThrow("SDK call failed");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://near.example/key");
   });
 });
 

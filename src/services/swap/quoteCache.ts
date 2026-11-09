@@ -28,6 +28,8 @@ export type CachedQuote = IntentRequest & {
   handedOver?: "submitted" | "relayed_for_refund";
   /** The backend refused its submit before the deadline; it's relayed for refund after it. */
   submitRefused?: true;
+  /** Epoch ms before which a failed submit isn't tried again: no later than the agent was told to wait. */
+  submitRetryAt?: number;
 };
 
 const MAX_QUOTES = 10_000;
@@ -139,6 +141,11 @@ export function claimDeposit(quoteId: string, txHash: string): "claimed" | "take
     close(quote);
   }
   return quote.depositTxHash === txHash ? "claimed" : "taken";
+}
+
+export function markSubmitFailed(quoteId: string, waitSec: number): void {
+  const quote = quotes.get(quoteId);
+  if (quote) quote.submitRetryAt = Date.now() + waitSec * 1000;
 }
 
 export function markSubmitted(quoteId: string): void {

@@ -58,6 +58,8 @@ afterEach(() => {
   setFallbackRequestContext({});
 });
 
+const NEVER = " The user must not send the swap again.";
+
 describe("sodax_swap_track", () => {
   it("checks the deposit, submits the quoted intent once, and reports it queued", async () => {
     const calls = stubBackend();
@@ -65,6 +67,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
     expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
     const [submit] = submits(calls);
     expect(submit.body).toEqual({
@@ -321,7 +324,9 @@ describe("sodax_swap_track", () => {
     vi.setSystemTime(Number(DEADLINE) * 1000);
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
-    expect(out.nextStep).toContain("To retry the refund, call sodax_swap_track again in about 60 seconds");
+    expect(out.nextStep).toContain(
+      "To retry the refund, call sodax_swap_track again in about 60 seconds, at most 10 times, then stop.",
+    );
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
       expect.any(String),
@@ -402,6 +407,7 @@ describe("sodax_swap_track", () => {
 
     const second = await track({ txHash: OTHER_TX, quoteId });
     expect(second.out).toMatchObject({ status: "not_submitted", reason: "quote_used" });
+    vi.setSystemTime(Date.now() + 15_000);
     expect((await track({ txHash: TX, quoteId })).out.status).toBe("queued");
     expect(submits(calls).map(call => call.body?.txHash)).toEqual([TX, TX]);
   });
@@ -607,7 +613,7 @@ describe("sodax_swap_track", () => {
     expect(out.error.code).toBe("QUOTE_KEY_MISMATCH");
     // The model can't set the connection's key: the user has to know it changed.
     expect(out.nextStep).toBe(
-      "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
+      `This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.${NEVER}`,
     );
     expect(calls).toEqual([]);
     expect(getEvmReceipt).not.toHaveBeenCalled();
@@ -636,7 +642,9 @@ describe("sodax_swap_track", () => {
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
     stubBackend();
     const { out } = await track({ txHash: TX, quoteId: randomUUID() });
-    expect(out.nextStep).toBe("Call again with the same arguments plus chain set to the swap's source chain key.");
+    expect(out.nextStep).toBe(
+      `Call again with the same arguments plus chain set to the swap's source chain key.${NEVER}`,
+    );
   });
 
   it("refuses a quoteId for another source chain", async () => {
@@ -651,7 +659,7 @@ describe("sodax_swap_track", () => {
     const chain = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(chain.out.nextStep).toBe(
-      "Call sodax_swap_track again in 30 seconds with the same arguments; don't send the swap again meanwhile.",
+      "Call sodax_swap_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
     );
 
     stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });
@@ -670,10 +678,106 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("don't send the swap again");
   });
 
-  it("needs a valid key to submit", async () => {
-    stubBackend({ submit: () => new Response("", { status: 401 }) });
-    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
-    expect(out.error.code).toBe("API_KEY_REQUIRED");
+  it("treats an amount refusal after the deposit is checked as refused: alerted, deposit safe, never quote again", async () => {
+    stubBackend({ submit: () => Response.json({ code: -23, message: "too low" }, { status: 400 }) });
+    const { isError, out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({ status: "submit_refused", alerted: true });
+    expect(out.nextStep).toContain("must not send it again");
+    expect(out.nextStep).not.toContain("larger amount");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "submit_rejected" }),
+      expect.any(String),
+    );
+  });
+
+  it.each([
+    ["a refused key", 401],
+    ["a WAF's 403", 403],
+  ])("retries %s after the deposit is checked, never asking for a new key", async (_, status) => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status }),
+      // The refused submit left no row.
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    const first = await track({ txHash: TX, quoteId });
+    expect(first.out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(first.out.nextStep).toContain("don't send the swap again");
+    expect(first.out.nextStep).not.toContain("API key");
+    // Not marked refused: the next call submits again.
+    vi.setSystemTime(Date.now() + 15_000);
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("finds the quote whatever the case of its quoteId", async () => {
+    const calls = stubBackend();
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId: quoteId.toUpperCase() });
+    expect(out).toMatchObject({ status: "queued", quoteId });
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it("waits out a retry sooner than told instead of spending another submit", async () => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    vi.setSystemTime(Date.now() + 5_000);
+    const early = await track({ txHash: TX, quoteId });
+    expect(early.out.error).toMatchObject({ code: "UPSTREAM_UNAVAILABLE", retryAfterSec: 10 });
+    expect(early.out.nextStep).toContain("don't send the swap again");
+    expect(submits(calls)).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 10_000);
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("lets a retry through as soon as the swap service's own Retry-After allows", async () => {
+    const calls = stubBackend({
+      submit: () => new Response("", { status: 429, headers: { "Retry-After": "5" } }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    expect((await track({ txHash: TX, quoteId })).out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 5 });
+    vi.setSystemTime(Date.now() + 5_000);
+    await track({ txHash: TX, quoteId });
+    expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("retries a refused status read after the deposit is checked, never asking for a new key", async () => {
+    let reads = 0;
+    stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      // No row yet, then the edge refuses the key.
+      status: () =>
+        reads++ === 0
+          ? Response.json({ message: "Swap transaction not found" }, { status: 404 })
+          : new Response("", { status: 403 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.nextStep).not.toContain("API key");
+  });
+
+  it("keeps waiting when a checked deposit's receipt goes missing, never calling it unsent", async () => {
+    stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    // A lagging RPC node, past the point where an unseen tx is no longer waited for.
+    vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {

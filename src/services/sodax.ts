@@ -12,13 +12,15 @@ import {
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
+  isBitcoinChainKey,
   isNativeToken,
+  isStellarChainKey,
   isSuiChainKey,
   solverConfig,
   spokeChainConfig,
 } from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
-import { logger, withoutUrls } from "./logger.js";
+import { logger, redact } from "./logger.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -28,8 +30,8 @@ let loaded: { sdk: Sdk; sodax: InstanceType<Sdk["Sodax"]> } | undefined;
 export const sdkLogger = {
   debug: () => {},
   info: () => {},
-  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, withoutUrls(String(message))),
-  error: (message: string) => logger.error({ source: "sodax-sdk" }, withoutUrls(String(message))),
+  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, redact(String(message))),
+  error: (message: string) => logger.error({ source: "sodax-sdk" }, redact(String(message))),
 };
 
 /** `rpcUrls` overrides the packaged RPC per chain key (see `parseRpcOverrides`). */
@@ -37,7 +39,14 @@ export async function initSodax(rpcUrls: Record<string, string> = {}): Promise<v
   if (loaded) return;
   const sdk = await import("@sodax/sdk");
   const chains = Object.fromEntries(Object.entries(rpcUrls).map(([chainKey, rpcUrl]) => [chainKey, { rpcUrl }]));
-  const options = { api: { baseURL: `${SODAX_API_ORIGIN}/v1` }, logger: sdkLogger, chains };
+  // The hub provider reads its own config, not the Sonic spoke's, so the override goes to both.
+  const hubRpcUrl = rpcUrls[HUB_CHAIN_KEY];
+  const options = {
+    api: { baseURL: `${SODAX_API_ORIGIN}/v1` },
+    logger: sdkLogger,
+    chains,
+    ...(hubRpcUrl && { hub: { rpcUrl: hubRpcUrl } }),
+  };
   loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
 }
 
@@ -73,6 +82,10 @@ export function encodeRecipient(chainKey: string, address: string): string | und
   try {
     // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
     if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
+    // It also takes a Stellar contract (C…) or muxed (M…) address and a Bitcoin testnet one; only a
+    // Stellar account and a Bitcoin mainnet address are wallets a swap should pay.
+    if (isStellarChainKey(chainKey as SpokeChainKey) && !address.startsWith("G")) return undefined;
+    if (isBitcoinChainKey(chainKey as SpokeChainKey) && !/^(1|3|bc1)/i.test(address)) return undefined;
     // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
     const encoded = sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
     // The SDK encodes any Stacks version, testnet (ST…, St…, SN…) included: only mainnet single- or multi-sig
@@ -116,12 +129,13 @@ export function intentChainId(chainKey: string): string | undefined {
 }
 
 /**
- * Whether a mixed-case EVM address carries a valid EIP-55 checksum. Unchecked before initSodax:
- * only the swap tools use such an address, and they load the SDK at boot.
+ * Whether an EVM address is all lowercase or carries a valid EIP-55 checksum, as the SDK takes it
+ * (it drops a fee paid to an all-uppercase one). Unchecked before initSodax: only the swap tools
+ * use such an address, and they load the SDK at boot.
  */
 export function checksumValid(address: string): boolean {
   const hex = address.slice(2);
-  if (!loaded || hex === hex.toLowerCase() || hex === hex.toUpperCase()) return true;
+  if (!loaded || hex === hex.toLowerCase()) return true;
   return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
 }
 
@@ -219,13 +233,16 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   }, RPC_CALL_TIMEOUT_MS);
 }
 
+// Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+const isHorizonNotFound = (error: unknown) =>
+  (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+
 // Whether a failed native read says the account doesn't exist yet (unfunded), per family; told apart
 // without the messages, which carry the RPC URL.
 function isMissingAccount(chainKey: string, error: unknown): boolean {
   switch (chainConfigs[chainKey]?.chain?.type) {
     case "STELLAR":
-      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
-      return (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+      return isHorizonNotFound(error);
     case "NEAR":
       return error instanceof Error && error.name === "AccountDoesNotExistError";
     default:
@@ -254,19 +271,48 @@ export function walletBalance(chainKey: string, address: string, token: { addres
   }, RPC_CALL_TIMEOUT_MS);
 }
 
-/** Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. */
+/**
+ * Whether the SDK can check a Stellar recipient for the token: one that needs a trustline needs it listed
+ * in the packaged config, which lists only some.
+ */
+export function stellarRecipientCheckable(token: string): boolean {
+  const wanted = token.toLowerCase();
+  return (
+    !sdk().sodax.spoke.stellar.requiresTrustline(token) ||
+    spokeChainConfig.stellar.trustlineConfigs.some(config => config.contractId.toLowerCase() === wanted)
+  );
+}
+
+/**
+ * Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. A
+ * Stellar account that doesn't exist yet can't receive XLM or a trustline token.
+ */
 export function recipientReady(
   chainType: "NEAR" | "STELLAR",
   token: string,
   address: string,
   amount: bigint,
 ): Promise<boolean> {
-  const { spoke } = sdk().sodax;
-  return bounded(() =>
-    chainType === "NEAR"
-      ? spoke.near.isStorageRegistered(token, address)
-      : spoke.stellar.hasSufficientTrustline(token, amount, address),
-  );
+  const { near, stellar } = sdk().sodax.spoke;
+  if (chainType === "NEAR") return bounded(() => near.isStorageRegistered(token, address));
+  return bounded(async () => {
+    try {
+      if (stellar.requiresTrustline(token)) return await stellar.hasSufficientTrustline(token, amount, address);
+      const { chain, nativeToken } = spokeChainConfig.stellar;
+      if (token.toLowerCase() === nativeToken.toLowerCase()) {
+        // Reads the account, which fails as for a trustline token when it doesn't exist.
+        await stellar.getWalletBalance({
+          srcChainKey: chain.key,
+          srcAddress: address as never,
+          token: { address: token } as never,
+        });
+      }
+      return true;
+    } catch (error) {
+      if (isHorizonNotFound(error)) return false;
+      throw error;
+    }
+  });
 }
 
 /** The intent fields `createIntent` takes, as the Swaps API returns them. */

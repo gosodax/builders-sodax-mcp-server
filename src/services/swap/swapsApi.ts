@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { EVM_ADDRESS_PATTERN, EVM_TX_HASH_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
 import { HttpError, fetchJson, fetchJsonOrNull } from "../http.js";
-import { logger } from "../logger.js";
+import { logger, redact } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { ActionError, type ActionErrorCode } from "./errors.js";
 
@@ -293,7 +293,8 @@ function toActionError(error: unknown, route: string): ActionError {
   // The code is upstream data of any shape; only a short scalar is worth a log field.
   const code =
     typeof apiCode === "number" || (typeof apiCode === "string" && apiCode.length <= 64) ? apiCode : undefined;
-  logger.warn({ route, status, apiCode: code, apiMessage }, "Swaps API call failed");
+  // Upstream text may quote a URL, a key or the request it refused.
+  logger.warn({ route, status, apiCode: code, apiMessage: apiMessage && redact(apiMessage) }, "Swaps API call failed");
   if (status === 401 || status === 403) {
     return new ActionError("API_KEY_REQUIRED", "The swap service needs a valid SODAX API key.");
   }

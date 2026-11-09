@@ -21,7 +21,7 @@ describe("findSecret", () => {
     ["an extended private key", `xprv${base58(107)}`, "private_key"],
     ["a compressed Bitcoin WIF", `K${base58(51)}`, "private_key"],
     ["an uncompressed Bitcoin WIF", `5${base58(50)}`, "private_key"],
-    ["a Solana secret key", base58(88), "private_key"],
+    ["a Solana secret key or tx signature", base58(88), "solana_key_or_signature"],
     ["a Sui private key", `suiprivkey1${"q".repeat(59)}`, "private_key"],
     ["a Stellar secret seed", `S${"A".repeat(55)}`, "private_key"],
   ])("finds %s", (_case, value, kind) => {
@@ -124,6 +124,18 @@ describe("screenSecrets", () => {
   it("skips tx-hash fields: a value that passed their check is a tx hash", () => {
     expect(() => screenSecrets({ txHash: base58(88), cancelTxHash: base58(87) })).not.toThrow();
     expect(() => screenSecrets({ chain: base58(88) })).toThrow(expect.objectContaining({ code: "SECRET_REJECTED" }));
+  });
+
+  // A Solana tx signature has a Solana secret key's shape: refused elsewhere, without saying it's a key.
+  it.each(["query", "address", "quoteId"])("hedges a Solana signature's shape in %s", field => {
+    expect(() => screenSecrets({ [field]: base58(88) })).toThrow(
+      expect.objectContaining({
+        code: "SECRET_REJECTED",
+        details: { field },
+        message: expect.stringContaining("a Solana secret key or a transaction signature"),
+        nextStep: expect.stringMatching(/^If it was a private key, .*; if it was a transaction signature, /),
+      }),
+    );
   });
 });
 

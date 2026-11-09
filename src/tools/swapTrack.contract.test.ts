@@ -5,7 +5,7 @@
  */
 
 import { spokeChainConfig } from "@sodax/types";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { evmSpokeFor, getEvmReceipt, initSodax, isHubChain } from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
@@ -47,7 +47,7 @@ const UNKNOWN = CANARY ? PRODUCTION_SWAP : CANARY_SWAPS[0];
 
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
 
-let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
+let fetchSpy: MockInstance<typeof fetch>;
 /** Every POST this server tried on the Swaps API (all refused). */
 const swapsPosts = () =>
   fetchSpy.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).startsWith(SODAX_SWAPS_BASE_URL));

@@ -202,7 +202,7 @@ Once connected, try asking your AI coding assistant:
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
 | SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
 | SODAX Swaps API (api.sodax.com/v1/swaps) | Swap token list, quotes and transactions (swap tools) | 2 min for the token list (up to 30 min while the API is down) |
-| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release |
+| SODAX SDK (`@sodax/sdk`, `@sodax/types`) | Swap tools: wallet balances, source-tx receipts, NEAR / Stellar recipient checks, address encoding, the pinned swap contracts | Packaged with the release; balance reads kept 5 s; other chain reads uncached |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 
@@ -267,8 +267,8 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
-| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC `sodax_swap_track` and `sodax_swap_cancel` read an EVM source chain through, by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Tools never take an RPC URL as input. |
-| `SODAX_RPC_URL_<family>` | SDK default | The RPC a non-EVM chain is read through (the quote reads NEAR storage and Stellar trustlines), by family: `SOLANA`, `SUI`, `NEAR`, `ICON`, `STACKS`, `BITCOIN` (an Esplora-style API such as mempool.space, not a node), `STELLAR_HORIZON` and `STELLAR_SOROBAN`. Not Injective: the SDK ignores its RPC setting. `https` only, and an unknown suffix stops the server at startup. Their public defaults can rate-limit. |
+| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Tools never take an RPC URL as input. |
+| `SODAX_RPC_URL_<family>` | SDK default | The RPC a non-EVM chain is read through (`sodax_get_balance` reads balances; the quote reads NEAR storage and Stellar trustlines), by family: `SOLANA`, `SUI`, `NEAR`, `ICON`, `STACKS`, `BITCOIN` (an Esplora-style API such as mempool.space, not a node), `STELLAR_HORIZON` and `STELLAR_SOROBAN`. Not Injective: the SDK ignores its RPC setting, so its reads keep the public endpoints. `https` only, and an unknown suffix stops the server at startup. Their public defaults can rate-limit. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |

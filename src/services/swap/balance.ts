@@ -1,0 +1,121 @@
+/** `sodax_get_balance`: a wallet's native balance and, optionally, one token's, read through the SDK. */
+
+import { recipientReady, stellarRecipientCheckable, walletBalance } from "../sodax.js";
+import type { ChainInfo } from "../sodaxApi.js";
+import { TtlCache } from "../ttlCache.js";
+import { ActionError } from "./errors.js";
+import { checkAddress, resolveExactly, resolveSwapChain } from "./resolver.js";
+import { chainRead } from "./source.js";
+import { type SwapsApiToken, getSwapCatalog, nativeToken } from "./tokens.js";
+import { formatUnits } from "./units.js";
+
+export interface Holding {
+  symbol: string;
+  address: string;
+  decimals: number;
+  /** In token units, as a plain decimal. */
+  amount: string;
+  baseUnits: string;
+}
+
+export interface BalanceResult {
+  status: "ok";
+  chain: ChainInfo;
+  address: string;
+  /** On Stellar, the spendable XLM: the balance less the minimum reserve and what open offers sell. */
+  native: Holding;
+  /** The token asked for; the native coin's holding when that's the one. */
+  token?: Holding;
+  /**
+   * False when the account doesn't exist on the chain yet (Stellar, NEAR): it holds no native coin. A
+   * NEAR token can still be held, since its balance lives in the token's contract.
+   */
+  accountExists?: false;
+  /** False when the Stellar account has no trustline for the token: it holds none and can't receive it yet. */
+  trustline?: false;
+}
+
+// A few seconds: an agent polling one wallet reads the chain once, and a top-up still shows soon.
+// Bounded, since every address a caller passes is a new key.
+const balances = new TtlCache(5_000, 10_000);
+
+export function clearBalanceCache(): void {
+  balances.clear();
+}
+
+export async function readBalances(input: { chain: string; address: string; token?: string }): Promise<BalanceResult> {
+  const catalog = await getSwapCatalog();
+  const chain = resolveSwapChain(catalog, input.chain);
+  const chainType = catalog.chains[chain.key]?.type;
+  const native = nativeToken(catalog, chain.key);
+  if (!native)
+    throw new ActionError("UPSTREAM_UNAVAILABLE", `The swap token list has no native token for ${chain.name}.`);
+  const address = checkAddress(input.address, chain);
+  const asked = input.token ? resolveExactly(catalog, chain.key, input.token).token : undefined;
+  const token = asked?.isNative ? undefined : asked;
+  // The SDK reads only BTC on Bitcoin, and would report any other token there as 0.
+  if (token && chainType === "BITCOIN") {
+    throw new ActionError("UNKNOWN_TOKEN", "Only the BTC balance can be read on Bitcoin.", {
+      nextStep: "Ask for the BTC balance instead.",
+    });
+  }
+
+  // Validated before any read; a failed read is CHAIN_UNAVAILABLE, never 0.
+  const tokenUnits =
+    token &&
+    chainRead(chain, "balance", async () => {
+      const units = await cachedBalance(chain.key, address, token);
+      // Only a native read may say the account is missing.
+      if (units === null) throw new Error("no balance for the token");
+      return units;
+    });
+  // Settled together: a failed token read doesn't count for a Stellar account that doesn't exist.
+  const [nativeRead] = await Promise.allSettled([
+    chainRead(chain, "balance", () => cachedBalance(chain.key, address, native)),
+    tokenUnits,
+  ]);
+  if (nativeRead.status === "rejected") throw nativeRead.reason;
+  const missing = nativeRead.value === null;
+  const base = { status: "ok" as const, chain, address, ...(missing && { accountExists: false as const }) };
+  const held = holding(native, nativeRead.value ?? 0n);
+  // A Stellar account that doesn't exist has no trustlines, and its token reads fail rather than say so.
+  if (missing && chainType === "STELLAR") return { ...base, native: held, ...(asked && { token: holding(asked, 0n) }) };
+  if (!token || !tokenUnits) return { ...base, native: held, ...(asked && { token: held }) };
+  try {
+    return { ...base, native: held, token: holding(token, await tokenUnits) };
+  } catch (error) {
+    if (chainType !== "STELLAR") throw error;
+    // The SDK checks a trustline only for a token the packaged config lists, so for another this failure
+    // can't be told apart from a missing trustline, and a retry won't change that.
+    if (!stellarRecipientCheckable(token.address)) {
+      throw new ActionError("UNKNOWN_TOKEN", `Couldn't read ${token.symbol} on Stellar for this wallet.`, {
+        nextStep: `Tell the user this server can't read their ${token.symbol} on Stellar for now; their wallet shows it.`,
+      });
+    }
+    // Stellar's read fails when the account has no trustline for the token (0n: any trustline at all).
+    const hasTrustline = await chainRead(chain, "trustline", () =>
+      recipientReady("STELLAR", token.address, address, 0n),
+    );
+    if (hasTrustline) throw error;
+    return { ...base, native: held, token: holding(token, 0n), trustline: false };
+  }
+}
+
+/** `walletBalance`, kept a few seconds per chain, wallet and token; parallel calls share one read. */
+function cachedBalance(chainKey: string, address: string, token: SwapsApiToken): Promise<bigint | null> {
+  const key = JSON.stringify([chainKey, address, token.address]);
+  const cached = balances.get<Promise<bigint | null>>(key);
+  if (cached) return cached;
+  const read = walletBalance(chainKey, address, token);
+  balances.set(key, read);
+  // A failed read is never kept; a newer one under the key stays.
+  read.catch(() => {
+    if (balances.get(key) === read) balances.delete(key);
+  });
+  return read;
+}
+
+function holding(token: SwapsApiToken, baseUnits: bigint): Holding {
+  const { symbol, address, decimals } = token;
+  return { symbol, address, decimals, amount: formatUnits(baseUnits, decimals), baseUnits: baseUnits.toString() };
+}

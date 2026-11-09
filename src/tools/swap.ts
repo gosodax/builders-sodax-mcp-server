@@ -245,6 +245,8 @@ function quoteNextStep(quote: SwapQuote): string {
 
 const safe = (alerted: boolean) => (alerted ? DEPOSIT_SAFE : DEPOSIT_SAFE_UNALERTED);
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
+const retryRefund = (tool: string, seconds: number) =>
+  `To retry the refund, call ${tool} again in about ${seconds} seconds, at most ${MAX_CALLS} times, then stop.`;
 // Each track call waits for the next step itself, so an agent that can't sleep calls straight back.
 // A slow solver can hold a healthy swap for minutes: about 10 minutes of calls before giving up.
 const MAX_POLLS = 30;
@@ -302,7 +304,7 @@ export function trackNextStep(result: TrackResult): string {
     case "expired_refunding":
       return "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";
     case "expired_unsubmitted":
-      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. To retry the refund, ${again(result.retryAfterSec)}.`;
+      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. ${retryRefund("sodax_swap_track", result.retryAfterSec)}`;
     case "submit_refused":
       return `The swap service refused this deposit, so it won't be swapped: ${safe(result.alerted)}. Once the quote expires this server starts the refund: ${again(result.retryAfterSec)}.`;
     case "queued":
@@ -353,7 +355,7 @@ export function cancelNextStep(result: CancelResult): string {
     case "deposit_unsubmitted":
       return `The swap's deposit is on ${chain} but was never submitted, so it won't be swapped unless sodax_swap_track is called: don't call it. To get the funds back, call sodax_swap_cancel again with the same arguments in about ${result.retryAfterSec} seconds, once the quote has expired, and this server starts the refund. The deposit is safe meanwhile; the user must not send it again.`;
     case "expired_unsubmitted":
-      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. To retry the refund, call sodax_swap_cancel again in about ${result.retryAfterSec} seconds.`;
+      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. ${retryRefund("sodax_swap_cancel", result.retryAfterSec)}`;
     case "ready":
       return `Have the user's wallet send the cancel step on ${chain}, then call sodax_swap_cancel again with the same arguments plus cancelTxHash.`;
     case "cancel_awaiting_confirmation":

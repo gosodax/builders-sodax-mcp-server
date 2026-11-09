@@ -324,7 +324,9 @@ describe("sodax_swap_track", () => {
     vi.setSystemTime(Number(DEADLINE) * 1000);
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
-    expect(out.nextStep).toContain("To retry the refund, call sodax_swap_track again in about 60 seconds");
+    expect(out.nextStep).toContain(
+      "To retry the refund, call sodax_swap_track again in about 60 seconds, at most 10 times, then stop.",
+    );
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
       expect.any(String),
@@ -705,6 +707,38 @@ describe("sodax_swap_track", () => {
     // Not marked refused: the next call submits again.
     await track({ txHash: TX, quoteId });
     expect(submits(calls)).toHaveLength(2);
+  });
+
+  it("retries a refused status read after the deposit is checked, never asking for a new key", async () => {
+    let reads = 0;
+    stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      // No row yet, then the edge refuses the key.
+      status: () =>
+        reads++ === 0
+          ? Response.json({ message: "Swap transaction not found" }, { status: 404 })
+          : new Response("", { status: 403 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.nextStep).not.toContain("API key");
+  });
+
+  it("keeps waiting when a checked deposit's receipt goes missing, never calling it unsent", async () => {
+    stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    // A lagging RPC node, past the point where an unseen tx is no longer waited for.
+    vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {

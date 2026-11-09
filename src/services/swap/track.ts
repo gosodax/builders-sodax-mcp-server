@@ -125,9 +125,11 @@ export async function trackSwap(input: { txHash: string; quoteId?: string; chain
 async function track(txHash: string, source: SwapSource, quoteId?: string): Promise<TrackResult> {
   const { chain, quote } = source;
   const base = { txHash, chain, ...(quoteId && { quoteId }) };
-  const row = await getSubmitTxStatus(txHash, chain.key);
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
+  const row = await getSubmitTxStatus(txHash, chain.key).catch(error => {
+    throw claimed ? retryable(error) : error;
+  });
   if (row && (!quote || claimed)) return { ...base, ...fromStatus(row, claimed ? quote : undefined) };
   // Already handed over by this server: the backend's row may lag its answer, and a resubmit costs
   // one of the 10 submits a minute this server's IP gets.
@@ -153,7 +155,8 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     const seen = await seenOnChain(chain, txHash);
     // An unseen tx is worth waiting for only while its quote can still be sent.
     const sendable = quote && Date.now() < deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
-    if (!seen && !sendable) return { ...base, status: "source_not_found" };
+    // A checked deposit had a receipt, so a missing one now is a lagging RPC, not a tx never sent.
+    if (!seen && !sendable && !claimed) return { ...base, status: "source_not_found" };
     return { ...base, status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: RETRY_AFTER_SEC };
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };

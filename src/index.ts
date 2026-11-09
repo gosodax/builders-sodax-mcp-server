@@ -50,7 +50,7 @@ import {
   runWithRequestContext,
   setFallbackRequestContext,
 } from "./services/requestContext.js";
-import { initSodax, parseRpcOverrides } from "./services/sodax.js";
+import { type RpcOverride, initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { openQuotes } from "./services/swap/quoteCache.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
@@ -105,8 +105,8 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
   return false;
 }
 
-/** `rpcUrls`: the RPC overrides the swap tools read through, already checked. */
-async function runStdio(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
+/** `rpcOverrides`: the RPC overrides the swap tools read through, already checked. */
+async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
@@ -116,7 +116,7 @@ async function runStdio(rpcUrls: Record<string, string>, swapToolsEnabled: boole
     swapToolsEnabled,
   });
   // The SDK only for the swap tools, and before the partner fee: its checksum check needs it.
-  if (toolsets.swap) await initSodax(rpcUrls);
+  if (toolsets.swap) await initSodax(rpcOverrides);
   const partnerFee = partnerFeeFromEnv(process.env);
 
   // Warm SDK docs cache before creating server; a swap-only server has no docs tools.
@@ -132,7 +132,7 @@ async function runStdio(rpcUrls: Record<string, string>, swapToolsEnabled: boole
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
-async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolean): Promise<void> {
+async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
   if (profileFromArgs(process.argv.slice(2), process.env) !== undefined) {
     logger.warn(
       "--profile and MCP_PROFILE are ignored over HTTP: each client picks its profile with ?profile= or x-sodax-profile",
@@ -146,7 +146,7 @@ async function runHTTP(rpcUrls: Record<string, string>, swapToolsEnabled: boolea
   }
   // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
-  await Promise.all([swapToolsEnabled ? initSodax(rpcUrls) : undefined, warmDocsCache()]);
+  await Promise.all([swapToolsEnabled ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
@@ -432,12 +432,12 @@ async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
-  const rpcUrls = parseRpcOverrides(process.env);
+  const rpcOverrides = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
-    await runStdio(rpcUrls, swapToolsEnabled);
+    await runStdio(rpcOverrides, swapToolsEnabled);
   } else {
-    await runHTTP(rpcUrls, swapToolsEnabled);
+    await runHTTP(rpcOverrides, swapToolsEnabled);
   }
 }
 

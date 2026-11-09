@@ -135,6 +135,7 @@ describe("resolveToken", () => {
   it.each([
     ["Arbitrm", [{ key: "0xa4b1.arbitrum", name: "Arbitrum" }]],
     ["avalanch", [{ key: "0xa86a.avax", name: "Avalanche" }]],
+    ["hedra", [{ key: "hedera", name: "Hedera" }]],
   ])("suggests the chain a typo %j is nearest to", (chain, didYouMean) => {
     expect(() => resolve(chain, "USDC")).toThrow(
       expect.objectContaining({
@@ -184,6 +185,16 @@ describe("resolveToken", () => {
       otherChains: [{ chain: { key: "0xa4b1.arbitrum", name: "Arbitrum" }, token: { symbol: "USDC" } }],
     });
     expect(resolve("Avalanche", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toMatchObject({ suggestions: [] });
+  });
+
+  it("names the other chains that list a symbol this chain doesn't, a native one included", () => {
+    expect(resolve("Arbitrum", "hbar")).toMatchObject({
+      status: "not_found",
+      otherChains: [{ chain: { key: "hedera", name: "Hedera" }, token: { symbol: "HBAR", isNative: true } }],
+    });
+    const weth = resolve("Arbitrum", "WETH");
+    expect(weth).toMatchObject({ otherChains: [{ chain: { key: "sonic" }, token: { symbol: "WETH" } }] });
+    expect(symbols(weth)[0]).toBe("ETH");
   });
 
   it("never names another chain's native token for an address this chain doesn't list", () => {

@@ -18,7 +18,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { type Express, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { callerApiKey, resolveConnection } from "./connection.js";
+import { messageContext, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
@@ -36,6 +36,7 @@ import {
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import { partnerFeeFromEnv } from "./services/partnerFee.js";
 import {
   apiKeyStatus,
   describeProfiles,
@@ -43,7 +44,13 @@ import {
   profileFromArgs,
   selectToolsets,
 } from "./services/profiles.js";
-import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
+import {
+  type RequestContext,
+  parseApiKey,
+  runWithRequestContext,
+  setFallbackRequestContext,
+} from "./services/requestContext.js";
+import { initSodax } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
@@ -101,17 +108,18 @@ async function runStdio(swapToolsEnabled: boolean): Promise<void> {
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
-  // Before the docs warm-up, so a refused profile fails fast.
+  // Before the docs warm-up, so a refused profile or partner fee fails fast.
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
     apiKey: keyStatus,
     swapToolsEnabled,
   });
+  const partnerFee = partnerFeeFromEnv(process.env);
 
   // Warm SDK docs cache before creating server
   logger.info("Initializing SODAX docs proxy...");
   await warmDocsCache();
 
-  setFallbackRequestContext({ apiKey });
+  setFallbackRequestContext({ apiKey, partnerFee });
   const server = await createServer(toolsets);
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -126,6 +134,9 @@ async function runHTTP(swapToolsEnabled: boolean): Promise<void> {
   }
   if (process.env.SODAX_API_KEY) {
     logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
+  }
+  if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
+    logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
 
   // Warm SDK docs cache before starting HTTP server
@@ -272,13 +283,17 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       });
       res.on("close", () => transport.close());
       await requestServer.connect(transport);
-      await runWithRequestContext({ apiKey: connection.apiKey }, () => transport.handleRequest(req, res, req.body));
+      await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
     }),
   );
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
   const sseLimiter = new SseSessionLimiter();
-  const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer; lease: SseLease }>();
+  // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
+  const sseSessions = new Map<
+    string,
+    { transport: SSEServerTransport; server: McpServer; context: RequestContext; lease: SseLease }
+  >();
 
   app.get(
     "/sse",
@@ -303,7 +318,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       const sseServer = await createServer(connection.toolsets, hashClientIp(ip));
       if (closed) return;
       const transport = new SSEServerTransport("/messages", res);
-      sseSessions.set(transport.sessionId, { transport, server: sseServer, lease });
+      sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
 
       res.on("close", () => {
         sseSessions.delete(transport.sessionId);
@@ -325,11 +340,11 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
         return;
       }
-      session.lease.touch();
       // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-      await runWithRequestContext({ apiKey: callerApiKey(req) }, () =>
-        session.transport.handlePostMessage(req, res, req.body),
-      );
+      const context = messageContext(session.context, req, res);
+      if (!context) return;
+      session.lease.touch();
+      await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
     }),
   );
 
@@ -410,6 +425,8 @@ function listen(app: Express, swapToolsEnabled: boolean): void {
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
+  // The SDK is only loaded for the swap tools.
+  if (swapToolsEnabled) await initSodax();
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
     await runStdio(swapToolsEnabled);

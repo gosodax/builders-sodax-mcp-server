@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveConnection } from "./connection.js";
+import { messageContext, resolveConnection } from "./connection.js";
 import { logger } from "./services/logger.js";
 
 const KEY = "sodax_test-key_1";
@@ -29,7 +29,7 @@ afterEach(() => {
 describe("resolveConnection", () => {
   it("forwards a SODAX key and serves its profile", () => {
     const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }));
-    expect(connection).toEqual({ apiKey: KEY, toolsets: { builder: false, swap: true } });
+    expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: false, swap: true } });
     expect(res.status).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -73,7 +73,7 @@ describe("resolveConnection", () => {
 
   it("serves a default connection with a malformed key keyless, tells the client, and logs at debug only", () => {
     const { connection, res } = resolve(fakeReq({}, { "x-api-key": `Bearer ${KEY}` }));
-    expect(connection?.apiKey).toBeUndefined();
+    expect(connection?.context.apiKey).toBeUndefined();
     expect([connection?.toolsets.builder, connection?.toolsets.swap]).toEqual([true, false]);
     expect(connection?.toolsets.keyHint).toContain("isn't a SODAX API key");
     expect(warn).not.toHaveBeenCalled();
@@ -112,8 +112,52 @@ describe("resolveConnection", () => {
 
     it("serves a keyed default connection the builder tools only, forwarding its key", () => {
       const { connection, res } = resolve(fakeReq({}, { "x-api-key": KEY }), false);
-      expect(connection).toEqual({ apiKey: KEY, toolsets: { builder: true, swap: false } });
+      expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: true, swap: false } });
       expect(res.status).not.toHaveBeenCalled();
     });
+  });
+
+  it("carries the connection's partner fee", () => {
+    const partnerAddress = `0x${"1".repeat(40)}`;
+    const { connection } = resolve(fakeReq({ partnerAddress, partnerFeeBps: "25" }));
+    expect(connection?.context.partnerFee).toEqual({ address: partnerAddress, bps: 25 });
+  });
+
+  it("refuses a bad partner fee with 400, before warning about the key", () => {
+    const { connection, res } = resolve(fakeReq({ partnerFeeBps: "25" }, { "x-api-key": `Bearer ${KEY}` }));
+    expect(connection).toBeUndefined();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(debug).not.toHaveBeenCalled();
+  });
+});
+
+describe("messageContext", () => {
+  function onSession(session: { apiKey?: string }, headers: Record<string, string>) {
+    const res = { status: vi.fn(), json: vi.fn() };
+    res.status.mockReturnValue(res);
+    return { context: messageContext(session, fakeReq({}, headers), res as unknown as Response), res };
+  }
+
+  it("runs a message with the key its session was opened with", () => {
+    const { context, res } = onSession({ apiKey: KEY }, { "x-api-key": KEY });
+    expect(context).toEqual({ apiKey: KEY });
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { "x-api-key": "sodax_another-key" }])(
+    "refuses a keyed session's message without that key (%o), so its swap tools never run under another",
+    headers => {
+      const { context, res } = onSession({ apiKey: KEY }, headers);
+      expect(context).toBeUndefined();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.objectContaining({ code: -32000 }) }),
+      );
+    },
+  );
+
+  it("runs a keyless session's message with its own key, if any", () => {
+    expect(onSession({}, {}).context).toEqual({ apiKey: undefined });
+    expect(onSession({}, { "x-api-key": KEY }).context).toEqual({ apiKey: KEY });
   });
 });

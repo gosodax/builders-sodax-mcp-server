@@ -297,7 +297,7 @@ pnpm test
 
 ## CI & Local Checks
 
-Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which executes the same four checks you can run locally:
+Every pull request, into any branch, runs `.github/workflows/ci.yml`, which executes the same four checks you can run locally:
 
 | Command | What it does |
 |---------|--------------|
@@ -351,7 +351,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
-| `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |
+| `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), API-drift summaries and the swap alerts (see *Operating the swap tools*). Empty/unset = silent (staging/local). |
 
 ## Deployment
 
@@ -394,7 +394,7 @@ Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
 - A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its quoteId, Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 

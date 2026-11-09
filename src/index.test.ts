@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createHttpApp } from "./index.js";
 import { hashClientIp } from "./services/analytics.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
+import { clearCache } from "./services/sodaxApi.js";
 
 // The guards are unit-tested in httpGuards.test.ts; this checks index.ts wires them to the routes.
 
@@ -54,13 +55,14 @@ const initialize = (id: number) => ({
 });
 
 // Each test sends from its own IP (trust proxy is on), so the per-IP limits don't carry over.
-function post(path: string, body: string, ip: string): Promise<Response> {
+function post(path: string, body: string, ip: string, headers: Record<string, string> = {}): Promise<Response> {
   return fetch(`${base}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "X-Forwarded-For": ip,
+      ...headers,
     },
     body,
   });
@@ -96,6 +98,31 @@ async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, match:
 }
 
 describe("HTTP routes", () => {
+  it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {
+    const local = globalThis.fetch;
+    const keys: (string | null)[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).startsWith(base)) return local(input, init);
+      keys.push(new Headers(init?.headers).get("x-api-key"));
+      return Response.json({});
+    });
+    const call = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "sodax_get_supported_chains", arguments: {} },
+      });
+
+    const res = await post("/mcp", call(1), "198.51.100.40", { "x-api-key": "sodax_route_key_a" });
+    expect(res.status).toBe(200);
+    clearCache();
+    const { reader, endpoint } = await sseSession("198.51.100.41");
+    await post(endpoint, call(2), "198.51.100.41", { "x-api-key": "sodax_route_key_b" });
+    await readUntil(reader, /event: message\ndata: .*"id":2/);
+    expect(keys).toEqual(["sodax_route_key_a", "sodax_route_key_b"]);
+  });
+
   it("answers GET /mcp with 405 and the allowed methods", async () => {
     const res = await fetch(`${base}/mcp`, { headers: { "X-Forwarded-For": "198.51.100.1" } });
     expect(res.status).toBe(405);

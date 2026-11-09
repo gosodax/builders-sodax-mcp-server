@@ -21,14 +21,14 @@ export interface ToolSelection extends Toolsets {
   keyHint?: string;
 }
 
-/** What each profile serves. `swapToolsEnabled` is the server's rollout switch. */
+/** What each profile serves. `swapToolsEnabled` is the server's kill switch for the swap tools. */
 export function describeProfiles(swapToolsEnabled: boolean): Record<Profile, string> {
   return {
     builder: "Data, relay and SDK docs tools",
-    swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Not enabled on this server yet",
+    swap: swapToolsEnabled ? "Swap tools; needs an x-api-key header" : "Turned off on this server",
     all: swapToolsEnabled
       ? "Both; the swap tools only with an x-api-key header"
-      : "The builder tools; swap tools aren't enabled yet",
+      : "The builder tools; the swap tools are turned off on this server",
   };
 }
 
@@ -57,9 +57,9 @@ export class ConnectionError extends Error {
   }
 }
 
-/** `SODAX_SWAP_TOOLS_ENABLED`: `true` turns the swap tools on; unset, empty or `false` keeps them off. */
+/** `SODAX_SWAP_TOOLS_ENABLED`, a kill switch: unset, empty or `true` serves the swap tools; `false` turns them off. */
 export function parseSwapToolsEnabled(value: string | undefined): boolean {
-  const flag = value?.trim().toLowerCase() || "false";
+  const flag = value?.trim().toLowerCase() || "true";
   if (flag === "true" || flag === "false") return flag === "true";
   throw new Error('SODAX_SWAP_TOOLS_ENABLED must be "true" or "false"');
 }
@@ -89,7 +89,7 @@ export function selectToolsets(requested: unknown, opts: SelectOptions): ToolSel
     throw new ConnectionError(400, `Unknown profile. Use ${enabled.join(", ")}.`);
   }
   if (profile === "swap" && !opts.swapToolsEnabled) {
-    throw new ConnectionError(400, "The swap profile is not enabled on this server yet. Use builder or all.");
+    throw new ConnectionError(400, "The swap profile is turned off on this server. Use builder or all.");
   }
   if (profile === "swap" && opts.apiKey === "missing") {
     throw new ConnectionError(403, `API key required for the swap profile. ${SEND_A_KEY}`);

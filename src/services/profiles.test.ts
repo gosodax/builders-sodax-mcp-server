@@ -91,7 +91,7 @@ describe("selectToolsets", () => {
   it("refuses swap while the switch is off, before asking for a key", () => {
     const error = refusal("swap", { ...keyless, ...off });
     expect([error.httpStatus, error.rpcCode]).toEqual([400, -32602]);
-    expect(error.message).toContain("not enabled");
+    expect(error.message).toContain("turned off");
   });
 
   it("refuses a keyless swap connection with 403 and where to get a key", () => {
@@ -129,12 +129,12 @@ describe("apiKeyStatus", () => {
 
 describe("describeProfiles", () => {
   it("describes swap as off while the switch is off", () => {
-    expect(describeProfiles(false).swap).toBe("Not enabled on this server yet");
+    expect(describeProfiles(false).swap).toBe("Turned off on this server");
     expect(describeProfiles(true).swap).toContain("x-api-key");
   });
 
   it("offers the swap tools in all only while the switch is on", () => {
-    expect(describeProfiles(false).all).toBe("The builder tools; swap tools aren't enabled yet");
+    expect(describeProfiles(false).all).toBe("The builder tools; the swap tools are turned off on this server");
     expect(describeProfiles(true).all).toContain("x-api-key");
   });
 });
@@ -169,11 +169,12 @@ describe("profileFromArgs", () => {
 
 describe("parseSwapToolsEnabled", () => {
   it.each([
-    [undefined, false],
-    ["", false],
-    ["false", false],
+    [undefined, true],
+    ["", true],
     ["true", true],
     [" TRUE ", true],
+    ["false", false],
+    [" False ", false],
   ])("%j → %j", (value, expected) => {
     expect(parseSwapToolsEnabled(value)).toBe(expected);
   });

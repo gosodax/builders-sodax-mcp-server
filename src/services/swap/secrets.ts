@@ -11,10 +11,12 @@ import { wordlist as french } from "@scure/bip39/wordlists/french";
 import { wordlist as italian } from "@scure/bip39/wordlists/italian";
 import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
 import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
+import { SODAX_KEY_PATTERN, isSodaxKey } from "../../constants.js";
 import { ActionError } from "./errors.js";
 import { AMOUNT_PATTERN } from "./units.js";
 
-type SecretKind = "api_key" | "seed_phrase" | "private_key";
+// A 64-byte base58 value is a Solana secret key or, as often, a Solana tx signature: refused, but hedged.
+type SecretKind = "api_key" | "seed_phrase" | "private_key" | "solana_key_or_signature";
 
 const BASE58 = "1-9A-HJ-NP-Za-km-z";
 // 64 bytes in base58: a Solana secret key, or just as well a Solana tx signature.
@@ -40,15 +42,14 @@ function hasSeedPhrase(text: string): boolean {
 }
 
 const SHAPES: [SecretKind, (text: string) => boolean][] = [
-  // A SODAX key is `sodax_` + base64url; a tool name (`sodax_get_supported_chains`) has no capital, digit or `-`.
   // Matched in two linear steps: zod hands over values of any length.
-  ["api_key", text => (text.match(/sodax_[A-Za-z0-9_-]{24,}/g) ?? []).some(key => /[A-Z0-9-]/.test(key.slice(6)))],
+  ["api_key", text => (text.match(SODAX_KEY_PATTERN) ?? []).some(isSodaxKey)],
   ["seed_phrase", hasSeedPhrase],
   ["private_key", text => new RegExp(`^[xyzt]prv[${BASE58}]{100,}$`).test(text)],
   // Bitcoin WIF: uncompressed (5…, 51 chars) or compressed (K…/L…, 52); testnet c… / 9….
   ["private_key", text => new RegExp(`^[5KLc9][${BASE58}]{50,51}$`).test(text)],
-  // A Solana secret key (an address is 32 bytes).
-  ["private_key", text => BASE58_64_BYTES.test(text)],
+  // A Solana secret key or tx signature (an address is 32 bytes).
+  ["solana_key_or_signature", text => BASE58_64_BYTES.test(text)],
   ["private_key", text => /^suiprivkey1[02-9ac-hj-np-z]{50,}$/.test(text)],
   // A Stellar secret seed (an account address starts with G).
   ["private_key", text => /^S[A-Z2-7]{55}$/.test(text)],
@@ -61,16 +62,26 @@ export function findSecret(value: string, { txHash = false } = {}): SecretKind |
   return SHAPES.find(([, matches]) => matches(text))?.[0];
 }
 
+/** For a value that is a key or, as often, something else of the same shape. */
+const ifKeyElse = (other: string) =>
+  `If it was a private key, tell the user to treat it as exposed and move their funds; if it was ${other}.`;
+
 function secretRefusal(kind: SecretKind, field?: string): ActionError {
+  const solana = kind === "solana_key_or_signature";
   return new ActionError(
     "SECRET_REJECTED",
-    "That looks like a private key, seed phrase or API key; it wasn't used or stored.",
+    solana
+      ? "That's a 64-byte base58 value, a Solana secret key or a transaction signature; it wasn't used or stored."
+      : "That looks like a private key, seed phrase or API key; it wasn't used or stored.",
     {
       details: { field },
       // The default next step covers keys and phrases; a SODAX key belongs in a header.
       ...(kind === "api_key" && {
         nextStep:
           "Tell the user to rotate that SODAX API key and send keys only as the x-api-key header, never as a tool input.",
+      }),
+      ...(solana && {
+        nextStep: ifKeyElse("a transaction signature, this field doesn't take one, so ask for what it needs"),
       }),
     },
   );
@@ -79,8 +90,7 @@ function secretRefusal(kind: SecretKind, field?: string): ActionError {
 function hex64Refusal(notA: string, field?: string): ActionError {
   return new ActionError("SECRET_REJECTED", `That's a 64-hex value, not ${notA}.`, {
     details: { field },
-    nextStep:
-      "If it was a private key, tell the user to treat it as exposed and move their funds; if it was a transaction hash, pass it to sodax_swap_track.",
+    nextStep: ifKeyElse("a transaction hash, pass it to sodax_swap_track"),
   });
 }
 
@@ -108,6 +118,22 @@ export function screenSecrets(args: Record<string, unknown>): void {
 export function rejectHex64(value: string, field: string, chainName: string, expected: "address" | "token"): void {
   if (!HEX64.test(value)) return;
   throw hex64Refusal(`${expected === "address" ? "an address" : "a token"} on ${chainName}`, field);
+}
+
+/**
+ * The same for a 64-hex token query that is a valid account on the chain (a NEAR contract account, a Sui
+ * package id): a token this list doesn't have, or a private key; the refusal says it may be either.
+ */
+export function rejectHex64Account(value: string, field: string, chainName: string): void {
+  if (!HEX64.test(value)) return;
+  throw new ActionError(
+    "SECRET_REJECTED",
+    `That's a 64-hex value: no token SODAX swaps on ${chainName} has that address, and it may be a private key.`,
+    {
+      details: { field },
+      nextStep: ifKeyElse(`a token's address, SODAX doesn't swap that token on ${chainName}: ask the user for another`),
+    },
+  );
 }
 
 /** `notHex64` names what a field that never holds a bare 64-hex value takes instead ("a quoteId"). */

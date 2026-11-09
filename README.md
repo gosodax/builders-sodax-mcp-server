@@ -43,6 +43,26 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 }
 ```
 
+### API Key (Optional)
+
+Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header and the server
+forwards it on its calls to the SODAX data API and solver, and nowhere else (not to the relay either). Over stdio,
+set `SODAX_API_KEY` instead. A value that isn't a SODAX key (`sodax_…`) is ignored.
+
+SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
+carries. The MCP SDKs' SSE clients already send their headers on both.
+
+```json
+{
+  "mcpServers": {
+    "sodax-builders": {
+      "url": "https://builders.sodax.com/mcp",
+      "headers": { "x-api-key": "<your key>" }
+    }
+  }
+}
+```
+
 ## Tools
 
 ### Network Configuration (9 tools)
@@ -158,7 +178,7 @@ Once connected, try asking your AI coding assistant:
 |--------|------|-------|
 | SODAX Backend API (api.sodax.com/v1/be) | Live cross-network data | 2 min |
 | SODAX Solver API (api.sodax.com/v1/intent) | Oracle prices + swap quotes | 2 min (oracle); none (quote) |
-| SODAX Intent Relay (xcall-relay.nw.iconblockchain.xyz) | Cross-chain packet tracking | none |
+| SODAX Intent Relay (api.sodax.com/v1/relay) | Cross-chain packet tracking | none |
 | Aggregator | Cross-chain swap token data | 2 min |
 | SODAX Docs MCP (docs.sodax.com) | SDK documentation | Auto-sync |
 
@@ -218,6 +238,8 @@ Coolify injects these directly into the process environment.
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
+| `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
+| `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), and API-drift summaries. Empty/unset = silent (staging/local). |

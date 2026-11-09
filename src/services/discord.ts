@@ -86,11 +86,13 @@ export async function notifyServerStarted(info: {
   version: string;
   transport: string;
   env: string;
+  sodaxEnv: string;
   port?: number;
 }): Promise<void> {
   const fields = [
     { name: "Version", value: info.version, inline: true },
     { name: "Environment", value: info.env, inline: true },
+    { name: "SODAX_ENV", value: info.sodaxEnv, inline: true },
     { name: "Transport", value: info.transport, inline: true },
   ];
   if (info.port !== undefined) fields.push({ name: "Port", value: String(info.port), inline: true });

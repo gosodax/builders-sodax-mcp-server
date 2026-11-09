@@ -18,6 +18,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { type Express, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
+import { SODAX_ENV, SODAX_ENV_ERROR } from "./constants.js";
 import { hashClientIp, shutdownAnalytics, withAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
@@ -33,6 +34,7 @@ import {
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import { parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./services/requestContext.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames, registerDocsProxyTools } from "./tools/docsProxy.js";
@@ -165,13 +167,27 @@ async function runStdio(): Promise<void> {
   logger.info("Initializing SODAX docs proxy...");
   await warmDocsCache();
 
+  const apiKey = parseApiKey(process.env.SODAX_API_KEY);
+  if (process.env.SODAX_API_KEY && !apiKey) {
+    logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
+  }
+  setFallbackRequestContext({ apiKey });
   const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("SODAX Builders MCP server running via stdio");
 }
 
+/** The SODAX API key a client sent, forwarded on its data API and solver calls. Absent → keyless. */
+function callerApiKey(req: Request): string | undefined {
+  return parseApiKey(req.get("x-api-key"));
+}
+
 async function runHTTP(): Promise<void> {
+  if (process.env.SODAX_API_KEY) {
+    logger.warn("SODAX_API_KEY is ignored over HTTP: each client sends its own x-api-key");
+  }
+
   // Warm SDK docs cache before starting HTTP server
   logger.info("Initializing SODAX docs proxy...");
   await warmDocsCache();
@@ -319,7 +335,7 @@ export function createHttpApp(): Express {
       });
       res.on("close", () => transport.close());
       await requestServer.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await runWithRequestContext({ apiKey: callerApiKey(req) }, () => transport.handleRequest(req, res, req.body));
     }),
   );
 
@@ -370,7 +386,10 @@ export function createHttpApp(): Express {
         return;
       }
       session.lease.touch();
-      await session.transport.handlePostMessage(req, res, req.body);
+      // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
+      await runWithRequestContext({ apiKey: callerApiKey(req) }, () =>
+        session.transport.handlePostMessage(req, res, req.body),
+      );
     }),
   );
 
@@ -421,13 +440,14 @@ export function createHttpApp(): Express {
 function listen(app: Express): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info({ port }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
+    logger.info({ port, sodaxEnv: SODAX_ENV }, `SODAX Builders MCP server running on http://0.0.0.0:${port}`);
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,
       transport: "http",
       port,
       env: process.env.NODE_ENV || "unset",
+      sodaxEnv: SODAX_ENV,
     });
     // Non-blocking: compare live OpenAPI spec against registered MCP tools.
     // Log-only at startup; use `pnpm check:drift` for a CI/CLI-gated run.
@@ -440,6 +460,7 @@ function listen(app: Express): void {
 }
 
 async function main(): Promise<void> {
+  if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
     await runStdio();

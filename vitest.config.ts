@@ -6,6 +6,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     // Tests deliberately exercise logger.warn / logger.error paths; silence
     // the production logger so passing runs aren't visually noisy.
-    env: { LOG_LEVEL: "silent" },
+    // Pin the SODAX API host so tests don't follow the shell's SODAX_ENV.
+    env: { LOG_LEVEL: "silent", SODAX_ENV: "production" },
   },
 });

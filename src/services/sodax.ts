@@ -233,13 +233,16 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   }, RPC_CALL_TIMEOUT_MS);
 }
 
+// Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+const isHorizonNotFound = (error: unknown) =>
+  (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+
 // Whether a failed native read says the account doesn't exist yet (unfunded), per family; told apart
 // without the messages, which carry the RPC URL.
 function isMissingAccount(chainKey: string, error: unknown): boolean {
   switch (chainConfigs[chainKey]?.chain?.type) {
     case "STELLAR":
-      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
-      return (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+      return isHorizonNotFound(error);
     case "NEAR":
       return error instanceof Error && error.name === "AccountDoesNotExistError";
     default:
@@ -306,8 +309,7 @@ export function recipientReady(
       }
       return true;
     } catch (error) {
-      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
-      if ((error as { response?: { status?: unknown } } | undefined)?.response?.status === 404) return false;
+      if (isHorizonNotFound(error)) return false;
       throw error;
     }
   });

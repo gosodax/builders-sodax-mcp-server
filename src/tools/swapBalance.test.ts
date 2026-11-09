@@ -28,14 +28,15 @@ const holding = (balances: Record<string, bigint | null>) =>
     .mocked(walletBalance)
     .mockImplementation(async (_chain, _address, token) => (token.address in balances ? balances[token.address] : 0n));
 
-/** The recorded catalog plus Stellar, with XLM and USDC as the live list has them. */
-function withStellar() {
+/** The recorded catalog plus Stellar, with XLM and USDC as the live list has them, and any `extra` tokens. */
+function withStellar(extra: { symbol: string; name: string; address: string }[] = []) {
   const tokens = JSON.parse(fixtureText("swap-tokens.json"));
   const configs = JSON.parse(fixtureText("chain-configs.json"));
   const token = { decimals: 7, chainKey: "stellar", hubAsset: ARB_USDC };
   tokens.stellar = [
     { ...token, symbol: "XLM", name: "Stellar Lumens", address: XLM },
     { ...token, symbol: "USDC", name: "USD Coin", address: STELLAR_USDC },
+    ...extra.map(added => ({ ...token, ...added })),
   ];
   configs.stellar = {
     chain: { id: "stellar", chainId: "stellar", name: "Stellar", type: "STELLAR" },
@@ -230,6 +231,28 @@ describe("sodax_get_balance", () => {
       expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
       expect(out.trustline).toBeUndefined();
     }
+  });
+
+  it("refuses, without a retry, a failed read of a Stellar token whose trustline the SDK can't check", async () => {
+    withStellar([{ symbol: "AMC", name: "AMC", address: "CUNLISTED" }]);
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    vi.mocked(walletBalance).mockImplementation(async (_chain, _address, token) => {
+      if (token.address === XLM) return 1n;
+      throw new Error("simulation failed");
+    });
+    const { out } = await balance({ chain: "stellar", address: STELLAR_USER, token: "AMC" });
+    expect(out.error.code).toBe("UNKNOWN_TOKEN");
+    expect(recipientReady).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["contract", STELLAR_USDC],
+    ["muxed", "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"],
+  ])("refuses a Stellar %s address as the wallet", async (_case, address) => {
+    withStellar();
+    const { out } = await balance({ chain: "stellar", address });
+    expect(out.error.code).toBe("INVALID_ADDRESS");
+    expect(walletBalance).not.toHaveBeenCalled();
   });
 
   it("says Stellar's native figure is what's spendable", async () => {

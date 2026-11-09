@@ -1,6 +1,6 @@
 /** `sodax_get_balance`: a wallet's native balance and, optionally, one token's, read through the SDK. */
 
-import { recipientReady, walletBalance } from "../sodax.js";
+import { recipientReady, stellarRecipientCheckable, walletBalance } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { TtlCache } from "../ttlCache.js";
 import { ActionError } from "./errors.js";
@@ -84,11 +84,19 @@ export async function readBalances(input: { chain: string; address: string; toke
   try {
     return { ...base, native: held, token: holding(token, await tokenUnits) };
   } catch (error) {
+    if (chainType !== "STELLAR") throw error;
+    // The SDK checks a trustline only for a token the packaged config lists, so for another this failure
+    // can't be told apart from a missing trustline, and a retry won't change that.
+    if (!stellarRecipientCheckable(token.address)) {
+      throw new ActionError("UNKNOWN_TOKEN", `Couldn't read ${token.symbol} on Stellar for this wallet.`, {
+        nextStep: `Tell the user this server can't read their ${token.symbol} on Stellar for now; their wallet shows it.`,
+      });
+    }
     // Stellar's read fails when the account has no trustline for the token (0n: any trustline at all).
-    const noTrustline =
-      chainType === "STELLAR" &&
-      !(await chainRead(chain, "trustline", () => recipientReady("STELLAR", token.address, address, 0n)));
-    if (!noTrustline) throw error;
+    const hasTrustline = await chainRead(chain, "trustline", () =>
+      recipientReady("STELLAR", token.address, address, 0n),
+    );
+    if (hasTrustline) throw error;
     return { ...base, native: held, token: holding(token, 0n), trustline: false };
   }
 }

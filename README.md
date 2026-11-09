@@ -85,6 +85,18 @@ URL, or the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers (std
 `SODAX_PARTNER_FEE_BPS`). Set both or neither; anything else is refused with HTTP 400. The fee is taken from the
 amount sent, is part of the quote, and is never a tool input.
 
+### Safety
+
+The swap tools never sign or move funds. They also:
+
+- refuse inputs that look like a private key, seed phrase or API key, and say so without echoing them;
+- trust only their own quote cache and chain data when tracking or cancelling;
+- reject slippage and deadlines outside their bounds instead of clamping them;
+- warn, never block, when a quote is worth more than `SODAX_SWAP_USD_WARN` USD;
+- pick canary or production once, at startup (`SODAX_ENV`), never per request;
+- take no RPC URL and no partner fee as a tool input;
+- keep keys and RPC URLs out of logs, and addresses out of analytics and alerts.
+
 ## Tools
 
 ### Network Configuration (9 tools)
@@ -267,6 +279,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API and solver calls. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `false` | Rollout switch for the swap tools. `true` or `false`; anything else stops the server at startup. |
+| `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`) and Ethereum (`1`) in production: their public defaults are unreliable. Tools never take an RPC URL as input. |
 | `SODAX_RPC_URL_<family>` | SDK default | The RPC a non-EVM chain is read through (`sodax_get_balance` reads balances; the quote reads NEAR storage and Stellar trustlines), by family: `SOLANA`, `SUI`, `NEAR`, `ICON`, `STACKS`, `BITCOIN` (an Esplora-style API such as mempool.space, not a node), `STELLAR_HORIZON` and `STELLAR_SOROBAN`. Not Injective: the SDK ignores its RPC setting, so its reads keep the public endpoints. `https` only, and an unknown suffix stops the server at startup. Their public defaults can rate-limit. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |

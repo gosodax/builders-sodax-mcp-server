@@ -5,23 +5,48 @@
 
 import { ActionError } from "./errors.js";
 
-const AMOUNT = /^\d+(\.\d+)?$/;
+export const AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
 const MAX_UINT256 = 2n ** 256n - 1n;
+
+const amountField = { field: "amount" };
 
 export function parseUnits(amount: string, decimals: number): bigint {
   const text = amount.trim();
   const [whole, fraction = ""] = text.split(".");
-  if (!AMOUNT.test(text) || fraction.length > decimals) {
+  if (!AMOUNT_PATTERN.test(text) || fraction.length > decimals) {
     throw new ActionError(
       "INVALID_AMOUNT",
       `Give the amount as a plain decimal, with no commas or units and at most ${decimals} digits after the point.`,
+      { details: amountField },
     );
   }
   const base = BigInt(whole + fraction.padEnd(decimals, "0"));
   if (base === 0n || base > MAX_UINT256) {
-    throw new ActionError("INVALID_AMOUNT", "The amount must be more than zero and fit in 256 bits.");
+    throw new ActionError("INVALID_AMOUNT", "The amount must be more than zero and fit in 256 bits.", {
+      details: amountField,
+    });
   }
   return base;
+}
+
+/**
+ * An amount sent as a JSON number, as a decimal. One with an exponent or more than 15 significant digits is
+ * refused, since it may have lost digits; digits the JSON parse already dropped can't be seen.
+ */
+export function amountText(amount: string | number): string {
+  if (typeof amount === "string") return amount;
+  const text = String(amount);
+  if (/e/i.test(text) || text.replace(/^-/, "").replace(".", "").replace(/^0+/, "").length > 15) {
+    throw new ActionError(
+      "INVALID_AMOUNT",
+      'Give this amount as a string, e.g. "0.5": as a number it may not be exact.',
+      {
+        details: amountField,
+        nextStep: "Call sodax_swap_quote again with amount as a string holding the user's exact amount.",
+      },
+    );
+  }
+  return text;
 }
 
 export function formatUnits(base: bigint, decimals: number): string {

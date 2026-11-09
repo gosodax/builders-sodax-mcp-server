@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fixtureCatalog } from "./__fixtures__/catalog.js";
+import { fixtureCatalog, fixtureText } from "./__fixtures__/catalog.js";
 import { type Resolution, resolveToken } from "./resolver.js";
 import { parseCatalog } from "./tokens.js";
 
@@ -190,6 +190,19 @@ describe("resolveToken", () => {
     const result = resolve("ICON", `0x${"0".repeat(40)}`);
     expect(result.status).toBe("not_found");
     expect(result).not.toHaveProperty("otherChains");
+  });
+
+  it.each([
+    ["has no config", (configs: Record<string, { nativeToken?: string }>) => delete configs.hyper],
+    ["has no native token", (configs: Record<string, { nativeToken?: string }>) => delete configs.hyper.nativeToken],
+  ])("never names another chain's gas token for a native sentinel when that chain %s", (_, breakHyper) => {
+    const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    breakHyper(configs);
+    const partial = parseCatalog(tokens, configs);
+    for (const sentinel of [`0x${"0".repeat(40)}`, `0X${"0".repeat(40)}`, `0x${"E".repeat(40)}`]) {
+      expect(resolveToken(partial, "ICON", sentinel)).not.toHaveProperty("otherChains");
+    }
   });
 
   it("names every other chain that lists the address", () => {

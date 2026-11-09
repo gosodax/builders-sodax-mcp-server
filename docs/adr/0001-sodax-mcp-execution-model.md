@@ -1,7 +1,7 @@
 # 0001. SODAX MCP execution model
 
 - Status: Proposed
-- Date: 2026-10-23
+- Date: 2026-10-23, updated 2026-11-09 to match the swap stack (#91 to #98, #102)
 - Issue: #80, part of the agent-executable swaps epic (#79)
 
 ## Context
@@ -38,8 +38,9 @@ What shapes the design:
 **Decision.**
 - Put `builders.sodax.com` behind the same HAProxy edge as the API, so keys and limits are enforced in one place.
 - The swap tools need an API key: `x-api-key` on HTTP, or `SODAX_API_KEY` on stdio. A connection without one gets no swap tools. `?profile=swap` is refused with "API key required" and where to get one, and `all` serves only the builder tools.
-- The server only checks that a key is there. Whether it's valid is the backend's call.
-- Builder tools stay open without a key. When a key is sent, it goes on every backend call made for that caller. Lists cached for all callers, like the swap token catalog, load without one, so one caller's key can't fail them for the others.
+- The server checks only that a key is a well-formed SODAX key, so another service's secret is never forwarded. A malformed key is refused on the swap profile; on the others it's dropped and the instructions say so.
+- Builder tools stay open without a key. When a key is sent, it goes with that caller's requests to the data API, the solver and the Swaps API, never to the relay, a separate service.
+- Data cached for all callers on the swap path (the swap token catalog, oracle prices) loads without a key, so one caller's key can't break it for the others.
 - On SSE, a session opened with a key refuses a message that doesn't carry the same key.
 - Drop the server's own inbound limit once the edge is in front, so only one counter applies. Behind a proxy it would only see the edge's IP anyway.
 - On a 429, wait out `Retry-After` instead of retrying at once, and tell the agent when to come back (`RATE_LIMITED` with `retryAfterSec`). A 401 or 403 becomes "API key required", with where to get one.
@@ -51,17 +52,18 @@ What shapes the design:
 
 ### D3. Client layer: `@sodax/sdk` and `@sodax/types`
 
-**Context.** Phase 1 needs the Swaps API client and a few chain helpers. Later phases add features like money market and staking, which have no backend API that builds transactions yet, and the SDK already covers them. The full SDK is heavy. Measured on 2026-10-22 with Node 22.15 (`npm i --ignore-scripts`, then `du -sh node_modules` and `npm audit`): `@sodax/sdk@2.2.0` with `@sodax/types@2.2.0` is 777 MB with 35 advisories (11 high). The high ones trace back to four packages: `axios`, `bigint-buffer`, `toml` and `ws`.
+**Context.** Phase 1 needs the Swaps API and a few chain helpers. Later phases add features like money market and staking, which have no backend API that builds transactions yet, and the SDK already covers them. The full SDK is heavy. Measured on 2026-10-22 with Node 22.15 (`npm i --ignore-scripts`, then `du -sh node_modules` and `npm audit`): `@sodax/sdk@2.2.0` with `@sodax/types@2.2.0` is 777 MB with 35 advisories (11 high). The high ones trace back to four packages: `axios`, `bigint-buffer`, `toml` and `ws`.
 
 **Decision.**
 - Use `@sodax/sdk` and `@sodax/types`, pinned to exact versions.
-- Override `axios`, `bigint-buffer` and `toml` to fixed versions. `ws` has no fix yet, so track it.
-- Build one `Sodax` instance from env at boot (production or canary, RPC overrides) for chain helpers. Give each request its own Swaps API client carrying the caller's key, so keys never mix between callers.
-- Use SDK clients where they exist, and keep plain REST and the drift check for the rest. Move the relay base URL to `api.sodax.com/v1/relay`.
+- Override `axios` and `ws` to fixed versions. `bigint-buffer` has no fixed release and `toml` isn't overridden yet: track both.
+- Build one `Sodax` instance from env at boot (production or canary, RPC overrides) for chain reads, and to rebuild what the Swaps API returns (the swap transaction, the cancel payload) and check it.
+- Call the Swaps API over REST, not through the SDK's client, which retries a 429 at once and drops `Retry-After`. Responses are checked with zod, and the caller's key is attached per call (D2), so keys never mix between callers.
+- The other APIs stay plain REST; the drift check covers the data API. Move the relay base URL to `api.sodax.com/v1/relay`.
 - Raise `engines.node` to `>=22.12.0`, which `@sodax/types` requires.
 
 **Consequences.**
-- Swaps API changes reach us through the SDK.
+- Swaps API changes don't arrive with an SDK upgrade: a breaking one fails the response checks, and the canary E2E runs the whole flow.
 - Later phases can use SDK features without a new dependency.
 - The Docker image grows. The PR records its size.
 
@@ -74,11 +76,13 @@ What shapes the design:
 - `swap`: the five swap tools.
 - `all`: both. This is the default.
 - Pick one with `?profile=`, the `x-sodax-profile` header, or `--profile` / `MCP_PROFILE` on stdio. An unknown profile is an error, not a silent fallback.
+- A config flag, `SODAX_SWAP_TOOLS_ENABLED` (on by default), turns the swap tools off with a restart and no deploy, so an incident can stop them at once. When it's off, `swap` is refused and `all` serves only the builder tools.
 
 **Consequences.**
-- Existing connections get `all`. Without a key, that's today's tools, unchanged. With a key, the swap tools come too; to keep today's exact list, connect with `?profile=builder`.
+- Existing connections get `all`. Without a key, that's today's tools, unchanged; only the server instructions gain a line on the key the swap tools need. With a key, the swap tools come too; to keep today's exact list, connect with `?profile=builder`.
 - A swap agent connects to `/mcp?profile=swap` with a key and sees five tools.
 - Phase 2 adds its own profile for its tools. Adding a profile changes nothing for existing connections, and `all` keeps serving every tool.
+- Turning the swap tools off removes track and cancel too, and its restart empties the quote cache: deposits sent before it are left to the operator (see [Quote cache](#quote-cache)).
 
 ### D5. Chains
 
@@ -88,7 +92,7 @@ What shapes the design:
 - Sources in phase 1: the EVM spoke chains. Sonic, the hub, is not a source yet: it has no `connection` contract, so nothing on chain proves a deposit from it. The other sources the Swaps API supports (Solana, Sui, Stellar, Injective, NEAR, ICON, Stacks and Bitcoin) open once the backend checks source transactions in `submit-tx` (see [Track](#track)). Destinations: any chain.
 - When those sources open, Stacks needs `srcPublicKey` and Bitcoin needs a Bound access token. When one is missing, the quote says which.
 - Before building a swap to NEAR or Stellar, check with the SDK that the recipient can hold the token (NEP-141 storage registration, Stellar trustline). Funds sent to an account that isn't ready get stuck.
-- No `rpcUrl` input. Operators set RPC URLs per chain through env; without one, the SDK's packaged default is used. The server reads chains only through the SDK: source transactions on EVM source chains, the user's hub wallet on Sonic, recipients on NEAR and Stellar, wallet balances, and the source chain's block number in a ready quote, so a dead RPC fails the quote (`CHAIN_UNAVAILABLE`) before anything is signed rather than at track. Whether an approve is needed comes from the backend's allowance check.
+- No `rpcUrl` input. Operators set an EVM chain's RPC URL with `SODAX_RPC_URL_<chainId>`; any chain without one, non-EVM chains included for now, uses the SDK's packaged default. The server reads chains only through the SDK: source transactions on EVM source chains, the user's hub wallet on Sonic, recipients on NEAR and Stellar, wallet balances, and the source chain's block number in a ready quote, so a dead RPC fails the quote (`CHAIN_UNAVAILABLE`) before anything is signed rather than at track. Whether an approve is needed comes from the backend's allowance check.
 
 **Consequences.**
 - Phase 1 covers the swaps most agents start with, without a reader for every chain family.
@@ -116,7 +120,7 @@ What shapes the design:
 - The intent is built with `createIntent`, not `includeTxData`. The minimum output comes from the slippage (1 to 500 bps, default 100), and the deadline from `getDeadline` (5 to 60 minutes, default 15). An intent that isn't filled in time is cancelled and refunded by the backend.
 - The answer shows the expected output (already net of the solver's fee), minimum received, partner fee, USD values in and out, and expiry, as a time and as seconds left. The API has no speed tier.
 - The quote is checked against market prices: an output worth less than 90% of the input (net of the partner fee) at oracle prices is refused (`PRICE_OFF_MARKET`) and alerts the operator. When either side has no price, the quote only warns. The swap tools read the production oracle in both environments, since canary swaps run on mainnet chains.
-- For a wallet that batches (EIP-5792), the quote returns the `wallet_sendCalls` envelope and which steps it replaces; the agent builds the calls from those steps, so the calldata appears once.
+- When an approve is needed, the quote also returns a `wallet_sendCalls` envelope (EIP-5792) for the approve and the swap, and names the steps it replaces; the agent builds the calls from those steps, so the calldata appears once. A reset approve stays outside the batch, since it must land first.
 - The partner fee comes from the connection, never from tool input:
   - the `x-sodax-partner-address` and `x-sodax-partner-fee-bps` headers;
   - or `partnerAddress` and `partnerFeeBps` in the URL query, for clients that only take a URL;
@@ -141,11 +145,13 @@ What shapes the design:
 - If `submit-tx` refuses the deposit before its deadline, the server alerts and doesn't resubmit. It relays the deposit to the hub on the first call after the deadline, or at once when the deadline is only minutes away. The backend refunds it there like any expired intent, since nothing posts it to a solver.
 - A transaction the chain hasn't seen may have been sped up or replaced in the wallet. The answer says to track the new hash with the same `quoteId`, and to quote again only if the wallet shows nothing was sent.
 - A backend status this server doesn't know is polled only while the quote can still be filled.
+- Once `track` has checked a deposit as the quote's, every failure says not to send the swap again, and none asks for a new quote or key. A key or edge refusal (401, 403) is retried like an outage, unlike at quote time (D2): the deposit is already on chain, and a new key can't help. A refusal of the swap itself alerts the operator, and the deposit is relayed for refund after its deadline. The answers bound retries and polls, and past the bound say what to tell the user.
+- Operator alerts are capped per hour, with a smaller budget for those any key can trigger. Past the cap they're held for one post at the end of the hour; when one reaches only the log, the answer tells the user to give SODAX support the tx hash.
 
 ### Cancel
 
 - The first call checks the status. If the swap is already solved, it says so. Otherwise it returns the unsigned cancel transaction.
-- A deposit that was never submitted has no hub intent to cancel. Cancel then reads the receipt: nothing sent means nothing to cancel; a deposit before its deadline won't be swapped unless tracked, so the answer is not to track it and to call cancel again after the deadline; after the deadline the deposit is relayed for refund, as `track` does.
+- A deposit that was never submitted has no hub intent to cancel. Cancel then reads the receipt: nothing sent means nothing to cancel; a deposit before its deadline won't be swapped unless tracked, so the answer is not to track it and to call cancel again after the deadline; after the deadline the deposit is relayed for refund, as `track` does. Without the quote, cancel reads no receipt and reports the deposit as not cancellable.
 - The second call, with `cancelTxHash`, checks the receipt and relays it through `/swaps/intents/submit`, because the cancel endpoint only builds the transaction.
 - The intent comes from the hub or the quote cache, never from model input. A cached quote is compared with the hub intent only for the deposit `track` checked as that quote's. Without a quote, the hub intent must come from the transaction's sender and that sender's hub wallet.
 - The cancel the backend builds is checked before it is returned: its message payload must equal the SDK's own cancel for that intent, so the user's hub wallet runs nothing else.
@@ -153,25 +159,28 @@ What shapes the design:
 
 ### Quote cache
 
-- It lives in memory. An entry is kept until the intent deadline plus 30 minutes, with at most 10,000 entries and 1,000 open quotes per API key; a key over its cap is refused. When the cache is full, expired entries go first, then unused quotes past their deadline. A live quote or one with a deposit is never dropped, so new quotes are refused until room frees up. The Bound token is never cached.
-- If the server restarts after the user broadcasts but before `track` submits, the entry is lost and the swap sits on chain, unsubmitted.
-- The server can't see this on its own. It finds out only when `track` is called again for that transaction and finds neither the quote nor a backend record. It then returns `not_submitted_unknown_quote`, tells the user the swap is on chain but not submitted yet, and alerts the operator with the source chain, tx hash and quote id so they can find the deposit and relay it.
+- It lives in memory. An entry is kept until 30 minutes past the intent deadline, or 24 hours once its deposit is relayed for refund, since the quote is then the only record of that refund.
+- It holds at most 10,000 entries and 1,000 open quotes per API key; a key over its cap is refused. When the cache is full, expired entries go first, then unused quotes past their deadline. A live quote or one with a deposit is never dropped, so new quotes are refused until room frees up. The Bound token is never cached.
+- If the server restarts after the user broadcasts but before `track` submits, the entry is lost and the swap sits on chain, unsubmitted. The health check reports how many quotes are open, so a deploy can wait until none are.
+- After a restart, or once a quote has aged out, the server learns of a lost entry only when `track` is called again with that deposit's chain and `quoteId` and neither the quote nor a backend record exists. It then returns `not_submitted_unknown_quote`, tells the user the swap is on chain and safe, and alerts the operator with the source chain, tx hash and quote id so they can find the deposit and relay it. Without a `quoteId` there's no alert.
 - If nobody calls `track` again, no alert fires. The deposit isn't lost: nothing fills an intent that was never submitted, and relaying the deposit after its deadline gets it refunded.
 
 ## Safety rules
 
 - Never sign or broadcast.
-- Reject anything that looks like a private key, seed phrase or API key, and explain why. Exempt:
-  - tx hashes, which look exactly like EVM private keys;
+- Reject anything that looks like a private key, a seed phrase or a SODAX API key, and explain why. Exempt:
+  - tx hashes in a tx-hash field, which look exactly like EVM private keys (64 hex) or, on Solana, like a secret key (64 bytes of base58);
   - values that validate as an address or token on the chosen chain, since a Sui address or coin type and a NEAR implicit account also contain 64 hex characters;
   - the Bound token.
+
+  Where a refused value could also be harmless (a Solana signature, a 64-hex account that isn't a listed token), the answer says it may be either.
 - `track` and `cancel` trust only the quote cache and on-chain data.
 - Every unsigned transaction names its chain, so it can't be sent on another network.
 - Slippage and deadline outside their bounds are rejected, not clamped.
 - Above a configurable USD value, the quote warns but doesn't block. The user's signature is the real check.
 - A quote whose output is far below market value at oracle prices is refused (see [Quote](#quote)).
 - `SODAX_ENV` chooses production or canary once, at boot. There's no per-request switch.
-- No keys or secrets in logs. Analytics carry the `quoteId`, the chains and a USD bucket, never addresses.
+- No keys or secrets in logs. Logged errors drop URLs, request bodies and call details. Analytics carry the `quoteId`, the chains and a USD bucket, never addresses.
 - No caller-supplied RPC URLs. A hosted server shouldn't fetch arbitrary URLs, and paid RPC URLs embed their own keys.
 - The partner fee is set by the connection, never by tool input, so a prompt can't redirect it.
 

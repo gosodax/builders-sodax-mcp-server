@@ -19,6 +19,7 @@ import {
   isHubChain,
   packagedToken,
   rebuildSwapTx,
+  stellarRecipientCheckable,
   swapContractFor,
   userHubWallet,
 } from "../sodax.js";
@@ -253,6 +254,14 @@ function resolveSide(
   }
   const config = catalog.chains[resolution.chain.key];
   if (!config) throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX chain config doesn't describe that chain.");
+  // A recipient that can't hold the token would strand the swap's output, so an unchecked one isn't quoted.
+  if (side === "to" && config.type === "STELLAR" && !stellarRecipientCheckable(resolution.token.address)) {
+    const { symbol } = resolution.token;
+    throw new ActionError("RESTRICTED_TOKEN", `This server can't check that a Stellar account can receive ${symbol}.`, {
+      nextStep: `Tell the user a swap to ${symbol} on Stellar isn't available here for now, and ask whether they want another token.`,
+      details: { side },
+    });
+  }
   // The amount is scaled by these decimals and the intent checked against this hub asset.
   const { decimals, hubAsset, address } = resolution.token;
   const packaged = packagedToken(resolution.chain.key, address);

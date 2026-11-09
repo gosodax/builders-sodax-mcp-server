@@ -58,11 +58,16 @@ describe("createMcpLimiter", () => {
   it("counts each message of a batch against the limit", async () => {
     const url = await limitedApp(5);
 
-    expect((await post(`${url}/mcp`, JSON.stringify([rpc(1), rpc(2), rpc(3)]))).status).toBe(200);
+    const first = await post(`${url}/mcp`, JSON.stringify([rpc(1), rpc(2), rpc(3)]));
+    expect(first.status).toBe(200);
+    expect(first.headers.get("ratelimit-remaining")).toBe("2");
     const res = await post(`${url}/mcp`, JSON.stringify([rpc(4), rpc(5), rpc(6)]));
 
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual(limitError);
+    expect(res.headers.get("ratelimit-remaining")).toBe("0");
+    expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(res.headers.get("retry-after")).toBe(res.headers.get("ratelimit-reset"));
   });
 
   it("counts a batch on /messages once, since the SSE transport refuses batches", async () => {

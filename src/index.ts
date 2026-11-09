@@ -28,6 +28,7 @@ import {
   asyncHandler,
   createMcpLimiter,
   jsonErrorHandler,
+  limitBody,
   mcpGetNotAllowed,
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
@@ -213,7 +214,7 @@ export function createHttpApp(): Express {
     max: 100, // 100 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many requests, please try again later." },
+    message: limitBody("Too many requests, please try again later."),
   });
   app.use(limiter);
 

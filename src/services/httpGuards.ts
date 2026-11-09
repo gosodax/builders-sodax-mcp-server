@@ -32,9 +32,12 @@ export function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0", error: { code, message }, id: null };
 }
 
-function limitBody(req: Request) {
-  return isMcpPath(req) ? jsonRpcError(-32000, MCP_LIMIT_MESSAGE) : { error: MCP_LIMIT_MESSAGE };
+/** A rate limiter's 429 body: a JSON-RPC error on /mcp, `{ error }` elsewhere. */
+export function limitBody(message: string) {
+  return (req: Request) => (isMcpPath(req) ? jsonRpcError(-32000, message) : { error: message });
 }
+
+const mcpLimitBody = limitBody(MCP_LIMIT_MESSAGE);
 
 /** Passes a rejected async handler to the error handler; Express 4 doesn't. */
 export function asyncHandler(
@@ -58,7 +61,7 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
     store,
     standardHeaders: true,
     legacyHeaders: false,
-    message: limitBody,
+    message: mcpLimitBody,
   });
 
   const countBatch = asyncHandler(async (req, res, next) => {
@@ -69,12 +72,13 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
         .json(jsonRpcError(-32600, `Invalid Request: a batch may hold at most ${MCP_MAX_BATCH_SIZE} messages`));
       return;
     }
-    // The limiter above already counted the first message.
-    const { key } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
-    let used = 0;
-    for (let i = 1; i < req.body.length; i++) used = (await store.increment(key)).totalHits;
+    // The limiter above already counted the first message and set its headers for that count alone.
+    let { key, used, resetTime } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
+    for (let i = 1; i < req.body.length; i++) ({ totalHits: used, resetTime } = await store.increment(key));
+    const resetSeconds = resetTime ? Math.max(0, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : 60;
+    res.set({ "RateLimit-Remaining": String(Math.max(limit - used, 0)), "RateLimit-Reset": String(resetSeconds) });
     if (used > limit) {
-      res.status(429).json(limitBody(req));
+      res.set("Retry-After", String(resetSeconds)).status(429).json(mcpLimitBody(req));
       return;
     }
     next();

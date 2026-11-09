@@ -180,6 +180,17 @@ describe("HTTP routes", () => {
     expect((await openSse(ip)).status).toBe(429);
   });
 
+  it("answers the global limit on /mcp with a JSON-RPC error too", async () => {
+    const ip = "198.51.100.12";
+    // The global limiter (100 a minute) counts every route; /health doesn't touch the MCP limiter.
+    await Promise.all(
+      Array.from({ length: 100 }, () => fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } })),
+    );
+    const res = await post("/mcp", JSON.stringify(initialize(1)), ip);
+    expect(res.status).toBe(429);
+    expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
+  });
+
   it("caps open SSE sessions per IP", async () => {
     const ip = "198.51.100.7";
     for (let i = 0; i < SSE_MAX_SESSIONS_PER_IP; i++) expect((await openSse(ip)).status).toBe(200);

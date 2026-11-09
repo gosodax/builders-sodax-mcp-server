@@ -240,13 +240,27 @@ describe("sodax_swap_quote", () => {
     expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
   });
 
-  it("skips the approve when the allowance is already enough (a native token)", async () => {
-    const calls = stubSwaps({ valid: true });
+  it("never asks about an allowance for a native token", async () => {
+    const calls = stubSwaps({ valid: false });
     const { out } = await quote({ ...USDC_TO_SONIC, fromToken: "native", amount: "0.01", fromAddress: USER });
     expect(out.steps?.map(step => step.kind)).toEqual(["swap"]);
     expect(out.steps?.[0].tx.value).toBe("0x2386f26fc10000");
     expect(out.batch).toBeUndefined();
-    expect(calls.map(call => call.path)).not.toContain("/approve");
+    expect(calls.map(call => call.path)).not.toContain("/allowance/check");
+  });
+
+  it("refuses, without inviting a retry, a Stellar token whose recipient it can't check", async () => {
+    const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    tokens.stellar = [
+      { symbol: "AMC", name: "AMC", decimals: 7, address: "CUNLISTED", chainKey: "stellar", hubAsset: HUB_WALLET },
+    ];
+    configs.stellar = { chain: { id: "stellar", chainId: "stellar", name: "Stellar", type: "STELLAR" } };
+    const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+    const { out } = await quote({ ...USDC_TO_SONIC, toChain: "stellar", toToken: "AMC", amount: "5" });
+    expect(out.error?.code).toBe("RESTRICTED_TOKEN");
+    expect(out.nextStep).toContain("isn't available here");
+    expect(calls).toEqual([]);
   });
 
   it("puts a reset first, on its own, outside the batch", async () => {

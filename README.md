@@ -319,6 +319,27 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
 
+### Errors and limits
+
+`/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
+Read `error.message`; `error` is an object here.
+
+| Status | On `/mcp` | `error.code` |
+|--------|-----------|--------------|
+| 400 | Invalid JSON | -32700 |
+| 400 | A batch of more than 10 messages | -32600 |
+| 405 | `GET /mcp`: there is no standalone stream | -32000 |
+| 413 | A body over 100 kB | -32600 |
+| 429 | A rate limit | -32000 |
+| 500 | A server error | -32603 |
+
+On `/sse` and `/messages`, the rate limits, an unknown session and server errors answer `{"error":"…"}`; the SSE
+transport's own errors (a message it can't parse, for one) are plain text.
+
+Limits are per client IP (IPv6 per /56): 100 requests a minute on all routes, and 60 a minute on `/mcp`, `/sse` and
+`/messages`, where each message of a `/mcp` batch counts. A rate-limit 429 carries `Retry-After` and `RateLimit-*`
+headers. SSE allows 10 open sessions per client and 200 in all, and closes a session after an hour without a message.
+
 ## Related
 
 - **SODAX** — [sodax.com](https://sodax.com)

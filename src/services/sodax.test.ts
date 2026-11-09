@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { EvmHubProvider, NearSpokeService, StellarSpokeService } from "@sodax/sdk";
-import { solverConfig } from "@sodax/types";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
@@ -18,11 +18,14 @@ import {
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
+  stellarRecipientCheckable,
   swapContractFor,
   userHubWallet,
 } from "./sodax.js";
 
 const USER = "0x000000000000000000000000000000000000dEaD";
+// A Stellar token whose trustline the packaged config lists, which the SDK needs to check a recipient.
+const LISTED = spokeChainConfig.stellar.trustlineConfigs[0].contractId;
 
 /** A live `POST /v1/swaps/intents` response (2026-10-26, nothing signed). */
 function recorded(name: "built-intent-usdc-fee.json" | "built-intent-eth.json" | "built-intent-sonic.json") {
@@ -114,6 +117,16 @@ describe("createIntentPayload", () => {
   });
 });
 
+describe("stellarRecipientCheckable", () => {
+  it("takes the tokens the SDK can check a Stellar recipient for, and nothing else", () => {
+    const { nativeToken, supportedTokens } = spokeChainConfig.stellar;
+    for (const token of [LISTED, LISTED.toLowerCase(), nativeToken, supportedTokens.legacybnUSD.address]) {
+      expect(stellarRecipientCheckable(token)).toBe(true);
+    }
+    expect(stellarRecipientCheckable("CUNLISTED")).toBe(false);
+  });
+});
+
 describe("addresses and contracts", () => {
   it("encodes recipients the SDK's way, refusing what isn't valid for the chain", () => {
     expect(encodeRecipient("0xa4b1.arbitrum", USER)).toBe(USER);
@@ -124,6 +137,18 @@ describe("addresses and contracts", () => {
     expect(encodeRecipient("sui", USER)).toBeUndefined();
     expect(encodeRecipient("near", "alice.near")).toBe("0x616c6963652e6e656172");
     expect(encodeRecipient("nowhere", USER)).toBeUndefined();
+  });
+
+  it("takes only a Stellar account and a Bitcoin mainnet address on those chains", () => {
+    const stellar = "GDZZZV63F63EL63XSKXE6V535JYUW2WFO6VKLYH73LCOUJCUCDRFPNIW";
+    expect(encodeRecipient("stellar", stellar)).toBeDefined();
+    expect(encodeRecipient("stellar", spokeChainConfig.stellar.nativeToken)).toBeUndefined();
+    expect(
+      encodeRecipient("stellar", "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"),
+    ).toBeUndefined();
+    expect(encodeRecipient("bitcoin", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")).toBeDefined();
+    expect(encodeRecipient("bitcoin", "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")).toBeUndefined();
+    expect(encodeRecipient("bitcoin", "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn")).toBeUndefined();
   });
 
   it("pins the swap contract: a spoke's asset manager, the hub intents contract", () => {
@@ -148,11 +173,11 @@ describe("addresses and contracts", () => {
     expect(packagedToken("sonic", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBeUndefined();
   });
 
-  it("checks a mixed-case address's EIP-55 checksum", () => {
+  it("takes an all-lowercase address or a valid EIP-55 checksum, nothing else", () => {
     expect(checksumValid(USER)).toBe(true);
     expect(checksumValid("0x000000000000000000000000000000000000DEad")).toBe(false);
     expect(checksumValid(USER.toLowerCase())).toBe(true);
-    expect(checksumValid(`0x${USER.slice(2).toUpperCase()}`)).toBe(true);
+    expect(checksumValid(`0x${USER.slice(2).toUpperCase()}`)).toBe(false);
   });
 
   it("encodes an approve as the SDK does", () => {
@@ -178,8 +203,26 @@ describe("SDK calls", () => {
     const trustline = vi.spyOn(StellarSpokeService.prototype, "hasSufficientTrustline").mockResolvedValue(false);
     await expect(recipientReady("NEAR", "usdc.near", "alice.near", 5n)).resolves.toBe(true);
     expect(storage).toHaveBeenCalledWith("usdc.near", "alice.near");
-    await expect(recipientReady("STELLAR", "USDC-SAC", "GABC", 5n)).resolves.toBe(false);
-    expect(trustline).toHaveBeenCalledWith("USDC-SAC", 5n, "GABC");
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).resolves.toBe(false);
+    expect(trustline).toHaveBeenCalledWith(LISTED, 5n, "GABC");
+  });
+
+  it("read a missing Stellar account as not ready", async () => {
+    const trustline = vi.spyOn(StellarSpokeService.prototype, "hasSufficientTrustline");
+    trustline.mockRejectedValueOnce(Object.assign(new Error("Not Found"), { response: { status: 404 } }));
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).resolves.toBe(false);
+    trustline.mockRejectedValueOnce(Object.assign(new Error("Bad Gateway"), { response: { status: 502 } }));
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).rejects.toThrow(/^SDK call failed$/);
+  });
+
+  it("needs an existing Stellar account for XLM, which takes no trustline", async () => {
+    const { nativeToken } = spokeChainConfig.stellar;
+    const read = vi.spyOn(StellarSpokeService.prototype, "getWalletBalance");
+    read.mockRejectedValueOnce(Object.assign(new Error("Not Found"), { response: { status: 404 } }));
+    await expect(recipientReady("STELLAR", nativeToken, "GABC", 5n)).resolves.toBe(false);
+    read.mockResolvedValueOnce(0n);
+    await expect(recipientReady("STELLAR", nativeToken, "GABC", 5n)).resolves.toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it("give up after 15 seconds", async () => {

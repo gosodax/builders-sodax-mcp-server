@@ -12,6 +12,8 @@ import {
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
+  isBitcoinChainKey,
+  isStellarChainKey,
   isSuiChainKey,
   solverConfig,
   spokeChainConfig,
@@ -79,6 +81,10 @@ export function encodeRecipient(chainKey: string, address: string): string | und
   try {
     // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
     if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
+    // It also takes a Stellar contract (C…) or muxed (M…) address and a Bitcoin testnet one; only a
+    // Stellar account and a Bitcoin mainnet address are wallets a swap should pay.
+    if (isStellarChainKey(chainKey as SpokeChainKey) && !address.startsWith("G")) return undefined;
+    if (isBitcoinChainKey(chainKey as SpokeChainKey) && !/^(1|3|bc1)/i.test(address)) return undefined;
     // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
     return sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
   } catch {
@@ -118,12 +124,13 @@ export function intentChainId(chainKey: string): string | undefined {
 }
 
 /**
- * Whether a mixed-case EVM address carries a valid EIP-55 checksum. Unchecked before initSodax:
- * only the swap tools use such an address, and they load the SDK at boot.
+ * Whether an EVM address is all lowercase or carries a valid EIP-55 checksum, as the SDK takes it
+ * (it drops a fee paid to an all-uppercase one). Unchecked before initSodax: only the swap tools
+ * use such an address, and they load the SDK at boot.
  */
 export function checksumValid(address: string): boolean {
   const hex = address.slice(2);
-  if (!loaded || hex === hex.toLowerCase() || hex === hex.toUpperCase()) return true;
+  if (!loaded || hex === hex.toLowerCase()) return true;
   return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
 }
 
@@ -221,19 +228,49 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
   }, RPC_CALL_TIMEOUT_MS);
 }
 
-/** Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. */
+/**
+ * Whether the SDK can check a Stellar recipient for the token: one that needs a trustline needs it listed
+ * in the packaged config, which lists only some.
+ */
+export function stellarRecipientCheckable(token: string): boolean {
+  const wanted = token.toLowerCase();
+  return (
+    !sdk().sodax.spoke.stellar.requiresTrustline(token) ||
+    spokeChainConfig.stellar.trustlineConfigs.some(config => config.contractId.toLowerCase() === wanted)
+  );
+}
+
+/**
+ * Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. A
+ * Stellar account that doesn't exist yet can't receive XLM or a trustline token.
+ */
 export function recipientReady(
   chainType: "NEAR" | "STELLAR",
   token: string,
   address: string,
   amount: bigint,
 ): Promise<boolean> {
-  const { spoke } = sdk().sodax;
-  return bounded(() =>
-    chainType === "NEAR"
-      ? spoke.near.isStorageRegistered(token, address)
-      : spoke.stellar.hasSufficientTrustline(token, amount, address),
-  );
+  const { near, stellar } = sdk().sodax.spoke;
+  if (chainType === "NEAR") return bounded(() => near.isStorageRegistered(token, address));
+  return bounded(async () => {
+    try {
+      if (stellar.requiresTrustline(token)) return await stellar.hasSufficientTrustline(token, amount, address);
+      const { chain, nativeToken } = spokeChainConfig.stellar;
+      if (token.toLowerCase() === nativeToken.toLowerCase()) {
+        // Reads the account, which fails as for a trustline token when it doesn't exist.
+        await stellar.getWalletBalance({
+          srcChainKey: chain.key,
+          srcAddress: address as never,
+          token: { address: token } as never,
+        });
+      }
+      return true;
+    } catch (error) {
+      // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+      if ((error as { response?: { status?: unknown } } | undefined)?.response?.status === 404) return false;
+      throw error;
+    }
+  });
 }
 
 /** The intent fields `createIntent` takes, as the Swaps API returns them. */

@@ -94,7 +94,9 @@ function readEnv() {
   const amount = AMOUNT || "5";
   const dryRun = E2E_DRY_RUN === "1";
   if (!MCP_URL || !SODAX_API_KEY) throw new Failure("MCP_URL and SODAX_API_KEY are required");
-  if (!/^\d+(?:\.\d+)?$/.test(amount)) throw new Failure("AMOUNT must be a plain decimal");
+  // A typo can't send more than a run needs.
+  if (!/^\d+(?:\.\d+)?$/.test(amount) || Number(amount) > 20)
+    throw new Failure("AMOUNT must be a plain decimal, at most 20");
   if (!dryRun && !/^0x[0-9a-fA-F]{64}$/.test(E2E_WALLET_PRIVATE_KEY ?? "")) {
     throw new Failure("E2E_WALLET_PRIVATE_KEY must be 0x + 64 hex");
   }
@@ -169,6 +171,9 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
   if (!out.afterSend) throw new Failure("a ready quote without afterSend");
   const mismatch = stepMismatch(out.steps, src, parseUnits(env.amount, src.usdc.decimals));
   if (mismatch) throw new Failure(`unexpected ${mismatch}`);
+  if (minimumTooLow(out.to.minimumAmount, env.amount, dst.usdc.decimals)) {
+    throw new Failure(`a minimum of ${out.to.minimumAmount} USDC for ${env.amount}`);
+  }
   log(`quoteId ${out.quoteId}, at least ${out.to.minimumAmount} USDC, ${out.steps.length} steps`);
   return out as ReadyQuote;
 }
@@ -198,6 +203,14 @@ export function stepMismatch(steps: SwapStep[], src: Wallet, amount: bigint): st
     const field = checks.find(([, ok]) => !ok)?.[0];
     if (field) return `step ${i + 1} (${kind}) ${field}`;
   }
+}
+
+/**
+ * USDC to USDC loses little: a minimum under 97% of the amount (the oracle off, the output unpriced) means
+ * the server's floor didn't apply, and this key doesn't sign it.
+ */
+export function minimumTooLow(minimumAmount: string, amount: string, decimals: number): boolean {
+  return parseUnits(minimumAmount, decimals) * 100n < parseUnits(amount, decimals) * 97n;
 }
 
 /** Whether `data` calls the asset manager's deposit of exactly `amount` of `token`. */

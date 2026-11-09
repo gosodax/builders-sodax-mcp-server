@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
-import { solverConfig } from "@sodax/types";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
@@ -19,12 +19,15 @@ import {
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
+  stellarRecipientCheckable,
   swapContractFor,
   userHubWallet,
   walletBalance,
 } from "./sodax.js";
 
 const USER = "0x000000000000000000000000000000000000dEaD";
+// A Stellar token whose trustline the packaged config lists, which the SDK needs to check a recipient.
+const LISTED = spokeChainConfig.stellar.trustlineConfigs[0].contractId;
 
 // Not a dependency here: the copy the SDK runs on, so its errors are the ones the SDK sees.
 const stellar = createRequire(createRequire(import.meta.url).resolve("@sodax/sdk"))("@stellar/stellar-sdk");
@@ -119,6 +122,16 @@ describe("createIntentPayload", () => {
   });
 });
 
+describe("stellarRecipientCheckable", () => {
+  it("takes the tokens the SDK can check a Stellar recipient for, and nothing else", () => {
+    const { nativeToken, supportedTokens } = spokeChainConfig.stellar;
+    for (const token of [LISTED, LISTED.toLowerCase(), nativeToken, supportedTokens.legacybnUSD.address]) {
+      expect(stellarRecipientCheckable(token)).toBe(true);
+    }
+    expect(stellarRecipientCheckable("CUNLISTED")).toBe(false);
+  });
+});
+
 describe("addresses and contracts", () => {
   it("encodes recipients the SDK's way, refusing what isn't valid for the chain", () => {
     expect(encodeRecipient("0xa4b1.arbitrum", USER)).toBe(USER);
@@ -148,6 +161,18 @@ describe("addresses and contracts", () => {
     }
   });
 
+  it("takes only a Stellar account and a Bitcoin mainnet address on those chains", () => {
+    const stellar = "GDZZZV63F63EL63XSKXE6V535JYUW2WFO6VKLYH73LCOUJCUCDRFPNIW";
+    expect(encodeRecipient("stellar", stellar)).toBeDefined();
+    expect(encodeRecipient("stellar", spokeChainConfig.stellar.nativeToken)).toBeUndefined();
+    expect(
+      encodeRecipient("stellar", "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"),
+    ).toBeUndefined();
+    expect(encodeRecipient("bitcoin", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")).toBeDefined();
+    expect(encodeRecipient("bitcoin", "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")).toBeUndefined();
+    expect(encodeRecipient("bitcoin", "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn")).toBeUndefined();
+  });
+
   it("pins the swap contract: a spoke's asset manager, the hub intents contract", () => {
     expect(swapContractFor("0xa4b1.arbitrum")).toBe("0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3");
     expect(swapContractFor("sonic")).toBe(solverConfig.intentsContract);
@@ -170,11 +195,11 @@ describe("addresses and contracts", () => {
     expect(packagedToken("sonic", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")).toBeUndefined();
   });
 
-  it("checks a mixed-case address's EIP-55 checksum", () => {
+  it("takes an all-lowercase address or a valid EIP-55 checksum, nothing else", () => {
     expect(checksumValid(USER)).toBe(true);
     expect(checksumValid("0x000000000000000000000000000000000000DEad")).toBe(false);
     expect(checksumValid(USER.toLowerCase())).toBe(true);
-    expect(checksumValid(`0x${USER.slice(2).toUpperCase()}`)).toBe(true);
+    expect(checksumValid(`0x${USER.slice(2).toUpperCase()}`)).toBe(false);
   });
 
   it("encodes an approve as the SDK does", () => {
@@ -200,8 +225,26 @@ describe("SDK calls", () => {
     const trustline = vi.spyOn(StellarSpokeService.prototype, "hasSufficientTrustline").mockResolvedValue(false);
     await expect(recipientReady("NEAR", "usdc.near", "alice.near", 5n)).resolves.toBe(true);
     expect(storage).toHaveBeenCalledWith("usdc.near", "alice.near");
-    await expect(recipientReady("STELLAR", "USDC-SAC", "GABC", 5n)).resolves.toBe(false);
-    expect(trustline).toHaveBeenCalledWith("USDC-SAC", 5n, "GABC");
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).resolves.toBe(false);
+    expect(trustline).toHaveBeenCalledWith(LISTED, 5n, "GABC");
+  });
+
+  it("read a missing Stellar account as not ready", async () => {
+    const trustline = vi.spyOn(StellarSpokeService.prototype, "hasSufficientTrustline");
+    trustline.mockRejectedValueOnce(Object.assign(new Error("Not Found"), { response: { status: 404 } }));
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).resolves.toBe(false);
+    trustline.mockRejectedValueOnce(Object.assign(new Error("Bad Gateway"), { response: { status: 502 } }));
+    await expect(recipientReady("STELLAR", LISTED, "GABC", 5n)).rejects.toThrow(/^SDK call failed$/);
+  });
+
+  it("needs an existing Stellar account for XLM, which takes no trustline", async () => {
+    const { nativeToken } = spokeChainConfig.stellar;
+    const read = vi.spyOn(StellarSpokeService.prototype, "getWalletBalance");
+    read.mockRejectedValueOnce(Object.assign(new Error("Not Found"), { response: { status: 404 } }));
+    await expect(recipientReady("STELLAR", nativeToken, "GABC", 5n)).resolves.toBe(false);
+    read.mockResolvedValueOnce(0n);
+    await expect(recipientReady("STELLAR", nativeToken, "GABC", 5n)).resolves.toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it("give up after 15 seconds", async () => {
@@ -327,11 +370,15 @@ describe("parseRpcOverrides", () => {
   it("maps SODAX_RPC_URL_<chainId> to the chain key, ignoring everything else", () => {
     const env = {
       SODAX_RPC_URL_42161: "https://arb.example/key",
+      SODAX_RPC_URL_146: "https://sonic.example/key",
       SODAX_RPC_URL_137: "",
       SODAX_RPC_URL: "https://no-id.example",
       PATH: "/bin",
     };
-    expect(parseRpcOverrides(env)).toEqual({ "0xa4b1.arbitrum": "https://arb.example/key" });
+    expect(parseRpcOverrides(env)).toEqual({
+      "0xa4b1.arbitrum": "https://arb.example/key",
+      sonic: "https://sonic.example/key",
+    });
   });
 
   it.each([
@@ -341,6 +388,18 @@ describe("parseRpcOverrides", () => {
   ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
     expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
     expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
+  });
+});
+
+describe("initSodax", () => {
+  it("sends the hub's reads through a Sonic override too", async () => {
+    vi.resetModules();
+    const fresh = await import("./sodax.js");
+    await fresh.initSodax({ sonic: "https://sonic.example/key" });
+    // A 400, which viem doesn't retry.
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
+    await expect(fresh.userHubWallet("0xa4b1.arbitrum", USER)).rejects.toThrow("SDK call failed");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://sonic.example/key");
   });
 });
 

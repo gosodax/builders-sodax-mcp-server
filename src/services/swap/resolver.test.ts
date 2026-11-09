@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { fixtureCatalog } from "./__fixtures__/catalog.js";
+import { beforeAll, describe, expect, it } from "vitest";
+import { initSodax } from "../sodax.js";
+import { fixtureCatalog, fixtureText } from "./__fixtures__/catalog.js";
 import { type Resolution, resolveToken } from "./resolver.js";
 import { parseCatalog } from "./tokens.js";
+
+// A 64-hex query is judged against the chain's own address format, which the SDK knows.
+beforeAll(() => initSodax());
 
 const catalog = fixtureCatalog();
 const resolve = (chain: string, query: string) => resolveToken(catalog, chain, query);
@@ -93,14 +97,30 @@ describe("resolveToken", () => {
     });
   });
 
-  // NEAR's USDC is a 64-hex account: it must match before a 64-hex query is refused as a possible key.
-  it("resolves a NEAR token given by its 64-hex address", () => {
+  // NEAR's USDC is a 64-hex account, and a Sui package id is 0x + 64 hex: there an unlisted one is just not listed.
+  // NEAR's USDC is a 64-hex account, and a Sui package id is 0x + 64 hex: there an unlisted one may be a token.
+  it("resolves a NEAR token given by its 64-hex address, and says an unlisted one may be a token or a key", () => {
     const address = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
     const near = parseCatalog({ near: [{ ...catalog.tokens.hyper[0], chainKey: "near", address }] }, {});
     expect(resolveToken(near, "near", address)).toMatchObject({ status: "resolved", matchedBy: "address" });
-    expect(() => resolveToken(near, "near", "ab".repeat(32))).toThrow(
-      expect.objectContaining({ code: "SECRET_REJECTED" }),
-    );
+    const mayBeEither = expect.objectContaining({
+      code: "SECRET_REJECTED",
+      message: expect.stringContaining("no token SODAX swaps on"),
+      nextStep: expect.stringContaining("if it was a token's address, SODAX doesn't swap that token"),
+    });
+    expect(() => resolveToken(near, "near", "ab".repeat(32))).toThrow(mayBeEither);
+    expect(() => resolve("sui", `0x${"ab".repeat(32)}`)).toThrow(mayBeEither);
+    // Each chain's other spelling isn't an account there: not a token, so a key or a tx hash.
+    for (const [chain, value] of [
+      ["near", `0x${"ab".repeat(32)}`],
+      ["sui", "ab".repeat(32)],
+      ["hyper", `0x${"ab".repeat(32)}`],
+    ]) {
+      const on = chain === "near" ? near : catalog;
+      expect(() => resolveToken(on, chain, value)).toThrow(
+        expect.objectContaining({ code: "SECRET_REJECTED", message: expect.stringMatching(/, not a token on /) }),
+      );
+    }
   });
 
   it("reports a chain whose tokens all failed validation as unavailable, not as unknown tokens", () => {
@@ -225,6 +245,19 @@ describe("resolveToken", () => {
     const result = resolve("ICON", `0x${"0".repeat(40)}`);
     expect(result.status).toBe("not_found");
     expect(result).not.toHaveProperty("otherChains");
+  });
+
+  it.each([
+    ["has no config", (configs: Record<string, { nativeToken?: string }>) => delete configs.hyper],
+    ["has no native token", (configs: Record<string, { nativeToken?: string }>) => delete configs.hyper.nativeToken],
+  ])("never names another chain's gas token for a native sentinel when that chain %s", (_, breakHyper) => {
+    const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    breakHyper(configs);
+    const partial = parseCatalog(tokens, configs);
+    for (const sentinel of [`0x${"0".repeat(40)}`, `0X${"0".repeat(40)}`, `0x${"E".repeat(40)}`]) {
+      expect(resolveToken(partial, "ICON", sentinel)).not.toHaveProperty("otherChains");
+    }
   });
 
   it("names every other chain that lists the address", () => {

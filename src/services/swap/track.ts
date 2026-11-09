@@ -10,11 +10,12 @@ import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 import { type EvmReceipt, isHubChain } from "../sodax.js";
 import { alertOperator } from "./alerts.js";
-import { ActionError } from "./errors.js";
+import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
   markRelayedForRefund,
+  markSubmitFailed,
   markSubmitRefused,
   markSubmitted,
 } from "./quoteCache.js";
@@ -37,6 +38,9 @@ const STATUSES: readonly string[] = ["pending", ...STAGES, "solved", "failed"];
 /** For a deposit on chain that SODAX operators must move by hand. */
 export const DEPOSIT_SAFE =
   "tell the user the deposit is on chain and safe, SODAX has been alerted to recover it, and they must not send it again";
+/** The same when the alert reached only the logs: the hourly alert cap was full. */
+export const DEPOSIT_SAFE_UNALERTED =
+  "tell the user the deposit is on chain and safe, that they must not send it again, and to give SODAX support its transaction hash to recover it";
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
@@ -54,15 +58,17 @@ export type TrackState =
   | { status: "awaiting_source_confirmation"; seenOnChain: boolean; retryAfterSec: number }
   | { status: "source_failed" }
   | { status: "source_not_found" }
+  | { status: "not_submitted"; reason: "not_a_deposit" }
   | {
       status: "not_submitted";
-      reason: "not_a_deposit" | "deposit_mismatch" | "other_sender" | "quote_used" | "multiple_deposits";
+      reason: "deposit_mismatch" | "other_sender" | "quote_used" | "multiple_deposits";
+      alerted: boolean;
     }
   | { status: "not_submitted_unknown_quote"; isDeposit: boolean; alerted: boolean }
   | { status: "expired_refunding" }
-  | { status: "expired_unsubmitted"; alerted: true; retryAfterSec: number }
+  | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
   /** Refused before its deadline: the first call after it relays the deposit for refund. */
-  | { status: "submit_refused"; alerted: true; retryAfterSec: number }
+  | { status: "submit_refused"; alerted: boolean; retryAfterSec: number }
   | { status: "queued"; retryAfterSec: number }
   | { status: "in_progress"; stage: string; hubTxHash?: string; retryAfterSec: number }
   | {
@@ -120,9 +126,11 @@ export async function trackSwap(input: { txHash: string; quoteId?: string; chain
 async function track(txHash: string, source: SwapSource, quoteId?: string): Promise<TrackResult> {
   const { chain, quote } = source;
   const base = { txHash, chain, ...(quoteId && { quoteId }) };
-  const row = await getSubmitTxStatus(txHash, chain.key);
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
+  const row = await getSubmitTxStatus(txHash, chain.key).catch(error => {
+    throw claimed ? retryable(error) : error;
+  });
   if (row && (!quote || claimed)) return { ...base, ...fromStatus(row, claimed ? quote : undefined) };
   // Already handed over by this server: the backend's row may lag its answer, and a resubmit costs
   // one of the 10 submits a minute this server's IP gets.
@@ -133,7 +141,14 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   }
   // A resubmit before the deadline is refused again, and costs one of those 10 submits.
   if (claimed && quote.submitRefused && Date.now() < deadlineMs(quote)) {
-    return { ...base, status: "submit_refused", alerted: true, retryAfterSec: untilRefundSec(quote) };
+    // Deduped: the first refusal's alert, or another try if that one reached only the log.
+    const alerted = alertOperator("submit_rejected", {
+      chainKey: chain.key,
+      txHash,
+      quoteId: quote.quoteId,
+      deadline: quote.intent.deadline,
+    });
+    return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
 
   const receipt = await readReceipt(chain, txHash);
@@ -141,15 +156,16 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     const seen = await seenOnChain(chain, txHash);
     // An unseen tx is worth waiting for only while its quote can still be sent.
     const sendable = quote && Date.now() < deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
-    if (!seen && !sendable) return { ...base, status: "source_not_found" };
+    // A checked deposit had a receipt, so a missing one now is a lagging RPC, not a tx never sent.
+    if (!seen && !sendable && !claimed) return { ...base, status: "source_not_found" };
     return { ...base, status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: RETRY_AFTER_SEC };
   }
   if (receipt.reverted) return { ...base, status: "source_failed" };
   if (!quote) return withoutQuote(base, source, receipt);
   const deposit = checkQuoteDeposit(receipt, source, quote);
   if (deposit === "multiple_deposits") {
-    alertOperator("multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
-    return { ...base, status: "not_submitted", reason: "multiple_deposits" };
+    const alerted = alertOperator("multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
+    return { ...base, status: "not_submitted", reason: "multiple_deposits", alerted };
   }
   if (deposit !== "match") return notThisDeposit(base, deposit, quote);
   const claim = claimDeposit(quote.quoteId, txHash);
@@ -157,13 +173,20 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (claim === "gone") return withoutQuote(base, source, receipt);
   // Both deposits carry the same intent id, so only the first can become an intent.
   if (claim === "taken") {
-    alertOperator("quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
-    return { ...base, status: "not_submitted", reason: "quote_used" };
+    const alerted = alertOperator("quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
+    return { ...base, status: "not_submitted", reason: "quote_used", alerted };
   }
   if (row) return { ...base, ...fromStatus(row, quote) };
   // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
   // backend's canceller, as its own expired rows are.
   if (Date.now() >= deadlineMs(quote)) return relayForRefund(base, quote);
+  // Each submit costs one of the 10 a minute this server's IP gets: a retry sooner than told waits.
+  const waitMs = (quote.submitRetryAt ?? 0) - Date.now();
+  if (waitMs > 0) {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "This deposit was submitted moments ago.", {
+      details: { retryAfterSec: Math.ceil(waitMs / 1000) },
+    });
+  }
 
   try {
     await submitTx({
@@ -174,9 +197,15 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
       relayData: quote.relayData.payload,
     });
   } catch (error) {
-    // Anything else may have reached the backend, so the claim stays and a repeat submits again.
-    if (!(error instanceof ActionError && error.code === "SWAP_REJECTED")) throw error;
-    alertOperator("submit_rejected", {
+    // A failure that may pass may also have reached the backend, so the claim stays and a repeat submits again.
+    if (!isRefusal(error)) {
+      const failure = retryable(error);
+      const told = failure instanceof ActionError ? Number(failure.details?.retryAfterSec ?? RETRY_AFTER_SEC) : 0;
+      markSubmitFailed(quote.quoteId, Math.min(told, RETRY_AFTER_SEC));
+      throw failure;
+    }
+    // A refusal of the swap itself, an amount one too, comes after the deposit: never the quote-time advice.
+    const alerted = alertOperator("submit_rejected", {
       chainKey: chain.key,
       txHash,
       quoteId: quote.quoteId,
@@ -185,12 +214,27 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     // The deposit still goes to the hub to be refunded: now near the deadline, else on the first call after it.
     if (Date.now() >= deadlineMs(quote) - REFUND_AT_ONCE_SEC * 1000) return relayForRefund(base, quote);
     markSubmitRefused(quote.quoteId);
-    return { ...base, status: "submit_refused", alerted: true, retryAfterSec: untilRefundSec(quote) };
+    return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
   markSubmitted(quote.quoteId);
   logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Submitted a swap deposit");
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
+
+/**
+ * A failure that calling again won't fix. A key or WAF refusal (401/403) is of the request, not the
+ * swap: past the claim it's retried, and from the deadline on the same call relays it for refund.
+ */
+const isRefusal = (error: unknown): error is ActionError =>
+  error instanceof ActionError && !RETRYABLE_CODES.includes(error.code) && error.code !== "API_KEY_REQUIRED";
+
+/** The error for the agent past the claim: never "get a new key", which leads to a second quote and deposit. */
+const retryable = (error: unknown) =>
+  error instanceof ActionError && error.code === "API_KEY_REQUIRED"
+    ? new ActionError("UPSTREAM_UNAVAILABLE", "The swap service refused this server's request for now.", {
+        details: { retryAfterSec: RETRY_AFTER_SEC },
+      })
+    : error;
 
 export const deadlineMs = (quote: CachedQuote) => Number(quote.intent.deadline) * 1000;
 export const untilRefundSec = (quote: CachedQuote) =>
@@ -221,11 +265,10 @@ export function checkQuoteDeposit(
  * this quote's sent from another address, or its sender's for another intent.
  */
 function notThisDeposit(base: SwapRef, deposit: Exclude<DepositCheck, "match">, quote: CachedQuote): TrackResult {
+  if (deposit === "not_a_deposit") return { ...base, status: "not_submitted", reason: deposit };
   const fields = { chainKey: base.chain.key, txHash: base.txHash, quoteId: quote.quoteId };
-  if (deposit === "other_sender") alertOperator("other_sender_deposit", fields);
-  if (deposit === "mismatch") alertOperator("other_quote_deposit", fields);
-  const reason = deposit === "mismatch" ? "deposit_mismatch" : deposit;
-  return { ...base, status: "not_submitted", reason };
+  const alerted = alertOperator(deposit === "other_sender" ? "other_sender_deposit" : "other_quote_deposit", fields);
+  return { ...base, status: "not_submitted", reason: deposit === "mismatch" ? "deposit_mismatch" : deposit, alerted };
 }
 
 /** A mined tx with no quote here (a restart, or its grace period over): a deposit may be stranded. */
@@ -233,8 +276,8 @@ function withoutQuote(base: SwapRef, source: SwapSource, receipt: EvmReceipt): T
   const { txHash, chain, quoteId } = base;
   const isDeposit = depositMessages(receipt, source.connection, source.assetManager).length > 0;
   // Only a named quoteId alerts, or any public deposit could page an operator.
-  const alerted = isDeposit && quoteId !== undefined;
-  if (alerted) alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
+  const alerted =
+    isDeposit && quoteId !== undefined && alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
   return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
 }
 
@@ -248,8 +291,8 @@ export async function relayForRefund(
   try {
     relayed = await relaySpokeTx(quote.intent.srcChain, txHash);
   } catch (error) {
-    // Refused is a relay failure; anything that may pass (a rate limit, an outage, the key) is retried.
-    if (!(error instanceof ActionError && error.code === "SWAP_REJECTED")) throw error;
+    // Refused is a relay failure; anything that may pass (a rate limit, an outage, a WAF) is retried.
+    if (!isRefusal(error)) throw retryable(error);
     relayed = false;
   }
   if (relayed) {
@@ -258,13 +301,13 @@ export async function relayForRefund(
     return { ...base, status: "expired_refunding" };
   }
   // The claim stays, so the next call tries the relay again.
-  alertOperator("refund_relay_failed", {
+  const alerted = alertOperator("refund_relay_failed", {
     chainKey: chain.key,
     txHash,
     quoteId: quote.quoteId,
     deadline: quote.intent.deadline,
   });
-  return { ...base, status: "expired_unsubmitted", alerted: true, retryAfterSec: REFUND_RETRY_SEC };
+  return { ...base, status: "expired_unsubmitted", alerted, retryAfterSec: REFUND_RETRY_SEC };
 }
 
 /** The backend's record in our words: enums and hashes checked at the API boundary, never its text. */

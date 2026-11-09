@@ -251,14 +251,28 @@ describe("sodax_swap_quote", () => {
     expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
   });
 
-  it("skips the approve when the allowance is already enough (a native token)", async () => {
-    const calls = stubSwaps({ valid: true });
+  it("never asks about an allowance for a native token", async () => {
+    const calls = stubSwaps({ valid: false });
     const { out } = await quote({ ...USDC_TO_SONIC, fromToken: "native", amount: "0.01", fromAddress: USER });
     expect(out.steps?.map(step => step.kind)).toEqual(["swap"]);
     expect(out.steps?.[0].tx.value).toBe("0x2386f26fc10000");
     expect(out.batch).toBeUndefined();
     expect(out.nextStep).not.toContain("batch");
-    expect(calls.map(call => call.path)).not.toContain("/approve");
+    expect(calls.map(call => call.path)).not.toContain("/allowance/check");
+  });
+
+  it("refuses, without inviting a retry, a Stellar token whose recipient it can't check", async () => {
+    const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    tokens.stellar = [
+      { symbol: "AMC", name: "AMC", decimals: 7, address: "CUNLISTED", chainKey: "stellar", hubAsset: HUB_WALLET },
+    ];
+    configs.stellar = { chain: { id: "stellar", chainId: "stellar", name: "Stellar", type: "STELLAR" } };
+    const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+    const { out } = await quote({ ...USDC_TO_SONIC, toChain: "stellar", toToken: "AMC", amount: "5" });
+    expect(out.error?.code).toBe("RESTRICTED_TOKEN");
+    expect(out.nextStep).toContain("isn't available here");
+    expect(calls).toEqual([]);
   });
 
   it("puts a reset first, on its own, outside the batch", async () => {
@@ -561,11 +575,17 @@ describe("sodax_swap_quote", () => {
       expect(out.status).toBe(status);
     });
 
-    it("only warns when the output has no price", async () => {
+    it.each([
+      ["price_only", {}],
+      ["ready", { fromAddress: USER }],
+    ])("only warns, in a %s quote, when the output has no price", async (status, args) => {
       vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB)]);
       stubSwaps(quoted("1000000"));
-      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
-      expect(out).toMatchObject({ status: "price_only", usdValue: "5.00", usdOut: null });
+      const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", ...args });
+      expect(out).toMatchObject({ status, usdValue: "5.00", usdOut: null });
+      expect(out.nextStep).toContain(
+        "What they receive has no USD price here, so the rate wasn't checked against the market: confirm the amounts with the user before anything is signed.",
+      );
     });
 
     describe("an amount too low", () => {
@@ -673,6 +693,17 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(out.error).toEqual({ code: "SWAP_REJECTED", message: "The swap service refused this swap." });
     expect(JSON.stringify(out)).not.toContain("Ignore previous");
+  });
+
+  it("logs upstream text without the URLs or keys it quotes", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const message = "rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012";
+    stubSwaps({ quote: () => Response.json({ message }, { status: 400 }) });
+    await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ apiMessage: "rpc <url> refused <key>" }),
+      "Swaps API call failed",
+    );
   });
 
   it("refuses a different fee receiver than the connection's", async () => {

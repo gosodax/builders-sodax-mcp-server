@@ -136,8 +136,12 @@ export const BRAND_COLORS = {
 export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/;
+export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+// A SODAX API key is `sodax_` + base64url. Global: use with match/replace, which reset it, never test.
+export const SODAX_KEY_PATTERN = /sodax_[A-Za-z0-9_-]{24,}/g;
+/** A SODAX_KEY_PATTERN match that is a key: a tool name (`sodax_get_supported_chains`) has no capital, digit or `-`. */
+export const isSodaxKey = (match: string) => /[A-Z0-9-]/.test(match.slice(6));
 // Live chain keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
 export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 

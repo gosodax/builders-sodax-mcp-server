@@ -305,14 +305,14 @@ Every PR into `development`/`master` runs `.github/workflows/ci.yml`, which exec
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
 | `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
-| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. The drift-check workflow runs them against production, without a key. |
+| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. The Drift Check runs them against production; its scheduled and push runs go red when they fail. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
 
 ### Canary swap E2E
 
-`.github/workflows/e2e-canary.yml` runs `pnpm e2e:canary` every day, and on demand, against a server it starts in the runner with `SODAX_ENV=canary`. Canary runs on mainnet chains, so it moves real funds: 5 USDC from whichever of Arbitrum and Base holds more to the other, so runs alternate. It never runs on pull requests. A failure posts the failing stage to Discord: `setup` means the swap never started (install, build or the server start failed, or an env value is missing or malformed); `read_wallet` means the balance reads failed; `balance_floor` means the wallet needs a top-up (USDC, or ETH for gas); `quote` means no ready quote came back, or its steps weren't the USDC approve and swap this route needs. Nothing was signed in any of these. `send` means the swap wasn't sent, or the node refused it and no node had it (an approve may have been mined): check the logged swap hash, if there is one; `track` means a swap may be on chain and needs a look; `arrival` means it was solved but the funds haven't reached the destination yet.
+`.github/workflows/e2e-canary.yml` runs `pnpm e2e:canary` every day, and on demand, against a server it starts in the runner with `SODAX_ENV=canary`. Canary runs on mainnet chains, so it moves real funds: 5 USDC from whichever of Arbitrum and Base holds more to the other, so runs alternate. It never runs on pull requests. A failure posts the failing stage to Discord: `setup` means the swap never started (install, build or the server start failed, or an env value is missing or malformed); `read_wallet` means the balance reads failed; `balance_floor` means the wallet needs a top-up (USDC, or ETH for gas); `quote` means no ready quote came back, its steps weren't the USDC approve and swap this route needs, or its minimum output was under 97% of the amount. Nothing was signed in any of these. `send` means the swap wasn't sent, or the node refused it and no node had it (an approve may have been mined): check the logged swap hash, if there is one; `track` means a swap may be on chain and needs a look; `arrival` means it was solved but the funds haven't reached the destination yet. The script's output is printed after the run, and the server log after a failure, unless a secret (the API key, the wallet key with or without `0x`, an RPC URL's host or path) shows up in either: that fails the run on its own, Discord gets the stage `a secret in the logs`, and neither is printed.
 
-The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
+The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
 To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
 
@@ -408,6 +408,27 @@ Swap quotes live in the server's memory, so:
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
+
+### Errors and limits
+
+`/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
+Read `error.message`; `error` is an object here.
+
+| Status | On `/mcp` | `error.code` |
+|--------|-----------|--------------|
+| 400 | Invalid JSON | -32700 |
+| 400 | A batch of more than 10 messages | -32600 |
+| 405 | `GET /mcp`: there is no standalone stream | -32000 |
+| 413 | A body over 100 kB | -32600 |
+| 429 | A rate limit | -32000 |
+| 500 | A server error | -32603 |
+
+On `/sse` and `/messages`, the rate limits, an unknown session and server errors answer `{"error":"…"}`; the SSE
+transport's own errors (a message it can't parse, for one) are plain text.
+
+Limits are per client IP (IPv6 per /56): 100 requests a minute on all routes, and 60 a minute on `/mcp`, `/sse` and
+`/messages`, where each message of a `/mcp` batch counts. A rate-limit 429 carries `Retry-After` and `RateLimit-*`
+headers. SSE allows 10 open sessions per client and 200 in all, and closes a session after an hour without a message.
 
 ## Related
 

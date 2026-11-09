@@ -14,21 +14,46 @@
  */
 
 import pino, { type Logger, type LoggerOptions } from "pino";
+import { isSodaxKey } from "../constants.js";
+
+// Any scheme (https, wss, …), slashes JSON-escaped or not; stops at quotes and backslashes, so it can
+// run over serialized JSON. The scheme is bounded so a long run without "://" (from a hostile RPC's
+// body) stays linear, and a run of plain characters is one loop step.
+const URL_PATTERN = /[a-z][a-z0-9+.-]{0,31}:(?:\/\/|\\\/\\\/)(?:[^\s"'\\<>]+|\\\/)+/gi;
+// Fields whose value is a key, or a request or call (viem's `body`, `args`, `sender`… hold the user's
+// address), whatever it looks like.
+const KEY_FIELD = /^(?:x-api-key|api-?key|authorization)$/i;
+const CALL_FIELD = /^(?:body|requestBody|args|sender|from|data|account)$/i;
+// Those same parts in viem's message text: "Request body: …", and the indented lines of its call details.
+const CALL_LINE = /^(\s+(?:args|sender|from|data|account):)[^\n]*/gm;
+
+const withoutUrls = (text: string) => text.replace(URL_PATTERN, url => (/^file:/i.test(url) ? url : "<url>"));
 
 /**
- * Text with every URL replaced. RPC URLs reach error messages (viem, the SDK), and an RPC override
- * can embed a paid key, so nothing logged or posted keeps a URL.
+ * Text with URLs, request bodies and keys replaced. RPC URLs reach error messages (viem, the SDK) and
+ * an RPC override can embed a paid key; viem quotes the request body, which holds the user's address.
+ * A `file:` URL is a stack frame's path, kept so a stack still says where it failed.
  */
-export function withoutUrls(text: string): string {
-  // Any scheme (https, wss, …); stops at quotes and backslashes too, so it can run over serialized JSON.
-  // The scheme is bounded so a long run without "://" (from a hostile RPC's body) stays linear.
-  return text.replace(/[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'\\<>]+/gi, "<url>");
+export function redact(text: string): string {
+  return (
+    withoutUrls(text)
+      .replace(/Request body: [^\n]*/g, "Request body: <redacted>")
+      .replace(CALL_LINE, "$1 <redacted>")
+      // Shorter than a whole key on purpose: upstream text cut mid-key still loses the part it kept.
+      .replace(/sodax_[A-Za-z0-9_-]{8,}/g, key => (isSodaxKey(key) ? "<key>" : key))
+      .replace(/\bBearer\s+[^\s"']+/gi, "Bearer <key>")
+  );
 }
 
-/** JSON that can't throw: bigints as strings, cycles cut. */
-function safeJson(value: unknown): string {
+/**
+ * JSON that can't throw, redacted: bigints as strings, cycles cut, every string through `redact`, and
+ * key and request-body fields replaced whole, before their contents are serialized.
+ */
+function redactedJson(value: unknown): string {
   const seen = new WeakSet<object>();
-  return JSON.stringify(value, (_key, item: unknown) => {
+  return JSON.stringify(value, (key, item: unknown) => {
+    if (CALL_FIELD.test(key)) return "<redacted>";
+    if (typeof item === "string") return KEY_FIELD.test(key) ? "<key>" : redact(item);
     if (typeof item === "bigint") return item.toString();
     if (item && typeof item === "object") {
       if (seen.has(item)) return "[Circular]";
@@ -39,14 +64,15 @@ function safeJson(value: unknown): string {
 }
 
 /**
- * pino's error serializer, with URLs gone from every field (viem errors carry them in `url`, `cause`
- * and more), for thrown strings and plain objects too. It never throws: a logger that throws hides
- * the error it was given.
+ * pino's error serializer, redacted (viem errors carry URLs and the request body in `message`, `url`,
+ * `body`, `metaMessages`, `cause` and more), for thrown strings and plain objects too. It never
+ * throws: a logger that throws hides the error it was given.
  */
-export function errWithoutUrls(error: unknown): unknown {
+export function redactErr(error: unknown): unknown {
   try {
     const serialized = error instanceof Error ? pino.stdSerializers.err(error) : error;
-    return serialized === undefined ? undefined : JSON.parse(withoutUrls(safeJson(serialized)));
+    // URLs once more over the whole text: a property name can be one too.
+    return serialized === undefined ? undefined : JSON.parse(withoutUrls(redactedJson(serialized)));
   } catch {
     return { type: typeof error, message: "unserializable error" };
   }
@@ -61,10 +87,10 @@ const level: LogLevel = (requestedIsValid ? (requested ?? "info") : "info") as L
 
 const isDev = process.env.NODE_ENV === "development";
 
-// One options object for both outputs, so neither can lose the URL-stripping serializer.
+// One options object for both outputs, so neither can lose the redacting serializer.
 const options: LoggerOptions = {
   level,
-  serializers: { err: errWithoutUrls },
+  serializers: { err: redactErr },
   timestamp: pino.stdTimeFunctions.isoTime,
 };
 

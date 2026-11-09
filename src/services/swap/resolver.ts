@@ -7,11 +7,11 @@
  * Returns structure only; each tool words its own next step.
  */
 
-import { chainDisplayName } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
 import { encodeRecipient, evmSpokeFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
-import { rejectHex64 } from "./secrets.js";
+import { rejectHex64, rejectHex64Account } from "./secrets.js";
 import { type SwapCatalog, type SwapsApiToken, findToken, nativeToken } from "./tokens.js";
 
 export type Resolution =
@@ -124,8 +124,10 @@ export function resolveToken(
 
   const byAddress = findToken(catalog, chain.key, q);
   if (byAddress) return { status: "resolved", chain, matchedBy: "address", token: byAddress };
-  // A 64-hex value that isn't a token here (NEAR's are matched above) may be a pasted private key.
-  rejectHex64(q, field, chain.name, "token");
+  // A 64-hex value that isn't a token here may be a pasted private key; where it's also a valid account
+  // (a NEAR contract account, a Sui package id), it may as well be a token this list doesn't have.
+  if (encodeRecipient(chain.key, q)) rejectHex64Account(q, field, chain.name);
+  else rejectHex64(q, field, chain.name, "token");
 
   const isEvm = catalog.chains[chain.key]?.type === "EVM";
   if (q.toLowerCase() === "native" || (isEvm && q.toLowerCase() === EVM_NATIVE_PLACEHOLDER)) {
@@ -148,11 +150,13 @@ export function resolveToken(
   }
 
   // At most one per chain, by address or else by exact symbol. Never a native token by address: the zero
-  // address is each chain's own gas token, not one token.
+  // address is each chain's own gas token, not one token. The sentinels are checked by value too, since
+  // `isNative` is unset on a chain whose config is missing.
+  const sentinel = ZERO_ADDRESS_PATTERN.test(q) || q.toLowerCase() === EVM_NATIVE_PLACEHOLDER;
   const otherChains = Object.keys(catalog.tokens)
     .filter(other => other !== chain.key)
     .flatMap(other => {
-      const byAddress = findToken(catalog, other, q);
+      const byAddress = sentinel ? undefined : findToken(catalog, other, q);
       const token =
         byAddress && !byAddress.isNative
           ? byAddress

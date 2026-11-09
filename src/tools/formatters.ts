@@ -3,7 +3,8 @@
  *
  * Tools accept a `format` argument ('json' | 'markdown'). JSON is a raw
  * pretty-printed dump; markdown renders arrays of objects as tables and
- * single objects as **key:** value lists, with long values truncated.
+ * single objects as **key:** value lists. Table cells keep strings whole, so
+ * addresses and hashes stay exact; a nested object is shortened, marked with "…".
  */
 
 import { ResponseFormat } from "../types.js";
@@ -11,7 +12,6 @@ import { ResponseFormat } from "../types.js";
 const TABLE_MAX_COLUMNS = 6;
 const TABLE_MAX_ROWS = 20;
 const TABLE_CELL_OBJECT_MAX = 30;
-const TABLE_CELL_STRING_MAX = 40;
 
 export function formatResponse(data: unknown, format: ResponseFormat): string {
   if (format === ResponseFormat.MARKDOWN) {
@@ -32,8 +32,11 @@ export function formatAsMarkdown(data: unknown): string {
         const values = keys.map(k => {
           const val = (item as Record<string, unknown>)[k];
           if (val === null || val === undefined) return "-";
-          if (typeof val === "object") return JSON.stringify(val).slice(0, TABLE_CELL_OBJECT_MAX);
-          return String(val).slice(0, TABLE_CELL_STRING_MAX);
+          if (typeof val === "object") {
+            const json = JSON.stringify(val);
+            return json.length > TABLE_CELL_OBJECT_MAX ? `${json.slice(0, TABLE_CELL_OBJECT_MAX)}…` : json;
+          }
+          return String(val);
         });
         md += `| ${values.join(" | ")} |\n`;
       }

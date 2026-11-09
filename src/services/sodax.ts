@@ -18,7 +18,7 @@ import {
   spokeChainConfig,
 } from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
-import { logger, withoutUrls } from "./logger.js";
+import { logger, redact } from "./logger.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -28,8 +28,8 @@ let loaded: { sdk: Sdk; sodax: InstanceType<Sdk["Sodax"]> } | undefined;
 export const sdkLogger = {
   debug: () => {},
   info: () => {},
-  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, withoutUrls(String(message))),
-  error: (message: string) => logger.error({ source: "sodax-sdk" }, withoutUrls(String(message))),
+  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, redact(String(message))),
+  error: (message: string) => logger.error({ source: "sodax-sdk" }, redact(String(message))),
 };
 
 /** `rpcUrls` overrides the packaged RPC per chain key (see `parseRpcOverrides`). */

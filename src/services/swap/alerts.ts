@@ -7,7 +7,7 @@
 
 import { SODAX_ENV } from "../../constants.js";
 import { COLOR, postToDiscord, truncate } from "../discord.js";
-import { logger, withoutUrls } from "../logger.js";
+import { logger, redact } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 
 export type AlertKind =
@@ -88,7 +88,7 @@ export function alertOperator(
     // Fields carry no error text by contract; this keeps a slip from posting a URL or a wall of text.
     .map(([name, value]) => ({
       name,
-      value: truncate(withoutUrls(String(value)), FIELD_VALUE_MAX),
+      value: truncate(redact(String(value)), FIELD_VALUE_MAX),
       inline: name !== "txHash",
     }));
   post(`🚨 ${TITLES[kind]}`, embedFields);

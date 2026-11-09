@@ -675,6 +675,17 @@ describe("sodax_swap_quote", () => {
     expect(JSON.stringify(out)).not.toContain("Ignore previous");
   });
 
+  it("logs upstream text without the URLs or keys it quotes", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const message = "rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012";
+    stubSwaps({ quote: () => Response.json({ message }, { status: 400 }) });
+    await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ apiMessage: "rpc <url> refused <key>" }),
+      "Swaps API call failed",
+    );
+  });
+
   it("refuses a different fee receiver than the connection's", async () => {
     setFallbackRequestContext({ partnerFee: { address: USER, bps: 25 } });
     stubSwaps({ intent: { data: `0x01${word(12500n)}${word(`0x${"8".repeat(40)}`)}` } });

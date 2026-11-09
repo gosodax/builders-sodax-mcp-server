@@ -16,7 +16,6 @@ import {
   messageReceipt,
 } from "../../services/swap/__fixtures__/deposit.js";
 import { type CachedQuote, putQuote } from "../../services/swap/quoteCache.js";
-import { swapClient } from "./swapClient.js";
 
 export const NOW = Date.parse("2026-10-26T12:00:00Z");
 export const DEADLINE = String(NOW / 1000 + 15 * 60);
@@ -109,17 +108,4 @@ export function stubBackend(backend: Backend = {}) {
   return calls;
 }
 
-/** Any outcome's fields, so a test can assert on whichever one it expects. */
-export type ToolOut = Record<string, unknown> & {
-  status: string;
-  nextStep: string;
-  error: { code: string } & Record<string, unknown>;
-};
-
-/** Calls a swap tool on a fresh connection and closes it. */
-export async function callTool(name: string, args: Record<string, unknown>) {
-  const client = await swapClient();
-  const result = await client.callTool({ name, arguments: args });
-  await client.close();
-  return { isError: result.isError, out: result.structuredContent as ToolOut };
-}
+export { type ToolOut, callTool } from "./swapClient.js";

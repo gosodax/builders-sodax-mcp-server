@@ -10,7 +10,7 @@
     "build": "pnpm exec tsc && cp -r src/public dist/",
     "check:drift": "tsx --env-file-if-exists=.env src/scripts/checkDrift.ts",
     "check:docs": "tsx --env-file-if-exists=.env src/scripts/checkDocs.ts",
-    "checkTs": "tsc --noEmit",
+    "checkTs": "tsc --noEmit && tsc -p tsconfig.contract.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

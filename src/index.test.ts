@@ -218,6 +218,15 @@ describe("HTTP routes", () => {
     expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
   });
 
+  it("doesn't count refused /sse connections against the per-IP cap", async () => {
+    const ip = "198.51.100.50";
+    for (let i = 0; i <= SSE_MAX_SESSIONS_PER_IP; i++) {
+      const refused = await fetch(`${base}/sse?profile=bogus`, { headers: { "X-Forwarded-For": ip } });
+      expect(refused.status).toBe(400);
+    }
+    expect((await openSse(ip)).status).toBe(200);
+  });
+
   it("caps open SSE sessions per IP", async () => {
     const ip = "198.51.100.7";
     for (let i = 0; i < SSE_MAX_SESSIONS_PER_IP; i++) expect((await openSse(ip)).status).toBe(200);

@@ -8,7 +8,7 @@
  * When unset, all tracking is silently skipped.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PostHog } from "posthog-node";
 import { getToolModule } from "./toolRegistry.js";
@@ -18,6 +18,7 @@ const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
 const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
 const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
+const CLIENT_ID_SECRET = process.env.POSTHOG_CLIENT_ID_SECRET || "";
 
 /**
  * Resolve tool group for PostHog filtering — derived from the tool registry,
@@ -47,13 +48,14 @@ function getClient(): PostHog | null {
 // ── Client identification ────────────────────────────────────────────
 
 /**
- * Hash an IP address to a privacy-safe client identifier.
- * Uses SHA-256 with a static salt so the same IP always maps to the
- * same distinctId, enabling unique-user counts in PostHog without
- * storing raw IPs.
+ * Hash an IP address to a privacy-safe client identifier, so the same IP
+ * always maps to the same distinctId without storing raw IPs. With
+ * POSTHOG_CLIENT_ID_SECRET set it is an HMAC, which can't be reversed by
+ * hashing every IPv4 address; unset keeps the unkeyed salted SHA-256.
  */
 export function hashClientIp(ip: string): string {
-  return createHash("sha256").update(`sodax-mcp:${ip}`).digest("hex").slice(0, 16);
+  const hash = CLIENT_ID_SECRET ? createHmac("sha256", CLIENT_ID_SECRET) : createHash("sha256");
+  return hash.update(`sodax-mcp:${ip}`).digest("hex").slice(0, 16);
 }
 
 // ── Core tracking function ───────────────────────────────────────────

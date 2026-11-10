@@ -53,7 +53,7 @@ const RELAY_TIMEOUT_MS = 30_000;
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
   // The relay answers "not found" with a 404 and a normal body; 5xx and non-relay bodies are the failures.
-  const response = await timedFetch(
+  const { response, body } = await timedFetch(
     `${SODAX_RELAY_BASE_URL}/`,
     {
       method: "POST",
@@ -65,13 +65,13 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
       signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
     },
     response => response.status < 500,
+    response => response.json().catch(() => undefined) as Promise<{ success?: unknown } | undefined>,
   );
 
   if (response.status >= 500) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  const body = (await response.json().catch(() => undefined)) as { success?: unknown } | undefined;
   if (typeof body?.success !== "boolean") {
     const retryAfter = response.headers.get("Retry-After");
     throw new Error(`HTTP ${response.status}${retryAfter ? `, retry after ${retryAfter}s` : ""}`);

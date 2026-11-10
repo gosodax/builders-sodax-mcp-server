@@ -22,6 +22,12 @@ export interface RequestContext {
 const storage = new AsyncLocalStorage<RequestContext>();
 let fallback: RequestContext = {};
 
+/** The context for work shared between callers (a cached read): the request's ids stay for the logs, its credentials don't. */
+export function withoutCredentials(context: RequestContext = getRequestContext()): RequestContext {
+  const { requestId, clientId } = context;
+  return { requestId, clientId };
+}
+
 export function runWithRequestContext<T>(context: RequestContext, fn: () => T): T {
   return storage.run(context, fn);
 }

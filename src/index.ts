@@ -489,13 +489,13 @@ function listen(app: Express, swapToolsEnabled: boolean): void {
 let otel: OtelLogs | undefined;
 
 async function main(): Promise<void> {
-  if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
-  if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
-  // The OTLP destination (#110) and its SDK load only when asked for.
+  // The OTLP destination (#110) and its SDK load only when asked for; first, so a config error below ships too.
   if (process.env.OTEL_LOGS_ENABLED === "true") {
     const { startOtelLogs } = await import("./services/otel.js");
     otel = startOtelLogs(process.env, { serviceVersion: SERVER_VERSION, instanceId: process.env.HOSTNAME });
   }
+  if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
+  if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
   const rpcOverrides = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";

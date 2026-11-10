@@ -121,11 +121,6 @@ function extractApiErrorMessage(obj: Record<string, unknown>): string | undefine
 }
 
 /**
- * `fetch` with one log record per upstream call (#110): the route with its ids and addresses masked (a user's
- * address is a path segment on some routes and a query value on others); the status, or the error's name when
- * no response came. `ok` decides the record's level.
- */
-/**
  * The route a path belongs to: the SODAX APIs put their parameters (addresses, hashes, chain keys, account names)
  * from the fifth segment on (`/v1/be/intent/user/<address>`), so those are masked, as is any id-shaped segment
  * (hex, or 24+ characters) before that.
@@ -136,11 +131,17 @@ export const routeOf = (pathname: string): string =>
     .map((segment, i) => (i >= 5 || /^0x[0-9a-f]+$/i.test(segment) || segment.length >= 24 ? "*" : segment))
     .join("/");
 
-export async function timedFetch(
+/**
+ * `fetch` with one log record per upstream call (#110), written once `read` has the body: the route with its ids
+ * and addresses masked, the status or the error's name, and the time to the whole answer, so a body that never
+ * arrives is a failed call, not a fast one. `ok` decides the record's level.
+ */
+export async function timedFetch<T>(
   url: string,
   init: RequestInit,
   ok: (response: Response) => boolean,
-): Promise<Response> {
+  read: (response: Response) => Promise<T>,
+): Promise<{ response: Response; body: T }> {
   const { host, pathname } = new URL(url);
   const started = Date.now();
   const fields = () => ({
@@ -156,15 +157,22 @@ export async function timedFetch(
     logger.warn({ ...fields(), "error.code": errorName(error) }, "Upstream call");
     throw error;
   }
+  let body: T;
+  try {
+    body = await read(response);
+  } catch (error) {
+    logger.warn({ ...fields(), "http.status": response.status, "error.code": errorName(error) }, "Upstream call");
+    throw error;
+  }
   logger[ok(response) ? "info" : "warn"]({ ...fields(), "http.status": response.status }, "Upstream call");
-  return response;
+  return { response, body };
 }
 
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
   const apiKey = forwardedApiKey(url);
-  const response = await timedFetch(
+  const { response, body: text } = await timedFetch(
     url,
     {
       method,
@@ -175,6 +183,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
       signal: AbortSignal.timeout(timeout),
     },
     response => response.ok || (allow404 && response.status === 404),
+    response => response.text(),
   );
 
   if (allow404 && response.status === 404) {
@@ -182,7 +191,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   }
 
   if (!response.ok) {
-    const { message: apiMessage, code: apiCode } = parseApiError(await response.text().catch(() => ""));
+    const { message: apiMessage, code: apiCode } = parseApiError(text);
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
     throw new HttpError(apiMessage ? `${base} - ${apiMessage}` : base, response.status, {
@@ -199,12 +208,12 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   // fetchJson, throw a clearer error instead of returning undefined-as-T,
   // which would otherwise lie about the Promise<T> contract and let an
   // undefined parsed value leak into callers (caching, destructuring etc).
-  const text = (await response.text()).trim();
-  if (!text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
     if (allow404) return null;
     throw new Error(`Empty response body from ${url}`);
   }
-  return JSON.parse(text) as T;
+  return JSON.parse(trimmed) as T;
 }
 
 export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}): Promise<T> {

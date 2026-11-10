@@ -48,26 +48,34 @@ const mcpLimitBody = limitBody(MCP_LIMIT_MESSAGE);
 
 /** The route as the handlers see it: Express ignores case and a trailing slash. */
 export const requestRoute = (req: Request): string => req.path.toLowerCase().replace(/\/$/, "");
+// A record names only routes this server has; whatever else a client typed is "other", never logged.
+const APP_ROUTE = /^\/(mcp|messages|sse|health|api)$/;
+const knownRoute = (req: Request): string => (APP_ROUTE.test(requestRoute(req)) ? requestRoute(req) : "other");
+
+const WINDOW_MS = 60 * 1000;
 
 /**
- * A limiter's refusal, logged once per client per window (#110): refusals aren't rate limited themselves, so a
- * record for each would let a flood write the log. `message` is the refused request's body.
+ * A limiter's refusal, logged once per client per window by whichever guard crossed the line (#110): refusals
+ * aren't rate limited themselves, so a record for each would let a flood write the log.
  */
+export function logRateLimited(req: Request, limit: number, windowMs = WINDOW_MS): void {
+  const { clientId } = getRequestContext();
+  logger.warn(
+    {
+      "http.route": knownRoute(req),
+      "rate_limit.limit": limit,
+      "rate_limit.window_ms": windowMs,
+      "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
+    },
+    "Rate limited",
+  );
+}
+
+/** The limiter's refusal: the first one in the window is logged. `message` is the refused request's body. */
 export function rateLimitHandler(message: (req: Request) => unknown): RateLimitExceededEventHandler {
   return (req, res, _next, options) => {
     const { used, limit } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
-    if (used === limit + 1) {
-      const { clientId } = getRequestContext();
-      logger.warn(
-        {
-          "http.route": requestRoute(req),
-          "rate_limit.limit": limit,
-          "rate_limit.window_ms": options.windowMs,
-          "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
-        },
-        "Rate limited",
-      );
-    }
+    if (used === limit + 1) logRateLimited(req, limit, options.windowMs);
     res.status(options.statusCode).json(message(req));
   };
 }
@@ -89,7 +97,7 @@ export function asyncHandler(
 export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandler[] {
   const store = new MemoryStore();
   const limiter = rateLimit({
-    windowMs: 60 * 1000,
+    windowMs: WINDOW_MS,
     limit,
     store,
     standardHeaders: true,
@@ -111,6 +119,8 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
     const resetSeconds = resetTime ? Math.max(0, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : 60;
     res.set({ "RateLimit-Remaining": String(Math.max(limit - used, 0)), "RateLimit-Reset": String(resetSeconds) });
     if (used > limit) {
+      // The limiter let the first message through, so this batch is the one that crossed the line.
+      logRateLimited(req, limit);
       res.set("Retry-After", String(resetSeconds)).status(429).json(mcpLimitBody(req));
       return;
     }

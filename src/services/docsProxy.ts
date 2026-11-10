@@ -117,10 +117,11 @@ async function postDocs(body: unknown): Promise<unknown> {
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
-  const response = await timedFetch(
+  const { response, body: text } = await timedFetch(
     DOCS_MCP_URL,
     { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(DOCS_TIMEOUT_MS) },
     response => response.ok,
+    response => response.text(),
   );
 
   // Capture a session id if the server starts issuing one.
@@ -131,7 +132,6 @@ async function postDocs(body: unknown): Promise<unknown> {
     throw new Error(`HTTP ${response.status} ${response.statusText} from SODAX docs MCP`);
   }
 
-  const text = await response.text();
   return parseDocsResponse(text);
 }
 

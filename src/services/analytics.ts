@@ -11,6 +11,7 @@
 
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { PostHog } from "posthog-node";
 import { CHAIN_KEY_PATTERN } from "../constants.js";
 import { errorName, logger } from "./logger.js";
@@ -181,9 +182,14 @@ function whereThrown(error: unknown): { type: string; stack?: string } {
  */
 export function withAnalytics(server: McpServer, clientId?: string): void {
   const originalTool = server.tool.bind(server);
+  // The names registered here, so a refused call is named only when its tool exists; and the calls that reached a
+  // handler, so the SDK's own refusals (unknown tool, invalid arguments) are the only ones logged below.
+  const registered = new Set<string>();
+  const handled = new WeakSet<object>();
 
   (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (...allArgs: unknown[]) => {
     const toolName = allArgs[0] as string;
+    registered.add(toolName);
     const lastIdx = allArgs.length - 1;
     const handler = allArgs[lastIdx];
 
@@ -191,6 +197,8 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
       const run = handler as (...args: unknown[]) => unknown;
       // Every record of one call carries a `request.id` (#110): the HTTP request's when there is one, else its own (stdio).
       allArgs[lastIdx] = (...handlerArgs: unknown[]) => {
+        const extra = handlerArgs.at(-1);
+        if (extra && typeof extra === "object") handled.add(extra);
         const context = getRequestContext();
         return runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, async () => {
           const start = Date.now();
@@ -219,6 +227,49 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
 
     return (originalTool as unknown as (...args: unknown[]) => unknown)(...allArgs);
   };
+
+  // The SDK answers an unknown tool or invalid arguments itself, as `isError`, before any handler runs (#110): that
+  // call gets its record here. `server.server` is the protocol layer McpServer installs its tools/call handler on.
+  const protocol = server.server as unknown as {
+    setRequestHandler: (schema: unknown, handler: CallToolHandler) => void;
+  };
+  const originalSetRequestHandler = protocol.setRequestHandler.bind(protocol);
+  protocol.setRequestHandler = (schema, handler) =>
+    originalSetRequestHandler(schema, schema === CallToolRequestSchema ? withRefusalRecords(handler) : handler);
+
+  function withRefusalRecords(handler: CallToolHandler): CallToolHandler {
+    return async (request, extra) => {
+      const start = Date.now();
+      const result = (await handler(request, extra)) as
+        | { isError?: boolean; content?: { text?: unknown }[] }
+        | undefined;
+      if (result?.isError && !handled.has(extra)) {
+        const name = request.params.name;
+        const context = getRequestContext();
+        runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, () =>
+          logToolCall(
+            registered.has(name) ? name : "other",
+            Date.now() - start,
+            { success: false, error_code: refusalCode(result) },
+            undefined,
+          ),
+        );
+      }
+      return result;
+    };
+  }
+}
+
+type CallToolHandler = (request: { params: { name: string } }, extra: object) => unknown;
+
+/** The SDK's refusal, by its message's shape (an McpError's, "MCP error -32602: " first); anything else is a code too. */
+function refusalCode(result: { content?: { text?: unknown }[] }): string {
+  const raw = typeof result.content?.[0]?.text === "string" ? result.content[0].text : "";
+  const text = raw.replace(/^MCP error -?\d+: /, "");
+  if (text.endsWith(" not found")) return "TOOL_NOT_FOUND";
+  if (text.startsWith("Input validation error")) return "INVALID_ARGUMENTS";
+  if (text.endsWith(" disabled")) return "TOOL_DISABLED";
+  return "TOOL_CALL_REFUSED";
 }
 
 // ── Graceful shutdown ────────────────────────────────────────────────

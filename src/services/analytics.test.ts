@@ -22,7 +22,10 @@ async function wrapTool(key: string | undefined, handler: () => Promise<unknown>
   const { withAnalytics } = await import("./analytics.js");
   const { registerAppTool } = await import("./toolRegistry.js");
   const tools: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
-  const server = { tool: (name: string, ...rest: unknown[]) => (tools[name] = rest.at(-1) as never) };
+  const server = {
+    tool: (name: string, ...rest: unknown[]) => (tools[name] = rest.at(-1) as never),
+    server: { setRequestHandler: () => {} },
+  };
   withAnalytics(server as never);
   registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never);
   const info = vi.spyOn(logger, "info");

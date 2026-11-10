@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./server.js";
+import { logger } from "./services/logger.js";
 import { type ToolSelection, type Toolsets, describeProfiles, selectToolsets } from "./services/profiles.js";
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
@@ -25,6 +26,32 @@ async function toolList(toolsets: Toolsets) {
   await client.close();
   return tools;
 }
+
+describe("a call the SDK refuses before any handler runs", () => {
+  it("gets a Tool call record: an unknown tool as other, invalid arguments under the tool's name", async () => {
+    const info = vi.spyOn(logger, "info");
+    const server = await createServer({ builder: true, swap: false });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    expect((await client.callTool({ name: "sodax_nope", arguments: {} })).isError).toBe(true);
+    expect((await client.callTool({ name: "sodax_get_intent", arguments: {} })).isError).toBe(true);
+    await client.close();
+    const records = info.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toContainEqual(
+      expect.objectContaining({ "tool.name": "other", "tool.outcome": "error", "error.code": "TOOL_NOT_FOUND" }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        "tool.name": "sodax_get_intent",
+        "tool.outcome": "error",
+        "error.code": "INVALID_ARGUMENTS",
+      }),
+    );
+    expect(JSON.stringify(records)).not.toContain("sodax_nope");
+  });
+});
 
 describe("builder tools", () => {
   // Recorded before profiles existed: names, descriptions, schemas and annotations must not change.

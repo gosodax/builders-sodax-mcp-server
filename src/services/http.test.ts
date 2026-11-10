@@ -251,6 +251,23 @@ describe("upstream call records", () => {
     expect(JSON.stringify(info.mock.calls)).not.toMatch(/0x1234|aaaa/);
   });
 
+  it("logs a body that fails to arrive as a failed call, with the status it came with", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const info = vi.spyOn(logger, "info");
+    const stuck = new ReadableStream({
+      pull(controller) {
+        controller.error(Object.assign(new Error("body timed out"), { name: "TimeoutError" }));
+      },
+    });
+    fetchSpy.mockResolvedValueOnce(new Response(stuck, { status: 200 }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("body timed out");
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ "url.path": "/v1/be/thing", "http.status": 200, "error.code": "TimeoutError" }),
+      "Upstream call",
+    );
+    expect(info).not.toHaveBeenCalledWith(expect.anything(), "Upstream call");
+  });
+
   it("logs a failed call at warn, and a refused connection by its cause's code", async () => {
     const warn = vi.spyOn(logger, "warn");
     fetchSpy.mockResolvedValueOnce(jsonResponse('{"detail":"nope"}', { status: 503 }));

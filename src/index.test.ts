@@ -326,6 +326,20 @@ describe("HTTP routes", () => {
     });
   });
 
+  it("names no route a client made up when the global limiter refuses it", async () => {
+    const ip = "198.51.100.13";
+    const warn = vi.spyOn(logger, "warn");
+    const path = "/sodax_made_up_path_that_looks_like_a_key_0123456789";
+    await Promise.all(
+      Array.from({ length: 100 }, () => fetch(`${base}${path}`, { headers: { "X-Forwarded-For": ip } })),
+    );
+    expect((await fetch(`${base}${path}`, { headers: { "X-Forwarded-For": ip } })).status).toBe(429);
+    const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");
+    expect(limited).toHaveLength(1);
+    expect(limited[0][0]).toMatchObject({ "http.route": "other" });
+    expect(JSON.stringify(limited)).not.toContain("made_up");
+  });
+
   it("doesn't count refused /sse connections against the per-IP cap", async () => {
     const ip = "198.51.100.50";
     for (let i = 0; i <= SSE_MAX_SESSIONS_PER_IP; i++) {

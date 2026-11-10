@@ -85,6 +85,17 @@ describe("createMcpLimiter", () => {
     });
   });
 
+  it("logs the crossing once when a batch crosses the line, and not again for the next refusal", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const url = await limitedApp(5);
+    expect((await post(`${url}/mcp`, JSON.stringify([rpc(1), rpc(2), rpc(3)]))).status).toBe(200);
+    expect((await post(`${url}/mcp`, JSON.stringify([rpc(4), rpc(5), rpc(6)]))).status).toBe(429);
+    expect((await post(`${url}/mcp`, JSON.stringify(rpc(7)))).status).toBe(429);
+    const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");
+    expect(limited).toHaveLength(1);
+    expect(limited[0][0]).toMatchObject({ "http.route": "/mcp", "rate_limit.limit": 5 });
+  });
+
   it("counts a batch on /messages once, since the SSE transport refuses batches", async () => {
     const url = await limitedApp(2);
 

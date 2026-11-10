@@ -394,7 +394,7 @@ The included `nixpacks.toml` handles deployment automatically. Set these environ
 - `PORT=3000`
 - `NODE_ENV=production`
 
-Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging: every record of one HTTP request (or one stdio tool call) carries `request.id`; a tool call, each upstream API call and each chain read get a record of their own with dotted attributes (`tool.name`, `url.path` with its parameters masked, `http.status`, `sdk.call`, `chain.key`, `duration.ms`, `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`), so a swap can be followed from the agent's call to the answer. Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can. The hub's `unified-logging-connect` skill has the connect check.
+Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging: every record of one HTTP request (or one stdio tool call) carries `request.id`; a tool call, each upstream API call and each chain read get a record of their own with dotted attributes (`tool.name`, `url.path` with its parameters masked, `http.status`, `sdk.call`, `chain.key`, `duration.ms`, `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`), so a swap can be followed from the agent's call to the answer. Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can. `GET /health` reports `unifiedLogging` (`on`, records `written`, `exported` and `failed`, `lastFailureAt`), so a token or allowlist problem shows there before Grafana; a batch the gateway accepted but partly rejected counts as exported and is logged as a warning. The hub's `unified-logging-connect` skill has the connect check.
 
 ### Operating the swap tools
 
@@ -412,7 +412,7 @@ Swap quotes live in the server's memory, so:
 |----------|-------------|
 | `GET /` | Landing page |
 | `GET /api` | Server info, tool list and profiles |
-| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose |
+| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose; `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |

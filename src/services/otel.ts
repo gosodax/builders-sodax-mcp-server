@@ -44,11 +44,25 @@ export function otelLogsConfig(env: NodeJS.ProcessEnv): OtelLogsConfig | string 
   return { url, token, environment, origin: env.ORIGIN?.trim() || undefined };
 }
 
+export interface OtelLogsStats {
+  /**
+   * Records handed to the SDK (its queue keeps 4096 and drops past that), records in batches the gateway accepted
+   * (a partially rejected batch counts as accepted and is logged as a warning), and records whose export failed
+   * or timed out. `written` minus the other two is what the queue holds or dropped.
+   */
+  written: number;
+  exported: number;
+  failed: number;
+  lastFailureAt: string | null;
+}
+
 export interface OtelLogs {
   /** One pino line. Never throws. */
   write(line: string): void;
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
+  /** For `/health`: whether what was written arrived. */
+  stats(): OtelLogsStats;
 }
 
 export interface OtelLogsOptions {
@@ -93,13 +107,17 @@ export function startOtelLogs(env: NodeJS.ProcessEnv, options: OtelLogsOptions):
 }
 
 export function initOtelLogs(config: OtelLogsConfig, options: OtelLogsOptions): OtelLogs {
-  const exporter =
+  const stats: OtelLogsStats = { written: 0, exported: 0, failed: 0, lastFailureAt: null };
+  const exporter = counting(
     options.exporter ??
-    new OTLPLogExporter({
-      url: config.url,
-      headers: { Authorization: `Bearer ${config.token}` },
-      timeoutMillis: 10_000,
-    });
+      new OTLPLogExporter({
+        url: config.url,
+        headers: { Authorization: `Bearer ${config.token}` },
+        // Under the processor's export timeout, so a hung gateway fails here, where it is counted.
+        timeoutMillis: 8_000,
+      }),
+    stats,
+  );
   const provider = new LoggerProvider({
     resource: defaultResource().merge(
       resourceFromAttributes({
@@ -128,11 +146,37 @@ export function initOtelLogs(config: OtelLogsConfig, options: OtelLogsOptions): 
     write(line) {
       try {
         const record = toLogRecord(line);
-        if (record) otelLogger.emit(record);
+        if (record) {
+          otelLogger.emit(record);
+          stats.written++;
+        }
       } catch {}
     },
     forceFlush: () => provider.forceFlush(),
     shutdown: () => provider.shutdown(),
+    stats: () => ({ ...stats }),
+  };
+}
+
+// ExportResultCode.SUCCESS in @opentelemetry/core, which is not a direct dependency (an enum from a second copy
+// of that package would not compare).
+const EXPORT_SUCCESS = 0;
+
+/** The exporter, counting into `stats` the records each export delivered or lost. */
+function counting(inner: LogRecordExporter, stats: OtelLogsStats): LogRecordExporter {
+  return {
+    export(logs, done) {
+      inner.export(logs, result => {
+        if (result.code === EXPORT_SUCCESS) stats.exported += logs.length;
+        else {
+          stats.failed += logs.length;
+          stats.lastFailureAt = new Date().toISOString();
+        }
+        done(result);
+      });
+    },
+    shutdown: () => inner.shutdown(),
+    forceFlush: () => inner.forceFlush(),
   };
 }
 
@@ -215,13 +259,23 @@ export function toLogRecord(line: string): LogRecord | undefined {
 
 /**
  * Dotted keys with primitive leaves, what the gateway stores; arrays and anything deeper than 4 levels as JSON.
- * Stops at the SDK's attribute limit, so a wide object costs the limit and not its size.
+ * Stops short of the SDK's attribute limit, leaving room for the exception's three attributes (the SDK sets
+ * them after ours) and for the marker that says the record was cut; stderr keeps the whole line.
  */
+const ATTRIBUTE_BUDGET = MAX_ATTRIBUTES - 4;
+
 function flattener(out: Attributes): (key: string, value: unknown, depth?: number) => void {
-  let left = MAX_ATTRIBUTES;
+  let left = ATTRIBUTE_BUDGET;
   const flatten = (key: string, value: unknown, depth = 0): void => {
-    if (left <= 0 || value === null || value === undefined) return;
-    if (typeof value !== "object" || Array.isArray(value) || depth >= MAX_DEPTH) {
+    if (value === null || value === undefined) return;
+    const leaf = typeof value !== "object" || Array.isArray(value) || depth >= MAX_DEPTH;
+    if (left <= 0) {
+      // Only something that would have become an attribute counts as cut.
+      const dropped = leaf || Object.values(value as object).some(item => item !== null && item !== undefined);
+      if (dropped) out["log.attributes_truncated"] = true;
+      return;
+    }
+    if (leaf) {
       out[key] = typeof value === "object" ? JSON.stringify(value) : (value as string | number | boolean);
       left--;
       return;

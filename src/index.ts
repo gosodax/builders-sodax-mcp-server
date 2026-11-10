@@ -273,6 +273,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
+      unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
 

@@ -30,6 +30,11 @@ const line = (fields: Record<string, unknown>) => JSON.stringify({ level: 30, ti
 
 // Every handle made here is shut down after its test, whatever the assertions did.
 const handles: OtelLogs[] = [];
+const stubExporter = (exportFn: LogRecordExporter["export"]): LogRecordExporter => ({
+  export: exportFn,
+  shutdown: async () => {},
+  forceFlush: async () => {},
+});
 function shipping(exporter: LogRecordExporter = new InMemoryLogRecordExporter()) {
   const otel = initOtelLogs(CONFIG, { serviceVersion: "1.2.3", exporter, instanceId: "test-1" });
   handles.push(otel);
@@ -120,8 +125,14 @@ describe("toLogRecord", () => {
       list: '[1,"x"]',
       rows: '[{"k":1}]',
     });
-    const wide = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`k${i}`, i]));
-    expect(Object.keys(toLogRecord(line({ wide }))?.attributes ?? {})).toHaveLength(256);
+    const keys = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, i]));
+    const cut = toLogRecord(line({ wide: keys(1000) }))?.attributes ?? {};
+    expect(Object.keys(cut)).toHaveLength(253);
+    expect(cut["log.attributes_truncated"]).toBe(true);
+    // Exactly the budget, then nothing more to add: not cut.
+    const exact = toLogRecord(line({ wide: keys(252), empty: {}, nulls: { a: null } }))?.attributes ?? {};
+    expect(Object.keys(exact)).toHaveLength(252);
+    expect(exact).not.toHaveProperty("log.attributes_truncated");
   });
 
   it("cuts the body at 4 KB and falls back to now without a usable time", () => {
@@ -169,9 +180,35 @@ describe("initOtelLogs", () => {
     expect((exporter.getFinishedLogRecords()[0].attributes.long as string).length).toBe(4096);
   });
 
+  it("keeps the exception's attributes on a record so wide its fields were cut", async () => {
+    const { exporter, otel } = shipping();
+    const wide = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`k${i}`, i]));
+    otel.write(JSON.stringify({ level: 50, time, msg: "failed", err: redactErr(new Error("boom")), wide }));
+    await otel.forceFlush();
+    const [record] = exporter.getFinishedLogRecords();
+    expect(record.attributes).toMatchObject({
+      "exception.type": "Error",
+      "exception.message": "boom",
+      "log.attributes_truncated": true,
+    });
+    expect(record.attributes["exception.stacktrace"]).toContain("Error: boom");
+  });
+
+  it("counts the records written, the ones the gateway took and the ones it lost, for /health", async () => {
+    const { otel } = shipping();
+    otel.write(line({ a: 1 }));
+    otel.write(line({ a: 2 }));
+    otel.write("not a record");
+    await otel.forceFlush();
+    expect(otel.stats()).toEqual({ written: 2, exported: 2, failed: 0, lastFailureAt: null });
+    const lost = shipping(stubExporter((_logs, done) => done({ code: 1, error: new Error("503") }))).otel;
+    lost.write(line({ a: 3 }));
+    await lost.forceFlush();
+    expect(lost.stats()).toEqual({ written: 1, exported: 0, failed: 1, lastFailureAt: expect.any(String) });
+  });
+
   it("never throws, not on a bad line and not with an exporter that never answers", () => {
-    const stuck: LogRecordExporter = { export: () => {}, shutdown: async () => {}, forceFlush: async () => {} };
-    const { otel } = shipping(stuck);
+    const { otel } = shipping(stubExporter(() => {}));
     expect(() => {
       otel.write("not json\n");
       for (let i = 0; i < 5000; i++) otel.write(line({ i }));

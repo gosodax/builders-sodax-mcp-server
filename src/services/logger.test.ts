@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
-import { buildLogger, logger, redact, redactErr } from "./logger.js";
+import { buildLogger, errorName, logger, redact, redactErr } from "./logger.js";
 import { runWithRequestContext } from "./requestContext.js";
 
 describe("redactErr", () => {
@@ -154,5 +154,21 @@ describe("request id", () => {
     const [inside, outside] = lines.map(line => JSON.parse(line));
     expect(inside).toMatchObject({ "request.id": "r1", "tool.name": "x", msg: "in" });
     expect(outside).not.toHaveProperty("request.id");
+  });
+});
+
+describe("errorName", () => {
+  it("takes a code-shaped cause, else the class name, never any text", () => {
+    expect(errorName(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }))).toBe(
+      "ECONNREFUSED",
+    );
+    expect(
+      errorName(Object.assign(new TypeError("fetch failed"), { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } })),
+    ).toBe("UND_ERR_CONNECT_TIMEOUT");
+    expect(
+      errorName(Object.assign(new Error("rpc"), { cause: { code: "execution reverted: https://evil.example" } })),
+    ).toBe("Error");
+    expect(errorName(Object.assign(new Error("rpc"), { cause: { code: -32000 } }))).toBe("Error");
+    expect(errorName("boom")).toBe("string");
   });
 });

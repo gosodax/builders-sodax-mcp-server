@@ -141,11 +141,14 @@ if (requested !== undefined && !requestedIsValid) {
 }
 
 /**
- * A thrown value's name for an `error.code` attribute: what failed, never its text. Node's fetch wraps the
- * reason in `cause.code` (ECONNREFUSED, ENOTFOUND, UND_ERR_CONNECT_TIMEOUT) under a bare TypeError.
+ * A thrown value's name for an `error.code` attribute: what failed, never its text. Node's errors carry a code
+ * themselves (ECONNRESET); fetch wraps the reason in `cause.code` (ECONNREFUSED, UND_ERR_CONNECT_TIMEOUT) under a
+ * bare TypeError. Only a code-shaped value is taken, since viem puts the raw RPC error object in `cause`.
  */
 export function errorName(error: unknown): string {
-  const cause = (error as { cause?: { code?: unknown } } | undefined)?.cause;
-  if (typeof cause?.code === "string") return cause.code;
+  const own = error as { code?: unknown; cause?: { code?: unknown } } | undefined;
+  for (const code of [own?.code, own?.cause?.code]) {
+    if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return code;
+  }
   return error instanceof Error ? error.name : typeof error;
 }

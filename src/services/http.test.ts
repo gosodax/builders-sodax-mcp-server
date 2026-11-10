@@ -6,6 +6,7 @@ import {
   SODAX_SOLVER_BASE_URL,
   SODAX_SWAPS_BASE_URL,
 } from "../constants.js";
+import { TOOL_CONTRACT } from "./apiDriftCheck.js";
 import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
 import { logger } from "./logger.js";
 import { runWithRequestContext } from "./requestContext.js";
@@ -279,5 +280,23 @@ describe("routeOf", () => {
     ["/v1/relay/", "/v1/relay/"],
   ])("masks the parameters of %s", (pathname, route) => {
     expect(routeOf(pathname)).toBe(route);
+  });
+});
+
+describe("routeOf on every data API route the drift check knows", () => {
+  it("masks each parameter, whatever shape its value takes", () => {
+    const templates = Object.keys(TOOL_CONTRACT)
+      .map(key => key.split(" ")[1])
+      .filter(path => path.includes(":"));
+    expect(templates.length).toBeGreaterThan(0);
+    for (const template of templates) {
+      // Hashes, addresses and the partner receiver are hex on the wire; anything else gets a short plain value,
+      // the hardest to spot.
+      const path = template.replace(/:([A-Za-z]+)/g, (_, name: string) =>
+        /hash|address|receiver/i.test(name) ? "0xabc123" : "x1",
+      );
+      const route = routeOf(`/v1/be${path}`);
+      expect(route, template).not.toMatch(/0xabc123|x1/);
+    }
   });
 });

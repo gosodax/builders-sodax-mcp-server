@@ -46,6 +46,8 @@ afterEach(() => {
   for (const stream of streams.splice(0)) stream.abort();
   held.length = 0;
   vi.restoreAllMocks();
+  // Tests that touch the data API warm its cache; the upstream-key tests count every fetch.
+  clearCache();
 });
 
 afterAll(async () => {
@@ -113,6 +115,16 @@ describe("HTTP routes", () => {
     expect(ids).toHaveLength(2);
     for (const id of ids) expect(id).toMatch(/^[0-9a-f-]{36}$/);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  it("reports on /health that unified logging is off here", async () => {
+    // /health reads the network count upstream; this run answers it locally.
+    const realFetch = fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
+      String(input).startsWith(base) ? realFetch(input, init) : Promise.resolve(new Response("[]", { status: 200 })),
+    );
+    const res = await realFetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.43" } });
+    expect(((await res.json()) as { unifiedLogging: unknown }).unifiedLogging).toEqual({ on: false });
   });
 
   it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {

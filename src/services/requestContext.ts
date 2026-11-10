@@ -15,6 +15,8 @@ export interface RequestContext {
   partnerFee?: PartnerFee;
   /** One MCP request (HTTP) or tool call (stdio); every log record of it carries `request.id`. */
   requestId?: string;
+  /** `hashClientIp` of the request's IP: the PostHog id, and the log's `client.ip_hash` when keyed. */
+  clientId?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

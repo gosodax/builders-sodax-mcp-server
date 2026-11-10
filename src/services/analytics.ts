@@ -23,6 +23,8 @@ const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
 const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 const CLIENT_ID_SECRET = process.env.POSTHOG_CLIENT_ID_SECRET || "";
+/** With the secret the id is an HMAC, so it can be stored in logs; the plain hash could be brute-forced back to the IP. */
+export const CLIENT_ID_KEYED = CLIENT_ID_SECRET !== "";
 
 /**
  * Resolve tool group for PostHog filtering — derived from the tool registry,
@@ -134,11 +136,13 @@ function usdBucket(value: unknown): string | undefined {
  * One log record per tool call (#110): the outcome, who called (a key hash, never the key) and, for a swap
  * tool, the ids its records are followed by. Nothing from the arguments.
  */
-function logToolCall(toolName: string, durationMs: number, outcome: Outcome, result: unknown): void {
+function logToolCall(toolName: string, durationMs: number, outcome: Outcome, result: unknown, thrown?: unknown): void {
   const out = ((result ?? {}) as { structuredContent?: Record<string, unknown> }).structuredContent ?? {};
   const str = (value: unknown) => (typeof value === "string" ? value : undefined);
-  logger.info(
+  // Tools return their failures as `isError`; a throw is a bug, so where it broke goes with the record.
+  logger[thrown === undefined ? "info" : "error"](
     {
+      err: thrown,
       "tool.name": toolName,
       "duration.ms": durationMs,
       "tool.outcome": outcome.success ? "ok" : "error",
@@ -155,6 +159,12 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
     },
     "Tool call",
   );
+}
+
+/** A thrown error's class and frames, without its message: the text may echo what the agent sent. */
+function whereThrown(error: unknown): { type: string; stack?: string } {
+  const frames = error instanceof Error ? error.stack?.split("\n").filter(line => line.startsWith("    at ")) : [];
+  return { type: errorName(error), ...(frames?.length && { stack: frames.join("\n") }) };
 }
 
 // ── Server wrapper ───────────────────────────────────────────────────
@@ -192,7 +202,13 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
             return result;
           } catch (err) {
             const durationMs = Date.now() - start;
-            logToolCall(toolName, durationMs, { success: false, error_code: errorName(err) }, undefined);
+            logToolCall(
+              toolName,
+              durationMs,
+              { success: false, error_code: errorName(err) },
+              undefined,
+              whereThrown(err),
+            );
             trackToolCall(toolName, durationMs, { success: false, error_message: String(err) }, clientId);
             throw err;
           }

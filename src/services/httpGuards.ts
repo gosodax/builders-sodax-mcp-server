@@ -5,9 +5,16 @@
 
 import { STATUS_CODES } from "node:http";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
-import rateLimit, { MemoryStore, type RateLimitInfo, ipKeyGenerator } from "express-rate-limit";
+import rateLimit, {
+  MemoryStore,
+  type RateLimitExceededEventHandler,
+  type RateLimitInfo,
+  ipKeyGenerator,
+} from "express-rate-limit";
+import { CLIENT_ID_KEYED } from "./analytics.js";
 import { notifyError } from "./discord.js";
 import { logger } from "./logger.js";
+import { getRequestContext } from "./requestContext.js";
 
 export const MCP_REQUESTS_PER_MINUTE = 60;
 // Protocol 2025-03-26 allows JSON-RPC batches; each message counts as one request.
@@ -39,6 +46,32 @@ export function limitBody(message: string) {
 
 const mcpLimitBody = limitBody(MCP_LIMIT_MESSAGE);
 
+/** The route as the handlers see it: Express ignores case and a trailing slash. */
+export const requestRoute = (req: Request): string => req.path.toLowerCase().replace(/\/$/, "");
+
+/**
+ * A limiter's refusal, logged once per client per window (#110): refusals aren't rate limited themselves, so a
+ * record for each would let a flood write the log. `message` is the refused request's body.
+ */
+export function rateLimitHandler(message: (req: Request) => unknown): RateLimitExceededEventHandler {
+  return (req, res, _next, options) => {
+    const { used, limit } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
+    if (used === limit + 1) {
+      const { clientId } = getRequestContext();
+      logger.warn(
+        {
+          "http.route": requestRoute(req),
+          "rate_limit.limit": limit,
+          "rate_limit.window_ms": options.windowMs,
+          "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
+        },
+        "Rate limited",
+      );
+    }
+    res.status(options.statusCode).json(message(req));
+  };
+}
+
 /** Passes a rejected async handler to the error handler; Express 4 doesn't. */
 export function asyncHandler(
   fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
@@ -61,7 +94,7 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
     store,
     standardHeaders: true,
     legacyHeaders: false,
-    message: mcpLimitBody,
+    handler: rateLimitHandler(mcpLimitBody),
   });
 
   const countBatch = asyncHandler(async (req, res, next) => {

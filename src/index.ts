@@ -17,13 +17,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express, { type Express, Request, Response } from "express";
+import { ClientNotificationSchema, ClientRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import express, { type Express, type NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { messageContext, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
-import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
+import { CLIENT_ID_KEYED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
@@ -35,6 +36,8 @@ import {
   jsonErrorHandler,
   limitBody,
   mcpGetNotAllowed,
+  rateLimitHandler,
+  requestRoute,
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
@@ -49,6 +52,7 @@ import {
 } from "./services/profiles.js";
 import {
   type RequestContext,
+  getRequestContext,
   parseApiKey,
   runWithRequestContext,
   setFallbackRequestContext,
@@ -156,6 +160,49 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
   listen(createHttpApp(swapToolsEnabled), swapToolsEnabled);
 }
 
+// The methods a client sends, from the SDK's own schemas: anything else is "other", so a client can't shape the record.
+const MCP_METHODS = new Set<string>(
+  [...ClientRequestSchema.options, ...ClientNotificationSchema.options].map(schema => schema.shape.method.value),
+);
+
+/** What the client asked for: a protocol method, "batch" for an array, "other" for any other body; none when nothing was parsed. */
+function mcpMethod(body: unknown): string | undefined {
+  if (body === undefined) return undefined;
+  if (Array.isArray(body)) return "batch";
+  const method = body && typeof body === "object" ? (body as { method?: unknown }).method : undefined;
+  return typeof method === "string" && MCP_METHODS.has(method) ? method : "other";
+}
+
+/**
+ * One "HTTP request" record per MCP request (#110), the ones a guard refuses included, and the request id every
+ * other record of the request carries: the context opens here and the handlers extend it with the connection's.
+ * On GET /sse the record is the session's: 200 and its length. Not for /health and the pages.
+ */
+function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
+  const requestId = randomUUID();
+  const clientId = hashClientIp(req.ip || "unknown");
+  const started = Date.now();
+  // "close" follows "finish", and comes alone when the client went away first; it may run outside the context.
+  res.once("close", () => {
+    const status = res.statusCode;
+    // A limiter logs its refusals once per window (rateLimitHandler); one record each would let a flood write the log.
+    logger[status === 429 ? "debug" : "info"](
+      {
+        "request.id": requestId,
+        "http.method": req.method,
+        "http.route": requestRoute(req),
+        // None when the client left before the answer.
+        "http.status": res.headersSent ? status : undefined,
+        "duration.ms": Date.now() - started,
+        "mcp.method": mcpMethod(req.body),
+        "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
+      },
+      "HTTP request",
+    );
+  });
+  runWithRequestContext({ requestId, clientId }, next);
+}
+
 /** The routes and their guards, without the docs warm-up or a listener, so a test can serve them. */
 export function createHttpApp(swapToolsEnabled: boolean): Express {
   const app = express();
@@ -179,13 +226,16 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }),
   );
 
+  // Before the limiters: a refused request is a request too. Routed, so /MCP and /mcp/ count like the handlers do.
+  app.all(["/mcp", "/messages", "/sse"], logMcpRequests);
+
   // Rate limiting
   const limiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: limitBody("Too many requests, please try again later."),
+    handler: rateLimitHandler(limitBody("Too many requests, please try again later.")),
   });
   app.use(limiter);
 
@@ -285,16 +335,15 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     asyncHandler(async (req: Request, res: Response) => {
       const connection = resolveConnection(req, res, swapToolsEnabled);
       if (!connection) return;
-      const clientId = hashClientIp(req.ip || "unknown");
-      const requestServer = await createServer(connection.toolsets, clientId);
+      const requestServer = await createServer(connection.toolsets, getRequestContext().clientId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
       res.on("close", () => transport.close());
       await requestServer.connect(transport);
-      // One id per HTTP request on every record it produces (#110); a tool call inside keeps it.
-      await runWithRequestContext({ ...connection.context, requestId: randomUUID() }, () =>
+      // The request's context (logMcpRequests) plus the connection's: one id on every record (#110).
+      await runWithRequestContext({ ...getRequestContext(), ...connection.context }, () =>
         transport.handleRequest(req, res, req.body),
       );
     }),
@@ -328,7 +377,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         lease.release();
       });
 
-      const sseServer = await createServer(connection.toolsets, hashClientIp(ip));
+      const sseServer = await createServer(connection.toolsets, getRequestContext().clientId);
       if (closed) return;
       const transport = new SSEServerTransport("/messages", res);
       sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
@@ -357,7 +406,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       const context = messageContext(session.context, req, res);
       if (!context) return;
       session.lease.touch();
-      await runWithRequestContext({ ...context, requestId: randomUUID() }, () =>
+      await runWithRequestContext({ ...getRequestContext(), ...context }, () =>
         session.transport.handlePostMessage(req, res, req.body),
       );
     }),

@@ -11,6 +11,7 @@
  * Mintlify endpoint `/mcp` (MCP protocol 2025-06-18, SSE-framed HTTP).
  */
 
+import { timedFetch } from "./http.js";
 import { logger } from "./logger.js";
 
 // SODAX docs MCP endpoint (Mintlify). The retired GitBook endpoint was
@@ -116,12 +117,11 @@ async function postDocs(body: unknown): Promise<unknown> {
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
-  const response = await fetch(DOCS_MCP_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(DOCS_TIMEOUT_MS),
-  });
+  const response = await timedFetch(
+    DOCS_MCP_URL,
+    { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(DOCS_TIMEOUT_MS) },
+    response => response.ok,
+  );
 
   // Capture a session id if the server starts issuing one.
   const issued = response.headers.get("mcp-session-id");

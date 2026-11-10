@@ -2,11 +2,12 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { type MockInstance, afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHttpApp } from "./index.js";
-import { hashClientIp } from "./services/analytics.js";
+import { createServer } from "./server.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
-import { runWithRequestContext } from "./services/requestContext.js";
+import { logger } from "./services/logger.js";
+import { getRequestContext, runWithRequestContext } from "./services/requestContext.js";
 import { clearCache } from "./services/sodaxApi.js";
 
 // The guards are unit-tested in httpGuards.test.ts; this checks index.ts wires them to the routes.
@@ -20,9 +21,10 @@ vi.mock("./services/discord.js", async importOriginal => ({
   ...(await importOriginal<typeof import("./services/discord.js")>()),
   notifyError: vi.fn(async () => {}),
 }));
-vi.mock("./services/analytics.js", async importOriginal => {
-  const actual = await importOriginal<typeof import("./services/analytics.js")>();
-  return { ...actual, hashClientIp: vi.fn(actual.hashClientIp) };
+// Spied, so a test can make a handler fail after the guards let the request through.
+vi.mock("./server.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./server.js")>();
+  return { ...actual, createServer: vi.fn(actual.createServer) };
 });
 // No docs MCP fetch per connection.
 vi.mock("./tools/docsProxy.js", async importOriginal => ({
@@ -113,16 +115,62 @@ async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, match:
   }
 }
 
+/**
+ * The "HTTP request" record with these fields: written when the response closes, just after the client has it.
+ * Matched, not the first one, because an SSE stream aborted in afterEach writes its record during the next test.
+ */
+function httpRequestRecord(spy: MockInstance, match: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const matches = (fields: Record<string, unknown>) =>
+    Object.entries(match).every(([key, value]) => fields[key] === value);
+  return vi.waitFor(() => {
+    const found = spy.mock.calls.find(([fields, msg]) => msg === "HTTP request" && matches(fields));
+    expect(found).toBeDefined();
+    return (found as [Record<string, unknown>])[0];
+  });
+}
+
 describe("HTTP routes", () => {
   it("runs each /mcp request under its own request id", async () => {
     const spy = vi.mocked(runWithRequestContext);
     spy.mockClear();
     await post("/mcp", JSON.stringify(initialize(1)), "198.51.100.41");
     await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.42");
+    // Per request: the context logMcpRequests opens, then the handler's extension of it, same id.
     const ids = spy.mock.calls.map(([context]) => context.requestId);
-    expect(ids).toHaveLength(2);
+    expect(ids).toHaveLength(4);
     for (const id of ids) expect(id).toMatch(/^[0-9a-f-]{36}$/);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  it("logs one HTTP request record per MCP request, under the id its tool call carries", async () => {
+    // The id on the tool's record comes from the context at write time, so the spy reads it there.
+    const contextIds = new Map<unknown, string | undefined>();
+    const info = vi.spyOn(logger, "info").mockImplementation(((_: unknown, msg: unknown) => {
+      contextIds.set(msg, getRequestContext().requestId);
+    }) as never);
+    const ip = "198.51.100.44";
+    const call = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "sodax_get_supported_chains", arguments: {} },
+    });
+    // Routed like the handlers: "/MCP/" is /mcp.
+    expect((await post("/MCP/", call, ip)).status).toBe(200);
+    await fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } });
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method": "tools/call" });
+    expect(fields).toMatchObject({ "http.method": "POST", "http.status": 200, "duration.ms": expect.any(Number) });
+    expect(fields["request.id"]).toMatch(/^[0-9a-f-]{36}$/);
+    // No POSTHOG_CLIENT_ID_SECRET here, so no client hash: the plain one could be reversed to the IP.
+    expect(fields["client.ip_hash"]).toBeUndefined();
+    expect(contextIds.get("Tool call")).toBe(fields["request.id"]);
+    expect(
+      info.mock.calls.filter(([f, msg]) => msg === "HTTP request" && f["mcp.method"] === "tools/call"),
+    ).toHaveLength(1);
+    // /health is not an MCP request.
+    expect(info.mock.calls.some(([fields, msg]) => msg === "HTTP request" && fields["http.route"] === "/health")).toBe(
+      false,
+    );
   });
 
   it("reports on /health that unified logging is off here", async () => {
@@ -154,17 +202,29 @@ describe("HTTP routes", () => {
     expect(keys).toEqual(["sodax_route_key_a", "sodax_route_key_b"]);
   });
 
-  it("answers GET /mcp with 405 and the allowed methods", async () => {
+  it("answers GET /mcp with 405 and the allowed methods, and logs the request", async () => {
+    const info = vi.spyOn(logger, "info");
     const res = await fetch(`${base}/mcp`, { headers: { "X-Forwarded-For": "198.51.100.1" } });
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST, DELETE");
     expect((await res.json()).error.code).toBe(-32000);
+    await httpRequestRecord(info, { "http.method": "GET", "http.route": "/mcp", "http.status": 405 });
   });
 
-  it("answers invalid JSON on /mcp with a JSON-RPC parse error", async () => {
+  it("answers invalid JSON on /mcp with a JSON-RPC parse error, and logs the request as other", async () => {
+    const info = vi.spyOn(logger, "info");
     const res = await post("/mcp", "{bad", "198.51.100.2");
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32700);
+    // body-parser leaves {} behind a failed parse: a body, with no protocol method in it.
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 400 });
+    expect(fields["mcp.method"]).toBe("other");
+  });
+
+  it("logs a method the protocol doesn't know as other, so a client can't shape the record", async () => {
+    const info = vi.spyOn(logger, "info");
+    await post("/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "Tools/LIST" }), "198.51.100.46");
+    await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method": "other" });
   });
 
   it("answers an oversized body on /mcp with 413 in JSON", async () => {
@@ -176,18 +236,21 @@ describe("HTTP routes", () => {
   it("refuses a batch over the cap on /mcp", async () => {
     // Not initialize: the MCP SDK refuses a batch holding one by itself, with the same code.
     const batch = Array.from({ length: MCP_MAX_BATCH_SIZE + 1 }, (_, id) => ({ jsonrpc: "2.0", id, method: "ping" }));
+    const info = vi.spyOn(logger, "info");
     const res = await post("/mcp", JSON.stringify(batch), "198.51.100.4");
     expect(res.status).toBe(400);
     expect((await res.json()).error.message).toContain(`at most ${MCP_MAX_BATCH_SIZE} messages`);
+    await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 400, "mcp.method": "batch" });
   });
 
   it("turns a throwing /mcp handler into a JSON 500 and keeps serving", async () => {
-    vi.mocked(hashClientIp).mockImplementationOnce(() => {
-      throw new Error("boom");
-    });
+    const info = vi.spyOn(logger, "info");
+    vi.mocked(createServer).mockRejectedValueOnce(new Error("boom"));
     const failed = await post("/mcp", JSON.stringify(initialize(1)), "198.51.100.5");
     expect(failed.status).toBe(500);
     expect((await failed.json()).error.code).toBe(-32603);
+    // At info: the failure itself is the error handler's "Unhandled HTTP error" record, with the stack.
+    await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 500 });
 
     const res = await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.5");
     expect(res.status).toBe(200);
@@ -200,16 +263,16 @@ describe("HTTP routes", () => {
     expect(sse.status).toBe(200);
     expect(sse.headers.get("content-type")).toContain("text/event-stream");
 
+    const info = vi.spyOn(logger, "info");
     const res = await post(endpoint, JSON.stringify(initialize(7)), ip);
     expect(res.status).toBe(202);
     await readUntil(reader, /event: message\ndata: .*"id":7/);
+    await httpRequestRecord(info, { "http.route": "/messages", "http.status": 202, "mcp.method": "initialize" });
   });
 
   it("turns a throwing /sse handler into a JSON 500 and keeps serving", async () => {
     const ip = "198.51.100.8";
-    vi.mocked(hashClientIp).mockImplementationOnce(() => {
-      throw new Error("boom");
-    });
+    vi.mocked(createServer).mockRejectedValueOnce(new Error("boom"));
     const failed = await openSse(ip);
     expect(failed.status).toBe(500);
     expect((await failed.json()).error).toBe("Internal Server Error");
@@ -244,9 +307,23 @@ describe("HTTP routes", () => {
     await Promise.all(
       Array.from({ length: 100 }, () => fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } })),
     );
+    const debug = vi.spyOn(logger, "debug");
+    const warn = vi.spyOn(logger, "warn");
     const res = await post("/mcp", JSON.stringify(initialize(1)), ip);
     expect(res.status).toBe(429);
     expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
+    // Refused before the body was parsed, and at debug: the limiter's own record is the one that ships.
+    const fields = await httpRequestRecord(debug, { "http.route": "/mcp", "http.status": 429 });
+    expect(fields["mcp.method"]).toBeUndefined();
+    // Once per window, however many refusals follow.
+    expect((await post("/mcp", JSON.stringify(initialize(2)), ip)).status).toBe(429);
+    const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");
+    expect(limited).toHaveLength(1);
+    expect(limited[0][0]).toMatchObject({
+      "http.route": "/mcp",
+      "rate_limit.limit": 100,
+      "rate_limit.window_ms": 60_000,
+    });
   });
 
   it("doesn't count refused /sse connections against the per-IP cap", async () => {

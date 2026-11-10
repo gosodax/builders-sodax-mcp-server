@@ -26,7 +26,8 @@ async function wrapTool(key: string | undefined, handler: () => Promise<unknown>
   withAnalytics(server as never);
   registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never);
   const info = vi.spyOn(logger, "info");
-  return { call: () => tools.test_tool(), info, getRequestContext };
+  const error = vi.spyOn(logger, "error");
+  return { call: () => tools.test_tool(), info, error, getRequestContext };
 }
 
 /** The wrapped tool called once: the PostHog event's properties. */
@@ -123,6 +124,15 @@ describe("hashClientIp", () => {
     );
   });
 
+  it("says whether the id is keyed, so only an HMAC reaches the logs", async () => {
+    vi.resetModules();
+    vi.stubEnv("POSTHOG_CLIENT_ID_SECRET", "test-secret");
+    expect((await import("./analytics.js")).CLIENT_ID_KEYED).toBe(true);
+    vi.resetModules();
+    vi.stubEnv("POSTHOG_CLIENT_ID_SECRET", "");
+    expect((await import("./analytics.js")).CLIENT_ID_KEYED).toBe(false);
+  });
+
   it("maps the same IP to the same id and different IPs to different ids", async () => {
     const hashClientIp = await loadHashClientIp("test-secret");
 
@@ -172,8 +182,8 @@ describe("tool call records", () => {
     expect(seen).toEqual(["http-1"]);
   });
 
-  it("names a thrown error by its class, never its text", async () => {
-    const { call, info } = await wrapTool(
+  it("logs a thrown error at error level with its class and frames, never its text", async () => {
+    const { call, info, error } = await wrapTool(
       undefined,
       async () => {
         throw new TypeError("secret detail");
@@ -181,8 +191,9 @@ describe("tool call records", () => {
       "api",
     );
     await expect(call()).rejects.toThrow("secret detail");
-    expect(info).toHaveBeenCalledWith(
+    expect(error).toHaveBeenCalledWith(
       {
+        err: { type: "TypeError", stack: expect.stringMatching(/^ {4}at /) },
         "tool.name": "test_tool",
         "duration.ms": expect.any(Number),
         "tool.outcome": "error",
@@ -190,7 +201,8 @@ describe("tool call records", () => {
       },
       "Tool call",
     );
-    expect(JSON.stringify(info.mock.calls)).not.toContain("secret detail");
+    expect(JSON.stringify(error.mock.calls)).not.toContain("secret detail");
+    expect(info).not.toHaveBeenCalledWith(expect.anything(), "Tool call");
   });
 
   it("names the caller by a hash of its key, never the key, under a name the gateway doesn't redact", async () => {

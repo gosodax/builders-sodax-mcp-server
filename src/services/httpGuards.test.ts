@@ -70,6 +70,21 @@ describe("createMcpLimiter", () => {
     expect(res.headers.get("retry-after")).toBe(res.headers.get("ratelimit-reset"));
   });
 
+  it("logs a refusal once per window, however many follow", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const url = await limitedApp(1);
+    expect((await post(`${url}/mcp`, JSON.stringify(rpc(1)))).status).toBe(200);
+    expect((await post(`${url}/mcp`, JSON.stringify(rpc(2)))).status).toBe(429);
+    expect((await post(`${url}/mcp`, JSON.stringify(rpc(3)))).status).toBe(429);
+    const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");
+    expect(limited).toHaveLength(1);
+    expect(limited[0][0]).toMatchObject({
+      "http.route": "/mcp",
+      "rate_limit.limit": 1,
+      "rate_limit.window_ms": 60_000,
+    });
+  });
+
   it("counts a batch on /messages once, since the SSE transport refuses batches", async () => {
     const url = await limitedApp(2);
 

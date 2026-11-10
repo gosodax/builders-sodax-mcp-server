@@ -193,6 +193,15 @@ describe("tool call records", () => {
     expect(JSON.stringify(info.mock.calls)).not.toContain("secret detail");
   });
 
+  it("names the caller by a hash of its key, never the key, under a name the gateway doesn't redact", async () => {
+    const { call, info } = await wrapTool(undefined, async () => ({ content: [] }), "api");
+    const { runWithRequestContext } = await import("./requestContext.js");
+    await runWithRequestContext({ apiKey: "sodax_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH" }, call);
+    const [record] = info.mock.calls.at(-1) as [Record<string, unknown>];
+    expect(record["caller.key_hash"]).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(record)).not.toMatch(/sodax_abc|api_key/);
+  });
+
   it("adds the ids a swap is followed by, from the result and nothing else of it", async () => {
     const { call, info } = await wrapTool(undefined, async () => ({
       content: [],

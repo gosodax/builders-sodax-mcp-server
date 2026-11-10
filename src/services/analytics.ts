@@ -143,7 +143,8 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
       "duration.ms": durationMs,
       "tool.outcome": outcome.success ? "ok" : "error",
       "error.code": outcome.error_code,
-      "api_key.hash": getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined,
+      // Not `api_key.*`: the gateway's redaction masks values under any key that names an API key.
+      "caller.key_hash": getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined,
       ...(resolveToolGroup(toolName) === "swap" && {
         "swap.status": str(out.status),
         "quote.id": str(out.quoteId),

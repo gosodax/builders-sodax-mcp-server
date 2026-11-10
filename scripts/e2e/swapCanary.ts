@@ -1,6 +1,6 @@
 /**
  * Canary swap E2E: one real swap through the swap tools, the way an agent makes it, signed by a funded
- * test wallet. `.github/workflows/e2e-canary.yml` runs it daily against a server started in the runner;
+ * test wallet. `.github/workflows/e2e-canary.yml` runs it on manual dispatch against a server started in the runner;
  * the README says how to run it locally. Canary runs on mainnet chains: this moves real funds.
  *
  * 5 USDC goes from whichever of Arbitrum and Base holds more to the other, so runs alternate and the

@@ -5,8 +5,6 @@ name: Canary swap E2E
 # environment, which only the default branch can use.
 
 on:
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       amount:
@@ -72,7 +70,6 @@ jobs:
           MCP_URL: http://127.0.0.1:3000/mcp?profile=swap
           SODAX_API_KEY: ${{ secrets.E2E_SODAX_API_KEY }}
           E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
-          # Empty on a scheduled run: the script defaults to 5.
           AMOUNT: ${{ inputs.amount }}
           E2E_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}

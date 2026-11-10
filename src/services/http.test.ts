@@ -6,7 +6,8 @@ import {
   SODAX_SOLVER_BASE_URL,
   SODAX_SWAPS_BASE_URL,
 } from "../constants.js";
-import { HttpError, fetchJson, fetchJsonOrNull } from "./http.js";
+import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
+import { logger } from "./logger.js";
 import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -227,5 +228,56 @@ describe("API key forwarding", () => {
     await fetchJson(dataUrl);
     expect(sentKey()).toBeUndefined();
     expect(sentInit().redirect).toBe("follow");
+  });
+});
+
+describe("upstream call records", () => {
+  it("logs each call with its path, status and duration, and no query string", async () => {
+    const info = vi.spyOn(logger, "info");
+    fetchSpy.mockResolvedValueOnce(jsonResponse('{"ok":true}', { status: 200 }));
+    await fetchJson(`${SODAX_API_BASE_URL}/intent/user/0x${"a".repeat(40)}?address=0x1234`);
+    const { host } = new URL(SODAX_API_BASE_URL);
+    expect(info).toHaveBeenCalledWith(
+      {
+        "http.method": "GET",
+        "url.host": host,
+        "url.path": "/v1/be/intent/user/*",
+        "http.status": 200,
+        "duration.ms": expect.any(Number),
+      },
+      "Upstream call",
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(/0x1234|aaaa/);
+  });
+
+  it("logs a failed call at warn, and a refused connection by its cause's code", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    fetchSpy.mockResolvedValueOnce(jsonResponse('{"detail":"nope"}', { status: 503 }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toBeInstanceOf(HttpError);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ "url.path": "/v1/be/thing", "http.status": 503 }),
+      "Upstream call",
+    );
+    fetchSpy.mockRejectedValueOnce(Object.assign(new Error("boom"), { name: "TimeoutError" }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("boom");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.code": "TimeoutError" }), "Upstream call");
+    fetchSpy.mockRejectedValueOnce(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("fetch failed");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.code": "ECONNREFUSED" }), "Upstream call");
+  });
+});
+
+describe("routeOf", () => {
+  it.each([
+    ["/v1/be/intent/user/alice.near", "/v1/be/intent/user/*"],
+    ["/v1/be/moneymarket/position/12345", "/v1/be/moneymarket/position/*"],
+    ["/v1/be/config/spoke/0xa4b1.arbitrum", "/v1/be/config/spoke/*"],
+    [`/v1/be/intent/0x${"a".repeat(64)}`, "/v1/be/intent/*"],
+    ["/v1/be/intent/user/0x12", "/v1/be/intent/user/*"],
+    ["/v1/intent/quote", "/v1/intent/quote"],
+    ["/v1/swaps/quote", "/v1/swaps/quote"],
+    ["/v1/relay/", "/v1/relay/"],
+  ])("masks the parameters of %s", (pathname, route) => {
+    expect(routeOf(pathname)).toBe(route);
   });
 });

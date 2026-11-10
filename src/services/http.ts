@@ -6,6 +6,7 @@
  */
 
 import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { errorName, logger } from "./logger.js";
 import { getRequestContext } from "./requestContext.js";
 
 interface FetchJsonOptions {
@@ -119,18 +120,62 @@ function extractApiErrorMessage(obj: Record<string, unknown>): string | undefine
   return undefined;
 }
 
+/**
+ * `fetch` with one log record per upstream call (#110): the route with its ids and addresses masked (a user's
+ * address is a path segment on some routes and a query value on others); the status, or the error's name when
+ * no response came. `ok` decides the record's level.
+ */
+/**
+ * The route a path belongs to: the SODAX APIs put their parameters (addresses, hashes, chain keys, account names)
+ * from the fifth segment on (`/v1/be/intent/user/<address>`), so those are masked, as is any id-shaped segment
+ * (hex, or 24+ characters) before that.
+ */
+export const routeOf = (pathname: string): string =>
+  pathname
+    .split("/")
+    .map((segment, i) => (i >= 5 || /^0x[0-9a-f]+$/i.test(segment) || segment.length >= 24 ? "*" : segment))
+    .join("/");
+
+export async function timedFetch(
+  url: string,
+  init: RequestInit,
+  ok: (response: Response) => boolean,
+): Promise<Response> {
+  const { host, pathname } = new URL(url);
+  const started = Date.now();
+  const fields = () => ({
+    "http.method": init.method ?? "GET",
+    "url.host": host,
+    "url.path": routeOf(pathname),
+    "duration.ms": Date.now() - started,
+  });
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    logger.warn({ ...fields(), "error.code": errorName(error) }, "Upstream call");
+    throw error;
+  }
+  logger[ok(response) ? "info" : "warn"]({ ...fields(), "http.status": response.status }, "Upstream call");
+  return response;
+}
+
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
   const apiKey = forwardedApiKey(url);
-  const response = await fetch(url, {
-    method,
-    headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
-    redirect: apiKey ? "error" : "follow",
-    signal: AbortSignal.timeout(timeout),
-  });
+  const response = await timedFetch(
+    url,
+    {
+      method,
+      headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
+      redirect: apiKey ? "error" : "follow",
+      signal: AbortSignal.timeout(timeout),
+    },
+    response => response.ok || (allow404 && response.status === 404),
+  );
 
   if (allow404 && response.status === 404) {
     return null;

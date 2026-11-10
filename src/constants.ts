@@ -147,3 +147,6 @@ export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** A parseable URL whose scheme is https, as every secret-carrying endpoint must be. */
+export const isHttpsUrl = (value: string): boolean => URL.canParse(value) && new URL(value).protocol === "https:";

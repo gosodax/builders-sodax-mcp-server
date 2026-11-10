@@ -1,17 +1,20 @@
 /**
- * Analytics Service — PostHog integration
+ * Analytics Service — PostHog integration, and the per-call records for unified logging (#110).
  *
- * Tracks every MCP tool call automatically via a server.tool() wrapper.
+ * Wraps every MCP tool call through server.tool(): each call runs under its own `request.id`, gets one
+ * "Tool call" log record (outcome, duration, the ids a swap is followed by), and one PostHog event.
  * Events are sent asynchronously and never block tool responses.
  *
  * Set POSTHOG_API_KEY in your environment to enable tracking.
  * When unset, all tracking is silently skipped.
  */
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PostHog } from "posthog-node";
 import { CHAIN_KEY_PATTERN } from "../constants.js";
+import { errorName, logger } from "./logger.js";
+import { callerKeyHash, getRequestContext, runWithRequestContext } from "./requestContext.js";
 import { getToolModule, toolGroup } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -127,6 +130,32 @@ function usdBucket(value: unknown): string | undefined {
   return usd < 100_000 ? "10k-100k" : "100k+";
 }
 
+/**
+ * One log record per tool call (#110): the outcome, who called (a key hash, never the key) and, for a swap
+ * tool, the ids its records are followed by. Nothing from the arguments.
+ */
+function logToolCall(toolName: string, durationMs: number, outcome: Outcome, result: unknown): void {
+  const out = ((result ?? {}) as { structuredContent?: Record<string, unknown> }).structuredContent ?? {};
+  const str = (value: unknown) => (typeof value === "string" ? value : undefined);
+  logger.info(
+    {
+      "tool.name": toolName,
+      "duration.ms": durationMs,
+      "tool.outcome": outcome.success ? "ok" : "error",
+      "error.code": outcome.error_code,
+      "api_key.hash": getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined,
+      ...(resolveToolGroup(toolName) === "swap" && {
+        "swap.status": str(out.status),
+        "quote.id": str(out.quoteId),
+        "tx.hash": str(out.txHash),
+        "hub_tx.hash": str(out.hubTxHash),
+        "chain.key": outcome.src_chain,
+      }),
+    },
+    "Tool call",
+  );
+}
+
 // ── Server wrapper ───────────────────────────────────────────────────
 
 /**
@@ -147,16 +176,26 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
     const handler = allArgs[lastIdx];
 
     if (typeof handler === "function") {
-      allArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
-        const start = Date.now();
-        try {
-          const result = await (handler as (...args: unknown[]) => unknown)(...handlerArgs);
-          trackToolCall(toolName, Date.now() - start, resultOutcome(toolName, result), clientId);
-          return result;
-        } catch (err) {
-          trackToolCall(toolName, Date.now() - start, { success: false, error_message: String(err) }, clientId);
-          throw err;
-        }
+      const run = handler as (...args: unknown[]) => unknown;
+      // Every record of one call carries a `request.id` (#110): the HTTP request's when there is one, else its own (stdio).
+      allArgs[lastIdx] = (...handlerArgs: unknown[]) => {
+        const context = getRequestContext();
+        return runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, async () => {
+          const start = Date.now();
+          try {
+            const result = await run(...handlerArgs);
+            const outcome = resultOutcome(toolName, result);
+            const durationMs = Date.now() - start;
+            logToolCall(toolName, durationMs, outcome, result);
+            trackToolCall(toolName, durationMs, outcome, clientId);
+            return result;
+          } catch (err) {
+            const durationMs = Date.now() - start;
+            logToolCall(toolName, durationMs, { success: false, error_code: errorName(err) }, undefined);
+            trackToolCall(toolName, durationMs, { success: false, error_message: String(err) }, clientId);
+            throw err;
+          }
+        });
       };
     }
 

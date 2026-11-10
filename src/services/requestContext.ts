@@ -13,6 +13,8 @@ import type { PartnerFee } from "./partnerFee.js";
 export interface RequestContext {
   apiKey?: string;
   partnerFee?: PartnerFee;
+  /** One MCP request (HTTP) or tool call (stdio); every log record of it carries `request.id`. */
+  requestId?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

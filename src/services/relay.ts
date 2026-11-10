@@ -16,6 +16,7 @@
 
 import { SODAX_RELAY_BASE_URL } from "../constants.js";
 import type { RelayGetPacketResponse, RelayPacketsResponse, RelaySubmitResponse } from "../types.js";
+import { timedFetch } from "./http.js";
 import { logger } from "./logger.js";
 
 interface SubmitParams {
@@ -51,15 +52,20 @@ const RELAY_TIMEOUT_MS = 30_000;
  * passes this route on to an origin outside the SODAX API.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
-  const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
+  // The relay answers "not found" with a 404 and a normal body; 5xx and non-relay bodies are the failures.
+  const response = await timedFetch(
+    `${SODAX_RELAY_BASE_URL}/`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ action, params }),
+      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
     },
-    body: JSON.stringify({ action, params }),
-    signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
-  });
+    response => response.status < 500,
+  );
 
   if (response.status >= 500) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);

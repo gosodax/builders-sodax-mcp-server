@@ -25,9 +25,8 @@ async function oraclePrices(): Promise<OraclePrice[] | null> {
   try {
     // Cached and backed off for every caller, so read without the caller's key: one key's 401 or 429
     // would otherwise blank the prices, and the off-market check, for everyone.
-    return await bounded(
-      () => runWithRequestContext({}, () => getSolverOracle(SODAX_SWAP_ORACLE_BASE_URL)),
-      ORACLE_WAIT_MS,
+    return await bounded({ label: "oracle prices", timeoutMs: ORACLE_WAIT_MS }, () =>
+      runWithRequestContext({}, () => getSolverOracle(SODAX_SWAP_ORACLE_BASE_URL)),
     );
   } catch {
     skipUntil = Date.now() + SKIP_AFTER_FAILURE_MS;

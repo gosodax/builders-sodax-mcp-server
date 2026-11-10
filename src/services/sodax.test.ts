@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  bounded,
   cancelPayload,
   checksumValid,
   connectionFor,
@@ -455,5 +456,29 @@ describe("connectionFor", () => {
     expect(connectionFor("0xa4b1.arbitrum")).toBe("0x4555aC13D7338D9E671584C1D118c06B2a3C88eD");
     expect(connectionFor("sonic")).toBeUndefined();
     expect(connectionFor("not-a-chain")).toBeUndefined();
+  });
+});
+
+describe("chain read records", () => {
+  it("logs what was read, where and how long, and a timeout by its name", async () => {
+    const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
+    await expect(bounded({ label: "receipt", chainKey: "sonic" }, () => Promise.resolve(1))).resolves.toBe(1);
+    expect(info).toHaveBeenCalledWith(
+      { "sdk.call": "receipt", "chain.key": "sonic", "duration.ms": expect.any(Number) },
+      "Chain read",
+    );
+    await expect(bounded({ label: "balance", timeoutMs: 1 }, () => new Promise(() => {}))).rejects.toThrow(
+      "SDK call failed",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      {
+        "sdk.call": "balance",
+        "chain.key": undefined,
+        "duration.ms": expect.any(Number),
+        "error.code": "TimeoutError",
+      },
+      "Chain read",
+    );
   });
 });

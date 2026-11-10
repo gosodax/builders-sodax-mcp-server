@@ -7,9 +7,11 @@
  * SDK documentation proxied from docs.sodax.com/mcp.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -36,6 +38,7 @@ import {
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import type { OtelLogs } from "./services/otel.js";
 import { partnerFeeFromEnv } from "./services/partnerFee.js";
 import {
   apiKeyStatus,
@@ -289,7 +292,10 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       });
       res.on("close", () => transport.close());
       await requestServer.connect(transport);
-      await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
+      // One id per HTTP request on every record it produces (#110); a tool call inside keeps it.
+      await runWithRequestContext({ ...connection.context, requestId: randomUUID() }, () =>
+        transport.handleRequest(req, res, req.body),
+      );
     }),
   );
 
@@ -350,7 +356,9 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       const context = messageContext(session.context, req, res);
       if (!context) return;
       session.lease.touch();
-      await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
+      await runWithRequestContext({ ...context, requestId: randomUUID() }, () =>
+        session.transport.handlePostMessage(req, res, req.body),
+      );
     }),
   );
 
@@ -428,9 +436,16 @@ function listen(app: Express, swapToolsEnabled: boolean): void {
   });
 }
 
+let otel: OtelLogs | undefined;
+
 async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
+  // The OTLP destination (#110) and its SDK load only when asked for.
+  if (process.env.OTEL_LOGS_ENABLED === "true") {
+    const { startOtelLogs } = await import("./services/otel.js");
+    otel = startOtelLogs(process.env, { serviceVersion: SERVER_VERSION, instanceId: process.env.HOSTNAME });
+  }
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
   const rpcOverrides = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";
@@ -457,8 +472,13 @@ function fatalExit(context: string, error: unknown): void {
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
-      clearTimeout(force);
-      process.exit(1);
+      // What the OTLP batch still holds; a stuck export is cut by the force timer.
+      void Promise.resolve(otel?.forceFlush())
+        .catch(() => {})
+        .finally(() => {
+          clearTimeout(force);
+          process.exit(1);
+        });
     });
   });
 }
@@ -476,6 +496,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   exiting = true;
   await notifyServerStopping(signal, openQuotes().open);
   await shutdownAnalytics();
+  // A failing export rejects the shutdown; the exit must still happen.
+  await Promise.race([otel?.shutdown().catch(() => {}), sleep(2000, undefined, { ref: false })]);
   process.exit(0);
 }
 

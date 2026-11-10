@@ -14,16 +14,25 @@ vi.mock("posthog-node", () => ({
 }));
 
 /** A fresh analytics module (it reads POSTHOG_API_KEY at load) and a tool wrapped by it. */
-async function wrappedTool(key: string | undefined, result: unknown, module: "swap" | "api" = "swap") {
+async function wrapTool(key: string | undefined, handler: () => Promise<unknown>, module: "swap" | "api" = "swap") {
   vi.resetModules();
   vi.stubEnv("POSTHOG_API_KEY", key ?? "");
+  const { logger } = await import("./logger.js");
+  const { getRequestContext } = await import("./requestContext.js");
   const { withAnalytics } = await import("./analytics.js");
   const { registerAppTool } = await import("./toolRegistry.js");
   const tools: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
   const server = { tool: (name: string, ...rest: unknown[]) => (tools[name] = rest.at(-1) as never) };
   withAnalytics(server as never);
-  registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, (async () => result) as never);
-  await tools.test_tool();
+  registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never);
+  const info = vi.spyOn(logger, "info");
+  return { call: () => tools.test_tool(), info, getRequestContext };
+}
+
+/** The wrapped tool called once: the PostHog event's properties. */
+async function wrappedTool(key: string | undefined, result: unknown, module: "swap" | "api" = "swap") {
+  const { call } = await wrapTool(key, async () => result, module);
+  await call();
   return capture.mock.calls.at(-1)?.[0]?.properties as Record<string, unknown> | undefined;
 }
 
@@ -119,5 +128,94 @@ describe("hashClientIp", () => {
 
     expect(hashClientIp("203.0.113.7")).toBe(hashClientIp("203.0.113.7"));
     expect(hashClientIp("203.0.113.7")).not.toBe(hashClientIp("203.0.113.8"));
+  });
+});
+
+describe("tool call records", () => {
+  it("logs one record per call with the outcome, and gives each call its own request id", async () => {
+    const seen: (string | undefined)[] = [];
+    const { call, info, getRequestContext } = await wrapTool(
+      undefined,
+      async () => {
+        seen.push(getRequestContext().requestId);
+        return { content: [], isError: true, structuredContent: { error: { code: "UNKNOWN_TOKEN" } } };
+      },
+      "api",
+    );
+    await call();
+    await call();
+    expect(info).toHaveBeenCalledWith(
+      {
+        "tool.name": "test_tool",
+        "duration.ms": expect.any(Number),
+        "tool.outcome": "error",
+        "error.code": "UNKNOWN_TOKEN",
+      },
+      "Tool call",
+    );
+    expect(seen[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(seen[1]).not.toBe(seen[0]);
+  });
+
+  it("keeps the request id an HTTP request already set", async () => {
+    const seen: (string | undefined)[] = [];
+    const { call, getRequestContext } = await wrapTool(
+      undefined,
+      async () => {
+        seen.push(getRequestContext().requestId);
+        return { content: [] };
+      },
+      "api",
+    );
+    const { runWithRequestContext } = await import("./requestContext.js");
+    await runWithRequestContext({ requestId: "http-1" }, call);
+    expect(seen).toEqual(["http-1"]);
+  });
+
+  it("names a thrown error by its class, never its text", async () => {
+    const { call, info } = await wrapTool(
+      undefined,
+      async () => {
+        throw new TypeError("secret detail");
+      },
+      "api",
+    );
+    await expect(call()).rejects.toThrow("secret detail");
+    expect(info).toHaveBeenCalledWith(
+      {
+        "tool.name": "test_tool",
+        "duration.ms": expect.any(Number),
+        "tool.outcome": "error",
+        "error.code": "TypeError",
+      },
+      "Tool call",
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toContain("secret detail");
+  });
+
+  it("adds the ids a swap is followed by, from the result and nothing else of it", async () => {
+    const { call, info } = await wrapTool(undefined, async () => ({
+      content: [],
+      structuredContent: {
+        status: "ready",
+        quoteId: "q-1",
+        txHash: "0xtx",
+        hubTxHash: "0xhub",
+        amount: "5",
+        from: { chain: { key: "0xa4b1.arbitrum" } },
+      },
+    }));
+    await call();
+    const [record] = info.mock.calls.at(-1) as [Record<string, unknown>];
+    expect(record).toMatchObject({
+      "tool.name": "test_tool",
+      "tool.outcome": "ok",
+      "swap.status": "ready",
+      "quote.id": "q-1",
+      "tx.hash": "0xtx",
+      "hub_tx.hash": "0xhub",
+      "chain.key": "0xa4b1.arbitrum",
+    });
+    expect(JSON.stringify(record)).not.toContain("amount");
   });
 });

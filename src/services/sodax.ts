@@ -20,8 +20,8 @@ import {
   solverConfig,
   spokeChainConfig,
 } from "@sodax/types";
-import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN } from "../constants.js";
-import { logger, redact } from "./logger.js";
+import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN, isHttpsUrl } from "../constants.js";
+import { errorName, logger, redact } from "./logger.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -96,7 +96,7 @@ export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, RpcOve
     if (!suffix || !value) continue;
     const target = RPC_TARGETS.get(suffix);
     if (!target) throw new Error(`${name} doesn't name a SODAX chain, one of ${[...RPC_TARGETS.keys()].join(", ")}`);
-    if (!URL.canParse(value) || new URL(value).protocol !== "https:") throw new Error(`${name} must be an https URL`);
+    if (!isHttpsUrl(value)) throw new Error(`${name} must be an https URL`);
     overrides[target.chainKey] = { ...overrides[target.chainKey], [target.field]: value };
   }
   return overrides;
@@ -195,17 +195,28 @@ const asEvmAddress = (value: unknown) =>
 const SDK_CALL_TIMEOUT_MS = 15_000;
 const RPC_CALL_TIMEOUT_MS = 8_000;
 
-/** A bounded call whose failure (timeout included) carries no text of its own. */
-export async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TIMEOUT_MS): Promise<T> {
+/**
+ * A bounded call whose failure (timeout included) carries no text of its own. One log record per call
+ * (#110): what was read, on which chain, how long it took, and whether it worked.
+ */
+export async function bounded<T>(
+  { label, chainKey, timeoutMs = SDK_CALL_TIMEOUT_MS }: { label: string; chainKey?: string; timeoutMs?: number },
+  call: () => Promise<T>,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
+  const started = Date.now();
+  const fields = { "sdk.call": label, "chain.key": chainKey };
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       call(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+        timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
       }),
     ]);
-  } catch {
+    logger.info({ ...fields, "duration.ms": Date.now() - started }, "Chain read");
+    return result;
+  } catch (error) {
+    logger.warn({ ...fields, "duration.ms": Date.now() - started, "error.code": errorName(error) }, "Chain read");
     throw new Error("SDK call failed");
   } finally {
     clearTimeout(timer);
@@ -214,7 +225,9 @@ export async function bounded<T>(call: () => Promise<T>, timeoutMs = SDK_CALL_TI
 
 /** The user's own hub wallet for an address on a chain (an intent's creator). One hub RPC read, cached by the SDK. */
 export function userHubWallet(chainKey: string, address: string): Promise<string> {
-  return bounded(() => sdk().sodax.hubProvider.getUserHubWalletAddress(address, chainKey as SpokeChainKey));
+  return bounded({ label: "hub wallet", chainKey }, () =>
+    sdk().sodax.hubProvider.getUserHubWalletAddress(address, chainKey as SpokeChainKey),
+  );
 }
 
 export interface EvmReceipt {
@@ -228,7 +241,7 @@ const isNotFound = (error: unknown) =>
 
 /** A mined tx's receipt on an EVM spoke, or `null` while it isn't mined. Fails as a bare error. */
 export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmReceipt | null> {
-  return bounded(async () => {
+  return bounded({ label: "receipt", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     try {
       const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
@@ -240,20 +253,20 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
       if (isNotFound(error)) return null;
       throw error;
     }
-  }, RPC_CALL_TIMEOUT_MS);
+  });
 }
 
 /** An EVM spoke's latest block number: proof its RPC answers. Fails as a bare error. */
 export function blockNumber(chainKey: string): Promise<bigint> {
-  return bounded(() => {
+  return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, () => {
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     return client.getBlockNumber();
-  }, RPC_CALL_TIMEOUT_MS);
+  });
 }
 
 /** Whether an EVM spoke's node knows the tx at all, mined or pending. */
 export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
-  return bounded(async () => {
+  return bounded({ label: "tx known", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     try {
       await client.getTransaction({ hash: txHash as `0x${string}` });
@@ -262,7 +275,7 @@ export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
       if (isNotFound(error)) return false;
       throw error;
     }
-  }, RPC_CALL_TIMEOUT_MS);
+  });
 }
 
 // Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
@@ -289,7 +302,7 @@ function isMissingAccount(chainKey: string, error: unknown): boolean {
  * never reported as 0. One read per token: the SDK's batch read reports a failed token as 0.
  */
 export function walletBalance(chainKey: string, address: string, token: { address: string }): Promise<bigint | null> {
-  return bounded(async () => {
+  return bounded({ label: "balance", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const result = await sdk().sodax.spoke.getWalletBalance({
       srcChainKey: chainKey as SpokeChainKey,
       srcAddress: address as never,
@@ -300,7 +313,7 @@ export function walletBalance(chainKey: string, address: string, token: { addres
     if (isNativeToken(chainKey as SpokeChainKey, token.address) && isMissingAccount(chainKey, result.error))
       return null;
     throw new Error("balance read failed");
-  }, RPC_CALL_TIMEOUT_MS);
+  });
 }
 
 /**
@@ -326,8 +339,8 @@ export function recipientReady(
   amount: bigint,
 ): Promise<boolean> {
   const { near, stellar } = sdk().sodax.spoke;
-  if (chainType === "NEAR") return bounded(() => near.isStorageRegistered(token, address));
-  return bounded(async () => {
+  if (chainType === "NEAR") return bounded({ label: "near storage" }, () => near.isStorageRegistered(token, address));
+  return bounded({ label: "stellar trustline" }, async () => {
     try {
       if (stellar.requiresTrustline(token)) return await stellar.hasSufficientTrustline(token, amount, address);
       const { chain, nativeToken } = spokeChainConfig.stellar;

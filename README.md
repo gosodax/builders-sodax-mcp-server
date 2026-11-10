@@ -334,7 +334,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 ### Environment Variables
 
 The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
-flag; the SODAX SDK needs Node ≥ 22.12.0). Copy `.env.example` to `.env` for local development;
+flag; the OpenTelemetry SDK that ships the logs needs Node ≥ 22.15.0). Copy `.env.example` to `.env` for local development;
 if no `.env` exists, every variable falls back to the default below. In production,
 Coolify injects these directly into the process environment.
 
@@ -353,6 +353,11 @@ Coolify injects these directly into the process environment.
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), API-drift summaries and the swap alerts (see *Operating the swap tools*). Empty/unset = silent (staging/local). |
+| `OTEL_LOGS_ENABLED` | - | `true` ships every log record to SODAX unified logging over OTLP as well as stderr; anything else, stderr only. With it set, the next three are required: a missing or bad one warns at startup and leaves shipping off. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | - | The log gateway's `/v1/logs` URL (the standard OpenTelemetry variable, used as given). `https` unless `DEPLOYMENT_ENV=dev`. |
+| `OTEL_LOGS_TOKEN` | - | The bearer token for that gateway, one per environment. Secret: the deployment's env only. The server sends it as its only header: `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_LOGS_HEADERS` must stay unset. |
+| `DEPLOYMENT_ENV` | - | `prod`, `canary`, `staging` or `dev`: the `deployment.environment` the records carry. `staging` is the server that follows `development`. Independent of `SODAX_ENV`, which picks the API host: the test server runs `SODAX_ENV=canary` with `DEPLOYMENT_ENV=staging`. |
+| `ORIGIN` | - | The host's label, as `sodax.origin` on the records. Optional. |
 
 ## Deployment
 
@@ -388,6 +393,8 @@ docker-compose up -d
 The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
 - `PORT=3000`
 - `NODE_ENV=production`
+
+Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging: every record of one HTTP request (or one stdio tool call) carries `request.id`; a tool call, each upstream API call and each chain read get a record of their own with dotted attributes (`tool.name`, `url.path` with its parameters masked, `http.status`, `sdk.call`, `chain.key`, `duration.ms`, `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`), so a swap can be followed from the agent's call to the answer. Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can. The hub's `unified-logging-connect` skill has the connect check.
 
 ### Operating the swap tools
 

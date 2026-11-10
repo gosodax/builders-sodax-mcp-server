@@ -6,10 +6,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createHttpApp } from "./index.js";
 import { hashClientIp } from "./services/analytics.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
+import { runWithRequestContext } from "./services/requestContext.js";
 import { clearCache } from "./services/sodaxApi.js";
 
 // The guards are unit-tested in httpGuards.test.ts; this checks index.ts wires them to the routes.
 
+// Spied, not replaced: the test reads the context each request runs under.
+vi.mock("./services/requestContext.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./services/requestContext.js")>();
+  return { ...actual, runWithRequestContext: vi.fn(actual.runWithRequestContext) };
+});
 vi.mock("./services/discord.js", async importOriginal => ({
   ...(await importOriginal<typeof import("./services/discord.js")>()),
   notifyError: vi.fn(async () => {}),
@@ -98,6 +104,17 @@ async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, match:
 }
 
 describe("HTTP routes", () => {
+  it("runs each /mcp request under its own request id", async () => {
+    const spy = vi.mocked(runWithRequestContext);
+    spy.mockClear();
+    await post("/mcp", JSON.stringify(initialize(1)), "198.51.100.41");
+    await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.42");
+    const ids = spy.mock.calls.map(([context]) => context.requestId);
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(new Set(ids).size).toBe(2);
+  });
+
   it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {
     const local = globalThis.fetch;
     const keys: (string | null)[] = [];

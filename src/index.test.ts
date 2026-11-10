@@ -2,7 +2,7 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHttpApp } from "./index.js";
 import { hashClientIp } from "./services/analytics.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
@@ -35,11 +35,19 @@ let base: string;
 const streams: AbortController[] = [];
 // Fetch cancels the stream of a collected response, which would free its SSE session mid-test.
 const held: Response[] = [];
+// The data API answers /health and tool calls; this suite never reaches it (100 parallel /health below).
+const realFetch = fetch;
+const upstreamStub = (...args: Parameters<typeof fetch>) =>
+  String(args[0]).startsWith(base) ? realFetch(...args) : Promise.resolve(new Response("[]", { status: 200 }));
 
 beforeAll(async () => {
   server = createHttpApp(true).listen(0, "127.0.0.1");
   await once(server, "listening");
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(upstreamStub);
 });
 
 afterEach(() => {
@@ -118,20 +126,14 @@ describe("HTTP routes", () => {
   });
 
   it("reports on /health that unified logging is off here", async () => {
-    // /health reads the network count upstream; this run answers it locally.
-    const realFetch = fetch;
-    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
-      String(input).startsWith(base) ? realFetch(input, init) : Promise.resolve(new Response("[]", { status: 200 })),
-    );
-    const res = await realFetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.43" } });
+    const res = await fetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.43" } });
     expect(((await res.json()) as { unifiedLogging: unknown }).unifiedLogging).toEqual({ on: false });
   });
 
   it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {
-    const local = globalThis.fetch;
     const keys: (string | null)[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      if (String(input).startsWith(base)) return local(input, init);
+      if (String(input).startsWith(base)) return realFetch(input, init);
       keys.push(new Headers(init?.headers).get("x-api-key"));
       return Response.json({});
     });

@@ -17,7 +17,7 @@ import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 export const RETRY_AFTER_SEC = 15;
 
 /** The swap a track or cancel call is about. */
-export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string };
+export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
 /** What checking a source tx needs. */
 export interface SourceChain {

@@ -6,7 +6,7 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { cancelPayload, createIntentPayload, intentChainId, userHubWallet } from "../sodax.js";
+import { cancelPayload, createIntentPayload, intentChainId, intentHash, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
 import { type CachedQuote, claimDeposit } from "./quoteCache.js";
@@ -46,7 +46,12 @@ export async function cancelSwap(input: {
   const txHash = input.txHash.toLowerCase();
   const source = await resolveSource(input);
   const { quote } = source;
-  const base: SwapRef = { txHash, chain: source.chain, ...(input.quoteId && { quoteId: input.quoteId }) };
+  const base: SwapRef = {
+    txHash,
+    chain: source.chain,
+    ...(input.quoteId && { quoteId: input.quoteId }),
+    ...(quote && { intentHash: intentHash(quote.intent) }),
+  };
   // The caller mixed up two swaps: this quote's deposit is another tx.
   if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) {
     throw quoteMismatch("That quote was used by another transaction.");

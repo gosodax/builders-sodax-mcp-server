@@ -8,7 +8,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, isHubChain } from "../sodax.js";
+import { type EvmReceipt, intentHash, isHubChain } from "../sodax.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
@@ -125,7 +125,7 @@ export async function trackSwap(input: { txHash: string; quoteId?: string; chain
 
 async function track(txHash: string, source: SwapSource, quoteId?: string): Promise<TrackResult> {
   const { chain, quote } = source;
-  const base = { txHash, chain, ...(quoteId && { quoteId }) };
+  const base = { txHash, chain, ...(quoteId && { quoteId }), ...(quote && { intentHash: intentHash(quote.intent) }) };
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
   const row = await getSubmitTxStatus(txHash, chain.key).catch(error => {

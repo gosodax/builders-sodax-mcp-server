@@ -154,6 +154,7 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
         "quote.id": str(out.quoteId),
         "tx.hash": str(out.txHash),
         "hub_tx.hash": str(out.hubTxHash),
+        "intent.hash": str(out.intentHash),
         "chain.key": outcome.src_chain,
       }),
     },

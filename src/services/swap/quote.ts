@@ -16,6 +16,7 @@ import {
   approveCalldata,
   encodeRecipient,
   intentChainId,
+  intentHash,
   isHubChain,
   packagedToken,
   rebuildSwapTx,
@@ -97,6 +98,8 @@ export type SwapQuote =
   | (QuoteSummary & {
       status: "ready";
       quoteId: string;
+      /** The hub's id of the intent, for `GET /intent/:intentHash` and the logs. */
+      intentHash: string;
       /** ISO time; the swap step must be mined, and tracked, before it. */
       expiresAt: string;
       /** Seconds from now to `expiresAt`, for agents that can't do time arithmetic. */
@@ -289,6 +292,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     status: "ready",
     ...summary,
     quoteId,
+    intentHash: intentHash(built.intent),
     expiresAt: new Date(Number(deadline) * 1000).toISOString(),
     expiresInSec: Math.max(0, Math.floor(Number(deadline) - Date.now() / 1000)),
     fromAddress,

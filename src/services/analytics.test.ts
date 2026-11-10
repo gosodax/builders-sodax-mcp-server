@@ -222,6 +222,7 @@ describe("tool call records", () => {
         quoteId: "q-1",
         txHash: "0xtx",
         hubTxHash: "0xhub",
+        intentHash: "0xintent",
         amount: "5",
         from: { chain: { key: "0xa4b1.arbitrum" } },
       },
@@ -235,6 +236,7 @@ describe("tool call records", () => {
       "quote.id": "q-1",
       "tx.hash": "0xtx",
       "hub_tx.hash": "0xhub",
+      "intent.hash": "0xintent",
       "chain.key": "0xa4b1.arbitrum",
     });
     expect(JSON.stringify(record)).not.toContain("amount");

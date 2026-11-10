@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
-import { getEvmReceipt, isTxKnown } from "../services/sodax.js";
+import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
@@ -65,7 +65,14 @@ describe("sodax_swap_track", () => {
     const calls = stubBackend();
     const { quoteId } = cacheQuote();
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
+    expect(out).toMatchObject({
+      status: "queued",
+      txHash: TX,
+      quoteId,
+      intentHash: intentHash(INTENT),
+      chain: { key: ARBITRUM },
+      retryAfterSec: 15,
+    });
     expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");

@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
-import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
+import {
+  type IntentJson,
+  blockNumber,
+  intentHash,
+  rebuildSwapTx,
+  recipientReady,
+  userHubWallet,
+} from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
@@ -195,6 +202,7 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out).toMatchObject({
       status: "ready",
+      intentHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       fromAddress: USER,
       toAddress: USER,
       expiresAt: new Date(Number(DEADLINE) * 1000).toISOString(),
@@ -229,6 +237,11 @@ describe("sodax_swap_quote", () => {
       relayData: { address: HUB_WALLET },
       minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
     });
+    const cached = getCachedQuote(String(out.quoteId), callerKeyHash()) as Exclude<
+      ReturnType<typeof getCachedQuote>,
+      string | undefined
+    >;
+    expect(out.intentHash).toBe(intentHash(cached.intent));
     expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");

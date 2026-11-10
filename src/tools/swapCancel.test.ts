@@ -7,6 +7,7 @@ import {
   createIntentPayload,
   getEvmReceipt,
   initSodax,
+  intentHash,
   userHubWallet,
 } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
@@ -112,6 +113,7 @@ describe("sodax_swap_cancel", () => {
     const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
     expect(out).toMatchObject({
       status: "ready",
+      intentHash: intentHash(INTENT),
       steps: [{ kind: "cancel", chainId: 42161, tx: { ...CANCEL_TX_BUILT, value: "0x0", chainId: "0xa4b1" } }],
     });
     expect(out.nextStep).toContain("call sodax_swap_cancel again with the same arguments plus cancelTxHash");

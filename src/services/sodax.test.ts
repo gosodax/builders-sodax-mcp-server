@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
+import { EvmHubProvider, EvmSolverService, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { INTENT } from "../tools/__fixtures__/swapBackend.js";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
@@ -15,6 +16,7 @@ import {
   evmChainIdFor,
   initSodax,
   intentChainId,
+  intentHash,
   packagedToken,
   parseRpcOverrides,
   rebuildSwapTx,
@@ -51,6 +53,24 @@ describe("before initSodax", () => {
     const fresh = await import("./sodax.js");
     expect(() => fresh.approveCalldata(USER, USER, 1n)).toThrow("initSodax");
     expect(fresh.encodeRecipient("0xa4b1.arbitrum", USER)).toBeUndefined();
+  });
+});
+
+describe("intentHash", () => {
+  it("is the SDK's hash of the same struct with its numbers as bigints, the hub's id of the intent", () => {
+    const hash = intentHash(INTENT);
+    expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(hash).toBe(
+      EvmSolverService.getIntentHash({
+        ...INTENT,
+        intentId: 7n,
+        inputAmount: 5_000_000n,
+        minOutputAmount: 4_941_968n,
+        deadline: BigInt(INTENT.deadline),
+        srcChain: 23n,
+        dstChain: 146n,
+      } as Parameters<typeof EvmSolverService.getIntentHash>[0]),
+    );
   });
 });
 

@@ -22,6 +22,7 @@ import {
 } from "@sodax/types";
 import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN, isHttpsUrl } from "../constants.js";
 import { errorName, logger, redact } from "./logger.js";
+import type { BuiltIntent } from "./swap/swapsApi.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -108,6 +109,23 @@ function sdk() {
 }
 
 export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
+
+/**
+ * The hub's id of an intent (IF-11: keccak256 of the ABI-encoded `createIntent` struct), as `GET /intent/:intentHash`
+ * and the solver name it, from the struct the Swaps API built. Verified against the data API's own hashes.
+ */
+export function intentHash(intent: BuiltIntent["intent"]): string {
+  const uint = (value: string) => BigInt(value);
+  return sdk().sdk.EvmSolverService.getIntentHash({
+    ...intent,
+    intentId: uint(intent.intentId),
+    inputAmount: uint(intent.inputAmount),
+    minOutputAmount: uint(intent.minOutputAmount),
+    deadline: uint(intent.deadline),
+    srcChain: uint(intent.srcChain),
+    dstChain: uint(intent.dstChain),
+  } as Parameters<Sdk["EvmSolverService"]["getIntentHash"]>[0]);
+}
 
 /** A recipient as intents carry it, or `undefined` if the address isn't valid for the chain (EIP-55 included). */
 export function encodeRecipient(chainKey: string, address: string): string | undefined {

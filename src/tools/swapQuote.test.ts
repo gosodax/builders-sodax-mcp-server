@@ -242,7 +242,7 @@ describe("sodax_swap_quote", () => {
       string | undefined
     >;
     expect(out.intentHash).toBe(intentHash(cached.intent));
-    expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_track", args: { quoteId: out.quoteId } } });
+    expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_submit_and_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
     expect(out.nextStep).toContain("Balances aren't checked here; sodax_get_balance reads them.");
@@ -250,7 +250,7 @@ describe("sodax_swap_quote", () => {
       "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
     );
     expect(out.nextStep).toContain(
-      "then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.",
+      "then call sodax_swap_submit_and_track with the quoteId and the swap transaction's hash, all before it expires.",
     );
     expect(out.nextStep).not.toContain("don't send");
   });
@@ -616,7 +616,7 @@ describe("sodax_swap_quote", () => {
         const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
         expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", suggestedAmount: "1.5" });
         expect(out.nextStep).toBe(
-          "The swap service usually quotes swaps worth about $1.5 or more: ask the user to send at least 1.5 USDC.",
+          "The swap service usually quotes swaps worth about $1.5 or more: ask the user whether to quote at least 1.5 USDC instead.",
         );
       });
 
@@ -636,7 +636,7 @@ describe("sodax_swap_quote", () => {
         const { out } = await quote({ ...USDC_TO_SONIC, amount });
         expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW" });
         expect(out.error.suggestedAmount).toBeUndefined();
-        expect(out.nextStep).toBe("Ask the user for a larger amount.");
+        expect(out.nextStep).toBe("Ask the user whether to quote a larger amount.");
       });
     });
   });
@@ -806,7 +806,9 @@ describe("sodax_swap_quote", () => {
     const sonic = { fromChain: "sonic", fromToken, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
     const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
     expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
-    expect(out.nextStep).toContain("not from Sonic or non-EVM chains");
+    expect(out.nextStep).toMatch(/^A swap can start only from .*Arbitrum.*: ask the user to swap from one of them\.$/);
+    expect(out.nextStep).not.toContain("Sonic");
+    expect(out.error.sourceChains).toContainEqual({ key: "0xa4b1.arbitrum", name: "Arbitrum" });
     expect(calls).toEqual([]);
   });
 

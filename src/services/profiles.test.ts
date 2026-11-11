@@ -14,7 +14,8 @@ const off = { swapToolsEnabled: false };
 const keyed = { apiKey: "valid" } as const;
 const keyless = { apiKey: "missing" } as const;
 const malformed = { apiKey: "malformed" } as const;
-const DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
+const GET_A_KEY =
+  "An organisation's Owner or Admin creates one in the partner portal, https://portal.sodax.com (API keys, then Create key). How to use it: https://docs.sodax.com/developers/how-to/api-keys";
 const NOT_A_SODAX_KEY = "isn't a SODAX API key (a sodax_… key alone, at most 128 characters)";
 
 function refusal(requested: unknown, opts: Parameters<typeof selectToolsets>[1]): ConnectionError {
@@ -36,14 +37,14 @@ describe("selectToolsets", () => {
     const selection = selectToolsets(undefined, { ...keyless, ...on });
     expect(selection).toEqual({ builder: true, swap: false, keyHint: expect.any(String) });
     expect(selection.keyHint).toContain("x-api-key header");
-    expect(selection.keyHint).toContain(DOCS_URL);
+    expect(selection.keyHint).toContain(GET_A_KEY);
   });
 
   it("tells a default connection with a malformed key that the value isn't a SODAX key", () => {
     const selection = selectToolsets("all", { ...malformed, ...on });
     expect([selection.builder, selection.swap]).toEqual([true, false]);
     expect(selection.keyHint).toBe(
-      `This connection has no swap tools: they need a SODAX API key. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
+      `This connection has no swap tools: they need a SODAX API key. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one. ${GET_A_KEY}`,
     );
   });
 
@@ -55,7 +56,7 @@ describe("selectToolsets", () => {
     const selection = selectToolsets(profile, { ...malformed, ...switchOpts });
     expect([selection.builder, selection.swap]).toEqual([true, false]);
     expect(selection.keyHint).toBe(
-      `The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one: ${DOCS_URL}`,
+      `The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}, so calls go out without one. ${GET_A_KEY}`,
     );
   });
 
@@ -98,14 +99,14 @@ describe("selectToolsets", () => {
     const error = refusal("swap", { ...keyless, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
     expect(error.message).toMatch(/^API key required for the swap profile\. Send it in the x-api-key header/);
-    expect(error.message).toContain(DOCS_URL);
+    expect(error.message).toContain(GET_A_KEY);
   });
 
   it("refuses a swap connection whose key isn't a SODAX key, saying so", () => {
     const error = refusal("swap", { ...malformed, ...on });
     expect([error.httpStatus, error.rpcCode]).toEqual([403, -32000]);
     expect(error.message).toBe(
-      `A SODAX API key is required for the swap profile. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}: ${DOCS_URL}`,
+      `A SODAX API key is required for the swap profile. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}. ${GET_A_KEY}`,
     );
   });
 });

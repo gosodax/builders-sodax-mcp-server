@@ -50,9 +50,7 @@ export function checkAddress(address: string, chain: ChainInfo, field = "address
 export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourcesOnly = false): ChainInfo {
   const key = findChainKey(catalog, chainQuery);
   if (key) return toChain(key);
-  const supported = Object.keys(catalog.tokens)
-    .filter(other => !sourcesOnly || isSwapSource(catalog, other))
-    .map(toChain);
+  const supported = swapChains(catalog, sourcesOnly);
   const near = nearestChains(supported, chainQuery);
   const names = near.map(chain => chain.name).join(" or ");
   throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
@@ -67,6 +65,13 @@ export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourc
 /** A chain a swap can start from: an EVM spoke whose deposits the SDK config can prove. */
 export function isSwapSource(catalog: SwapCatalog, chainKey: string): boolean {
   return catalog.chains[chainKey]?.type === "EVM" && evmSpokeFor(chainKey) !== undefined;
+}
+
+/** The catalog's swap chains, or only those a swap can start from. */
+export function swapChains(catalog: SwapCatalog, sourcesOnly = false): ChainInfo[] {
+  return Object.keys(catalog.tokens)
+    .filter(key => !sourcesOnly || isSwapSource(catalog, key))
+    .map(toChain);
 }
 
 /** The chains within two typos of the query, by name or key, closest first. */

@@ -1,5 +1,5 @@
 /**
- * `sodax_swap_track` and its deposit checks against live chains and the live Swaps API:
+ * `sodax_swap_submit_and_track` and its deposit checks against live chains and the live Swaps API:
  * `pnpm test:contract` (canary by default, `SODAX_ENV=production` for production). Reads only:
  * every POST to the Swaps API is refused here, so nothing is submitted or relayed, and nothing is signed.
  */
@@ -45,7 +45,7 @@ const PRODUCTION_SWAP = {
 const TRACKED = CANARY ? CANARY_SWAPS : [PRODUCTION_SWAP];
 const UNKNOWN = CANARY ? PRODUCTION_SWAP : CANARY_SWAPS[0];
 
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 
 let fetchSpy: MockInstance<typeof fetch>;
 /** Every POST this server tried on the Swaps API (all refused). */
@@ -70,7 +70,7 @@ afterAll(() => {
   vi.unstubAllEnvs();
 });
 
-describe("sodax_swap_track against live chains and the live Swaps API", () => {
+describe("sodax_swap_submit_and_track against live chains and the live Swaps API", () => {
   it.each(TRACKED)("reports the swap from $chain as solved, with its hub and fill txs, each call", async swap => {
     for (let i = 0; i < 3; i++) {
       const { out } = await track({ txHash: swap.txHash, chain: swap.chain });

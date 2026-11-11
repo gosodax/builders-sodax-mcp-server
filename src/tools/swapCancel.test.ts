@@ -252,7 +252,7 @@ describe("sodax_swap_cancel", () => {
       const { quoteId } = cacheQuote();
       const { out } = await cancel({ txHash: TX, quoteId });
       expect(out).toMatchObject({ status: "deposit_unsubmitted", retryAfterSec: 15 * 60 + 15 });
-      expect(out.nextStep).toContain("won't be swapped unless sodax_swap_track is called: don't call it");
+      expect(out.nextStep).toContain("won't be swapped unless sodax_swap_submit_and_track is called: don't call it");
       expect(out.nextStep).toContain("call sodax_swap_cancel again with the same arguments in about 915 seconds");
       expect(posts(calls)).toEqual([]);
       // Unclaimed: a track call would still submit it.

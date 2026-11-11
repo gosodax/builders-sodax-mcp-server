@@ -32,7 +32,7 @@ vi.mock("../services/sodax.js", async importOriginal => {
 
 const HUB_TX = `0x${"b".repeat(64)}`;
 const OTHER_TX = `0x${"e".repeat(64)}`;
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
 
 beforeEach(() => {
@@ -60,7 +60,7 @@ afterEach(() => {
 
 const NEVER = " The user must not send the swap again.";
 
-describe("sodax_swap_track", () => {
+describe("sodax_swap_submit_and_track", () => {
   it("checks the deposit, submits the quoted intent once, and reports it queued", async () => {
     const calls = stubBackend();
     const { quoteId } = cacheQuote();
@@ -73,7 +73,9 @@ describe("sodax_swap_track", () => {
       chain: { key: ARBITRUM },
       retryAfterSec: 15,
     });
-    expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(out.nextStep).toContain(
+      "call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step)",
+    );
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(logger.info).toHaveBeenCalledWith(
       { "chain.key": ARBITRUM, "quote.id": quoteId, "tx.hash": TX, "intent.hash": intentHash(INTENT) },
@@ -202,7 +204,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, ...args() });
     expect(out.status).toBe("source_not_found");
     expect(out).not.toHaveProperty("retryAfterSec");
-    expect(out.nextStep).toContain("If the user's wallet sped it up or replaced it, call sodax_swap_track");
+    expect(out.nextStep).toContain("If the user's wallet sped it up or replaced it, call sodax_swap_submit_and_track");
     expect(out.nextStep).toContain("Only if the wallet shows it was never sent: nothing was swapped");
   });
 
@@ -335,7 +337,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
     expect(out.nextStep).toContain(
-      "To retry the refund, call sodax_swap_track again in about 60 seconds, at most 10 times, then stop.",
+      "To retry the refund, call sodax_swap_submit_and_track again in about 60 seconds, at most 10 times, then stop.",
     );
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
@@ -370,7 +372,7 @@ describe("sodax_swap_track", () => {
     expect(out).toMatchObject({ status: "submit_refused", alerted: true, retryAfterSec: 15 * 60 + 15 });
     expect(out.nextStep).toContain("the deposit is on chain and safe");
     expect(out.nextStep).toContain("must not send it again");
-    expect(out.nextStep).toContain("call sodax_swap_track again in about 915 seconds");
+    expect(out.nextStep).toContain("call sodax_swap_submit_and_track again in about 915 seconds");
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "submit_rejected" }),
       expect.any(String),
@@ -467,7 +469,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, chain: "Arbitrum" });
     expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
     expect(out.nextStep).toBe(
-      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
+      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
     );
     expect(logger.error).not.toHaveBeenCalled();
     expect(submits(calls)).toEqual([]);
@@ -642,6 +644,15 @@ describe("sodax_swap_track", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("asks which chain a sent swap came from, not for a new swap, when that chain can't start one", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, chain: "sonic" });
+    expect(out.nextStep).toMatch(
+      /^No swap can start from Sonic: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
+    );
+    expect(out.error.sourceChains).toContainEqual({ key: ARBITRUM, name: "Arbitrum" });
+  });
+
   it("suggests a misspelled source chain, listing only chains a swap can start from", async () => {
     stubBackend();
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
@@ -669,7 +680,7 @@ describe("sodax_swap_track", () => {
     const chain = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(chain.out.nextStep).toBe(
-      "Call sodax_swap_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
+      "Call sodax_swap_submit_and_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
     );
 
     stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });
@@ -794,7 +805,7 @@ describe("sodax_swap_track", () => {
     const client = await swapClient();
     const { tools } = await client.listTools();
     await client.close();
-    expect(tools.find(tool => tool.name === "sodax_swap_track")?.description).toContain(
+    expect(tools.find(tool => tool.name === "sodax_swap_submit_and_track")?.description).toContain(
       "A successful result without retryAfterSec is final; after an error, follow its nextStep.",
     );
     for (const tool of tools) expect(tool.description).not.toContain("same API key");
@@ -804,7 +815,7 @@ describe("sodax_swap_track", () => {
     const calls = stubBackend();
     const client = await swapClient();
     const result = await client.callTool({
-      name: "sodax_swap_track",
+      name: "sodax_swap_submit_and_track",
       arguments: { txHash: "0x1234", chain: ARBITRUM },
     });
     await client.close();

@@ -78,7 +78,7 @@ function secretRefusal(kind: SecretKind, field?: string): ActionError {
       // The default next step covers keys and phrases; a SODAX key belongs in a header.
       ...(kind === "api_key" && {
         nextStep:
-          "Tell the user to rotate that SODAX API key and send keys only as the x-api-key header, never as a tool input.",
+          "Tell the user to rotate that SODAX API key in the partner portal (https://portal.sodax.com) and send keys only as the x-api-key header, never as a tool input.",
       }),
       ...(solana && {
         nextStep: ifKeyElse("a transaction signature, this field doesn't take one, so ask for what it needs"),
@@ -90,7 +90,7 @@ function secretRefusal(kind: SecretKind, field?: string): ActionError {
 function hex64Refusal(notA: string, field?: string): ActionError {
   return new ActionError("SECRET_REJECTED", `That's a 64-hex value, not ${notA}.`, {
     details: { field },
-    nextStep: ifKeyElse("a transaction hash, pass it to sodax_swap_track"),
+    nextStep: ifKeyElse("a transaction hash, pass it to sodax_swap_submit_and_track"),
   });
 }
 

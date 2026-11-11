@@ -435,7 +435,7 @@ function failedNextStep({ canCancel, outcome }: Extract<TrackResult, { status: "
 
 const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" }>["reason"], string> = {
   not_submitted:
-    "This swap was never submitted, so there's no intent to cancel. Submitting it with sodax_swap_submit_and_track may get it filled before a cancel lands: ask the user before calling it, then cancel once the swap is on the hub.",
+    "The swap service has no record of this swap yet, so there's nothing to cancel. Call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; once it reports the swap on the hub, call sodax_swap_cancel again.",
   solved: "The swap is already complete; there's nothing to cancel.",
   cancelled: "The swap is already cancelled.",
   refunding: "The swap is already being refunded to the user.",

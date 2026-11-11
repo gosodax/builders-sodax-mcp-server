@@ -45,14 +45,13 @@ export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo, sent = fa
  * one, a swap already sent was sent from one of them.
  */
 function unsupportedSource(chain: ChainInfo, sources: ChainInfo[] = [], sent = false): ActionError {
-  const message = `Swaps from ${chain.name} aren't supported here yet.`;
-  if (sources.length === 0) return new ActionError("UNSUPPORTED_SOURCE", message);
   const names = sources.map(({ name }) => name).join(", ");
-  return new ActionError("UNSUPPORTED_SOURCE", message, {
-    nextStep: sent
-      ? `No swap can start from ${chain.name}: ask the user which chain they sent the swap from (one of ${names}) and pass its key.`
-      : `A swap can start only from ${names}: ask the user to swap from one of them.`,
-    details: { sourceChains: sources },
+  const nextStep = sent
+    ? `No swap can start from ${chain.name}: ask the user which chain they sent the swap from${names && ` (one of ${names})`} and pass its key.`
+    : names && `A swap can start only from ${names}: ask the user to swap from one of them.`;
+  return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`, {
+    nextStep: nextStep || undefined,
+    details: sources.length > 0 ? { sourceChains: sources } : undefined,
   });
 }
 

@@ -290,7 +290,12 @@ describe("sodax_swap_cancel", () => {
       stubBackend({ row: null });
       const submitted = claimedQuote();
       markSubmitted(submitted);
-      expect((await cancel({ txHash: TX, quoteId: submitted })).out).toMatchObject({ reason: "not_submitted" });
+      const { out } = await cancel({ txHash: TX, quoteId: submitted });
+      expect(out).toMatchObject({ reason: "not_submitted" });
+      // Track only reports here (queued while the backend's row lags), so the agent calls it without asking.
+      expect(out.nextStep).toBe(
+        "The swap service has no record of this swap yet, so there's nothing to cancel. Call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; once it reports the swap on the hub, call sodax_swap_cancel again.",
+      );
       clearQuoteCache();
       vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT);
       expect((await cancel({ txHash: TX, quoteId: cacheQuote().quoteId })).out).toMatchObject({

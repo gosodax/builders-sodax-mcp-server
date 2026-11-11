@@ -710,11 +710,11 @@ describe("sodax_swap_quote", () => {
 
   it("logs upstream text without the URLs or keys it quotes", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    const message = "rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012";
+    const message = `rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012 for 0x${"ab".repeat(20)}`;
     stubSwaps({ quote: () => Response.json({ message }, { status: 400 }) });
     await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ apiMessage: "rpc <url> refused <key>" }),
+      expect.objectContaining({ apiMessage: "rpc <url> refused <key> for *" }),
       "Swaps API call failed",
     );
   });
@@ -905,7 +905,10 @@ describe("sodax_swap_quote", () => {
     stubSwaps({ quote: () => Response.json({ message: "no", code: "x".repeat(65) }, { status: 400 }) });
     const warn = vi.spyOn(logger, "warn");
     await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ status: 400, apiCode: undefined }), expect.any(String));
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ "url.path": "/v1/swaps/quote", "http.status": 400, apiCode: undefined }),
+      "Swaps API call failed",
+    );
   });
 });
 

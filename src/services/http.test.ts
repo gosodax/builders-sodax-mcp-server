@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SODAX_API_BASE_URL,
@@ -8,6 +9,8 @@ import {
 } from "../constants.js";
 import { TOOL_CONTRACT } from "./apiDriftCheck.js";
 import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
+// Loads the client, which registers its routes.
+import "./sodaxApi.js";
 import { logger } from "./logger.js";
 import { runWithRequestContext } from "./requestContext.js";
 
@@ -287,33 +290,47 @@ describe("upstream call records", () => {
 
 describe("routeOf", () => {
   it.each([
-    ["/v1/be/intent/user/alice.near", "/v1/be/intent/user/*"],
-    ["/v1/be/moneymarket/position/12345", "/v1/be/moneymarket/position/*"],
-    ["/v1/be/config/spoke/0xa4b1.arbitrum", "/v1/be/config/spoke/*"],
-    [`/v1/be/intent/0x${"a".repeat(64)}`, "/v1/be/intent/*"],
-    ["/v1/be/intent/user/0x12", "/v1/be/intent/user/*"],
+    // A static word beats a parameter.
+    ["/v1/be/moneymarket/asset/all", "/v1/be/moneymarket/asset/all"],
+    ["/v1/be/moneymarket/asset/0xabc", "/v1/be/moneymarket/asset/*"],
+    // Off the contract: the tail is masked from the fifth segment, and an id-shaped segment before that.
+    ["/v1/be/config/spoke/sonic", "/v1/be/config/spoke/*"],
+    ["/v1/be/intent/user/a/b", "/v1/be/intent/user/*/*"],
+    ["/v1/swaps/intents/0xabc", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/alice.near", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/0xa4b1.arbitrum", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/GABC", "/v1/swaps/intents/*"],
+    [`/v1/relay/${"x".repeat(24)}`, "/v1/relay/*"],
     ["/v1/intent/quote", "/v1/intent/quote"],
-    ["/v1/swaps/quote", "/v1/swaps/quote"],
     ["/v1/relay/", "/v1/relay/"],
-  ])("masks the parameters of %s", (pathname, route) => {
+  ])("routes %s", (pathname, route) => {
     expect(routeOf(pathname)).toBe(route);
   });
 });
 
 describe("routeOf on every data API route the drift check knows", () => {
-  it("masks each parameter, whatever shape its value takes", () => {
-    const templates = Object.keys(TOOL_CONTRACT)
-      .map(key => key.split(" ")[1])
-      .filter(path => path.includes(":"));
-    expect(templates.length).toBeGreaterThan(0);
+  const templates = Object.keys(TOOL_CONTRACT).map(key => key.split(" ")[1]);
+  const routeOfTemplate = (template: string) => `/v1/be${template.replace(/:\w+/g, "*")}`;
+
+  it("logs the route itself: static segments kept, each parameter masked, whatever shape its value takes", () => {
+    expect(templates.some(path => path.includes(":"))).toBe(true);
     for (const template of templates) {
       // Hashes, addresses and the partner receiver are hex on the wire; anything else gets a short plain value,
       // the hardest to spot.
-      const path = template.replace(/:([A-Za-z]+)/g, (_, name: string) =>
+      const path = template.replace(/:(\w+)/g, (_, name: string) =>
         /hash|address|receiver/i.test(name) ? "0xabc123" : "x1",
       );
-      const route = routeOf(`/v1/be${path}`);
-      expect(route, template).not.toMatch(/0xabc123|x1/);
+      expect(routeOf(`/v1/be${path}`), template).toBe(routeOfTemplate(template));
     }
+  });
+
+  it("knows every path the data API client builds, so none falls back to the masked guess", () => {
+    const routes = new Set(templates.map(routeOfTemplate));
+    // Every path-shaped literal in the client: a ${…} right after a slash is a path parameter.
+    const literal = /[`"](\/(?:[\w-]+|\$\{\w+\})(?:\/(?:[\w-]+|\$\{\w+\}))*)/g;
+    const source = readFileSync(new URL("./sodaxApi.ts", import.meta.url), "utf8");
+    const built = [...source.matchAll(literal)].map(match => match[1]);
+    expect(built.length).toBeGreaterThan(20);
+    for (const each of built) expect(routes, each).toContain(routeOf(`/v1/be${each.replace(/\$\{\w+\}/g, "x1")}`));
   });
 });

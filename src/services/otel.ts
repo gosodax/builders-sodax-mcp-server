@@ -77,6 +77,9 @@ export const SERVICE_NAMESPACE = "builders-sodax-mcp-server";
 /** On the logger records that carry the SDK's own diagnostics, which the OTLP stream skips. */
 const DIAG_FIELD = "otel.diag";
 const DIAG_THROTTLE_MS = 5 * 60 * 1000;
+// sodax-observability's producer-liveness alert takes 10 silent minutes for a stopped producer. A quiet server still
+// sends this, so silence there means it is down or can't ship, not that nobody called it.
+const HEARTBEAT_MS = 5 * 60 * 1000;
 
 let started: OtelLogs | undefined;
 
@@ -92,16 +95,29 @@ export function startOtelLogs(env: NodeJS.ProcessEnv, options: OtelLogsOptions):
     return undefined;
   }
   const otel = initOtelLogs(config, options);
-  // Once shut down, the lines go back to stderr only.
-  started = {
+  // Through the logger like every record, so it proves the whole path, but at info whatever LOG_LEVEL says.
+  const beat = logger.child({}, { level: "info" });
+  const heartbeat = setInterval(() => {
+    const { written, exported, failed } = otel.stats();
+    beat.info(
+      { "unified_logging.written": written, "unified_logging.exported": exported, "unified_logging.failed": failed },
+      "Unified logging heartbeat",
+    );
+  }, HEARTBEAT_MS).unref();
+  // Once shut down, the lines go back to stderr only. A handle shut down late leaves a newer one alone.
+  const handle: OtelLogs = {
     ...otel,
     shutdown: () => {
-      detachOtelLogs();
-      started = undefined;
+      clearInterval(heartbeat);
+      if (started === handle) {
+        detachOtelLogs();
+        started = undefined;
+      }
       return otel.shutdown();
     },
   };
-  attachOtelLogs(started);
+  started = handle;
+  attachOtelLogs(handle);
   logger.info({ environment: config.environment }, "Unified logging on");
   return started;
 }

@@ -120,16 +120,37 @@ function extractApiErrorMessage(obj: Record<string, unknown>): string | undefine
   return undefined;
 }
 
+const isParam = (segment: string) => segment.startsWith(":");
+const paramCount = (parts: string[]) => parts.filter(isParam).length;
+
+// Fewest parameters first, so a static word wins: `asset/all` before `asset/:reserveAddress`.
+const routes: { parts: string[]; route: string }[] = [];
+
+/** Templates (`/intent/user/:userAddress`) of the routes a client calls under `baseUrl`. */
+export function addRouteTemplates(baseUrl: string, templates: readonly string[]): void {
+  const base = new URL(baseUrl).pathname;
+  for (const template of templates) {
+    const parts = `${base}${template}`.split("/");
+    routes.push({ parts, route: parts.map(part => (isParam(part) ? "*" : part)).join("/") });
+  }
+  routes.sort((a, b) => paramCount(a.parts) - paramCount(b.parts));
+}
+
+// What a static path segment looks like: a plain lowercase word. Hashes, addresses, account names and chain keys don't.
+const WORD = /^([a-z][a-z0-9_-]{0,22})?$/;
+
 /**
- * The route a path belongs to: the SODAX APIs put their parameters (addresses, hashes, chain keys, account names)
- * from the fifth segment on (`/v1/be/intent/user/<address>`), so those are masked, as is any id-shaped segment
- * (hex, or 24+ characters) before that.
+ * The route a path belongs to: a registered template's, static segments kept and parameters masked; else a guess that
+ * masks every segment from the fifth on (the SODAX APIs put their parameters there: `/v1/be/intent/user/<address>`)
+ * and, before that, any that isn't a plain word. Either way no hash, address or account name is logged.
  */
-export const routeOf = (pathname: string): string =>
-  pathname
-    .split("/")
-    .map((segment, i) => (i >= 5 || /^0x[0-9a-f]+$/i.test(segment) || segment.length >= 24 ? "*" : segment))
-    .join("/");
+export function routeOf(pathname: string): string {
+  const segments = pathname.split("/");
+  const known = routes.find(
+    ({ parts }) => parts.length === segments.length && parts.every((part, i) => isParam(part) || part === segments[i]),
+  );
+  return known?.route ?? segments.map((segment, i) => (i >= 5 || !WORD.test(segment) ? "*" : segment)).join("/");
+}
 
 /**
  * `fetch` with one log record per upstream call (#110), written once `read` has the body: the route with its ids

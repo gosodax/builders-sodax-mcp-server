@@ -22,11 +22,18 @@ import type {
   VolumeData,
   VolumeStats,
 } from "../types.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
+import { TOOL_CONTRACT } from "./apiDriftCheck.js";
+import { addRouteTemplates, fetchJson, fetchJsonOrNull } from "./http.js";
 import { logger } from "./logger.js";
 import { TtlCache } from "./ttlCache.js";
 
 const cache = new TtlCache();
+
+// The routes this client calls are the drift check's contract, so their log records keep their static segments (#110).
+addRouteTemplates(
+  SODAX_API_BASE_URL,
+  Object.keys(TOOL_CONTRACT).map(key => key.split(" ")[1]),
+);
 
 function apiUrl(path: string): string {
   return `${SODAX_API_BASE_URL}${path}`;

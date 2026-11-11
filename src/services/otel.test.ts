@@ -266,6 +266,53 @@ describe("startOtelLogs", () => {
   });
 });
 
+describe("the heartbeat", () => {
+  it("ships the export counts through the logger every five minutes whatever the log level, and stops at shutdown", async () => {
+    vi.useFakeTimers();
+    const timersBefore = vi.getTimerCount();
+    const exporter = new InMemoryLogRecordExporter();
+    // The logger is silent under vitest, so a record that reaches the exporter passed the hook at its own level.
+    const otel = startOtelLogs(ENV, { serviceVersion: "1", exporter });
+    expect(otel).toBeDefined();
+    if (!otel) return;
+    handles.push(otel);
+    const beats = async () => {
+      await otel.forceFlush();
+      return exporter.getFinishedLogRecords().filter(record => record.body === "Unified logging heartbeat");
+    };
+    vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+    expect(await beats()).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    const [beat, ...more] = await beats();
+    expect(more).toEqual([]);
+    expect(beat.severityText).toBe("INFO");
+    expect(beat.attributes).toEqual({
+      "unified_logging.written": expect.any(Number),
+      "unified_logging.exported": expect.any(Number),
+      "unified_logging.failed": 0,
+    });
+    await otel.shutdown();
+    expect(vi.getTimerCount()).toBe(timersBefore);
+  });
+});
+
+describe("a late shutdown", () => {
+  it("of a handle already replaced leaves the newer one attached", async () => {
+    const first = startOtelLogs(ENV, { serviceVersion: "1", exporter: new InMemoryLogRecordExporter() });
+    if (!first) throw new Error("not started");
+    await first.shutdown();
+    const exporter = new InMemoryLogRecordExporter();
+    const second = startOtelLogs(ENV, { serviceVersion: "1", exporter });
+    if (!second) throw new Error("not started");
+    handles.push(second);
+    await first.shutdown();
+    expect(startOtelLogs(ENV, { serviceVersion: "1", exporter })).toBe(second);
+    const write = vi.spyOn(second, "write");
+    buildLogger({ write: () => {} }, { level: "info" }).info("still shipped");
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe("the OTel modules stay unloaded without OTEL_LOGS_ENABLED", () => {
   const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 

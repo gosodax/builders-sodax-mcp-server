@@ -96,7 +96,7 @@ export async function registerDocsProxyTools(server: McpServer): Promise<number>
       return 0;
     }
 
-    logger.debug({ toolCount: tools.length }, "Registering docs tools as docs_* proxies");
+    logger.debug({ "tool.count": tools.length }, "Registering docs tools as docs_* proxies");
 
     for (const tool of tools) {
       try {
@@ -152,11 +152,11 @@ export async function registerDocsProxyTools(server: McpServer): Promise<number>
 
         registeredCount++;
       } catch (toolError) {
-        logger.error({ err: toolError, toolName: tool.name }, "Failed to register docs tool");
+        logger.error({ err: toolError, "gen_ai.tool.name": `docs_${tool.name}` }, "Failed to register docs tool");
       }
     }
 
-    logger.debug({ registeredCount }, "Registered tools from SODAX docs MCP");
+    logger.debug({ "tool.count": registeredCount }, "Registered tools from SODAX docs MCP");
   } catch (error) {
     logger.error({ err: error }, "Failed to register docs proxy tools");
   }

@@ -217,7 +217,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
   markSubmitted(quote.quoteId);
-  logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Submitted a swap deposit");
+  logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Submitted a swap deposit");
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 
@@ -297,7 +297,7 @@ export async function relayForRefund(
   }
   if (relayed) {
     markRelayedForRefund(quote);
-    logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Relayed an expired swap deposit for refund");
+    logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Relayed an expired swap deposit for refund");
     return { ...base, status: "expired_refunding" };
   }
   // The claim stays, so the next call tries the relay again.
@@ -335,7 +335,7 @@ function fromStatus(row: SubmitTxStatus, quote?: CachedQuote): TrackState {
     }
     default: {
       const known = STAGES.includes(row.status);
-      if (!known) logger.warn({ status: row.status }, "Unknown submit-tx status");
+      if (!known) logger.warn({ "upstream.status": row.status }, "Unknown submit-tx status");
       // A status added upstream may be final: worth polling only while the quote can still be filled.
       const fillable = quote !== undefined && Date.now() < deadlineMs(quote);
       if (!known && !fillable) return { status: "unknown" };

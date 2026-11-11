@@ -85,7 +85,7 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
     const tools = await fetchDocsTools({ force: true });
 
     if (tools.length > 0) {
-      logger.info({ toolCount: tools.length }, "✅ SDK docs proxy initialized");
+      logger.info({ "tool.count": tools.length }, "✅ SDK docs proxy initialized");
       return true;
     }
     logger.warn("⚠️ SDK docs returned 0 tools");
@@ -95,12 +95,12 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
 
   // Retry if we haven't exceeded max attempts
   if (retryCount < MAX_DOCS_RETRIES - 1) {
-    logger.info({ delayMs: DOCS_RETRY_DELAY }, "Retrying SDK docs proxy init");
+    logger.info({ "retry.delay_ms": DOCS_RETRY_DELAY }, "Retrying SDK docs proxy init");
     await new Promise(resolve => setTimeout(resolve, DOCS_RETRY_DELAY));
     return warmDocsCache(retryCount + 1);
   }
 
-  logger.warn({ maxAttempts: MAX_DOCS_RETRIES }, "⚠️ SDK docs proxy unavailable. Meta-tools still available.");
+  logger.warn({ "retry.max_attempts": MAX_DOCS_RETRIES }, "⚠️ SDK docs proxy unavailable. Meta-tools still available.");
   // Alert loudly: a dead docs proxy silently degrades conceptual answers (see
   // the Mintlify migration incident). Best-effort — no-op if Discord isn't set.
   void notifyError(
@@ -467,7 +467,7 @@ function listen(app: Express, swapToolsEnabled: boolean): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
     logger.info(
-      { port, sodaxEnv: SODAX_ENV, swapToolsEnabled },
+      { port, "sodax.env": SODAX_ENV, "swap_tools.enabled": swapToolsEnabled },
       `SODAX Builders MCP server running on http://0.0.0.0:${port}`,
     );
     // #38: announce the server is online to Discord (silent when no webhook set).

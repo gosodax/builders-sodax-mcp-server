@@ -36,7 +36,7 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       return toResult(await run(args));
     } catch (error) {
       // The logger strips URLs from `err`: SDK and viem errors carry the RPC URL.
-      if (!(error instanceof ActionError)) logger.error({ err: error, tool: name }, "Swap tool failed");
+      if (!(error instanceof ActionError)) logger.error({ err: error, "gen_ai.tool.name": name }, "Swap tool failed");
       const failure =
         error instanceof ActionError ? error : new ActionError("INTERNAL", "The tool failed unexpectedly.");
       if (ALERTED_CODES.includes(failure.code)) {

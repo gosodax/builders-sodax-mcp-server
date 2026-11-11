@@ -15,7 +15,7 @@ import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { PostHog } from "posthog-node";
 import { CHAIN_KEY_PATTERN } from "../constants.js";
 import { errorName, logger } from "./logger.js";
-import { callerKeyHash, getRequestContext, runWithRequestContext } from "./requestContext.js";
+import { callerKeyTag, getRequestContext, runWithRequestContext } from "./requestContext.js";
 import { getToolModule, toolGroup } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
       "tool.outcome": outcome.success ? "ok" : "error",
       "error.type": outcome.error_code,
       // Not `api_key.*`: the gateway's redaction masks values under any key that names an API key.
-      "caller.key_hash": getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined,
+      "caller.key_hash": callerKeyTag(),
       ...(resolveToolGroup(toolName) === "swap" && {
         "swap.status": str(out.status),
         "quote.id": str(out.quoteId),

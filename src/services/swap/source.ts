@@ -52,7 +52,10 @@ const unsupportedSource = (chain: ChainInfo) =>
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
-  logger.error({ chainKey, field, token }, "The live SODAX config differs from the SDK's");
+  logger.error(
+    { "chain.key": chainKey, field, "token.address": token },
+    "The live SODAX config differs from the SDK's",
+  );
   return new ActionError("SWAP_MISMATCH", "The SODAX config doesn't agree with the SDK's.", { details: { chainKey } });
 }
 
@@ -111,7 +114,7 @@ export async function chainRead<T>(chain: ChainInfo, op: string, read: () => Pro
   try {
     return await read();
   } catch {
-    logger.warn({ chainKey: chain.key, op }, "Chain read failed");
+    logger.warn({ "chain.key": chain.key, "sdk.call": op }, "Chain read failed");
     throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${chain.name} right now.`);
   }
 }

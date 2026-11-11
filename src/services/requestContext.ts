@@ -43,6 +43,11 @@ export function callerKeyHash(): string {
     .digest("hex");
 }
 
+/** The caller as log records name it (`caller.key_hash`): 16 characters of the hash, none without a key. */
+export function callerKeyTag(): string | undefined {
+  return getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined;
+}
+
 /** stdio only. In HTTP mode a caller without a key stays keyless. */
 export function setFallbackRequestContext(context: RequestContext): void {
   fallback = context;

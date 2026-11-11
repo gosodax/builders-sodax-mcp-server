@@ -75,7 +75,10 @@ describe("sodax_swap_track", () => {
     });
     expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
-    expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
+    expect(logger.info).toHaveBeenCalledWith(
+      { "chain.key": ARBITRUM, "quote.id": quoteId },
+      "Submitted a swap deposit",
+    );
     const [submit] = submits(calls);
     expect(submit.body).toEqual({
       txHash: TX,
@@ -241,7 +244,7 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("track it with the quoteId it was made from. Without that quoteId, tell the user");
     expect(out.nextStep).toContain("SODAX has been alerted to recover it, and they must not send it again");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "other_quote_deposit", txHash: TX, quoteId: other.quoteId }),
+      expect.objectContaining({ alert: "other_quote_deposit", "tx.hash": TX, "quote.id": other.quoteId }),
       expect.any(String),
     );
   });
@@ -254,7 +257,7 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("from another address than its fromAddress");
     expect(out.nextStep).toContain("SODAX has been alerted");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "other_sender_deposit", txHash: TX, quoteId }),
+      expect.objectContaining({ alert: "other_sender_deposit", "tx.hash": TX, "quote.id": quoteId }),
       expect.any(String),
     );
     expect(submits(calls)).toEqual([]);
@@ -279,7 +282,7 @@ describe("sodax_swap_track", () => {
     expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits" });
     expect(out.nextStep).toContain("send each swap as its own transaction");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "multiple_deposits", txHash: TX, quoteId }),
+      expect.objectContaining({ alert: "multiple_deposits", "tx.hash": TX, "quote.id": quoteId }),
       expect.any(String),
     );
     expect(submits(calls)).toEqual([]);

@@ -34,6 +34,12 @@ beforeEach(() => {
   errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
 
+/** The fields of each swap_error alert logged, none of the other error records. */
+const alertFields = () =>
+  errors.mock.calls
+    .map(([fields]) => fields as { alert?: string; "error.type"?: string; "chain.key"?: string })
+    .filter(fields => fields.alert === "swap_error");
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -87,7 +93,7 @@ describe("registerActionTool", () => {
     expect(JSON.stringify(redactErr(logged.err))).not.toContain("KEY");
     const alerts = errors.mock.calls.filter(([fields]) => (fields as { alert?: string }).alert === "swap_error");
     expect(alerts).toHaveLength(1);
-    expect(alerts[0][0]).toMatchObject({ tool: "test_action_tool", code: "INTERNAL" });
+    expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "test_action_tool", "error.type": "INTERNAL" });
   });
 
   it("posts an unexpected error to Discord by its class only, never its message", async () => {
@@ -105,7 +111,7 @@ describe("registerActionTool", () => {
     await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
     await callFailingTool(new ActionError("RATE_LIMITED", "Slow down."));
     await callFailingTool(new ActionError("INVALID_ADDRESS", "Bad address."));
-    const alerted = errors.mock.calls.map(([fields]) => (fields as { code?: string }).code).filter(Boolean);
+    const alerted = alertFields().map(fields => fields["error.type"]);
     expect(alerted).toEqual(["SWAP_MISMATCH"]);
   });
 
@@ -121,7 +127,7 @@ describe("registerActionTool", () => {
     for (const chainKey of ["sonic", "0xa4b1.arbitrum", "sonic"]) {
       await callFailingTool(new ActionError("SWAP_MISMATCH", "The config doesn't agree.", { details: { chainKey } }));
     }
-    const chains = errors.mock.calls.map(([fields]) => (fields as { chainKey?: string }).chainKey).filter(Boolean);
+    const chains = alertFields().map(fields => fields["chain.key"]);
     expect(chains).toEqual(["sonic", "0xa4b1.arbitrum"]);
   });
 });

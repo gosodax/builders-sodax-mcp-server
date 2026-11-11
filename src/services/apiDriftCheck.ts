@@ -538,13 +538,13 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
   const details = buildDriftReportText(endpointGaps, paramIssues, requiredIssues, fieldIssues);
   if (!hasDrift) {
     logger.info(
-      { totalEndpoints: total, uncovered: uncovered.length },
+      { "drift.endpoints": total, "drift.uncovered": uncovered.length },
       `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
     );
   } else {
     // One record, the issues in it, so a boot with drift is one warning.
     logger.warn(
-      { issueCount, totalEndpoints: total, details },
+      { "drift.issues": issueCount, "drift.endpoints": total, details },
       `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`,
     );
   }

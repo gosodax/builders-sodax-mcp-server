@@ -301,8 +301,8 @@ function toActionError(error: unknown, route: string): ActionError {
     {
       "url.template": route,
       "http.response.status_code": status,
-      apiCode: code,
-      apiMessage: apiMessage && withoutIds(redact(apiMessage)),
+      "upstream.code": code,
+      "upstream.message": apiMessage && withoutIds(redact(apiMessage)),
     },
     "Swaps API call failed",
   );

@@ -333,7 +333,7 @@ describe("sodax_swap_quote", () => {
     expect(out.error.code).toBe("SWAP_MISMATCH");
     expect(out.nextStep).toContain("don't retry");
     expect(error).toHaveBeenCalledWith(
-      expect.objectContaining({ mismatch, srcChainKey: "0xa4b1.arbitrum", dataSha256: expect.any(String) }),
+      expect.objectContaining({ mismatch, "chain.key": "0xa4b1.arbitrum", "tx.data_sha256": expect.any(String) }),
       expect.any(String),
     );
   });
@@ -573,7 +573,11 @@ describe("sodax_swap_quote", () => {
       expect(out.nextStep).toContain("quoted far below market prices");
       expect(calls.map(call => call.path)).not.toContain("/intents");
       expect(error).toHaveBeenCalledWith(
-        expect.objectContaining({ alert: "swap_error", code: "PRICE_OFF_MARKET", chainKey: "0xa4b1.arbitrum" }),
+        expect.objectContaining({
+          alert: "swap_error",
+          "error.type": "PRICE_OFF_MARKET",
+          "chain.key": "0xa4b1.arbitrum",
+        }),
         expect.any(String),
       );
     });
@@ -714,7 +718,7 @@ describe("sodax_swap_quote", () => {
     stubSwaps({ quote: () => Response.json({ message }, { status: 400 }) });
     await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ apiMessage: "rpc <url> refused <key> for *" }),
+      expect.objectContaining({ "upstream.message": "rpc <url> refused <key> for *" }),
       "Swaps API call failed",
     );
   });
@@ -854,7 +858,7 @@ describe("sodax_swap_quote", () => {
     expect(calls.map(call => call.path)).not.toContain("/intents");
     // The alert names the chain, so another chain's disagreement alerts too.
     expect(error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "swap_error", code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" }),
+      expect.objectContaining({ alert: "swap_error", "error.type": "SWAP_MISMATCH", "chain.key": "0xa4b1.arbitrum" }),
       expect.any(String),
     );
   });
@@ -889,7 +893,10 @@ describe("sodax_swap_quote", () => {
       expect(out.error.code).toBe("SWAP_MISMATCH");
       expect(calls).toEqual([]);
       // Which token's packaged config is stale.
-      expect(error).toHaveBeenCalledWith(expect.objectContaining({ chainKey, token: address }), expect.any(String));
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ "chain.key": chainKey, "token.address": address }),
+        expect.any(String),
+      );
     },
   );
 
@@ -909,7 +916,7 @@ describe("sodax_swap_quote", () => {
       expect.objectContaining({
         "url.template": "/v1/swaps/quote",
         "http.response.status_code": 400,
-        apiCode: undefined,
+        "upstream.code": undefined,
       }),
       "Swaps API call failed",
     );

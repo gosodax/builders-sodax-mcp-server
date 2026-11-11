@@ -189,8 +189,15 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const usdOut = await usdValue(to.token.hubAsset, formatUnits(quoted, to.token.decimals));
   const usdNet = usd === null ? null : usd * (1 - (partnerFee?.bps ?? 0) / 10_000);
   if (usdNet !== null && usdOut !== null && usdOut < usdNet * MIN_MARKET_SHARE) {
-    const tokens = { inputToken: from.token.address, outputToken: to.token.address };
-    logger.warn({ srcChainKey: from.chain.key, dstChainKey: to.chain.key, ...tokens }, "A swap quote is off market");
+    logger.warn(
+      {
+        "chain.key": from.chain.key,
+        "dst_chain.key": to.chain.key,
+        "token.address": from.token.address,
+        "dst_token.address": to.token.address,
+      },
+      "A swap quote is off market",
+    );
     throw new ActionError("PRICE_OFF_MARKET", "The quoted amount is worth far less than the amount sent.", {
       details: { chainKey: from.chain.key, usdValue: usd?.toFixed(2), usdOut: usdOut.toFixed(2) },
     });
@@ -269,7 +276,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     const { srcChainKey, dstChainKey } = request;
     const dataSha256 = createHash("sha256").update(built.tx.data.toLowerCase()).digest("hex");
     logger.error(
-      { mismatch, srcChainKey, dstChainKey, txTo: built.tx.to, dataSha256 },
+      {
+        mismatch,
+        "chain.key": srcChainKey,
+        "dst_chain.key": dstChainKey,
+        "tx.to": built.tx.to,
+        "tx.data_sha256": dataSha256,
+      },
       "The Swaps API built a swap that doesn't match the quote",
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.", {

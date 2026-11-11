@@ -38,7 +38,7 @@ export async function checkRecipient(recipient: Recipient): Promise<RecipientChe
   try {
     ready = await recipientReady(chainType, token.address, address, amount);
   } catch {
-    logger.warn({ chainKey: recipient.chainKey }, "Couldn't check the recipient");
+    logger.warn({ "dst_chain.key": recipient.chainKey }, "Couldn't check the recipient");
     throw new ActionError("UPSTREAM_UNAVAILABLE", `Couldn't check the recipient on ${chainName}.`);
   }
   if (ready) return "ok";

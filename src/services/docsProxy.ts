@@ -245,10 +245,10 @@ async function fetchAndApply(gen: number): Promise<DocsTool[]> {
 
     if (cachedTools.length > 0) {
       lastFailedFetchAt = 0;
-      logger.debug({ toolCount: cachedTools.length }, "Fetched tools from SODAX docs MCP");
+      logger.debug({ "tool.count": cachedTools.length }, "Fetched tools from SODAX docs MCP");
     } else {
       lastFailedFetchAt = Date.now();
-      logger.warn({ upstreamCount: upstream.length }, "SODAX docs MCP returned no allowlisted tools");
+      logger.warn({ "upstream.tool_count": upstream.length }, "SODAX docs MCP returned no allowlisted tools");
     }
     return cachedTools;
   } catch (error) {

@@ -18,4 +18,4 @@ Closes #
 - [ ] Title follows Conventional Commits
 - [ ] Tests added or updated, and the repo's checks pass locally
 - [ ] No secrets, keys or `.env` files; new config or env vars are documented
-- [ ] If this changes an interface (ABI, message encoding, API, SDK type), the consumers are listed in the linked issue
+- [ ] If this changes an interface (a tool's name, description, schema or annotations, an HTTP endpoint or header, `server.json`), the consumers are listed in the linked issue

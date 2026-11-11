@@ -10,9 +10,20 @@ body:
     id: bug
     attributes:
       label: Describe the bug
-      description: What happens, and where (service, endpoint, page, contract).
+      description: What happens, and in which tool or endpoint.
     validations:
       required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: How you connected. Say whether you sent an API key, never the key itself.
+      value: |
+        MCP client:
+        Transport (/mcp, /sse or stdio):
+        Profile (all, builder or swap):
+        API key sent (yes or no):
+        Tool:
   - type: textarea
     id: reproduce
     attributes:

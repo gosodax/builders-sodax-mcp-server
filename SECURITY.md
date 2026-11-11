@@ -20,8 +20,8 @@ Include the affected component and version or commit, the impact, steps to repro
 
 ## Scope
 
-This policy covers the code in this repository (`gosodax/builders-sodax-mcp-server`). If you are not sure whether a finding belongs here, report it anyway and say so; a maintainer routes it.
+This policy covers the code in this repository (`gosodax/builders-sodax-mcp-server`) and the hosted server at `builders.sodax.com`. If you are not sure whether a finding belongs here, report it anyway and say so; a maintainer routes it.
 
 ## Security issue or ordinary bug?
 
-Treat it as a security issue if it can lead to loss or theft of funds, unauthorised access, leaked or reusable keys or signatures, forged or replayed cross-chain messages, or malicious code reaching a release. Anything else is an ordinary bug: open a public issue.
+Treat it as a security issue if it can lead to loss or theft of funds, unauthorised access, leaked or reusable keys or signatures, forged or replayed cross-chain messages, malicious code reaching a release, or a request that crashes or takes down the hosted server. Anything else is an ordinary bug: open a public issue.

@@ -5,7 +5,13 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { getRequestContext, parseApiKey, runWithRequestContext, setFallbackRequestContext } from "./requestContext.js";
+import {
+  getRequestContext,
+  parseApiKey,
+  runWithRequestContext,
+  setFallbackRequestContext,
+  withoutCredentials,
+} from "./requestContext.js";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -18,6 +24,16 @@ describe("runWithRequestContext", () => {
     setFallbackRequestContext({ apiKey: "stdio" });
     expect(getRequestContext().apiKey).toBe("stdio");
     expect(runWithRequestContext({}, () => getRequestContext().apiKey)).toBeUndefined();
+  });
+});
+
+describe("withoutCredentials", () => {
+  it("keeps the ids the logs need and drops what a caller must not share", () => {
+    const shared = runWithRequestContext(
+      { apiKey: "sodax_k", partnerFee: { address: "0x1", bps: 10 } as never, requestId: "r1", clientId: "c1" },
+      () => withoutCredentials(),
+    );
+    expect(shared).toEqual({ requestId: "r1", clientId: "c1" });
   });
 });
 

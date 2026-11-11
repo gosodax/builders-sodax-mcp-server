@@ -36,6 +36,13 @@ export const RETRYABLE_CODES: readonly ActionErrorCode[] = [
 /** Failures that point at a bug, or at the swap service building or pricing a swap wrong: someone should look. */
 export const ALERTED_CODES: readonly ActionErrorCode[] = ["INTERNAL", "SWAP_MISMATCH", "PRICE_OFF_MARKET"];
 
+/** Swap failures on SODAX's side, not the caller's: their "Tool call" record is a warning (toolFailure.ts). */
+export const SODAX_SIDE_CODES: readonly ActionErrorCode[] = [
+  ...ALERTED_CODES,
+  "CHAIN_UNAVAILABLE",
+  "UPSTREAM_UNAVAILABLE",
+];
+
 const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SODAX swap service is unavailable.";
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {

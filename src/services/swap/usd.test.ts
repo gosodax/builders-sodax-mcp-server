@@ -39,13 +39,14 @@ describe("usdValue", () => {
   });
 
   it("reads the oracle without the caller's key, since every caller shares its prices and back-off", async () => {
-    let keyOnRead: string | undefined = "unread";
+    let onRead: { apiKey?: string; requestId?: string } = { apiKey: "unread" };
     vi.mocked(getSolverOracle).mockImplementation(async () => {
-      keyOnRead = getRequestContext().apiKey;
+      onRead = getRequestContext();
       return [];
     });
-    await runWithRequestContext({ apiKey: "sodax_caller_key" }, () => usdValue(HUB_USDC, "1"));
-    expect(keyOnRead).toBeUndefined();
+    await runWithRequestContext({ apiKey: "sodax_caller_key", requestId: "r1" }, () => usdValue(HUB_USDC, "1"));
+    // No key, so one caller's 401 can't blank the prices for all; the request's id stays, so the read is its own.
+    expect(onRead).toEqual({ requestId: "r1", clientId: undefined });
   });
 
   it.each([

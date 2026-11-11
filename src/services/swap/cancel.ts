@@ -6,7 +6,7 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { cancelPayload, createIntentPayload, intentChainId, userHubWallet } from "../sodax.js";
+import { cancelPayload, createIntentPayload, intentChainId, intentHash, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
 import { type CachedQuote, claimDeposit } from "./quoteCache.js";
@@ -46,7 +46,12 @@ export async function cancelSwap(input: {
   const txHash = input.txHash.toLowerCase();
   const source = await resolveSource(input);
   const { quote } = source;
-  const base: SwapRef = { txHash, chain: source.chain, ...(input.quoteId && { quoteId: input.quoteId }) };
+  const base: SwapRef = {
+    txHash,
+    chain: source.chain,
+    ...(input.quoteId && { quoteId: input.quoteId }),
+    ...(quote && { intentHash: intentHash(quote.intent) }),
+  };
   // The caller mixed up two swaps: this quote's deposit is another tx.
   if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) {
     throw quoteMismatch("That quote was used by another transaction.");
@@ -79,7 +84,7 @@ export async function cancelSwap(input: {
   const differs = quote ? differingFields(quote.intent, intent) : [];
   if (differs.length > 0) {
     logger.error(
-      { chainKey: source.chain.key, quoteId: quote?.quoteId, fields: differs },
+      { "chain.key": source.chain.key, "quote.id": quote?.quoteId, fields: differs },
       "The hub intent isn't the quoted one",
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service returned a different intent than the one quoted.", {
@@ -87,7 +92,7 @@ export async function cancelSwap(input: {
     });
   }
   if (!quote && !(await isDepositsIntent(source, txHash, intent))) {
-    logger.error({ chainKey: source.chain.key }, "The hub intent isn't the tracked deposit's");
+    logger.error({ "chain.key": source.chain.key }, "The hub intent isn't the tracked deposit's");
     throw new ActionError("SWAP_MISMATCH", "The swap service returned an intent that isn't this deposit's.", {
       details: { chainKey: source.chain.key },
     });
@@ -193,7 +198,7 @@ async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{
     !same(message.payload, payload)
   ) {
     logger.error(
-      { chainKey: source.chain.key, txTo: tx.to },
+      { "chain.key": source.chain.key, "tx.to": tx.to },
       "The Swaps API built a cancel that doesn't match the intent",
     );
     throw new ActionError("SWAP_MISMATCH", "The swap service built a different cancel than expected.", {

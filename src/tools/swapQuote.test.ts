@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
 import { callerKeyHash, setFallbackRequestContext } from "../services/requestContext.js";
-import { type IntentJson, blockNumber, rebuildSwapTx, recipientReady, userHubWallet } from "../services/sodax.js";
+import {
+  type IntentJson,
+  blockNumber,
+  intentHash,
+  rebuildSwapTx,
+  recipientReady,
+  userHubWallet,
+} from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
@@ -195,6 +202,7 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out).toMatchObject({
       status: "ready",
+      intentHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       fromAddress: USER,
       toAddress: USER,
       expiresAt: new Date(Number(DEADLINE) * 1000).toISOString(),
@@ -229,6 +237,11 @@ describe("sodax_swap_quote", () => {
       relayData: { address: HUB_WALLET },
       minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
     });
+    const cached = getCachedQuote(String(out.quoteId), callerKeyHash()) as Exclude<
+      ReturnType<typeof getCachedQuote>,
+      string | undefined
+    >;
+    expect(out.intentHash).toBe(intentHash(cached.intent));
     expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
     expect(out.nextStep).toContain("the sender's own address: make sure they control it on Sonic");
@@ -320,7 +333,7 @@ describe("sodax_swap_quote", () => {
     expect(out.error.code).toBe("SWAP_MISMATCH");
     expect(out.nextStep).toContain("don't retry");
     expect(error).toHaveBeenCalledWith(
-      expect.objectContaining({ mismatch, srcChainKey: "0xa4b1.arbitrum", dataSha256: expect.any(String) }),
+      expect.objectContaining({ mismatch, "chain.key": "0xa4b1.arbitrum", "tx.data_sha256": expect.any(String) }),
       expect.any(String),
     );
   });
@@ -560,7 +573,11 @@ describe("sodax_swap_quote", () => {
       expect(out.nextStep).toContain("quoted far below market prices");
       expect(calls.map(call => call.path)).not.toContain("/intents");
       expect(error).toHaveBeenCalledWith(
-        expect.objectContaining({ alert: "swap_error", code: "PRICE_OFF_MARKET", chainKey: "0xa4b1.arbitrum" }),
+        expect.objectContaining({
+          alert: "swap_error",
+          "error.type": "PRICE_OFF_MARKET",
+          "chain.key": "0xa4b1.arbitrum",
+        }),
         expect.any(String),
       );
     });
@@ -697,11 +714,11 @@ describe("sodax_swap_quote", () => {
 
   it("logs upstream text without the URLs or keys it quotes", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    const message = "rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012";
+    const message = `rpc https://rpc.example/KEY refused sodax_Ab3dEfGhIjKlMnOpQrStUvWxYz012 for 0x${"ab".repeat(20)}`;
     stubSwaps({ quote: () => Response.json({ message }, { status: 400 }) });
     await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ apiMessage: "rpc <url> refused <key>" }),
+      expect.objectContaining({ "upstream.message": "rpc <url> refused <key> for *" }),
       "Swaps API call failed",
     );
   });
@@ -841,7 +858,7 @@ describe("sodax_swap_quote", () => {
     expect(calls.map(call => call.path)).not.toContain("/intents");
     // The alert names the chain, so another chain's disagreement alerts too.
     expect(error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "swap_error", code: "SWAP_MISMATCH", chainKey: "0xa4b1.arbitrum" }),
+      expect.objectContaining({ alert: "swap_error", "error.type": "SWAP_MISMATCH", "chain.key": "0xa4b1.arbitrum" }),
       expect.any(String),
     );
   });
@@ -876,7 +893,10 @@ describe("sodax_swap_quote", () => {
       expect(out.error.code).toBe("SWAP_MISMATCH");
       expect(calls).toEqual([]);
       // Which token's packaged config is stale.
-      expect(error).toHaveBeenCalledWith(expect.objectContaining({ chainKey, token: address }), expect.any(String));
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ "chain.key": chainKey, "token.address": address }),
+        expect.any(String),
+      );
     },
   );
 
@@ -892,7 +912,14 @@ describe("sodax_swap_quote", () => {
     stubSwaps({ quote: () => Response.json({ message: "no", code: "x".repeat(65) }, { status: 400 }) });
     const warn = vi.spyOn(logger, "warn");
     await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ status: 400, apiCode: undefined }), expect.any(String));
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        "url.template": "/v1/swaps/quote",
+        "http.response.status_code": 400,
+        "upstream.code": undefined,
+      }),
+      "Swaps API call failed",
+    );
   });
 });
 

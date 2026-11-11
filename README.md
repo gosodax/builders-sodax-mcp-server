@@ -97,8 +97,8 @@ every transaction; the server never signs.
 
 1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
    destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
-   needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId` and
-   `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
+   needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
+   `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
@@ -334,7 +334,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 ### Environment Variables
 
 The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
-flag; the SODAX SDK needs Node ≥ 22.12.0). Copy `.env.example` to `.env` for local development;
+flag; the OpenTelemetry SDK that ships the logs needs Node ≥ 22.15.0). Copy `.env.example` to `.env` for local development;
 if no `.env` exists, every variable falls back to the default below. In production,
 Coolify injects these directly into the process environment.
 
@@ -353,6 +353,12 @@ Coolify injects these directly into the process environment.
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), API-drift summaries and the swap alerts (see *Operating the swap tools*). Empty/unset = silent (staging/local). |
+| `OTEL_LOGS_ENABLED` | - | `true` ships every log record to SODAX unified logging over OTLP as well as stderr; anything else, stderr only. With it set, the next three are required: a missing or bad one warns at startup and leaves shipping off. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | - | The log gateway's URL: the full `/v1/logs` URL, used as given, or the gateway's bare origin, which gets `/v1/logs` appended; a trailing slash is dropped. `https` unless `DEPLOYMENT_ENV=dev`. |
+| `OTEL_LOGS_TOKEN` | - | The bearer token for that gateway, one per environment. Secret: the deployment's env only. The server sends it as its only header: `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_LOGS_HEADERS` must stay unset. |
+| `DEPLOYMENT_ENV` | - | `prod`, `canary`, `staging` or `dev`: the `deployment.environment` the records carry. `staging` is the server that follows `development`. Independent of `SODAX_ENV`, which picks the API host: the test server runs `SODAX_ENV=canary` with `DEPLOYMENT_ENV=staging`. |
+| `ORIGIN` | - | The host's label, as `sodax.origin` on the records. Optional. |
+| `GIT_SHA`, `SOURCE_COMMIT` | package version | The running commit, the records' `service.version` (`GIT_SHA` first). The Docker image sets `GIT_SHA` from the `SOURCE_COMMIT` build argument, which Coolify passes when "Include Source Commit in Build" is on. A value that isn't a git sha is ignored. |
 
 ## Deployment
 
@@ -385,9 +391,9 @@ docker-compose up -d
 
 ### Deployment notes
 
-The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
-- `PORT=3000`
-- `NODE_ENV=production`
+Coolify builds the `Dockerfile`, the same image CI builds. The image sets `NODE_ENV=production`; `PORT` defaults to
+3000. With Coolify's "Include Source Commit in Build" on, the image also sets `GIT_SHA`, the version the log records
+carry (see [Logging](#logging)). `nixpacks.toml` is kept for a nixpacks build, which sets no `GIT_SHA`.
 
 ### Operating the swap tools
 
@@ -399,13 +405,59 @@ Swap quotes live in the server's memory, so:
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 
+## Logging
+
+Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem (over SSE, the tool calls' ids are on the `POST /messages` responses, not on the stream), and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
+
+| Record | Level | When | Attributes |
+|---|---|---|---|
+| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`, `/messages`, `/sse`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile` (not on `/messages`, which runs with its SSE session's), `caller.key_status` (`valid`: a SODAX key's shape, the backend decides the rest; `malformed`; `missing`), `caller.key_hash` with a valid key, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
+| `Tool call` | info for the caller's failure, `warn` for one on SODAX's side, `error` for a bug | each tool call, and each call the SDK refuses before a handler runs | `gen_ai.tool.name` (`other` for a name the server doesn't have), `tool.outcome` (`ok` or `error`), `error.type`, `duration.ms`, `caller.key_hash` with a key; swap tools add `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`, `intent.hash`, `chain.key`, `dst_chain.key`, `swap.usd_bucket`; a bug adds `exception.type` and its stack frames, never its message |
+| `Upstream call` | info, `warn` on failure | each call to the SODAX APIs, the solver, the relay and the docs MCP | `http.request.method`, `server.address`, `url.template` (static segments kept, parameters masked), `http.response.status_code`, `duration.ms`, `error.type` |
+| `Chain read` | info, `warn` on failure | each bounded SDK or RPC read | `sdk.call`, `chain.key`, `duration.ms`, `error.type` |
+| `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
+| `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
+| `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
+| `SODAX Builders MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
+| `SODAX SDK warning`, `SODAX SDK error` | warn, error | the SDK's own log lines | `sdk.message` (URLs stripped) |
+| `Swaps API call failed` | warn | a Swaps API error answer | `url.template`, `http.response.status_code`, `upstream.code`, `upstream.message` (ids masked) |
+| an operator alert, titled by its kind | error | a swap needs an operator: a deposit that can't be submitted or doesn't match its quote, a refund that couldn't start, a swap the service built wrong (`SWAP_MISMATCH`) or quoted off market (`PRICE_OFF_MARKET`), a swap tool's unexpected failure. It also goes to Discord, which shows the first 12 characters of `caller.key_hash` | `alert` (the kind), `chain.key`, `tx.hash`, `quote.id`, `deadline`, `gen_ai.tool.name`, `error.type`, `reason`, `caller.key_hash` |
+| `Rate limited` | warn | a limiter's first refusal per client per window | `http.route`, `rate_limit.limit`, `rate_limit.window_ms`, `client.ip_hash` as above |
+| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `sse.sessions`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`; `unified_logging.gauges_failed` when they couldn't be read |
+
+A record's body is a constant (`Body = 'Tool call'`); what varies is in its attributes. One failure is one record of each kind: the data services don't log what `Upstream call`, `Chain read` and `Tool call` already say.
+
+`error.type` says why:
+
+- **`HTTP request`**, the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`,
+  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
+  `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST`,
+  `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
+- **`Tool call` the SDK refused** before a handler ran: `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED`,
+  `TOOL_CALL_REFUSED`.
+- **A swap tool's failure**: the code the tool returned.
+- **A data or docs tool's failure**, by its cause:
+  - `UPSTREAM_NOT_FOUND`, `UPSTREAM_4XX`, `UPSTREAM_5XX`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`,
+    `UPSTREAM_BAD_RESPONSE`;
+  - `RATE_LIMITED` (a 429 on the caller's key) or `UPSTREAM_RATE_LIMITED` (a 429 on a keyless call, so this
+    server's shared egress);
+  - `INVALID_INPUT`;
+  - `DOCS_RPC_ERROR`, `DOCS_TOOL_ERROR`, `DOCS_UNAVAILABLE` (a 4xx from the docs server: its endpoint moved or gone);
+  - `INTERNAL` when nothing explains it.
+
+A `Tool call` is at `warn` when the failure is on SODAX's side: `UPSTREAM_RATE_LIMITED`, `UPSTREAM_5XX`,
+`UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`, `UPSTREAM_BAD_RESPONSE`, `DOCS_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`,
+`CHAIN_UNAVAILABLE`, `SWAP_MISMATCH`, `PRICE_OFF_MARKET`, `INTERNAL`.
+
+Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can; a failure to start leaves the logs on stderr and the server serving. `GET /health` reports `unifiedLogging` (`on`, records `written`, `exported` and `failed`, `lastFailureAt`), so a token or allowlist problem shows there before Grafana; the heartbeat keeps a quiet server from looking like a stopped producer. A batch the gateway accepted but partly rejected counts as exported and is logged as a warning. The hub's `unified-logging-connect` skill has the connect check.
+
 ## API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Landing page |
 | `GET /api` | Server info, tool list and profiles |
-| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose |
+| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose; `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
@@ -414,6 +466,9 @@ Swap quotes live in the server's memory, so:
 
 `/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
 Read `error.message`; `error` is an object here.
+
+Every MCP response carries an `X-Request-Id` header (over SSE, on the `POST /messages` responses). Quote it when
+reporting a problem: the server's logs find the request by it.
 
 | Status | On `/mcp` | `error.code` |
 |--------|-----------|--------------|

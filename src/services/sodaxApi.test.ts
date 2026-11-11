@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_API_BASE_URL } from "../constants.js";
 
 vi.mock("./http.js", () => ({
+  addRouteTemplates: vi.fn(),
   fetchJson: vi.fn(),
   fetchJsonOrNull: vi.fn(),
 }));

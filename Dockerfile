@@ -47,6 +47,12 @@ RUN addgroup -g 1001 -S appgroup && \
 # Set environment
 ENV NODE_ENV=production
 
+# The running commit, the `service.version` of the unified logging records. Coolify passes it as a build argument
+# when "Include Source Commit in Build" is on; without it the records carry the package version. Last, so a new
+# commit rebuilds no other layer.
+ARG SOURCE_COMMIT=""
+ENV GIT_SHA=${SOURCE_COMMIT}
+
 USER appuser
 
 CMD ["node", "--env-file-if-exists=.env", "dist/index.js"]

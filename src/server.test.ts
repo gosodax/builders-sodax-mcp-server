@@ -1,30 +1,97 @@
 import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createServer } from "./server.js";
+import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer, seedToolRegistry } from "./server.js";
+import { logger } from "./services/logger.js";
 import { type ToolSelection, type Toolsets, describeProfiles, selectToolsets } from "./services/profiles.js";
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
 beforeEach(() => {
-  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+  // What fetch rejects with when the network is down.
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function toolList(toolsets: Toolsets) {
+/** A client connected in memory to a server with these toolsets. */
+async function connect(toolsets: ToolSelection): Promise<Client> {
   const server = await createServer(toolsets);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "test", version: "0.0.0" });
   await client.connect(clientTransport);
+  return client;
+}
+
+/** The fields of each "Tool call" record the spy saw. */
+const toolCalls = (info: MockInstance) =>
+  info.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+
+async function toolList(toolsets: Toolsets) {
+  const client = await connect(toolsets);
   // A server with no tools declares no tools capability, and tools/list then fails.
   const tools = client.getServerCapabilities()?.tools ? (await client.listTools()).tools : [];
   await client.close();
   return tools;
 }
+
+describe("a call the SDK refuses before any handler runs", () => {
+  it("gets a Tool call record: an unknown tool as other, invalid arguments under the tool's name", async () => {
+    const info = vi.spyOn(logger, "info");
+    const client = await connect({ builder: true, swap: false });
+    expect((await client.callTool({ name: "sodax_nope", arguments: {} })).isError).toBe(true);
+    expect((await client.callTool({ name: "sodax_get_intent", arguments: {} })).isError).toBe(true);
+    await client.close();
+    const records = toolCalls(info);
+    expect(records).toContainEqual(
+      expect.objectContaining({ "gen_ai.tool.name": "other", "tool.outcome": "error", "error.type": "TOOL_NOT_FOUND" }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        "gen_ai.tool.name": "sodax_get_intent",
+        "tool.outcome": "error",
+        "error.type": "INVALID_ARGUMENTS",
+      }),
+    );
+    expect(JSON.stringify(records)).not.toContain("sodax_nope");
+  });
+
+  it("leaves a tool's own error result to the tool's record: one record, not two, naming the cause", async () => {
+    const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
+    const client = await connect({ builder: true, swap: false });
+    // The data API is offline here, so the handler runs and returns its failure as isError.
+    const result = await client.callTool({
+      name: "sodax_get_intent",
+      arguments: { intentHash: `0x${"ab".repeat(32)}` },
+    });
+    await client.close();
+    expect(result.isError).toBe(true);
+    // SODAX's side, not the caller's: a warning.
+    expect(toolCalls(info)).toEqual([]);
+    expect(toolCalls(warn)).toEqual([
+      expect.objectContaining({
+        "gen_ai.tool.name": "sodax_get_intent",
+        "tool.outcome": "error",
+        "error.type": "UPSTREAM_UNREACHABLE",
+      }),
+    ]);
+  });
+
+  it("names a swap tool called on a connection without a key", async () => {
+    seedToolRegistry({ builder: true, swap: true });
+    const info = vi.spyOn(logger, "info");
+    const client = await connect({ builder: true, swap: false });
+    expect((await client.callTool({ name: "sodax_swap_track", arguments: {} })).isError).toBe(true);
+    await client.close();
+    expect(toolCalls(info)).toContainEqual(
+      expect.objectContaining({ "gen_ai.tool.name": "sodax_swap_track", "error.type": "TOOL_NOT_FOUND" }),
+    );
+  });
+});
 
 describe("builder tools", () => {
   // Recorded before profiles existed: names, descriptions, schemas and annotations must not change.
@@ -50,11 +117,7 @@ describe("builder tools", () => {
 
 describe("instructions", () => {
   async function instructions(toolsets: ToolSelection): Promise<string> {
-    const server = await createServer(toolsets);
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    const client = new Client({ name: "test", version: "0.0.0" });
-    await client.connect(clientTransport);
+    const client = await connect(toolsets);
     const text = client.getInstructions() ?? "";
     await client.close();
     return text;

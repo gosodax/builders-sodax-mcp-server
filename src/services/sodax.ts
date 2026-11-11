@@ -234,7 +234,7 @@ export async function bounded<T>(
     logger.info({ ...fields, "duration.ms": Date.now() - started }, "Chain read");
     return result;
   } catch (error) {
-    logger.warn({ ...fields, "duration.ms": Date.now() - started, "error.code": errorName(error) }, "Chain read");
+    logger.warn({ ...fields, "duration.ms": Date.now() - started, "error.type": errorName(error) }, "Chain read");
     throw new Error("SDK call failed");
   } finally {
     clearTimeout(timer);

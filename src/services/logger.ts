@@ -141,7 +141,7 @@ if (requested !== undefined && !requestedIsValid) {
 }
 
 /**
- * A thrown value's name for an `error.code` attribute: what failed, never its text. Node's errors carry a code
+ * A thrown value's name for an `error.type` attribute: what failed, never its text. Node's errors carry a code
  * themselves (ECONNRESET); fetch wraps the reason in `cause.code` (ECONNREFUSED, UND_ERR_CONNECT_TIMEOUT) under a
  * bare TypeError. Only a code-shaped value is taken, since viem puts the raw RPC error object in `cause`.
  */

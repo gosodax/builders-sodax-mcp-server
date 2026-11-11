@@ -158,14 +158,18 @@ describe("HTTP routes", () => {
     // Routed like the handlers: "/MCP/" is /mcp.
     expect((await post("/MCP/", call, ip)).status).toBe(200);
     await fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } });
-    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method": "tools/call" });
-    expect(fields).toMatchObject({ "http.method": "POST", "http.status": 200, "duration.ms": expect.any(Number) });
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "tools/call" });
+    expect(fields).toMatchObject({
+      "http.request.method": "POST",
+      "http.response.status_code": 200,
+      "duration.ms": expect.any(Number),
+    });
     expect(fields["request.id"]).toMatch(/^[0-9a-f-]{36}$/);
     // No POSTHOG_CLIENT_ID_SECRET here, so no client hash: the plain one could be reversed to the IP.
     expect(fields["client.ip_hash"]).toBeUndefined();
     expect(contextIds.get("Tool call")).toBe(fields["request.id"]);
     expect(
-      info.mock.calls.filter(([f, msg]) => msg === "HTTP request" && f["mcp.method"] === "tools/call"),
+      info.mock.calls.filter(([f, msg]) => msg === "HTTP request" && f["mcp.method.name"] === "tools/call"),
     ).toHaveLength(1);
     // /health is not an MCP request.
     expect(info.mock.calls.some(([fields, msg]) => msg === "HTTP request" && fields["http.route"] === "/health")).toBe(
@@ -208,7 +212,11 @@ describe("HTTP routes", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST, DELETE");
     expect((await res.json()).error.code).toBe(-32000);
-    await httpRequestRecord(info, { "http.method": "GET", "http.route": "/mcp", "http.status": 405 });
+    await httpRequestRecord(info, {
+      "http.request.method": "GET",
+      "http.route": "/mcp",
+      "http.response.status_code": 405,
+    });
   });
 
   it("answers invalid JSON on /mcp with a JSON-RPC parse error, and logs the request as other", async () => {
@@ -217,14 +225,14 @@ describe("HTTP routes", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32700);
     // body-parser leaves {} behind a failed parse: a body, with no protocol method in it.
-    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 400 });
-    expect(fields["mcp.method"]).toBe("other");
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "http.response.status_code": 400 });
+    expect(fields["mcp.method.name"]).toBe("other");
   });
 
   it("logs a method the protocol doesn't know as other, so a client can't shape the record", async () => {
     const info = vi.spyOn(logger, "info");
     await post("/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "Tools/LIST" }), "198.51.100.46");
-    await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method": "other" });
+    await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "other" });
   });
 
   it("answers an oversized body on /mcp with 413 in JSON", async () => {
@@ -240,7 +248,11 @@ describe("HTTP routes", () => {
     const res = await post("/mcp", JSON.stringify(batch), "198.51.100.4");
     expect(res.status).toBe(400);
     expect((await res.json()).error.message).toContain(`at most ${MCP_MAX_BATCH_SIZE} messages`);
-    await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 400, "mcp.method": "batch" });
+    await httpRequestRecord(info, {
+      "http.route": "/mcp",
+      "http.response.status_code": 400,
+      "mcp.method.name": "batch",
+    });
   });
 
   it("turns a throwing /mcp handler into a JSON 500 and keeps serving", async () => {
@@ -250,7 +262,7 @@ describe("HTTP routes", () => {
     expect(failed.status).toBe(500);
     expect((await failed.json()).error.code).toBe(-32603);
     // At info: the failure itself is the error handler's "Unhandled HTTP error" record, with the stack.
-    await httpRequestRecord(info, { "http.route": "/mcp", "http.status": 500 });
+    await httpRequestRecord(info, { "http.route": "/mcp", "http.response.status_code": 500 });
 
     const res = await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.5");
     expect(res.status).toBe(200);
@@ -267,7 +279,11 @@ describe("HTTP routes", () => {
     const res = await post(endpoint, JSON.stringify(initialize(7)), ip);
     expect(res.status).toBe(202);
     await readUntil(reader, /event: message\ndata: .*"id":7/);
-    await httpRequestRecord(info, { "http.route": "/messages", "http.status": 202, "mcp.method": "initialize" });
+    await httpRequestRecord(info, {
+      "http.route": "/messages",
+      "http.response.status_code": 202,
+      "mcp.method.name": "initialize",
+    });
   });
 
   it("turns a throwing /sse handler into a JSON 500 and keeps serving", async () => {
@@ -313,8 +329,8 @@ describe("HTTP routes", () => {
     expect(res.status).toBe(429);
     expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
     // Refused before the body was parsed, and at debug: the limiter's own record is the one that ships.
-    const fields = await httpRequestRecord(debug, { "http.route": "/mcp", "http.status": 429 });
-    expect(fields["mcp.method"]).toBeUndefined();
+    const fields = await httpRequestRecord(debug, { "http.route": "/mcp", "http.response.status_code": 429 });
+    expect(fields["mcp.method.name"]).toBeUndefined();
     // Once per window, however many refusals follow.
     expect((await post("/mcp", JSON.stringify(initialize(2)), ip)).status).toBe(429);
     const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");

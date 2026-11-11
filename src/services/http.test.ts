@@ -243,10 +243,10 @@ describe("upstream call records", () => {
     const { host } = new URL(SODAX_API_BASE_URL);
     expect(info).toHaveBeenCalledWith(
       {
-        "http.method": "GET",
-        "url.host": host,
-        "url.path": "/v1/be/intent/user/*",
-        "http.status": 200,
+        "http.request.method": "GET",
+        "server.address": host,
+        "url.template": "/v1/be/intent/user/*",
+        "http.response.status_code": 200,
         "duration.ms": expect.any(Number),
       },
       "Upstream call",
@@ -265,7 +265,11 @@ describe("upstream call records", () => {
     fetchSpy.mockResolvedValueOnce(new Response(stuck, { status: 200 }));
     await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("body timed out");
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ "url.path": "/v1/be/thing", "http.status": 200, "error.code": "TimeoutError" }),
+      expect.objectContaining({
+        "url.template": "/v1/be/thing",
+        "http.response.status_code": 200,
+        "error.type": "TimeoutError",
+      }),
       "Upstream call",
     );
     expect(info).not.toHaveBeenCalledWith(expect.anything(), "Upstream call");
@@ -276,15 +280,15 @@ describe("upstream call records", () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse('{"detail":"nope"}', { status: 503 }));
     await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toBeInstanceOf(HttpError);
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ "url.path": "/v1/be/thing", "http.status": 503 }),
+      expect.objectContaining({ "url.template": "/v1/be/thing", "http.response.status_code": 503 }),
       "Upstream call",
     );
     fetchSpy.mockRejectedValueOnce(Object.assign(new Error("boom"), { name: "TimeoutError" }));
     await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("boom");
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.code": "TimeoutError" }), "Upstream call");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "TimeoutError" }), "Upstream call");
     fetchSpy.mockRejectedValueOnce(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }));
     await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("fetch failed");
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.code": "ECONNREFUSED" }), "Upstream call");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "ECONNREFUSED" }), "Upstream call");
   });
 });
 

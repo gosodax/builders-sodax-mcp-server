@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createServer } from "./server.js";
+import { createServer, seedToolRegistry } from "./server.js";
 import { logger } from "./services/logger.js";
 import { type ToolSelection, type Toolsets, describeProfiles, selectToolsets } from "./services/profiles.js";
 
@@ -40,16 +40,51 @@ describe("a call the SDK refuses before any handler runs", () => {
     await client.close();
     const records = info.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
     expect(records).toContainEqual(
-      expect.objectContaining({ "tool.name": "other", "tool.outcome": "error", "error.code": "TOOL_NOT_FOUND" }),
+      expect.objectContaining({ "gen_ai.tool.name": "other", "tool.outcome": "error", "error.type": "TOOL_NOT_FOUND" }),
     );
     expect(records).toContainEqual(
       expect.objectContaining({
-        "tool.name": "sodax_get_intent",
+        "gen_ai.tool.name": "sodax_get_intent",
         "tool.outcome": "error",
-        "error.code": "INVALID_ARGUMENTS",
+        "error.type": "INVALID_ARGUMENTS",
       }),
     );
     expect(JSON.stringify(records)).not.toContain("sodax_nope");
+  });
+
+  it("leaves a tool's own error result to the tool's record: one record, not two", async () => {
+    const info = vi.spyOn(logger, "info");
+    const server = await createServer({ builder: true, swap: false });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    // The data API is offline here, so the handler runs and returns its failure as isError.
+    const result = await client.callTool({
+      name: "sodax_get_intent",
+      arguments: { intentHash: `0x${"ab".repeat(32)}` },
+    });
+    await client.close();
+    expect(result.isError).toBe(true);
+    const records = info.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toEqual([
+      expect.objectContaining({ "gen_ai.tool.name": "sodax_get_intent", "tool.outcome": "error" }),
+    ]);
+  });
+
+  it("names a swap tool called on a connection without a key", async () => {
+    seedToolRegistry({ builder: true, swap: true });
+    const info = vi.spyOn(logger, "info");
+    const server = await createServer({ builder: true, swap: false });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    expect((await client.callTool({ name: "sodax_swap_track", arguments: {} })).isError).toBe(true);
+    await client.close();
+    expect(info.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields)).toContainEqual(
+      expect.objectContaining({ "gen_ai.tool.name": "sodax_swap_track", "error.type": "TOOL_NOT_FOUND" }),
+    );
   });
 });
 

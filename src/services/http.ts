@@ -166,26 +166,32 @@ export async function timedFetch<T>(
   const { host, pathname } = new URL(url);
   const started = Date.now();
   const fields = () => ({
-    "http.method": init.method ?? "GET",
-    "url.host": host,
-    "url.path": routeOf(pathname),
+    "http.request.method": init.method ?? "GET",
+    "server.address": host,
+    "url.template": routeOf(pathname),
     "duration.ms": Date.now() - started,
   });
   let response: Response;
   try {
     response = await fetch(url, init);
   } catch (error) {
-    logger.warn({ ...fields(), "error.code": errorName(error) }, "Upstream call");
+    logger.warn({ ...fields(), "error.type": errorName(error) }, "Upstream call");
     throw error;
   }
   let body: T;
   try {
     body = await read(response);
   } catch (error) {
-    logger.warn({ ...fields(), "http.status": response.status, "error.code": errorName(error) }, "Upstream call");
+    logger.warn(
+      { ...fields(), "http.response.status_code": response.status, "error.type": errorName(error) },
+      "Upstream call",
+    );
     throw error;
   }
-  logger[ok(response) ? "info" : "warn"]({ ...fields(), "http.status": response.status }, "Upstream call");
+  logger[ok(response) ? "info" : "warn"](
+    { ...fields(), "http.response.status_code": response.status },
+    "Upstream call",
+  );
   return { response, body };
 }
 

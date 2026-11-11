@@ -144,10 +144,10 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
   logger[thrown === undefined ? "info" : "error"](
     {
       err: thrown,
-      "tool.name": toolName,
+      "gen_ai.tool.name": toolName,
       "duration.ms": durationMs,
       "tool.outcome": outcome.success ? "ok" : "error",
-      "error.code": outcome.error_code,
+      "error.type": outcome.error_code,
       // Not `api_key.*`: the gateway's redaction masks values under any key that names an API key.
       "caller.key_hash": getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined,
       ...(resolveToolGroup(toolName) === "swap" && {
@@ -182,8 +182,8 @@ function whereThrown(error: unknown): { type: string; stack?: string } {
  */
 export function withAnalytics(server: McpServer, clientId?: string): void {
   const originalTool = server.tool.bind(server);
-  // The names registered here, so a refused call is named only when its tool exists; and the calls that reached a
-  // handler, so the SDK's own refusals (unknown tool, invalid arguments) are the only ones logged below.
+  // A refused call is named only when its tool exists: registered here, or in the registry (a swap tool called without
+  // a key). `handled` holds the calls that reached a handler, so only the SDK's own refusals are logged below.
   const registered = new Set<string>();
   const handled = new WeakSet<object>();
 
@@ -248,7 +248,7 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
         const context = getRequestContext();
         runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, () =>
           logToolCall(
-            registered.has(name) ? name : "other",
+            registered.has(name) || getToolModule(name) ? name : "other",
             Date.now() - start,
             { success: false, error_code: refusalCode(result) },
             undefined,

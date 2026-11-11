@@ -25,13 +25,15 @@ export interface OtelLogsConfig {
 
 /** The settings behind `OTEL_LOGS_ENABLED=true`, or the variable that stops shipping (never its value). */
 export function otelLogsConfig(env: NodeJS.ProcessEnv): OtelLogsConfig | string {
-  const url = env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT?.trim();
+  const endpoint = env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT?.trim().replace(/\/+$/, "");
   const token = env.OTEL_LOGS_TOKEN?.trim();
   const environment = env.DEPLOYMENT_ENV?.trim() as DeploymentEnv | undefined;
   if (!environment || !DEPLOYMENT_ENVS.includes(environment)) {
     return `DEPLOYMENT_ENV must be one of ${DEPLOYMENT_ENVS.join(", ")}`;
   }
-  if (!url || !URL.canParse(url)) return "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be the gateway's /v1/logs URL";
+  if (!endpoint || !URL.canParse(endpoint)) return "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be the gateway's URL";
+  // The full /v1/logs URL (the OTel meaning) or the gateway's base URL (the backend's): either reaches the gateway.
+  const url = endpoint.endsWith("/v1/logs") ? endpoint : `${endpoint}/v1/logs`;
   // The token travels to this URL: outside a dev box it must be https.
   if (!isHttpsUrl(url) && environment !== "dev") return "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be an https URL";
   if (!token) return "OTEL_LOGS_TOKEN is missing";
@@ -216,13 +218,14 @@ function routeDiagnostics(): void {
   );
 }
 
-const SEVERITY: Record<number, SeverityNumber> = {
-  10: SeverityNumber.TRACE,
-  20: SeverityNumber.DEBUG,
-  30: SeverityNumber.INFO,
-  40: SeverityNumber.WARN,
-  50: SeverityNumber.ERROR,
-  60: SeverityNumber.FATAL,
+// pino's own labels: lowercase, like the backend's winston levels, so each level has one spelling in the store.
+const SEVERITY: Record<number, [SeverityNumber, string]> = {
+  10: [SeverityNumber.TRACE, "trace"],
+  20: [SeverityNumber.DEBUG, "debug"],
+  30: [SeverityNumber.INFO, "info"],
+  40: [SeverityNumber.WARN, "warn"],
+  50: [SeverityNumber.ERROR, "error"],
+  60: [SeverityNumber.FATAL, "fatal"],
 };
 // The resource already says where the process ran.
 const DROPPED = new Set(["pid", "hostname"]);
@@ -261,12 +264,12 @@ export function toLogRecord(line: string): LogRecord | undefined {
   } else if (typeof err === "string" || typeof err === "number") {
     exception = err;
   }
-  const severityNumber = SEVERITY[Number(level)] ?? SeverityNumber.UNSPECIFIED;
+  const [severityNumber, severityText] = SEVERITY[Number(level)] ?? [SeverityNumber.UNSPECIFIED, undefined];
   const timestamp = new Date(time as string | number).getTime();
   return {
     timestamp: Number.isNaN(timestamp) ? Date.now() : timestamp,
     severityNumber,
-    severityText: SeverityNumber[severityNumber],
+    severityText,
     body: typeof msg === "string" ? msg.slice(0, MAX_BODY) : "",
     attributes,
     exception,

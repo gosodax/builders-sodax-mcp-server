@@ -159,10 +159,10 @@ describe("tool call records", () => {
     await call();
     expect(info).toHaveBeenCalledWith(
       {
-        "tool.name": "test_tool",
+        "gen_ai.tool.name": "test_tool",
         "duration.ms": expect.any(Number),
         "tool.outcome": "error",
-        "error.code": "UNKNOWN_TOKEN",
+        "error.type": "UNKNOWN_TOKEN",
       },
       "Tool call",
     );
@@ -197,10 +197,10 @@ describe("tool call records", () => {
     expect(error).toHaveBeenCalledWith(
       {
         err: { type: "TypeError", stack: expect.stringMatching(/^ {4}at /) },
-        "tool.name": "test_tool",
+        "gen_ai.tool.name": "test_tool",
         "duration.ms": expect.any(Number),
         "tool.outcome": "error",
-        "error.code": "TypeError",
+        "error.type": "TypeError",
       },
       "Tool call",
     );
@@ -233,7 +233,7 @@ describe("tool call records", () => {
     await call();
     const [record] = info.mock.calls.at(-1) as [Record<string, unknown>];
     expect(record).toMatchObject({
-      "tool.name": "test_tool",
+      "gen_ai.tool.name": "test_tool",
       "tool.outcome": "ok",
       "swap.status": "ready",
       "quote.id": "q-1",

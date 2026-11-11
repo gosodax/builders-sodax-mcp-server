@@ -189,12 +189,12 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
     logger[status === 429 ? "debug" : "info"](
       {
         "request.id": requestId,
-        "http.method": req.method,
+        "http.request.method": req.method,
         "http.route": requestRoute(req),
         // None when the client left before the answer.
-        "http.status": res.headersSent ? status : undefined,
+        "http.response.status_code": res.headersSent ? status : undefined,
         "duration.ms": Date.now() - started,
-        "mcp.method": mcpMethod(req.body),
+        "mcp.method.name": mcpMethod(req.body),
         "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
       },
       "HTTP request",
@@ -491,8 +491,13 @@ let otel: OtelLogs | undefined;
 async function main(): Promise<void> {
   // The OTLP destination (#110) and its SDK load only when asked for; first, so a config error below ships too.
   if (process.env.OTEL_LOGS_ENABLED === "true") {
-    const { startOtelLogs } = await import("./services/otel.js");
-    otel = startOtelLogs(process.env, { serviceVersion: SERVER_VERSION, instanceId: process.env.HOSTNAME });
+    try {
+      const { startOtelLogs } = await import("./services/otel.js");
+      otel = startOtelLogs(process.env, { serviceVersion: SERVER_VERSION, instanceId: process.env.HOSTNAME });
+    } catch (error) {
+      // An optional destination: if it can't start, the logs stay on stderr and the server still serves.
+      logger.warn({ err: error }, "Unified logging stays off");
+    }
   }
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);

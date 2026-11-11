@@ -906,7 +906,11 @@ describe("sodax_swap_quote", () => {
     const warn = vi.spyOn(logger, "warn");
     await quote({ ...USDC_TO_SONIC, amount: "5" });
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ "url.path": "/v1/swaps/quote", "http.status": 400, apiCode: undefined }),
+      expect.objectContaining({
+        "url.template": "/v1/swaps/quote",
+        "http.response.status_code": 400,
+        apiCode: undefined,
+      }),
       "Swaps API call failed",
     );
   });

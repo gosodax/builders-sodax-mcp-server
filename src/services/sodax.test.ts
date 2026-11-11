@@ -496,7 +496,7 @@ describe("chain read records", () => {
         "sdk.call": "balance",
         "chain.key": undefined,
         "duration.ms": expect.any(Number),
-        "error.code": "TimeoutError",
+        "error.type": "TimeoutError",
       },
       "Chain read",
     );

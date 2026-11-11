@@ -244,7 +244,7 @@ async function send(path: string, body: unknown, fetcher: typeof fetchJsonOrNull
 function parse<T>(schema: Schema<T>, path: string, raw: unknown): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    logger.error({ "url.path": urlPath(path) }, "Unexpected Swaps API response");
+    logger.error({ "url.template": urlPath(path) }, "Unexpected Swaps API response");
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
   }
   return parsed.data;
@@ -280,7 +280,7 @@ const REFUSALS = new Map<number, Refusal>([
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
 ]);
 
-/** Hex values, and long runs of letters and digits (base58, bech32, NEAR implicit), as in a masked `url.path`. */
+/** Hex values, and long runs of letters and digits (base58, bech32, NEAR implicit), as in a masked `url.template`. */
 const withoutIds = (text: string) => text.replace(/0x[0-9a-f]{6,}|\b[a-z0-9]{24,}\b/gi, "*");
 
 // The route as the "Upstream call" record names it, so one query finds both.
@@ -288,7 +288,7 @@ const urlPath = (path: string) => routeOf(new URL(`${SODAX_SWAPS_BASE_URL}${path
 
 function toActionError(error: unknown, route: string): ActionError {
   if (!(error instanceof HttpError)) {
-    logger.warn({ err: error, "url.path": route }, "Swaps API call failed");
+    logger.warn({ err: error, "url.template": route }, "Swaps API call failed");
     return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
   }
   // The status, code and reason go to the log, not to the agent: upstream text isn't ours to pass on.
@@ -299,8 +299,8 @@ function toActionError(error: unknown, route: string): ActionError {
   // Upstream text may quote a URL, a key or the request it refused: what reads like an id is masked, the reason stays.
   logger.warn(
     {
-      "url.path": route,
-      "http.status": status,
+      "url.template": route,
+      "http.response.status_code": status,
       apiCode: code,
       apiMessage: apiMessage && withoutIds(redact(apiMessage)),
     },

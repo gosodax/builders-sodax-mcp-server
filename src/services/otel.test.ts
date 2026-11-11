@@ -71,6 +71,12 @@ describe("otelLogsConfig", () => {
     expect(reason).not.toContain("secret-token");
   });
 
+  it("takes the gateway's base URL too, as the backend's variable holds it", () => {
+    for (const base of ["https://otel.example", "https://otel.example/"]) {
+      expect(otelLogsConfig({ ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: base })).toEqual(CONFIG);
+    }
+  });
+
   it("allows a plain http endpoint on a dev box only", () => {
     const env = { ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs", DEPLOYMENT_ENV: "dev" };
     expect(otelLogsConfig(env)).toMatchObject({ environment: "dev" });
@@ -85,7 +91,7 @@ describe("toLogRecord", () => {
       pid: 1,
       hostname: "h",
       msg: "Tool call",
-      "tool.name": "x",
+      "gen_ai.tool.name": "x",
       "request.id": "r1",
       n: 2,
       ok: true,
@@ -93,9 +99,9 @@ describe("toLogRecord", () => {
     expect(toLogRecord(`${full}\n`)).toEqual({
       timestamp: Date.parse(time),
       severityNumber: SeverityNumber.WARN,
-      severityText: "WARN",
+      severityText: "warn",
       body: "Tool call",
-      attributes: { "tool.name": "x", "request.id": "r1", n: 2, ok: true },
+      attributes: { "gen_ai.tool.name": "x", "request.id": "r1", n: 2, ok: true },
       exception: undefined,
     });
   });
@@ -151,7 +157,7 @@ describe("toLogRecord", () => {
 describe("initOtelLogs", () => {
   it("exports records with the gateway's required resource attributes, the exception mapped by the SDK", async () => {
     const { exporter, otel } = shipping();
-    otel.write(line({ msg: "hello", "tool.name": "x" }));
+    otel.write(line({ msg: "hello", "gen_ai.tool.name": "x" }));
     otel.write(
       JSON.stringify({ level: 50, time, msg: "failed", err: redactErr(new Error("x https://rpc.example/k")) }),
     );
@@ -168,7 +174,7 @@ describe("initOtelLogs", () => {
     });
     expect(hello.body).toBe("hello");
     expect(hello.severityNumber).toBe(SeverityNumber.INFO);
-    expect(hello.attributes).toEqual({ "tool.name": "x" });
+    expect(hello.attributes).toEqual({ "gen_ai.tool.name": "x" });
     expect(failed.attributes).toMatchObject({ "exception.type": "Error", "exception.message": "x <url>" });
     expect(failed.attributes["exception.stacktrace"]).toContain("Error: x");
   });
@@ -255,7 +261,7 @@ describe("startOtelLogs", () => {
     await otel.forceFlush();
     const [inside, outside, ...more] = exporter.getFinishedLogRecords();
     expect(more).toEqual([]);
-    expect(inside.severityText).toBe("WARN");
+    expect(inside.severityText).toBe("warn");
     expect(inside.attributes).toEqual({ "request.id": "req-1", "chain.key": "sonic" });
     expect(outside.attributes).not.toHaveProperty("request.id");
     // Shut down, the hook no longer reaches it.
@@ -285,7 +291,7 @@ describe("the heartbeat", () => {
     vi.advanceTimersByTime(1);
     const [beat, ...more] = await beats();
     expect(more).toEqual([]);
-    expect(beat.severityText).toBe("INFO");
+    expect(beat.severityText).toBe("info");
     expect(beat.attributes).toEqual({
       "unified_logging.written": expect.any(Number),
       "unified_logging.exported": expect.any(Number),

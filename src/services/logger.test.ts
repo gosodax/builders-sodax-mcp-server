@@ -149,10 +149,10 @@ describe("request id", () => {
   it("is on every record written inside a request context, and on none outside", () => {
     const lines: string[] = [];
     const log = buildLogger({ write: line => void lines.push(line) }, { level: "info" });
-    runWithRequestContext({ requestId: "r1" }, () => log.info({ "tool.name": "x" }, "in"));
+    runWithRequestContext({ requestId: "r1" }, () => log.info({ "gen_ai.tool.name": "x" }, "in"));
     log.info("out");
     const [inside, outside] = lines.map(line => JSON.parse(line));
-    expect(inside).toMatchObject({ "request.id": "r1", "tool.name": "x", msg: "in" });
+    expect(inside).toMatchObject({ "request.id": "r1", "gen_ai.tool.name": "x", msg: "in" });
     expect(outside).not.toHaveProperty("request.id");
   });
 });

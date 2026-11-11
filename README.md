@@ -391,9 +391,21 @@ docker-compose up -d
 
 ### Deployment notes
 
-The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
-- `PORT=3000`
-- `NODE_ENV=production`
+Coolify builds the `Dockerfile`, the same image CI builds. The image sets `NODE_ENV=production`; `PORT` defaults to
+3000. With Coolify's "Include Source Commit in Build" on, the image also sets `GIT_SHA`, the version the log records
+carry (see [Logging](#logging)). `nixpacks.toml` is kept for a nixpacks build, which sets no `GIT_SHA`.
+
+### Operating the swap tools
+
+Swap quotes live in the server's memory, so:
+
+- Run one replica. Another replica doesn't have the first one's quotes.
+- A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
+- To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
+- `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
+
+## Logging
 
 Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem (over SSE, the tool calls' ids are on the `POST /messages` responses, not on the stream), and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
 
@@ -415,17 +427,29 @@ Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `O
 
 A record's body is a constant (`Body = 'Tool call'`); what varies is in its attributes. One failure is one record of each kind: the data services don't log what `Upstream call`, `Chain read` and `Tool call` already say.
 
-`error.type` on an `HTTP request` is the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`, `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`, `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST` or `INTERNAL`. On a `Tool call` the SDK refused it is `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED` or `TOOL_CALL_REFUSED`; on a swap tool's failure, the code the tool returned. A data or docs tool's failure is named by its cause: `UPSTREAM_NOT_FOUND`, `RATE_LIMITED` (a 429 on the caller's key), `UPSTREAM_RATE_LIMITED` (a 429 on a keyless call), `UPSTREAM_4XX`, `UPSTREAM_5XX`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`, `UPSTREAM_BAD_RESPONSE`, `INVALID_INPUT`, `DOCS_RPC_ERROR`, `DOCS_TOOL_ERROR`, `DOCS_UNAVAILABLE` (a 4xx from the docs server: its endpoint moved or gone), or `INTERNAL` when nothing explains it. SODAX's side (`warn`) is `UPSTREAM_RATE_LIMITED` (the server's own egress is limited), `UPSTREAM_5XX`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`, `UPSTREAM_BAD_RESPONSE`, `DOCS_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`, `CHAIN_UNAVAILABLE`, `SWAP_MISMATCH`, `PRICE_OFF_MARKET` and `INTERNAL`. Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can; a failure to start leaves the logs on stderr and the server serving. `GET /health` reports `unifiedLogging` (`on`, records `written`, `exported` and `failed`, `lastFailureAt`), so a token or allowlist problem shows there before Grafana; the heartbeat keeps a quiet server from looking like a stopped producer. A batch the gateway accepted but partly rejected counts as exported and is logged as a warning. The hub's `unified-logging-connect` skill has the connect check.
+`error.type` says why:
 
-### Operating the swap tools
+- **`HTTP request`**, the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`,
+  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
+  `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST`,
+  `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
+- **`Tool call` the SDK refused** before a handler ran: `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED`,
+  `TOOL_CALL_REFUSED`.
+- **A swap tool's failure**: the code the tool returned.
+- **A data or docs tool's failure**, by its cause:
+  - `UPSTREAM_NOT_FOUND`, `UPSTREAM_4XX`, `UPSTREAM_5XX`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`,
+    `UPSTREAM_BAD_RESPONSE`;
+  - `RATE_LIMITED` (a 429 on the caller's key) or `UPSTREAM_RATE_LIMITED` (a 429 on a keyless call, so this
+    server's shared egress);
+  - `INVALID_INPUT`;
+  - `DOCS_RPC_ERROR`, `DOCS_TOOL_ERROR`, `DOCS_UNAVAILABLE` (a 4xx from the docs server: its endpoint moved or gone);
+  - `INTERNAL` when nothing explains it.
 
-Swap quotes live in the server's memory, so:
+A `Tool call` is at `warn` when the failure is on SODAX's side: `UPSTREAM_RATE_LIMITED`, `UPSTREAM_5XX`,
+`UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`, `UPSTREAM_BAD_RESPONSE`, `DOCS_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`,
+`CHAIN_UNAVAILABLE`, `SWAP_MISMATCH`, `PRICE_OFF_MARKET`, `INTERNAL`.
 
-- Run one replica. Another replica doesn't have the first one's quotes.
-- A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
-- To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
-- `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
+Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can; a failure to start leaves the logs on stderr and the server serving. `GET /health` reports `unifiedLogging` (`on`, records `written`, `exported` and `failed`, `lastFailureAt`), so a token or allowlist problem shows there before Grafana; the heartbeat keeps a quiet server from looking like a stopped producer. A batch the gateway accepted but partly rejected counts as exported and is logged as a warning. The hub's `unified-logging-connect` skill has the connect check.
 
 ## API Endpoints
 
@@ -442,6 +466,9 @@ Swap quotes live in the server's memory, so:
 
 `/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
 Read `error.message`; `error` is an object here.
+
+Every MCP response carries an `X-Request-Id` header (over SSE, on the `POST /messages` responses). Quote it when
+reporting a problem: the server's logs find the request by it.
 
 | Status | On `/mcp` | `error.code` |
 |--------|-----------|--------------|

@@ -57,8 +57,8 @@ jobs:
           SODAX_ENV: canary
           LOG_LEVEL: info
           PORT: "3000"
-          SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}
-          SODAX_RPC_URL_8453: ${{ secrets.SODAX_RPC_URL_8453 }}
+          # toJSON quotes and escapes each secret; an unset one ("") leaves that chain on its public RPC.
+          RPC_CONFIG: '{"0xa4b1.arbitrum":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_42161) }}},"0x2105.base":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_8453) }}}}'
         run: |
           nohup node dist/index.js > server.log 2>&1 &
           curl --retry 60 --retry-delay 2 --retry-connrefused -sf http://127.0.0.1:3000/health -o /dev/null
@@ -72,8 +72,7 @@ jobs:
           E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
           AMOUNT: ${{ inputs.amount }}
           E2E_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
-          SODAX_RPC_URL_42161: ${{ secrets.SODAX_RPC_URL_42161 }}
-          SODAX_RPC_URL_8453: ${{ secrets.SODAX_RPC_URL_8453 }}
+          RPC_CONFIG: '{"0xa4b1.arbitrum":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_42161) }}},"0x2105.base":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_8453) }}}}'
         # To a file, not the log: it's printed once the check below finds no secret in it.
         run: pnpm e2e:canary > e2e.log 2>&1
 

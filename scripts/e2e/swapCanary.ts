@@ -7,11 +7,11 @@
  * wallet rebalances itself. It prints only text it builds: never an error object, its message or an env
  * value (Actions logs are public, and GitHub masks secrets but not text derived from them).
  *
- * Env: MCP_URL, SODAX_API_KEY, E2E_WALLET_PRIVATE_KEY; optional AMOUNT (default 5), SODAX_RPC_URL_42161,
- * SODAX_RPC_URL_8453, E2E_DRY_RUN=1 (quote only: nothing is signed, no balance needed).
+ * Env: MCP_URL, SODAX_API_KEY, E2E_WALLET_PRIVATE_KEY; optional AMOUNT (default 5), RPC_CONFIG (the server's,
+ * for its Arbitrum and Base `rpcUrl`), E2E_DRY_RUN=1 (quote only: nothing is signed, no balance needed).
  *
- * From `src/` it imports types, `sameHex` and the retryable error codes (errors.ts loads only constants.ts,
- * which loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the
+ * From `src/` it imports types, helpers from constants.ts (`sameHex`, the RPC_CONFIG reader) and the retryable error
+ * codes (errors.ts loads only constants.ts, which loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the
  * server, though: on the runner the server runs as the same user and could read this process's environment.
  */
 
@@ -40,7 +40,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum, base } from "viem/chains";
-import { sameHex } from "../../src/constants.js";
+import { isRecord, isRpcUrl, parseRpcConfigJson, sameHex } from "../../src/constants.js";
 import { type ActionErrorCode, RETRYABLE_CODES } from "../../src/services/swap/errors.js";
 import type { SwapQuote, SwapStep } from "../../src/services/swap/quote.js";
 import type { TrackResult } from "../../src/services/swap/track.js";
@@ -106,13 +106,21 @@ function readEnv() {
 }
 type Env = ReturnType<typeof readEnv>;
 
+/** A side's RPC from `RPC_CONFIG`, read as the server reads it; none for viem's default. Never its value in a message. */
+function rpcUrlFor(config: unknown, key: string): string | undefined {
+  const entry = isRecord(config) ? config[key] : undefined;
+  const url = isRecord(entry) && typeof entry.rpcUrl === "string" ? entry.rpcUrl.trim() : undefined;
+  return isRpcUrl(url) ? url : undefined;
+}
+
 /**
  * A signer that also reads, per side, on the side's RPC override or viem's default, and a reader for the
  * swap lookups that tries each once, for 4 s (not viem's 10 s and 3 retries). USDC from the SDK config.
  */
 export function wallets(account: Env["account"]) {
+  const config = parseRpcConfigJson(process.env.RPC_CONFIG?.trim() ?? "");
   return SIDES.map(({ key, chain }) => {
-    const url = process.env[`SODAX_RPC_URL_${chain.id}`] || undefined;
+    const url = rpcUrlFor(config, key);
     return {
       key,
       usdc: spokeChainConfig[key].supportedTokens.USDC,

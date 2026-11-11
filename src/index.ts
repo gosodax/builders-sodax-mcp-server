@@ -145,7 +145,12 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info(
-    { ...bootConfig(rpcOverrides, swapToolsEnabled), "mcp.transport": "stdio", "partner_fee.set": !!partnerFee },
+    {
+      // The SDK, and so the overrides, load only with the swap tools.
+      ...bootConfig(toolsets.swap ? rpcOverrides : {}, swapToolsEnabled),
+      "mcp.transport": "stdio",
+      "partner_fee.set": !!partnerFee,
+    },
     "SODAX Builders MCP server started",
   );
 }
@@ -168,7 +173,7 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
-  listen(createHttpApp(swapToolsEnabled), bootConfig(rpcOverrides, swapToolsEnabled));
+  listen(createHttpApp(swapToolsEnabled), bootConfig(swapToolsEnabled ? rpcOverrides : {}, swapToolsEnabled));
 }
 
 // The methods a client sends, from the SDK's own schemas: anything else is "other", so a client can't shape the record.

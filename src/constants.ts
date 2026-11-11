@@ -151,5 +151,30 @@ export const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/** A parseable URL whose scheme is https, as every secret-carrying endpoint must be. */
+/** A parseable https URL: the OTLP endpoint's check. RPC URLs take the stricter `isRpcUrl`. */
 export const isHttpsUrl = (value: string): boolean => URL.canParse(value) && new URL(value).protocol === "https:";
+
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * An RPC URL the swap tools take: `https://` as written, lowercase, without whitespace and without the characters the
+ * log redaction stops at (`"'\\<>`), so all of it is masked in a logged error. Every chain client accepts that form
+ * (Solana's refuses `HTTPS:` or a missing `//` at boot). Never http: track trusts what the RPC answers, and a paid key
+ * would travel in the clear.
+ */
+export const isRpcUrl = (value: unknown): value is string =>
+  typeof value === "string" && /^https:\/\/[^\s"'\\<>]+$/.test(value) && URL.canParse(value);
+
+/**
+ * `RPC_CONFIG`'s JSON, or undefined when it doesn't parse: as an env value may hold it, wrapped in single quotes,
+ * with escaped double quotes, or with double-escaped newlines.
+ */
+export function parseRpcConfigJson(raw: string): unknown {
+  const unquoted = raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1) : raw;
+  try {
+    return JSON.parse(unquoted.replaceAll('\\"', '"').replaceAll("\\\\n", "\\n"));
+  } catch {
+    return undefined;
+  }
+}

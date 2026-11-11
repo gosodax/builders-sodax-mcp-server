@@ -8,7 +8,6 @@
  */
 
 import {
-  type ChainType,
   type EvmSpokeOnlyChainKey,
   HUB_CHAIN_KEY,
   type SpokeChainKey,
@@ -20,7 +19,14 @@ import {
   solverConfig,
   spokeChainConfig,
 } from "@sodax/types";
-import { EVM_ADDRESS_PATTERN, SODAX_API_ORIGIN, isHttpsUrl } from "../constants.js";
+import {
+  CHAIN_KEY_PATTERN,
+  EVM_ADDRESS_PATTERN,
+  SODAX_API_ORIGIN,
+  isRecord,
+  isRpcUrl,
+  parseRpcConfigJson,
+} from "../constants.js";
 import { errorName, logger, redact } from "./logger.js";
 import type { BuiltIntent } from "./swap/swapsApi.js";
 
@@ -37,8 +43,9 @@ export const sdkLogger = {
   error: (message: string) => logger.error({ "sdk.message": redact(String(message)) }, "SODAX SDK error"),
 };
 
-/** The RPC fields of a chain's packaged config that `SODAX_RPC_URL_*` may replace (see `parseRpcOverrides`). */
-type RpcField = "rpcUrl" | "grpc_url" | "horizonRpcUrl" | "sorobanRpcUrl";
+// The RPC fields a chain's config may have, in the SDK's names (see `parseRpcOverrides`).
+const RPC_FIELD_NAMES = ["rpcUrl", "grpc_url", "debugRpcUrl", "horizonRpcUrl", "sorobanRpcUrl"] as const;
+type RpcField = (typeof RPC_FIELD_NAMES)[number];
 export type RpcOverride = Partial<Record<RpcField, string>>;
 
 /** `chains` overrides the packaged RPC per chain key; the SDK deep-merges each patch into that chain's config. */
@@ -56,50 +63,68 @@ export async function initSodax(chains: Record<string, RpcOverride> = {}): Promi
   loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
 }
 
-type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> } & RpcOverride;
+type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> };
 const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
 
-// Where a family's SDK provider reads its RPC when not the config's `rpcUrl`: Sui's gRPC endpoint, Stellar's two servers.
-const RPC_FIELD_EXCEPTIONS: Record<string, { type: ChainType; field: RpcField }> = {
-  SUI: { type: "SUI", field: "grpc_url" },
-  STELLAR_HORIZON: { type: "STELLAR", field: "horizonRpcUrl" },
-  STELLAR_SOROBAN: { type: "STELLAR", field: "sorobanRpcUrl" },
-};
-// Families whose SDK provider never reads the config's `rpcUrl` (Injective hard-codes its mainnet endpoints).
-const RPC_URL_UNREAD: ReadonlySet<ChainType> = new Set(["INJECTIVE"]);
-
-type RpcTarget = { chainKey: string; field: RpcField };
-
-/** What `SODAX_RPC_URL_<suffix>` replaces: an EVM chain by its id, a non-EVM family (one mainnet chain) by its type. */
-function rpcTargets(): Map<string, RpcTarget> {
-  const targets = new Map<string, RpcTarget>();
+/**
+ * What an `RPC_CONFIG` entry may set, by chain key: the RPC fields that chain's packaged config has, so they follow
+ * the SDK. Injective's `rpcUrl` is among them though its provider uses fixed mainnet endpoints (the README says so):
+ * skipping it would warn on every boot over a value the backend's own format includes.
+ */
+function readRpcFields(): Map<string, ReadonlySet<string>> {
+  const fields = new Map<string, ReadonlySet<string>>();
   for (const [chainKey, config] of Object.entries(chainConfigs)) {
-    const evmChainId = evmChainIdFor(chainKey);
-    const type = config?.chain?.type as ChainType | undefined;
-    if (evmChainId !== undefined) targets.set(String(evmChainId), { chainKey, field: "rpcUrl" });
-    else if (type && config?.rpcUrl && !RPC_URL_UNREAD.has(type)) targets.set(type, { chainKey, field: "rpcUrl" });
-    for (const [suffix, exception] of Object.entries(RPC_FIELD_EXCEPTIONS)) {
-      if (exception.type === type) targets.set(suffix, { chainKey, field: exception.field });
-    }
+    const present = config ? RPC_FIELD_NAMES.filter(field => field in config) : [];
+    if (present.length > 0) fields.set(chainKey, new Set(present));
   }
-  return targets;
+  return fields;
 }
-const RPC_TARGETS = rpcTargets();
+const RPC_FIELDS = readRpcFields();
+
+// A key of the secret-bearing value, as a warning names it: a URL pasted as a key would otherwise reach the logs.
+const nameOf = (key: string) => (CHAIN_KEY_PATTERN.test(key) ? key : "(an unknown key)");
+const fieldNameOf = (field: string) => (/^[A-Za-z_]{1,32}$/.test(field) ? field : "(an unknown field)");
 
 /**
- * `SODAX_RPC_URL_<evmChainId>` and `SODAX_RPC_URL_<family>` (`RPC_TARGETS`) override by chain key; without one
- * the SDK's packaged RPC is used. A bad one stops the boot, named by its variable, never its value (paid URLs
- * embed keys).
+ * `RPC_CONFIG`, in the format the SODAX backend uses: an object keyed by chain key in the SDK's own field names
+ * (`{"sonic":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"}}`), so the same value works in both. A chain or
+ * field it leaves out, or leaves blank, keeps the SDK's packaged RPC, and so does every chain without it.
+ *
+ * It never stops the server: the value is shared with services on other SDK versions, so an entry this server can't
+ * apply (an unknown chain or field, a value that isn't an https URL) is skipped with one warning naming it, never its
+ * value (paid URLs embed keys).
  */
 export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, RpcOverride> {
+  const legacy = Object.keys(env).filter(name => name.startsWith("SODAX_RPC_URL_"));
+  if (legacy.length > 0) {
+    logger.warn({ "rpc_config.legacy": legacy.join(", ") }, "SODAX_RPC_URL_* is no longer read: set RPC_CONFIG");
+  }
+  const raw = env.RPC_CONFIG?.trim();
+  if (!raw) return {};
+  const config = parseRpcConfigJson(raw);
+  if (!isRecord(config)) {
+    logger.warn("RPC_CONFIG isn't a JSON object; every chain uses its packaged RPC");
+    return {};
+  }
   const overrides: Record<string, RpcOverride> = {};
-  for (const [name, value] of Object.entries(env)) {
-    const suffix = /^SODAX_RPC_URL_(\w+)$/.exec(name)?.[1];
-    if (!suffix || !value) continue;
-    const target = RPC_TARGETS.get(suffix);
-    if (!target) throw new Error(`${name} doesn't name a SODAX chain, one of ${[...RPC_TARGETS.keys()].join(", ")}`);
-    if (!isHttpsUrl(value)) throw new Error(`${name} must be an https URL`);
-    overrides[target.chainKey] = { ...overrides[target.chainKey], [target.field]: value };
+  const skipped: string[] = [];
+  for (const [chainKey, entry] of Object.entries(config)) {
+    const fields = RPC_FIELDS.get(chainKey);
+    if (!fields || !isRecord(entry)) {
+      skipped.push(nameOf(chainKey));
+      continue;
+    }
+    for (const [field, raw] of Object.entries(entry)) {
+      // Trimmed: a secret pasted or set from a file often ends in a newline. Blank, as a workflow writes an unset
+      // secret: not set.
+      const value = typeof raw === "string" ? raw.trim() : raw;
+      if (value === "") continue;
+      if (fields.has(field) && isRpcUrl(value)) overrides[chainKey] = { ...overrides[chainKey], [field]: value };
+      else skipped.push(`${nameOf(chainKey)}.${fieldNameOf(field)}`);
+    }
+  }
+  if (skipped.length > 0) {
+    logger.warn({ "rpc_config.skipped": skipped.join(", ") }, "RPC_CONFIG entries this server can't apply");
   }
   return overrides;
 }

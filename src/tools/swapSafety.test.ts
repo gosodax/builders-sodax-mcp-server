@@ -70,9 +70,9 @@ describe("swap tool safety", () => {
     await client.close();
     expect(result.isError).toBe(true);
     const text = JSON.stringify(result.content);
-    expect(text).toContain("SECRET_REJECTED");
     expect(text).toContain(says);
-    expect(text).toContain(`\\"${field}\\"`);
+    // The SDK reports a zod issue as "<message> at <field>".
+    expect(text).toMatch(new RegExp(`SECRET_REJECTED: [^"]* at ${field}\\b`));
     expect(text).not.toMatch(/abandon|Ab3-|abab/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });

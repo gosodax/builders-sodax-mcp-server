@@ -147,3 +147,27 @@ export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * An RPC URL the swap tools take: `https://` as written, lowercase and without whitespace. Every chain client accepts
+ * that form (Solana's refuses `HTTPS:` or a missing `//` at boot), and the log redaction recognises it. Never http:
+ * track trusts what the RPC answers, and a paid key would travel in the clear.
+ */
+export const isRpcUrl = (value: unknown): value is string =>
+  typeof value === "string" && /^https:\/\/\S+$/.test(value) && URL.canParse(value);
+
+/**
+ * `RPC_CONFIG`'s JSON, or undefined when it doesn't parse: as an env value may hold it, wrapped in single quotes,
+ * with escaped double quotes, or with double-escaped newlines.
+ */
+export function parseRpcConfigJson(raw: string): unknown {
+  const unquoted = raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1) : raw;
+  try {
+    return JSON.parse(unquoted.replaceAll('\\"', '"').replaceAll("\\\\n", "\\n"));
+  } catch {
+    return undefined;
+  }
+}

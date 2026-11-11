@@ -107,10 +107,10 @@ every transaction; the server never signs.
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
    deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
-   Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and an expired one is refunded there.
-   While the result has `retryAfterSec`, call it again after that many seconds. A tx no node has seen comes with
-   `stopAfter`: by then it wasn't sent in time, and track reports it not found. Such a tx is read from the chain at
-   most once every 10 seconds, however often it's tracked.
+   Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
+   there once expired, unless a solver filled it first. While the result has `retryAfterSec`, call it again after
+   that many seconds. A tx no node has seen comes with `stopAfter`: track is called until then, and once more after.
+   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`).

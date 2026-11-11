@@ -8,6 +8,7 @@ import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
 import { EVM_TX_HASH_PATTERN, SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
+import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
@@ -340,7 +341,13 @@ function quoteNextStep(quote: SwapQuote): string {
   ].join(" ");
 }
 
-const safe = (alerted: boolean) => (alerted ? DEPOSIT_SAFE : DEPOSIT_SAFE_UNALERTED);
+// A swap from the hub is an intent there already: it's filled or, once expired, refunded without an operator.
+const safe = ({ alerted, chain }: { alerted: boolean; chain: { key: string; name: string } }) =>
+  isHubChain(chain.key)
+    ? `tell the user the swap is on ${chain.name} and safe: unless a solver fills it first, it's refunded to them once its quote expires, and they must not send it again`
+    : alerted
+      ? DEPOSIT_SAFE
+      : DEPOSIT_SAFE_UNALERTED;
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
 const retryRefund = (tool: string, seconds: number) =>
   `To retry the refund, call ${tool} again in about ${seconds} seconds, at most ${MAX_CALLS} times, then stop.`;
@@ -353,7 +360,7 @@ function notSubmittedNextStep(result: Extract<TrackResult, { status: "not_submit
   if (result.reason === "not_a_deposit") {
     return "That transaction isn't this quote's swap (it may be the approve, or the swap call failed inside a batch); ask for the swap transaction's hash.";
   }
-  const deposit = safe(result.alerted);
+  const deposit = safe(result);
   switch (result.reason) {
     case "deposit_mismatch":
       return `That transaction is a SODAX deposit from this wallet for another quote: track it with the quoteId it was made from. Without that quoteId, ${deposit}.`;
@@ -383,7 +390,7 @@ export function trackNextStep(result: TrackResult): string {
         ? `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`
         : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
             result.stopAfter
-              ? `call sodax_swap_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}: if ${chain} still hasn't seen it by then, it wasn't sent in time and nothing was swapped.`
+              ? `call sodax_swap_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}, then once more and follow that answer.`
               : POLL
           }`;
     case "source_not_found": {
@@ -397,17 +404,20 @@ export function trackNextStep(result: TrackResult): string {
       return notSubmittedNextStep(result);
     case "not_submitted_unknown_quote":
       // Only a deposit named by its quoteId alerts.
-      if (result.isDeposit && result.quoteId)
-        return `This server has no quote for that deposit: ${safe(result.alerted)}.`;
+      if (result.isDeposit && result.quoteId) return `This server has no quote for that deposit: ${safe(result)}.`;
       return result.isDeposit
         ? "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again."
         : `That transaction isn't a SODAX swap deposit on ${chain}; ask for the swap transaction's hash.`;
     case "expired_refunding":
-      return "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";
+      return isHubChain(result.chain.key)
+        ? `The swap expired before it was submitted: unless a solver filled it first, its intent on ${chain} is refunded to the user, and they must not send it again.`
+        : "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";
     case "expired_unsubmitted":
-      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. ${retryRefund("sodax_swap_track", result.retryAfterSec)}`;
+      return `The swap won't be filled and its refund couldn't start: ${safe(result)}. ${retryRefund("sodax_swap_track", result.retryAfterSec)}`;
     case "submit_refused":
-      return `The swap service refused this deposit, so it won't be swapped: ${safe(result.alerted)}. Once the quote expires this server starts the refund: ${again(result.retryAfterSec)}.`;
+      return isHubChain(result.chain.key)
+        ? `The swap service refused this swap: ${safe(result)}. Then ${again(result.retryAfterSec)}.`
+        : `The swap service refused this deposit, so it won't be swapped: ${safe(result)}. Once the quote expires this server starts the refund: ${again(result.retryAfterSec)}.`;
     case "queued":
       return `The swap is queued for processing; ${POLL}`;
     case "in_progress":
@@ -454,9 +464,12 @@ export function cancelNextStep(result: CancelResult): string {
     case "not_cancellable":
       return NOT_CANCELLABLE[result.reason];
     case "deposit_unsubmitted":
+      if (isHubChain(result.chain.key)) {
+        return `The swap is on ${chain} but was never submitted, so it can't be cancelled here: don't call sodax_swap_track, which would submit it. Unless a solver fills it first, it's refunded to the user once the quote expires: call sodax_swap_cancel again with the same arguments in about ${result.retryAfterSec} seconds. The user must not send it again.`;
+      }
       return `The swap's deposit is on ${chain} but was never submitted, so it won't be swapped unless sodax_swap_track is called: don't call it. To get the funds back, call sodax_swap_cancel again with the same arguments in about ${result.retryAfterSec} seconds, once the quote has expired, and this server starts the refund. The deposit is safe meanwhile; the user must not send it again.`;
     case "expired_unsubmitted":
-      return `The swap won't be filled and its refund couldn't start: ${safe(result.alerted)}. ${retryRefund("sodax_swap_cancel", result.retryAfterSec)}`;
+      return `The swap won't be filled and its refund couldn't start: ${safe(result)}. ${retryRefund("sodax_swap_cancel", result.retryAfterSec)}`;
     case "ready":
       return `Have the user's wallet send the cancel step on ${chain}, then call sodax_swap_cancel again with the same arguments plus cancelTxHash.`;
     case "cancel_awaiting_confirmation":

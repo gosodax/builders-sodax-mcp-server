@@ -1,7 +1,7 @@
 import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
-import { type EvmReceipt, getEvmReceipt, initSodax, intentHash, isTxKnown } from "../services/sodax.js";
+import { getEvmReceipt, initSodax, intentHash, isTxKnown, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { hubReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
@@ -24,7 +24,7 @@ import {
 // Unit tests don't reach a chain: receipts are scripted per test.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
 });
 
 const SONIC_TX = `0x${"5".repeat(64)}`;
@@ -104,6 +104,7 @@ describe("a swap from Sonic, the hub", () => {
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
     const { out } = await track({ txHash: SONIC_TX, quoteId });
     expect(out.status).toBe("expired_refunding");
+    expect(out.nextStep).toContain("unless a solver filled it first");
     expect(relays(calls)).toEqual([]);
     expect(submits(calls)).toEqual([]);
   });
@@ -115,6 +116,9 @@ describe("a swap from Sonic, the hub", () => {
     vi.setSystemTime(Number(DEADLINE) * 1000 - 60_000);
     const { out } = await track({ txHash: SONIC_TX, quoteId });
     expect(out).toMatchObject({ status: "submit_refused", alerted: false });
+    // No operator recovers a hub intent: the expiry does.
+    expect(out.nextStep).toContain("unless a solver fills it first, it's refunded to them once its quote expires");
+    expect(out.nextStep).not.toContain("SODAX support");
     expect(relays(calls)).toEqual([]);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
     expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_refunding");
@@ -146,6 +150,7 @@ describe("a swap from Sonic, the hub", () => {
           kind: "cancel",
           chainId: 146,
           tx: expect.objectContaining({
+            from: HUB_INTENT.srcAddress,
             to: spokeChainConfig.sonic.addresses.walletRouter,
             value: "0x0",
             chainId: "0x92",
@@ -161,6 +166,35 @@ describe("a swap from Sonic, the hub", () => {
       expect(out.status).toBe("cancel_confirmed");
       expect(getEvmReceipt).toHaveBeenCalledWith("sonic", CANCEL_TX);
       expect(relays(calls)).toEqual([]);
+    });
+
+    it("is built without its quote for an intent the tracked tx created, by the sender's router", async () => {
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+      vi.mocked(userHubWallet).mockResolvedValue(CREATOR);
+      stubBackend({ row, hubIntent: HUB_INTENT });
+      const { out } = await cancel({ txHash: SONIC_TX, chain: "sonic" });
+      expect(out.status).toBe("ready");
+      expect(userHubWallet).toHaveBeenCalledWith("sonic", HUB_INTENT.srcAddress);
+    });
+
+    it.each([
+      ["the tracked tx created another intent", [OTHER_HASH], CREATOR],
+      ["its creator isn't the sender's router", [HASH], USER],
+    ])("isn't built without its quote when %s", async (_case, hashes, router) => {
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, hashes));
+      vi.mocked(userHubWallet).mockResolvedValue(router);
+      stubBackend({ row, hubIntent: HUB_INTENT });
+      const { out } = await cancel({ txHash: SONIC_TX, chain: "sonic" });
+      expect(out.error.code).toBe("SWAP_MISMATCH");
+    });
+
+    it("says an unsubmitted swap is left to its expiry, not to an operator", async () => {
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+      stubBackend({ row: null });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
+      expect(out.status).toBe("deposit_unsubmitted");
+      expect(out.nextStep).toContain("can't be cancelled here");
+      expect(out.nextStep).toContain("don't call sodax_swap_track");
     });
 
     it("isn't confirmed by a tx that cancelled another intent", async () => {

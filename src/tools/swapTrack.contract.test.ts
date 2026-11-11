@@ -4,7 +4,9 @@
  * every POST to the Swaps API is refused here, so nothing is submitted or relayed, and nothing is signed.
  */
 
+import { IntentsAbi } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { http, createPublicClient, decodeFunctionData } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { getEvmReceipt, initSodax, intentHash, isHubChain, pinnedSourceOf } from "../services/sodax.js";
@@ -126,6 +128,27 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
       INTENT_CREATED_TOPIC,
     );
     expect(logged).toEqual([intentHash(intent).toLowerCase()]);
+  });
+
+  // A wallet's own swap from Sonic: the hash logged is of the intent in its createIntent calldata, as sent.
+  it("finds the hash of the intent a wallet sent from Sonic in its IntentCreated log", async () => {
+    const hash = "0x01ff71f704e9d91a76b787c36d10a466e071224be547dd295b36b7db267ba002";
+    const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
+    const tx = await client.getTransaction({ hash });
+    expect(tx.to?.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
+    const { functionName, args } = decodeFunctionData({ abi: IntentsAbi, data: tx.input });
+    expect(functionName).toBe("createIntent");
+    const sent = Object.fromEntries(
+      Object.entries(args?.[0] ?? {}).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value]),
+    ) as unknown as Parameters<typeof intentHash>[0];
+    expect(sent.srcChain).toBe("146");
+    const receipt = await getEvmReceipt("sonic", hash);
+    const logged = hubIntentHashes(
+      receipt ?? { reverted: true, logs: [] },
+      solverConfig.intentsContract,
+      INTENT_CREATED_TOPIC,
+    );
+    expect(logged).toEqual([intentHash(sent).toLowerCase()]);
   });
 
   it("finds a connection and an https RPC in the SDK config for every EVM source chain", async () => {

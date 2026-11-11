@@ -184,7 +184,7 @@ describe("resolveToken", () => {
       }
     };
     expect(chainsOf(true)).toEqual(expect.arrayContaining(["0xa4b1.arbitrum", "0xa86a.avax", "hyper"]));
-    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sonic"]));
+    expect(chainsOf(true)).toEqual(expect.arrayContaining(["sonic"]));
     expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sui"]));
     expect(chainsOf(false)).toEqual(expect.arrayContaining(["sonic", "sui", "0xa4b1.arbitrum"]));
   });

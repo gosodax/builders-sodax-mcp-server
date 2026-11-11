@@ -26,8 +26,10 @@ import {
   isRecord,
   isRpcUrl,
   parseRpcConfigJson,
+  sameHex,
 } from "../constants.js";
 import { errorName, logger, redact } from "./logger.js";
+import type { SourceChain } from "./swap/source.js";
 import type { BuiltIntent } from "./swap/swapsApi.js";
 
 type Sdk = typeof import("@sodax/sdk");
@@ -223,14 +225,17 @@ export function connectionFor(chainKey: string): string | undefined {
   return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
 }
 
-/** An EVM spoke's chain id, `connection` and asset manager from the packaged config, if it has all three. */
-export function evmSpokeFor(
-  chainKey: string,
-): { chainId: number; connection: string; assetManager: string } | undefined {
+/**
+ * A chain's source from the packaged config, if a swap can start there: the hub, whose intents contract logs the
+ * intent the swap tx creates, or an EVM spoke, whose `connection` proves a deposit. The quote, the source-chain
+ * suggestions and the chain support tool all ask this.
+ */
+export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
   const chainId = evmChainIdFor(chainKey);
+  const swapContract = swapContractFor(chainKey);
   const connection = connectionFor(chainKey);
-  const assetManager = swapContractFor(chainKey);
-  return chainId !== undefined && connection && assetManager ? { chainId, connection, assetManager } : undefined;
+  if (chainId === undefined || !swapContract || (!connection && !isHubChain(chainKey))) return undefined;
+  return { chainId, swapContract, ...(connection && { connection }) };
 }
 
 const asEvmAddress = (value: unknown) =>
@@ -482,10 +487,13 @@ export function cancelPayload(intent: IntentJson): string | undefined {
   }
 }
 
+// `route((address,uint256,bytes)[])` on the Sonic wallet router: it runs the calls as the sender's hub wallet.
+const ROUTE_SELECTOR = "0x65a3b0a5";
+
 /**
- * The cancel of a swap from the hub, as the SDK builds its own: the user's wallet router running
- * `cancelIntent(intent)` on the intents contract, from the intent's source address, no value. `undefined` if
- * the SDK can't, or if it would call anything but the packaged wallet router.
+ * The cancel of a swap from the hub, as the SDK builds its own: the user's wallet router running exactly
+ * `cancelIntent(intent)` on the intents contract, from the intent's source address, no value. `undefined` if the
+ * SDK can't, or if what it built is anything else.
  */
 export async function hubCancelTx(
   intent: IntentJson,
@@ -497,8 +505,14 @@ export async function hubCancelTx(
     });
     if (!result.ok) return undefined;
     const { from, to, value, data } = result.value as { from: string; to: string; value: bigint; data: string };
-    const router = spokeChainConfig.sonic.addresses.walletRouter;
-    return to.toLowerCase() === router.toLowerCase() && value === 0n ? { from, to, value: "0", data } : undefined;
+    const calls = cancelPayload(intent);
+    const ok =
+      calls !== undefined &&
+      sameHex(from, intent.srcAddress) &&
+      sameHex(to, spokeChainConfig.sonic.addresses.walletRouter) &&
+      value === 0n &&
+      sameHex(data, `${ROUTE_SELECTOR}${calls.slice(2)}`);
+    return ok ? { from, to, value: "0", data } : undefined;
   } catch {
     return undefined;
   }

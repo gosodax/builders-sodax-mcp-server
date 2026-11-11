@@ -454,13 +454,15 @@ describe("sodax_swap_quote", () => {
   it.each([
     ["fromChain", "Arbitrm", "0xa4b1.arbitrum", false],
     ["toChain", "sonci", "sonic", true],
-  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsSonic) => {
+  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsSui) => {
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, [side]: typo, amount: "5" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key }] });
     const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
     expect(listed).toContain("0xa4b1.arbitrum");
-    expect(listed.includes("sonic")).toBe(listsSonic);
+    // A swap starts on Sonic too, but on no non-EVM chain yet; it can end on either.
+    expect(listed).toContain("sonic");
+    expect(listed.includes("sui")).toBe(listsSui);
     expect(calls).toEqual([]);
   });
 

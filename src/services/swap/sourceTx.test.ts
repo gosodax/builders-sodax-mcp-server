@@ -10,6 +10,7 @@ import {
   DEPOSIT_RECEIPT as RECEIPT,
   DEPOSIT_RELAY_DATA as RELAY_DATA,
   USER,
+  hubReceipt,
   messageReceipt as receiptWith,
 } from "./__fixtures__/deposit.js";
 import { abiEncode, rlpList } from "./__fixtures__/encode.js";
@@ -131,7 +132,6 @@ describe("decodeSendMessage", () => {
 describe("hubIntentHashes", () => {
   const INTENTS = solverConfig.intentsContract;
   const hash = `0x${"A".repeat(64)}`;
-  const log = (address: string, topic: string) => ({ address, topics: [topic], data: `${hash}${"0".repeat(64)}` });
 
   it("takes the topics from the SDK's intents contract ABI", () => {
     expect(INTENT_CREATED_TOPIC).toBe(toEventSelector(IntentCreatedEventAbi));
@@ -142,9 +142,9 @@ describe("hubIntentHashes", () => {
     const receipt = {
       reverted: false,
       logs: [
-        log(INTENTS.toUpperCase().replace("0X", "0x"), INTENT_CREATED_TOPIC),
-        log(INTENTS, INTENT_CANCELLED_TOPIC),
-        log(`0x${"1".repeat(40)}`, INTENT_CREATED_TOPIC),
+        ...hubReceipt(INTENT_CREATED_TOPIC, [hash], INTENTS.toUpperCase().replace("0X", "0x")).logs,
+        ...hubReceipt(INTENT_CANCELLED_TOPIC, [hash]).logs,
+        ...hubReceipt(INTENT_CREATED_TOPIC, [hash], `0x${"1".repeat(40)}`).logs,
         { address: INTENTS, topics: [INTENT_CREATED_TOPIC], data: "0x12" },
       ],
     };

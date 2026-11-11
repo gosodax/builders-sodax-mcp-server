@@ -6,16 +6,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import {
-  type EvmReceipt,
-  blockNumber,
-  evmChainIdFor,
-  evmSpokeFor,
-  getEvmReceipt,
-  isHubChain,
-  isTxKnown,
-  swapContractFor,
-} from "../sodax.js";
+import { type EvmReceipt, blockNumber, evmChainIdFor, getEvmReceipt, isTxKnown, pinnedSourceOf } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
@@ -55,15 +46,6 @@ function pinnedSource(chain: ChainInfo): SourceChain {
   const source = pinnedSourceOf(chain.key);
   if (!source) throw unsupportedSource(chain);
   return source;
-}
-
-/** A chain's source from the SDK config, if a swap can start there; what the chain support tool reports too. */
-export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
-  const chainId = evmChainIdFor(chainKey);
-  const intentsContract = isHubChain(chainKey) ? swapContractFor(chainKey) : undefined;
-  if (chainId !== undefined && intentsContract) return { chainId, swapContract: intentsContract };
-  const spoke = evmSpokeFor(chainKey);
-  return spoke && { chainId: spoke.chainId, swapContract: spoke.assetManager, connection: spoke.connection };
 }
 
 const unsupportedSource = (chain: ChainInfo) =>

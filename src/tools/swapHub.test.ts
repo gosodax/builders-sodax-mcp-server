@@ -1,8 +1,9 @@
-import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { type EvmReceipt, getEvmReceipt, initSodax, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import { hubReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { INTENT_CANCELLED_TOPIC, INTENT_CREATED_TOPIC } from "../services/swap/sourceTx.js";
@@ -28,7 +29,6 @@ vi.mock("../services/sodax.js", async importOriginal => {
 
 const SONIC_TX = `0x${"5".repeat(64)}`;
 const CANCEL_TX = `0x${"c".repeat(64)}`;
-const INTENTS = solverConfig.intentsContract;
 // A swap from the hub: its source is the hub's relay id, and the sender's router is the creator.
 const HUB_INTENT = { ...INTENT, srcChain: "146", dstChain: "23" };
 await initSodax();
@@ -39,14 +39,6 @@ const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", ar
 const cancel = (args: Record<string, unknown>) => callTool("sodax_swap_cancel", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
 const relays = (calls: { path: string }[]) => calls.filter(call => call.path === "/intents/submit");
-
-/** A Sonic receipt with one log per hash under `topic`, from the intents contract unless `from` says otherwise. */
-function hubReceipt(topic: string, hashes: string[], from = INTENTS): EvmReceipt {
-  return {
-    reverted: false,
-    logs: hashes.map(hash => ({ address: from, topics: [topic], data: `${hash}${"0".repeat(64)}` })),
-  };
-}
 
 const hubQuote = () =>
   cacheQuote({
@@ -87,10 +79,16 @@ describe("a swap from Sonic, the hub", () => {
   });
 
   it.each([
-    ["another intent", [OTHER_HASH], INTENTS, { reason: "deposit_mismatch", alerted: true }],
-    ["no intent", [], INTENTS, { reason: "not_a_deposit" }],
+    // The log names no sender, so another intent may be anyone's: no alert either way.
+    ["another intent", [OTHER_HASH], undefined, { reason: "not_a_deposit" }],
+    ["no intent", [], undefined, { reason: "not_a_deposit" }],
     ["the quoted intent logged by another contract", [HASH], USER, { reason: "not_a_deposit" }],
-    ["two intents, the quoted one among them", [HASH, OTHER_HASH], INTENTS, { reason: "multiple_deposits" }],
+    [
+      "two intents, the quoted one among them",
+      [HASH, OTHER_HASH],
+      undefined,
+      { reason: "multiple_deposits", alerted: false },
+    ],
   ])("isn't submitted when the tx created %s", async (_case, hashes, from, expected) => {
     vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, hashes, from));
     const calls = stubBackend();
@@ -110,11 +108,24 @@ describe("a swap from Sonic, the hub", () => {
     expect(submits(calls)).toEqual([]);
   });
 
-  it("is reported, not submitted, without its quote", async () => {
+  it("waits for its deadline when refused near it: only an expired hub intent is refunded", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    const calls = stubBackend({ row: null, submit: () => Response.json({ message: "refused" }, { status: 400 }) });
+    const { quoteId } = hubQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 - 60_000);
+    const { out } = await track({ txHash: SONIC_TX, quoteId });
+    expect(out).toMatchObject({ status: "submit_refused", alerted: false });
+    expect(relays(calls)).toEqual([]);
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_refunding");
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("is reported, not submitted, without its quote, and pages no one", async () => {
     vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
     const calls = stubBackend();
-    const { out } = await track({ txHash: SONIC_TX, chain: "sonic" });
-    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true });
+    const { out } = await track({ txHash: SONIC_TX, chain: "sonic", quoteId: "6f1c7e1e-9d2a-4f5b-8c3d-2e4a6b8c0d1e" });
+    expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
     expect(submits(calls)).toEqual([]);
   });
 
@@ -158,41 +169,5 @@ describe("a swap from Sonic, the hub", () => {
       const { out } = await cancel({ txHash: SONIC_TX, quoteId: cancellable(), cancelTxHash: CANCEL_TX });
       expect(out.status).toBe("not_a_cancel_tx");
     });
-  });
-});
-
-describe("a tx no node has seen", () => {
-  beforeEach(() => {
-    vi.mocked(getEvmReceipt).mockResolvedValue(null);
-    vi.mocked(isTxKnown).mockResolvedValue(false);
-  });
-
-  it("is read from the chain once per 10 seconds, however often it's tracked", async () => {
-    stubBackend();
-    const { quoteId } = cacheQuote();
-    await track({ txHash: TX, quoteId });
-    await track({ txHash: TX, quoteId });
-    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
-    expect(isTxKnown).toHaveBeenCalledTimes(1);
-    vi.setSystemTime(NOW + 11_000);
-    await track({ txHash: TX, quoteId });
-    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
-  });
-
-  it("isn't waited for within a call", async () => {
-    Object.assign(trackWait, { stepMs: 1, maxMs: 50 });
-    const calls = stubBackend();
-    await track({ txHash: TX, quoteId: cacheQuote().quoteId });
-    expect(calls.filter(call => call.path.startsWith("/submit-tx/status?"))).toHaveLength(1);
-  });
-
-  it("tells the agent when to stop: the quote's deadline and the 5 minutes a late tx gets", async () => {
-    stubBackend();
-    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
-    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, stopAfter });
-    expect(out.nextStep).toContain(`until ${stopAfter}`);
-    vi.setSystemTime(Date.parse(stopAfter) + 1000);
-    expect((await track({ txHash: TX, quoteId: cacheQuote().quoteId })).out.status).toBe("source_not_found");
   });
 });

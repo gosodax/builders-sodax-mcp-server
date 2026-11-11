@@ -160,7 +160,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_cancel",
-    "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it. This server never signs or moves funds.",
+    "Cancel a submitted swap that hasn't been filled. The first call returns the cancel transaction for the user's wallet to sign; once it's sent, call again with cancelTxHash and this server relays it, or for a swap from Sonic confirms it on the hub. This server never signs or moves funds.",
     {
       ...swapArgs,
       cancelTxHash: txHashArg()

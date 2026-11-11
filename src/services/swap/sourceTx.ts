@@ -56,6 +56,11 @@ export function hubIntentHashes(receipt: EvmReceipt, intentsContract: string, to
   );
 }
 
+/** Whether the intents contract logged `hash` under `topic` in this hub receipt. */
+export function hubLogged(receipt: EvmReceipt, intentsContract: string, topic: string, hash: string): boolean {
+  return hubIntentHashes(receipt, intentsContract, topic).some(logged => same(logged, hash));
+}
+
 export type DepositCheck = "match" | "not_a_deposit" | "mismatch" | "other_sender";
 
 /**

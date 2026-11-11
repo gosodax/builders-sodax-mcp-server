@@ -4,6 +4,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { solverConfig } from "@sodax/types";
 import type { EvmReceipt } from "../../sodax.js";
 import { MESSAGE_TOPIC, decodeMessage, decodeRlpList } from "../sourceTx.js";
 import { abiEncode } from "./encode.js";
@@ -41,4 +42,15 @@ export function messageReceipt(
     message.payload,
   ]);
   return { reverted: false, logs: [{ address, topics: [MESSAGE_TOPIC], data }] };
+}
+
+/**
+ * A hub receipt with one log per intent hash under `topic` (IntentCreated, IntentCancelled), from the intents contract
+ * unless `address` says otherwise: the hash is the first data word, as the contract emits it.
+ */
+export function hubReceipt(topic: string, hashes: string[], address = solverConfig.intentsContract): EvmReceipt {
+  return {
+    reverted: false,
+    logs: hashes.map(hash => ({ address, topics: [topic], data: `${hash}${"0".repeat(64)}` })),
+  };
 }

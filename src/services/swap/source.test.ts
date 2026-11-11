@@ -1,9 +1,10 @@
 import { solverConfig } from "@sodax/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
+import { pinnedSourceOf } from "../sodax.js";
 import { fixtureCatalog } from "./__fixtures__/catalog.js";
 import { toChain } from "./resolver.js";
-import { pinnedSourceOf, sourceChainFor } from "./source.js";
+import { sourceChainFor } from "./source.js";
 
 const ARBITRUM = toChain("0xa4b1.arbitrum");
 

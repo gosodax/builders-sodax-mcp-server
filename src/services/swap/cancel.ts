@@ -19,17 +19,9 @@ import {
   resolveSource,
   whyNotCancellable,
 } from "./source.js";
-import {
-  HUB_RELAY_ID,
-  INTENT_CANCELLED_TOPIC,
-  INTENT_CREATED_TOPIC,
-  checkDeposit,
-  decodeSendMessage,
-  holdsCancel,
-  hubIntentHashes,
-} from "./sourceTx.js";
+import { HUB_RELAY_ID, INTENT_CANCELLED_TOPIC, decodeSendMessage, holdsCancel, hubLogged } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
-import { checkQuoteDeposit, deadlineMs, relayForRefund, swapsIn, untilRefundSec } from "./track.js";
+import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
 
 export type CancelState =
   | { status: "not_cancellable"; reason: NotCancellable | "not_sent" }
@@ -117,11 +109,8 @@ export async function cancelSwap(input: {
   }
   const { connection } = source;
   if (!connection) {
-    const hashes = hubIntentHashes(receipt, source.swapContract, INTENT_CANCELLED_TOPIC);
-    return {
-      ...base,
-      status: hashes.includes(intentHash(intent).toLowerCase()) ? "cancel_confirmed" : "not_a_cancel_tx",
-    };
+    const cancelled = hubLogged(receipt, source.swapContract, INTENT_CANCELLED_TOPIC, intentHash(intent));
+    return { ...base, status: cancelled ? "cancel_confirmed" : "not_a_cancel_tx" };
   }
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
@@ -143,7 +132,7 @@ export async function cancelSwap(input: {
 
 /**
  * A quote's tx with no backend row: nothing reached the hub to cancel. Its deposit stays on chain unswapped;
- * only track would submit it, and from its deadline on it's relayed for refund as track does. `undefined`
+ * only track would submit it, and from its deadline on it's refunded as track does. `undefined`
  * for a mined tx that isn't this quote's deposit, which track reports on.
  */
 async function unsubmittedDeposit(
@@ -158,7 +147,7 @@ async function unsubmittedDeposit(
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
   if (claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
-  const refund = await relayForRefund(base, quote);
+  const refund = await relayForRefund(base, quote, source);
   return refund.status === "expired_refunding" ? { ...base, status: "not_cancellable", reason: "refunding" } : refund;
 }
 
@@ -168,28 +157,21 @@ const quoteMismatch = (message: string) =>
   });
 
 /**
- * Without a quote, the hub intent must be the tracked deposit's: from this chain, sent in that tx by the
- * intent's source address to its creator with the calls that create this very intent, and the creator
- * must be that address's hub wallet, so its cancel reaches it.
+ * Without a quote, the hub intent must be the tracked swap's: from this chain, and alone in that tx, either a
+ * deposit by the intent's source address to its creator with the calls that create this very intent, or on the
+ * hub the intents contract's log of it. The creator must be that address's hub wallet, so its cancel reaches it.
  */
 async function isDepositsIntent(source: SwapSource, txHash: string, intent: Intent): Promise<boolean> {
   if (intent.srcChain !== intentChainId(source.chain.key)) return false;
+  // A deposit must carry the calls that create this intent; a hub swap is matched by the intent's hash alone.
+  const payload = source.connection ? createIntentPayload(intent) : "";
+  if (payload === undefined) return false;
   const receipt = await readReceipt(source.chain, txHash);
   // The deposit reached the hub, so it's mined: a node without its receipt is behind.
   if (!receipt) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${source.chain.name} right now.`);
-  // As track: the backend takes a tx's first swap only, so it can't tell two apart.
-  if (swapsIn(receipt, source) > 1) return false;
-  const { connection, swapContract } = source;
-  if (connection) {
-    const payload = createIntentPayload(intent);
-    if (!payload) return false;
-    const relayData = { address: intent.creator, payload };
-    const { srcChain, srcAddress } = intent;
-    const want = { connection, assetManager: swapContract, srcChain, srcAddress, relayData };
-    if (checkDeposit(receipt, want) !== "match") return false;
-  } else if (!hubIntentHashes(receipt, swapContract, INTENT_CREATED_TOPIC).includes(intentHash(intent).toLowerCase())) {
-    return false;
-  }
+  // As track checks a quote's: alone in its tx.
+  const swap = { intent, srcAddress: intent.srcAddress, relayData: { address: intent.creator, payload } };
+  if (checkQuoteDeposit(receipt, source, swap) !== "match") return false;
   const hubWallet = await userHubWallet(source.chain.key, intent.srcAddress).catch(() => {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
   });

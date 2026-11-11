@@ -71,10 +71,12 @@ describe("otelLogsConfig", () => {
     expect(reason).not.toContain("secret-token");
   });
 
-  it("takes the gateway's base URL too, as the backend's variable holds it", () => {
+  it("takes the gateway's bare origin too, as the backend's variable holds it, and any other URL as given", () => {
     for (const base of ["https://otel.example", "https://otel.example/"]) {
       expect(otelLogsConfig({ ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: base })).toEqual(CONFIG);
     }
+    const proxied = "https://proxy.example/otlp/logs";
+    expect(otelLogsConfig({ ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: proxied })).toMatchObject({ url: proxied });
   });
 
   it("allows a plain http endpoint on a dev box only", () => {

@@ -156,9 +156,13 @@ describe("HTTP routes", () => {
       params: { name: "sodax_get_supported_chains", arguments: {} },
     });
     // Routed like the handlers: "/MCP/" is /mcp.
-    expect((await post("/MCP/", call, ip)).status).toBe(200);
-    await fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } });
+    const res = await post("/MCP/", call, ip);
+    expect(res.status).toBe(200);
+    const health = await fetch(`${base}/health`, { headers: { "X-Forwarded-For": ip } });
     const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "tools/call" });
+    // The client gets the id to quote; /health isn't an MCP request and gets none.
+    expect(res.headers.get("x-request-id")).toBe(fields["request.id"]);
+    expect(health.headers.get("x-request-id")).toBeNull();
     expect(fields).toMatchObject({
       "http.request.method": "POST",
       "http.response.status_code": 200,

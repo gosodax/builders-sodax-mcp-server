@@ -363,6 +363,8 @@ export interface DriftReport {
     fieldGaps: number;
     uncovered: number;
   };
+  /** The issues, one per line; empty without drift. */
+  details: string;
 }
 
 export interface DriftCheckOptions {
@@ -387,6 +389,7 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
   const emptyReport: DriftReport = {
     hasDrift: false,
     summary: { totalEndpoints: 0, endpointGaps: 0, paramGaps: 0, requiredGaps: 0, fieldGaps: 0, uncovered: 0 },
+    details: "",
   };
 
   let spec: OpenApiSpec;
@@ -532,53 +535,37 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
     uncovered: uncovered.length,
   };
 
+  const details = buildDriftReportText(endpointGaps, paramIssues, requiredIssues, fieldIssues);
   if (!hasDrift) {
     logger.info(
       { totalEndpoints: total, uncovered: uncovered.length },
       `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
     );
   } else {
+    // One record, the issues in it, so a boot with drift is one warning.
     logger.warn(
-      { issueCount, totalEndpoints: total },
+      { issueCount, totalEndpoints: total, details },
       `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`,
     );
-    if (endpointGaps.length > 0) {
-      logger.warn(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
-      for (const key of endpointGaps) logger.warn(`  - ${key}`);
-      logger.warn("  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts");
-    }
-    if (paramIssues.length > 0) {
-      logger.warn(`Param drift — ${paramIssues.length} issue(s):`);
-      for (const issue of paramIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
-    }
-    if (requiredIssues.length > 0) {
-      logger.warn(`Required-flag drift — ${requiredIssues.length} issue(s):`);
-      for (const issue of requiredIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
-    }
-    if (fieldIssues.length > 0) {
-      logger.warn(`Response-field drift — ${fieldIssues.length} issue(s):`);
-      for (const issue of fieldIssues) logger.warn(`  - ${issue.endpoint}: ${issue.detail}`);
-    }
   }
 
   if (uncovered.length > 0) {
     logger.info(
-      `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema):`,
+      { endpoints: uncovered.join(", ") },
+      `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema)`,
     );
-    for (const key of uncovered) logger.info(`  - ${key}`);
   }
 
   // ── Runtime notification (prod server startup only) ─────────────────────
   if (options.notify && hasDrift) {
-    const reportText = buildDriftReportText(endpointGaps, paramIssues, requiredIssues, fieldIssues);
     const delivered = await postToDiscord({
       username: "Drift Watcher",
-      content: buildDiscordContent(summary, reportText),
+      content: buildDiscordContent(summary, details),
     });
     if (delivered) logger.info("📣 Drift notifier: posted drift summary to Discord");
   }
 
-  return { hasDrift, summary };
+  return { hasDrift, summary, details };
 }
 
 /**
@@ -593,7 +580,7 @@ function restoreOpenApiPath(normalized: string, paths: OpenApiSpec["paths"]): st
   return normalized;
 }
 
-/** Render the detailed drift issues as plain text for the Discord fenced block. */
+/** The detailed drift issues as plain text, for the log record, the CLI and the Discord fenced block. */
 function buildDriftReportText(
   endpointGaps: EndpointKey[],
   paramIssues: DriftIssue[],
@@ -604,6 +591,7 @@ function buildDriftReportText(
   if (endpointGaps.length > 0) {
     lines.push(`Endpoint coverage — ${endpointGaps.length} endpoint(s) have no MCP tool:`);
     for (const key of endpointGaps) lines.push(`  - ${key}`);
+    lines.push("  → Add a tool in src/tools/sodaxApi.ts and a contract entry in src/services/apiDriftCheck.ts");
   }
   if (paramIssues.length > 0) {
     lines.push(`Param drift — ${paramIssues.length} issue(s):`);

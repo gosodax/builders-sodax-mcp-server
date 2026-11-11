@@ -200,6 +200,8 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
       "HTTP request",
     );
   });
+  // The id a builder can quote when reporting a problem; every record of the request carries it.
+  res.setHeader("X-Request-Id", requestId);
   runWithRequestContext({ requestId, clientId }, next);
 }
 

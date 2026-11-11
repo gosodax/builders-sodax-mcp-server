@@ -237,14 +237,14 @@ async function send(path: string, body: unknown, fetcher: typeof fetchJsonOrNull
     const options = { method: body === undefined ? "GET" : "POST", body, timeout: TIMEOUT_MS };
     return await fetcher<unknown>(`${SODAX_SWAPS_BASE_URL}${path}`, options);
   } catch (error) {
-    throw toActionError(error, urlPath(path));
+    throw toActionError(error, urlTemplate(path));
   }
 }
 
 function parse<T>(schema: Schema<T>, path: string, raw: unknown): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    logger.error({ "url.template": urlPath(path) }, "Unexpected Swaps API response");
+    logger.error({ "url.template": urlTemplate(path) }, "Unexpected Swaps API response");
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
   }
   return parsed.data;
@@ -284,7 +284,7 @@ const REFUSALS = new Map<number, Refusal>([
 const withoutIds = (text: string) => text.replace(/0x[0-9a-f]{6,}|\b[a-z0-9]{24,}\b/gi, "*");
 
 // The route as the "Upstream call" record names it, so one query finds both.
-const urlPath = (path: string) => routeOf(new URL(`${SODAX_SWAPS_BASE_URL}${path}`).pathname);
+const urlTemplate = (path: string) => routeOf(new URL(`${SODAX_SWAPS_BASE_URL}${path}`).pathname);
 
 function toActionError(error: unknown, route: string): ActionError {
   if (!(error instanceof HttpError)) {

@@ -5,7 +5,7 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
-import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { SODAX_API_BASE_URL, SODAX_API_ORIGINS, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { errorName, logger } from "./logger.js";
 import { getRequestContext } from "./requestContext.js";
 
@@ -33,6 +33,9 @@ function forwardedApiKey(url: string): string | undefined {
   const { href } = new URL(url);
   return KEYED_BASE_URLS.some(base => href.startsWith(base)) ? apiKey : undefined;
 }
+
+// SODAX's own API hosts, every route on them: they get the request's id, so their logs can name the request ours do.
+const SODAX_ORIGINS = new Set<string>(Object.values(SODAX_API_ORIGINS));
 
 /**
  * A non-2xx response. The message is the one callers already show; the parts ride along for
@@ -163,17 +166,24 @@ export async function timedFetch<T>(
   ok: (response: Response) => boolean,
   read: (response: Response) => Promise<T>,
 ): Promise<{ response: Response; body: T }> {
-  const { host, pathname } = new URL(url);
+  const { origin, hostname, pathname } = new URL(url);
+  const { requestId } = getRequestContext();
+  let sent = init;
+  if (requestId && SODAX_ORIGINS.has(origin)) {
+    const headers = new Headers(init.headers);
+    headers.set("X-Request-Id", requestId);
+    sent = { ...init, headers };
+  }
   const started = Date.now();
   const fields = () => ({
     "http.request.method": init.method ?? "GET",
-    "server.address": host,
+    "server.address": hostname,
     "url.template": routeOf(pathname),
     "duration.ms": Date.now() - started,
   });
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await fetch(url, sent);
   } catch (error) {
     logger.warn({ ...fields(), "error.type": errorName(error) }, "Upstream call");
     throw error;

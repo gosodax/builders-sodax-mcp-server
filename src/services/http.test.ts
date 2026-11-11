@@ -6,6 +6,7 @@ import {
   SODAX_RELAY_BASE_URL,
   SODAX_SOLVER_BASE_URL,
   SODAX_SWAPS_BASE_URL,
+  SODAX_SWAP_ORACLE_BASE_URL,
 } from "../constants.js";
 import { TOOL_CONTRACT } from "./apiDriftCheck.js";
 import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
@@ -233,6 +234,22 @@ describe("API key forwarding", () => {
     expect(sentKey()).toBeUndefined();
     expect(sentInit().redirect).toBe("follow");
   });
+
+  const sentId = () => new Headers(sentInit().headers).get("X-Request-Id");
+  const fetchInRequest = (url: string) => runWithRequestContext({ requestId: "req-1" }, () => fetchJson(url));
+
+  it.each([dataUrl, `${SODAX_SWAP_ORACLE_BASE_URL}/oracle`, `${SODAX_RELAY_BASE_URL}/`])(
+    "sends the request's id to %s, a SODAX API host",
+    async url => {
+      await fetchInRequest(url);
+      expect(sentId()).toBe("req-1");
+    },
+  );
+
+  it.each(["https://docs.sodax.com/mcp", "http://example.com/x"])("never sends the request's id to %s", async url => {
+    await fetchInRequest(url);
+    expect(sentId()).toBeNull();
+  });
 });
 
 describe("upstream call records", () => {
@@ -240,11 +257,11 @@ describe("upstream call records", () => {
     const info = vi.spyOn(logger, "info");
     fetchSpy.mockResolvedValueOnce(jsonResponse('{"ok":true}', { status: 200 }));
     await fetchJson(`${SODAX_API_BASE_URL}/intent/user/0x${"a".repeat(40)}?address=0x1234`);
-    const { host } = new URL(SODAX_API_BASE_URL);
+    const { hostname } = new URL(SODAX_API_BASE_URL);
     expect(info).toHaveBeenCalledWith(
       {
         "http.request.method": "GET",
-        "server.address": host,
+        "server.address": hostname,
         "url.template": "/v1/be/intent/user/*",
         "http.response.status_code": 200,
         "duration.ms": expect.any(Number),

@@ -2,7 +2,7 @@
  * Constants for the SODAX Builders MCP Server
  */
 
-const SODAX_API_ORIGINS = {
+export const SODAX_API_ORIGINS = {
   production: "https://api.sodax.com",
   canary: "https://canary-api.sodax.com",
 } as const;

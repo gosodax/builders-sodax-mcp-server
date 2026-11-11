@@ -8,7 +8,8 @@ import { type ToolSelection, type Toolsets, describeProfiles, selectToolsets } f
 
 // With the docs MCP unreachable only the docs meta-tools register, so the list is stable.
 beforeEach(() => {
-  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+  // What fetch rejects with when the network is down.
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
 });
 
 afterEach(() => {
@@ -58,8 +59,9 @@ describe("a call the SDK refuses before any handler runs", () => {
     expect(JSON.stringify(records)).not.toContain("sodax_nope");
   });
 
-  it("leaves a tool's own error result to the tool's record: one record, not two", async () => {
+  it("leaves a tool's own error result to the tool's record: one record, not two, naming the cause", async () => {
     const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
     const client = await connect({ builder: true, swap: false });
     // The data API is offline here, so the handler runs and returns its failure as isError.
     const result = await client.callTool({
@@ -68,9 +70,14 @@ describe("a call the SDK refuses before any handler runs", () => {
     });
     await client.close();
     expect(result.isError).toBe(true);
-    const records = toolCalls(info);
-    expect(records).toEqual([
-      expect.objectContaining({ "gen_ai.tool.name": "sodax_get_intent", "tool.outcome": "error" }),
+    // SODAX's side, not the caller's: a warning.
+    expect(toolCalls(info)).toEqual([]);
+    expect(toolCalls(warn)).toEqual([
+      expect.objectContaining({
+        "gen_ai.tool.name": "sodax_get_intent",
+        "tool.outcome": "error",
+        "error.type": "UPSTREAM_UNREACHABLE",
+      }),
     ]);
   });
 

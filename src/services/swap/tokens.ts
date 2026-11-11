@@ -112,6 +112,11 @@ function refreshCatalog(): Promise<SwapCatalog> {
     });
 }
 
+/** Seconds since the catalog was fetched, for the heartbeat; none before the first fetch. */
+export function swapCatalogAgeSec(): number | undefined {
+  return cached && Math.round((Date.now() - cached.fetchedAt) / 1000);
+}
+
 /** Make the next call refresh, while the current catalog still covers an outage. */
 export function expireSwapCatalog(): void {
   if (cached) cached = { ...cached, fetchedAt: Math.min(cached.fetchedAt, Date.now() - CACHE_DURATION_MS) };

@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { type MockInstance, afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHttpApp } from "./index.js";
+import { bootConfig, createHttpApp, serverGauges } from "./index.js";
 import { createServer } from "./server.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
 import { logger } from "./services/logger.js";
@@ -220,6 +220,7 @@ describe("HTTP routes", () => {
       "http.request.method": "GET",
       "http.route": "/mcp",
       "http.response.status_code": 405,
+      "error.type": "METHOD_NOT_ALLOWED",
     });
   });
 
@@ -231,6 +232,7 @@ describe("HTTP routes", () => {
     // body-parser leaves {} behind a failed parse: a body, with no protocol method in it.
     const fields = await httpRequestRecord(info, { "http.route": "/mcp", "http.response.status_code": 400 });
     expect(fields["mcp.method.name"]).toBe("other");
+    expect(fields["error.type"]).toBe("INVALID_JSON");
   });
 
   it("logs a method the protocol doesn't know as other, so a client can't shape the record", async () => {
@@ -240,9 +242,11 @@ describe("HTTP routes", () => {
   });
 
   it("answers an oversized body on /mcp with 413 in JSON", async () => {
+    const info = vi.spyOn(logger, "info");
     const res = await post("/mcp", JSON.stringify({ pad: "x".repeat(101 * 1024) }), "198.51.100.3");
     expect(res.status).toBe(413);
     expect((await res.json()).jsonrpc).toBe("2.0");
+    await httpRequestRecord(info, { "http.route": "/mcp", "error.type": "BODY_TOO_LARGE" });
   });
 
   it("refuses a batch over the cap on /mcp", async () => {
@@ -256,7 +260,82 @@ describe("HTTP routes", () => {
       "http.route": "/mcp",
       "http.response.status_code": 400,
       "mcp.method.name": "batch",
+      "error.type": "BATCH_TOO_LARGE",
     });
+  });
+
+  it("names the client from initialize, and the connection's profile and key status, never the key", async () => {
+    const info = vi.spyOn(logger, "info");
+    const key = "sodax_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
+    const res = await post("/mcp?profile=builder", JSON.stringify(initialize(1)), "198.51.100.47", {
+      "x-api-key": key,
+      "User-Agent": "test-agent/1.0",
+    });
+    expect(res.status).toBe(200);
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "initialize" });
+    expect(fields).toMatchObject({
+      "mcp.client.name": "route-test",
+      "mcp.client.version": "0",
+      "mcp.protocol.version": "2025-03-26",
+      "user_agent.original": "test-agent/1.0",
+      "mcp.profile": "builder",
+      "caller.key_status": "valid",
+      "caller.key_hash": expect.stringMatching(/^[0-9a-f]{16}$/),
+    });
+    expect(fields["error.type"]).toBeUndefined();
+    expect(JSON.stringify(fields)).not.toContain("sodax_abc");
+  });
+
+  it("cuts a client's name to 64 characters without control characters, and names no client off initialize", async () => {
+    const info = vi.spyOn(logger, "info");
+    const message = initialize(1);
+    message.params.clientInfo.name = `a\u0000b\n${"c".repeat(100)}`;
+    await post("/mcp", JSON.stringify(message), "198.51.100.48");
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "initialize" });
+    expect(fields["mcp.client.name"]).toBe(`ab${"c".repeat(62)}`);
+    expect(fields).toMatchObject({ "mcp.profile": "all", "caller.key_status": "missing" });
+    expect(fields["caller.key_hash"]).toBeUndefined();
+    await post("/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }), "198.51.100.48");
+    const ping = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "ping" });
+    expect(ping["mcp.client.name"]).toBeUndefined();
+  });
+
+  it("drops line separators from a client's name, and never leaves half an emoji at the cut", async () => {
+    const info = vi.spyOn(logger, "info");
+    const message = initialize(1);
+    message.params.clientInfo.name = `a\u2028${"\u{1F600}".repeat(40)}`;
+    await post("/mcp", JSON.stringify(message), "198.51.100.51");
+    const fields = await httpRequestRecord(info, { "http.route": "/mcp", "mcp.method.name": "initialize" });
+    expect(fields["mcp.client.name"]).toBe(`a${"\u{1F600}".repeat(31)}`);
+  });
+
+  it("names the setting a refused connection got wrong", async () => {
+    const info = vi.spyOn(logger, "info");
+    // A sessionId on any route but /messages names no session: it could be someone else's.
+    const unknown = await post("/mcp?profile=bogus&sessionId=abc", JSON.stringify(initialize(1)), "198.51.100.49");
+    expect(unknown.status).toBe(400);
+    const profile = await httpRequestRecord(info, { "http.route": "/mcp", "error.type": "UNKNOWN_PROFILE" });
+    // The value a client typed is never logged.
+    expect(profile["mcp.profile"]).toBeUndefined();
+    expect(profile["mcp.session.id_hash"]).toBeUndefined();
+    expect(JSON.stringify(profile)).not.toContain("bogus");
+    const keyless = await post("/mcp?profile=swap", JSON.stringify(initialize(1)), "198.51.100.49", {
+      "x-api-key": "not-a-key",
+    });
+    expect(keyless.status).toBe(403);
+    const key = await httpRequestRecord(info, { "http.route": "/mcp", "error.type": "API_KEY_MALFORMED" });
+    expect(key).toMatchObject({ "mcp.profile": "swap", "caller.key_status": "malformed" });
+    expect(key["caller.key_hash"]).toBeUndefined();
+    expect(JSON.stringify(key)).not.toContain("not-a-key");
+  });
+
+  it("names a /messages POST for a session that doesn't exist", async () => {
+    const info = vi.spyOn(logger, "info");
+    const res = await post("/messages?sessionId=nope", JSON.stringify(initialize(1)), "198.51.100.50");
+    expect(res.status).toBe(400);
+    const fields = await httpRequestRecord(info, { "http.route": "/messages", "error.type": "SSE_SESSION_NOT_FOUND" });
+    // A message runs with its session's profile, named on that session's GET /sse.
+    expect(fields["mcp.profile"]).toBeUndefined();
   });
 
   it("turns a throwing /mcp handler into a JSON 500 and keeps serving", async () => {
@@ -288,6 +367,32 @@ describe("HTTP routes", () => {
       "http.response.status_code": 202,
       "mcp.method.name": "initialize",
     });
+  });
+
+  it("names an SSE session by a hash of its id: when it opens, on its messages and on its close", async () => {
+    const ip = "198.51.100.52";
+    const info = vi.spyOn(logger, "info");
+    const { reader, endpoint } = await sseSession(ip);
+    const sessionId = new URL(endpoint, base).searchParams.get("sessionId") as string;
+    const opened = info.mock.calls.find(([, msg]) => msg === "SSE session opened")?.[0] as Record<string, unknown>;
+    const tag = opened["mcp.session.id_hash"];
+    expect(tag).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(sessionId);
+    await post(endpoint, JSON.stringify(initialize(7)), ip);
+    await readUntil(reader, /"id":7/);
+    await httpRequestRecord(info, { "http.route": "/messages", "mcp.session.id_hash": tag });
+    // The open sessions are a heartbeat gauge, next to the others.
+    expect(serverGauges()()).toMatchObject({
+      "swap_quotes.open": expect.any(Number),
+      "sse.sessions": expect.any(Number),
+      "process.memory.rss_bytes": expect.any(Number),
+      "process.memory.heap_used_bytes": expect.any(Number),
+      "event_loop.delay_p99_ms": expect.any(Number),
+      "docs_proxy.healthy": expect.any(Boolean),
+    });
+    expect(serverGauges()()["sse.sessions"]).toBeGreaterThanOrEqual(1);
+    streams.splice(0).forEach(stream => stream.abort());
+    await httpRequestRecord(info, { "http.route": "/sse", "mcp.session.id_hash": tag });
   });
 
   it("turns a throwing /sse handler into a JSON 500 and keeps serving", async () => {
@@ -334,6 +439,7 @@ describe("HTTP routes", () => {
     expect((await res.json()).error).toEqual({ code: -32000, message: "Too many requests, please try again later." });
     // Refused before the body was parsed, and at debug: the limiter's own record is the one that ships.
     const fields = await httpRequestRecord(debug, { "http.route": "/mcp", "http.response.status_code": 429 });
+    expect(fields["error.type"]).toBe("RATE_LIMITED");
     expect(fields["mcp.method.name"]).toBeUndefined();
     // Once per window, however many refusals follow.
     expect((await post("/mcp", JSON.stringify(initialize(2)), ip)).status).toBe(429);
@@ -372,8 +478,30 @@ describe("HTTP routes", () => {
   it("caps open SSE sessions per IP", async () => {
     const ip = "198.51.100.7";
     for (let i = 0; i < SSE_MAX_SESSIONS_PER_IP; i++) expect((await openSse(ip)).status).toBe(200);
+    const info = vi.spyOn(logger, "info");
     const refused = await openSse(ip);
     expect(refused.status).toBe(429);
     expect((await refused.json()).error).toContain("Too many open SSE sessions");
+    await httpRequestRecord(info, { "http.route": "/sse", "error.type": "SSE_SESSION_LIMIT" });
+  });
+});
+
+describe("the records about the server itself", () => {
+  it("names how it was started: overridden RPCs by chain only, never a URL", () => {
+    const config = bootConfig(
+      { solana: { rpcUrl: "https://rpc.example/KEY" }, "0xa4b1.arbitrum": { rpcUrl: "x" } },
+      true,
+    );
+    expect(config).toMatchObject({
+      "app.version": expect.any(String),
+      "sodax.env": expect.any(String),
+      "swap_tools.enabled": true,
+      "rpc_overrides.chains": "0xa4b1.arbitrum,solana",
+      "posthog.enabled": false,
+      "discord.enabled": expect.any(Boolean),
+      "log.level": expect.any(String),
+    });
+    expect(JSON.stringify(config)).not.toContain("rpc.example");
+    expect(bootConfig({}, false)["rpc_overrides.chains"]).toBeUndefined();
   });
 });

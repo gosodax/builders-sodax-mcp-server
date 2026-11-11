@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { SeverityNumber, diag } from "@opentelemetry/api";
 import { InMemoryLogRecordExporter, type LogRecordExporter } from "@opentelemetry/sdk-logs";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +80,21 @@ describe("otelLogsConfig", () => {
     expect(otelLogsConfig({ ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: proxied })).toMatchObject({ url: proxied });
   });
 
+  it("drops a trailing slash, which the gateway would answer with a 404", () => {
+    for (const url of ["https://otel.example/v1/logs/", "https://otel.example/v1/logs//", "https://otel.example//"]) {
+      expect(otelLogsConfig({ ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: url })).toEqual(CONFIG);
+    }
+  });
+
+  it("takes the running commit as the version: the Dockerfile's GIT_SHA, else Coolify's SOURCE_COMMIT", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const commit = (env: Record<string, string>) => (otelLogsConfig({ ...ENV, ...env }) as OtelLogsConfig).commit;
+    expect(commit({ GIT_SHA: sha, SOURCE_COMMIT: "f".repeat(40) })).toBe(sha);
+    expect(commit({ GIT_SHA: "", SOURCE_COMMIT: ` ${sha} ` })).toBe(sha);
+    // Anything that isn't a sha leaves the package version.
+    for (const value of ["", "unknown", "main", "abc"]) expect(commit({ GIT_SHA: value })).toBeUndefined();
+  });
+
   it("allows a plain http endpoint on a dev box only", () => {
     const env = { ...ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs", DEPLOYMENT_ENV: "dev" };
     expect(otelLogsConfig(env)).toMatchObject({ environment: "dev" });
@@ -112,7 +128,7 @@ describe("toLogRecord", () => {
     const err = redactErr(
       Object.assign(new Error("boom https://rpc.example/key"), { code: 7, cause: { status: 500 } }),
     );
-    const record = toLogRecord(JSON.stringify({ level: 50, time, msg: "Swap tool failed", err }));
+    const record = toLogRecord(JSON.stringify({ level: 50, time, msg: "Tool call", err }));
     expect(record?.severityNumber).toBe(SeverityNumber.ERROR);
     expect(record?.exception).toMatchObject({ name: "Error", message: "boom <url>" });
     expect((record?.exception as { stack: string }).stack).toContain("Error: boom");
@@ -179,6 +195,20 @@ describe("initOtelLogs", () => {
     expect(hello.attributes).toEqual({ "gen_ai.tool.name": "x" });
     expect(failed.attributes).toMatchObject({ "exception.type": "Error", "exception.message": "x <url>" });
     expect(failed.attributes["exception.stacktrace"]).toContain("Error: x");
+  });
+
+  it("names the running commit as the version, and the host when the instance id is blank", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const otel = initOtelLogs({ ...CONFIG, commit: "abc1234" }, { serviceVersion: "1.2.3", exporter, instanceId: "" });
+    handles.push(otel);
+    otel.write(line({}));
+    await otel.forceFlush();
+    const [record] = exporter.getFinishedLogRecords();
+    // A blank id would make the gateway drop every record.
+    expect(record.resource.attributes).toMatchObject({
+      "service.version": "abc1234",
+      "service.instance.id": hostname(),
+    });
   });
 
   it("cuts long attribute values at 4 KB", async () => {
@@ -301,6 +331,25 @@ describe("the heartbeat", () => {
     });
     await otel.shutdown();
     expect(vi.getTimerCount()).toBe(timersBefore);
+  });
+
+  it("carries the server's gauges, and still beats when one can't be read", async () => {
+    vi.useFakeTimers();
+    const exporter = new InMemoryLogRecordExporter();
+    let reads = 0;
+    const gauges = () => {
+      reads++;
+      if (reads === 2) throw new Error("unreadable");
+      return { "swap_quotes.open": 3 };
+    };
+    const otel = startOtelLogs(ENV, { serviceVersion: "1", exporter, gauges });
+    if (!otel) throw new Error("not started");
+    handles.push(otel);
+    vi.advanceTimersByTime(2 * 5 * 60 * 1000);
+    await otel.forceFlush();
+    const beats = exporter.getFinishedLogRecords().filter(record => record.body === "Unified logging heartbeat");
+    expect(beats.map(beat => beat.attributes["swap_quotes.open"])).toEqual([3, undefined]);
+    expect(beats[1].attributes).toMatchObject({ "unified_logging.failed": 0, "unified_logging.gauges_failed": true });
   });
 });
 

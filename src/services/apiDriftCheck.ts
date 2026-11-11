@@ -396,12 +396,12 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
   try {
     spec = await fetchJson<OpenApiSpec>(`${SODAX_API_BASE_URL}/docs-json`, { timeout: 10000 });
   } catch (error) {
-    logger.warn({ err: error }, "⚠️  API drift check: could not fetch OpenAPI spec");
+    logger.warn({ err: error }, "API drift check could not fetch the OpenAPI spec");
     return emptyReport;
   }
 
   if (!spec?.paths) {
-    logger.warn("⚠️  API drift check: could not parse OpenAPI spec");
+    logger.warn("API drift check could not parse the OpenAPI spec");
     return emptyReport;
   }
 
@@ -537,22 +537,17 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
 
   const details = buildDriftReportText(endpointGaps, paramIssues, requiredIssues, fieldIssues);
   if (!hasDrift) {
-    logger.info(
-      { "drift.endpoints": total, "drift.uncovered": uncovered.length },
-      `✅ API drift check passed: ${total} endpoints covered, params/required/response-fields all in sync (${uncovered.length} endpoints skip field check)`,
-    );
+    logger.info({ "drift.endpoints": total, "drift.uncovered": uncovered.length }, "API drift check passed");
   } else {
     // One record, the issues in it, so a boot with drift is one warning.
-    logger.warn(
-      { "drift.issues": issueCount, "drift.endpoints": total, details },
-      `⚠️  API drift check: ${issueCount} issue(s) across ${total} endpoint(s)`,
-    );
+    logger.warn({ "drift.issues": issueCount, "drift.endpoints": total, details }, "API drift found");
   }
 
   if (uncovered.length > 0) {
+    // The service returns a primitive, a map or no schema for these.
     logger.info(
-      { endpoints: uncovered.join(", ") },
-      `ℹ️  ${uncovered.length} endpoint(s) skip response-field drift (service returns primitive, map, or no schema)`,
+      { "drift.uncovered": uncovered.length, "drift.uncovered_endpoints": uncovered.join(", ") },
+      "Endpoints without a response-field drift check",
     );
   }
 
@@ -562,7 +557,7 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
       username: "Drift Watcher",
       content: buildDiscordContent(summary, details),
     });
-    if (delivered) logger.info("📣 Drift notifier: posted drift summary to Discord");
+    if (delivered) logger.info("Posted the API drift summary to Discord");
   }
 
   return { hasDrift, summary, details };

@@ -71,12 +71,12 @@ export async function postToDiscord(message: DiscordMessage): Promise<boolean> {
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
     });
     if (!response.ok) {
-      logger.warn({ "http.response.status_code": response.status }, "⚠️  Discord notifier: webhook returned non-2xx");
+      logger.warn({ "http.response.status_code": response.status }, "Discord webhook returned non-2xx");
       return false;
     }
     return true;
   } catch (err) {
-    logger.warn({ err }, "⚠️  Discord notifier: POST failed (swallowed)");
+    logger.warn({ err }, "Discord webhook POST failed");
     return false;
   }
 }

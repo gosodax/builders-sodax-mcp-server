@@ -13,9 +13,10 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { PostHog } from "posthog-node";
-import { CHAIN_KEY_PATTERN } from "../constants.js";
+import { CHAIN_KEY_PATTERN, ERROR_CODE_PATTERN } from "../constants.js";
 import { errorName, logger } from "./logger.js";
 import { callerKeyTag, getRequestContext, runWithRequestContext } from "./requestContext.js";
+import { SERVER_SIDE_CODES, type ToolFailure, classifyFailure, failureOf } from "./toolFailure.js";
 import { getToolModule, toolGroup } from "./toolRegistry.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
 const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 const CLIENT_ID_SECRET = process.env.POSTHOG_CLIENT_ID_SECRET || "";
+export const POSTHOG_ENABLED = POSTHOG_API_KEY !== "";
 /** With the secret the id is an HMAC, so it can be stored in logs; the plain hash could be brute-forced back to the IP. */
 export const CLIENT_ID_KEYED = CLIENT_ID_SECRET !== "";
 
@@ -84,7 +86,6 @@ function trackToolCall(toolName: string, durationMs: number, outcome: Outcome, c
 // ── What a returned result may tell PostHog ──────────────────────────
 type Outcome = Record<string, unknown> & { success: boolean };
 
-const ERROR_CODE = /^[A-Z_]{1,40}$/;
 const STATUS = /^[a-z_]{1,40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -105,6 +106,7 @@ interface SwapOutput {
 /**
  * A returned result's outcome: tools report failures as `isError`, not by throwing. Swap tools add a
  * whitelist of fields, so a new output field never leaks: no addresses, amounts, tx hashes or queries.
+ * A data tool's failure code rides on the result object (toolFailure.ts), outside what the agent gets.
  * Undefined fields are dropped when the event is serialized.
  */
 function resultOutcome(toolName: string, result: unknown): Outcome {
@@ -112,7 +114,7 @@ function resultOutcome(toolName: string, result: unknown): Outcome {
   const out = structuredContent ?? {};
   return {
     success: isError !== true,
-    error_code: matching(out.error?.code, ERROR_CODE),
+    error_code: matching(out.error?.code ?? failureOf(result)?.code, ERROR_CODE_PATTERN),
     ...(resolveToolGroup(toolName) === "swap" && {
       status: matching(out.status, STATUS),
       quote_id: matching(out.quoteId, UUID),
@@ -135,15 +137,25 @@ function usdBucket(value: unknown): string | undefined {
 
 /**
  * One log record per tool call (#110): the outcome, who called (a key hash, never the key) and, for a swap
- * tool, the ids its records are followed by. Nothing from the arguments.
+ * tool, the ids its records are followed by. Nothing from the arguments. The level says whose failure it is:
+ * error for a bug (with where it broke), warn for SODAX's side, info for the caller's.
  */
-function logToolCall(toolName: string, durationMs: number, outcome: Outcome, result: unknown, thrown?: unknown): void {
+function logToolCall(
+  toolName: string,
+  durationMs: number,
+  outcome: Outcome,
+  result: unknown,
+  failure: ToolFailure | undefined = failureOf(result),
+): void {
   const out = ((result ?? {}) as { structuredContent?: Record<string, unknown> }).structuredContent ?? {};
   const str = (value: unknown) => (typeof value === "string" ? value : undefined);
-  // Tools return their failures as `isError`; a throw is a bug, so where it broke goes with the record.
-  logger[thrown === undefined ? "info" : "error"](
+  // By the key, not the value: a bug may throw undefined.
+  const bug = failure !== undefined && "thrown" in failure;
+  const code = str(outcome.error_code);
+  const level = bug ? "error" : code && SERVER_SIDE_CODES.has(code) ? "warn" : "info";
+  logger[level](
     {
-      err: thrown,
+      err: bug ? whereThrown(failure.thrown) : undefined,
       "gen_ai.tool.name": toolName,
       "duration.ms": durationMs,
       "tool.outcome": outcome.success ? "ok" : "error",
@@ -157,6 +169,8 @@ function logToolCall(toolName: string, durationMs: number, outcome: Outcome, res
         "hub_tx.hash": str(out.hubTxHash),
         "intent.hash": str(out.intentHash),
         "chain.key": outcome.src_chain,
+        "dst_chain.key": outcome.dst_chain,
+        "swap.usd_bucket": outcome.usd_bucket,
       }),
     },
     "Tool call",
@@ -211,14 +225,15 @@ export function withAnalytics(server: McpServer, clientId?: string): void {
             return result;
           } catch (err) {
             const durationMs = Date.now() - start;
-            logToolCall(
+            // Named as a returned failure would be, but logged as a bug whatever its cause: tools return their failures.
+            const { code } = classifyFailure(err);
+            logToolCall(toolName, durationMs, { success: false, error_code: code }, undefined, { code, thrown: err });
+            trackToolCall(
               toolName,
               durationMs,
-              { success: false, error_code: errorName(err) },
-              undefined,
-              whereThrown(err),
+              { success: false, error_code: code, error_message: String(err) },
+              clientId,
             );
-            trackToolCall(toolName, durationMs, { success: false, error_message: String(err) }, clientId);
             throw err;
           }
         });

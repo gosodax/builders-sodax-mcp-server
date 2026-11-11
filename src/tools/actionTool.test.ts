@@ -3,14 +3,16 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { logger, redactErr } from "../services/logger.js";
+import { withAnalytics } from "../services/analytics.js";
+import { logger } from "../services/logger.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { ActionError } from "../services/swap/errors.js";
 import { registerActionTool } from "./actionTool.js";
 
-/** A tool that takes one string, `value`, and runs `run` with it. */
+/** A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is. */
 async function callTool(value: string, run: () => Promise<never | { status: string; nextStep: string }>) {
   const server = new McpServer({ name: "test", version: "0.0.0" });
+  withAnalytics(server);
   // Non-empty annotations: the SDK reads an empty object here as a second input schema.
   registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -85,12 +87,23 @@ describe("registerActionTool", () => {
     expect(JSON.stringify(errors.mock.calls)).not.toContain("abandon");
   });
 
-  it("logs an unexpected error without any URL in it, and alerts once", async () => {
+  it("logs an unexpected error once, as its Tool call: class and stack, never the message; and alerts once", async () => {
     await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
     await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
-    const logged = errors.mock.calls.find(([fields]) => (fields as { err?: unknown }).err)?.[0] as { err: unknown };
-    expect(JSON.stringify(redactErr(logged.err))).toContain("<url>");
-    expect(JSON.stringify(redactErr(logged.err))).not.toContain("KEY");
+    const records = errors.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      "gen_ai.tool.name": "test_action_tool",
+      "tool.outcome": "error",
+      "error.type": "INTERNAL",
+      err: { type: "Error", stack: expect.stringMatching(/^ {4}at /) },
+    });
+    // No second record for the same failure, and the message (an RPC URL here) in none.
+    const others = errors.mock.calls.filter(
+      ([fields, msg]) => msg !== "Tool call" && !(fields as { alert?: string }).alert,
+    );
+    expect(others).toEqual([]);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("rpc.example");
     const alerts = errors.mock.calls.filter(([fields]) => (fields as { alert?: string }).alert === "swap_error");
     expect(alerts).toHaveLength(1);
     expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "test_action_tool", "error.type": "INTERNAL" });

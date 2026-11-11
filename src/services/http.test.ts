@@ -9,7 +9,7 @@ import {
   SODAX_SWAP_ORACLE_BASE_URL,
 } from "../constants.js";
 import { TOOL_CONTRACT } from "./apiDriftCheck.js";
-import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
+import { BadResponseError, HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
 // Loads the client, which registers its routes.
 import "./sodaxApi.js";
 import { logger } from "./logger.js";
@@ -53,6 +53,14 @@ describe("fetchJson", () => {
     await expect(fetchJson("http://example.com/x")).rejects.toThrow(
       /Empty response body from http:\/\/example\.com\/x/,
     );
+  });
+
+  it("names a 2xx body that isn't JSON a bad response, keeping the parser's message", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("<html>", { status: 200 }));
+    const error = await fetchJson("http://example.com/x").catch(e => e);
+    expect(error).toBeInstanceOf(BadResponseError);
+    expect(error.cause).toBeInstanceOf(SyntaxError);
+    expect(error.message).toBe(error.cause.message);
   });
 
   it("throws 'Empty response body' on 204 No Content", async () => {

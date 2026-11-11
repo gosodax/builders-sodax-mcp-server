@@ -45,17 +45,28 @@ export class HttpError extends Error {
   readonly apiMessage?: string;
   readonly apiCode?: unknown;
   readonly retryAfterSec?: number;
+  /** Sent with the caller's key: a 429 is that key's quota, not this server's. */
+  readonly keyed: boolean;
 
   constructor(
     message: string,
     readonly status: number,
-    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number } = {},
+    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number; keyed?: boolean } = {},
   ) {
     super(message);
     this.name = "HttpError";
     this.apiMessage = parts.apiMessage;
     this.apiCode = parts.apiCode;
     this.retryAfterSec = parts.retryAfterSec;
+    this.keyed = parts.keyed ?? false;
+  }
+}
+
+/** A 2xx answer that isn't what the API promised: an empty body, not JSON, or JSON of another shape. */
+export class BadResponseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "BadResponseError";
   }
 }
 
@@ -235,6 +246,7 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
       apiMessage,
       apiCode,
       retryAfterSec: retryAfterSeconds(response.headers.get("Retry-After")),
+      keyed: apiKey !== undefined,
     });
   }
 
@@ -248,9 +260,14 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   const trimmed = text.trim();
   if (!trimmed) {
     if (allow404) return null;
-    throw new Error(`Empty response body from ${url}`);
+    throw new BadResponseError(`Empty response body from ${url}`);
   }
-  return JSON.parse(trimmed) as T;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch (error) {
+    // The parser's own message, as callers have always shown it.
+    throw new BadResponseError(error instanceof Error ? error.message : "Invalid JSON", { cause: error });
+  }
 }
 
 export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}): Promise<T> {

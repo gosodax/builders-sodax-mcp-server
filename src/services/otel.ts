@@ -21,6 +21,15 @@ export interface OtelLogsConfig {
   token: string;
   environment: DeploymentEnv;
   origin?: string;
+  /** The running commit, the records' `service.version`; the package version without one. */
+  commit?: string;
+}
+
+// A git sha, as the Dockerfile passes it on (GIT_SHA) or Coolify sets it (SOURCE_COMMIT).
+const COMMIT = /^[0-9a-f]{7,64}$/i;
+
+function commitFrom(env: NodeJS.ProcessEnv): string | undefined {
+  return [env.GIT_SHA, env.SOURCE_COMMIT].map(value => value?.trim()).find(value => value && COMMIT.test(value));
 }
 
 /** The settings behind `OTEL_LOGS_ENABLED=true`, or the variable that stops shipping (never its value). */
@@ -33,7 +42,9 @@ export function otelLogsConfig(env: NodeJS.ProcessEnv): OtelLogsConfig | string 
   }
   if (!endpoint || !URL.canParse(endpoint)) return "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be the gateway's URL";
   // A URL with a path is used as given (the OTel meaning); a bare origin (the backend's form) gets the logs path.
-  const url = new URL(endpoint).pathname === "/" ? `${endpoint.replace(/\/+$/, "")}/v1/logs` : endpoint;
+  // Either way without a trailing slash: the gateway answers `/v1/logs/` with a 404.
+  const trimmed = endpoint.replace(/\/+$/, "");
+  const url = new URL(trimmed).pathname === "/" ? `${trimmed}/v1/logs` : trimmed;
   // The token travels to this URL: outside a dev box it must be https.
   if (!isHttpsUrl(url) && environment !== "dev") return "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be an https URL";
   if (!token) return "OTEL_LOGS_TOKEN is missing";
@@ -43,7 +54,7 @@ export function otelLogsConfig(env: NodeJS.ProcessEnv): OtelLogsConfig | string 
   }
   // A header can't carry anything else; the exporter would log the whole value and send none.
   if (!/^[\x21-\x7e]+$/.test(token)) return "OTEL_LOGS_TOKEN has characters a header can't carry";
-  return { url, token, environment, origin: env.ORIGIN?.trim() || undefined };
+  return { url, token, environment, origin: env.ORIGIN?.trim() || undefined, commit: commitFrom(env) };
 }
 
 export interface OtelLogsStats {
@@ -69,6 +80,8 @@ export interface OtelLogs {
 
 export interface OtelLogsOptions {
   serviceVersion: string;
+  /** What the heartbeat carries besides the export counts: the server's own gauges, read at each beat. */
+  gauges?: () => Record<string, unknown>;
   /** Tests inject an in-memory exporter and a fixed instance id. */
   exporter?: LogRecordExporter;
   instanceId?: string;
@@ -101,8 +114,20 @@ export function startOtelLogs(env: NodeJS.ProcessEnv, options: OtelLogsOptions):
   const beat = logger.child({}, { level: "info" });
   const heartbeat = setInterval(() => {
     const { written, exported, failed } = otel.stats();
+    let gauges: Record<string, unknown> = {};
+    try {
+      gauges = options.gauges?.() ?? {};
+    } catch {
+      // A gauge that can't be read leaves the beat itself standing, and says why the gauges are missing.
+      gauges = { "unified_logging.gauges_failed": true };
+    }
     beat.info(
-      { "unified_logging.written": written, "unified_logging.exported": exported, "unified_logging.failed": failed },
+      {
+        ...gauges,
+        "unified_logging.written": written,
+        "unified_logging.exported": exported,
+        "unified_logging.failed": failed,
+      },
       "Unified logging heartbeat",
     );
   }, HEARTBEAT_MS).unref();
@@ -136,14 +161,17 @@ export function initOtelLogs(config: OtelLogsConfig, options: OtelLogsOptions): 
       }),
     stats,
   );
+  // The contract asks for a commit or image tag: staging and prod share a package version but not their code.
+  const version = config.commit ?? options.serviceVersion;
   const provider = new LoggerProvider({
     resource: defaultResource().merge(
       resourceFromAttributes({
         "service.name": SERVICE_NAME,
         "service.namespace": SERVICE_NAMESPACE,
         "deployment.environment": config.environment,
-        "service.version": options.serviceVersion,
-        "service.instance.id": options.instanceId ?? hostname(),
+        "service.version": version,
+        // An empty id would make the gateway drop every record while still answering 200.
+        "service.instance.id": options.instanceId || hostname(),
         ...(config.origin && { "sodax.origin": config.origin }),
       }),
     ),
@@ -159,7 +187,7 @@ export function initOtelLogs(config: OtelLogsConfig, options: OtelLogsOptions): 
     ],
   });
   routeDiagnostics();
-  const otelLogger = provider.getLogger(SERVICE_NAME, options.serviceVersion);
+  const otelLogger = provider.getLogger(SERVICE_NAME, version);
   return {
     write(line) {
       try {

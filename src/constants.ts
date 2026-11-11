@@ -145,6 +145,9 @@ export const isSodaxKey = (match: string) => /[A-Z0-9-]/.test(match.slice(6));
 // Live chain keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
 export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
+/** An error code a log record or analytics event may carry (`error.type`): `UPSTREAM_5XX`, `INVALID_AMOUNT`. */
+export const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
+
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 

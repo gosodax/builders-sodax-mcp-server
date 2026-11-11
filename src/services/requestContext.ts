@@ -38,14 +38,28 @@ export function getRequestContext(): RequestContext {
 
 /** Who the caller is, without keeping their key: what a quote is bound to. */
 export function callerKeyHash(): string {
+  return keyHash(getRequestContext().apiKey);
+}
+
+function keyHash(apiKey: string | undefined): string {
   return createHash("sha256")
-    .update(getRequestContext().apiKey ?? "")
+    .update(apiKey ?? "")
     .digest("hex");
 }
 
-/** The caller as log records name it (`caller.key_hash`): 16 characters of the hash, none without a key. */
+/** A SHA-256 hex as log records name it (`caller.key_hash`, `mcp.session.id_hash`): its first 16 characters. */
+export const tagOf = (sha256Hex: string): string => sha256Hex.slice(0, 16);
+
+/** A secret's tag: what a record can carry instead of it (an SSE session id). */
+export const hashTag = (secret: string): string => tagOf(createHash("sha256").update(secret).digest("hex"));
+
+/** A key as log records name it, none without a key. */
+export function keyTag(apiKey: string | undefined): string | undefined {
+  return apiKey ? tagOf(keyHash(apiKey)) : undefined;
+}
+
 export function callerKeyTag(): string | undefined {
-  return getRequestContext().apiKey ? callerKeyHash().slice(0, 16) : undefined;
+  return keyTag(getRequestContext().apiKey);
 }
 
 /** stdio only. In HTTP mode a caller without a key stays keyless. */

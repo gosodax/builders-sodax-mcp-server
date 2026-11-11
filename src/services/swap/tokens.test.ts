@@ -3,7 +3,7 @@ import { logger } from "../logger.js";
 import { getRequestContext, runWithRequestContext } from "../requestContext.js";
 import { clearCache } from "../sodaxApi.js";
 import { catalogFetch, fixtureText } from "./__fixtures__/catalog.js";
-import { clearSwapCatalogCache, expireSwapCatalog, getSwapCatalog } from "./tokens.js";
+import { clearSwapCatalogCache, expireSwapCatalog, getSwapCatalog, swapCatalogAgeSec } from "./tokens.js";
 
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
@@ -20,6 +20,10 @@ afterEach(() => {
 });
 
 describe("getSwapCatalog", () => {
+  it("says how old the catalog is, and nothing before the first fetch", () => {
+    expect(swapCatalogAgeSec()).toBeUndefined();
+  });
+
   it("fetches both lists once for concurrent callers and marks native tokens", async () => {
     const [first, second] = await Promise.all([getSwapCatalog(), getSwapCatalog()]);
     expect(first).toBe(second);

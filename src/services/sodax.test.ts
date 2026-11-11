@@ -366,15 +366,15 @@ describe("walletBalance", () => {
 });
 
 describe("sdkLogger", () => {
-  it("passes on only the SDK's message, never its error or data", () => {
+  it("passes on only the SDK's message, never its error or data, under one constant body", () => {
     const warn = vi.spyOn(logger, "warn");
     const error = vi.spyOn(logger, "error");
     sdkLogger.debug();
     sdkLogger.info();
     sdkLogger.warn("balance read failed");
     sdkLogger.error("rpc failed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "balance read failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "rpc failed" }, "SODAX SDK error");
   });
 
   it("passes the message on without URLs", () => {
@@ -382,8 +382,8 @@ describe("sdkLogger", () => {
     const error = vi.spyOn(logger, "error");
     sdkLogger.warn("read from https://rpc.example/KEY failed");
     sdkLogger.error("socket wss://rpc.example/KEY closed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "read from <url> failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "socket <url> closed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "read from <url> failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "socket <url> closed" }, "SODAX SDK error");
   });
 });
 

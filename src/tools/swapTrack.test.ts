@@ -76,7 +76,7 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(logger.info).toHaveBeenCalledWith(
-      { "chain.key": ARBITRUM, "quote.id": quoteId },
+      { "chain.key": ARBITRUM, "quote.id": quoteId, "tx.hash": TX, "intent.hash": intentHash(INTENT) },
       "Submitted a swap deposit",
     );
     const [submit] = submits(calls);

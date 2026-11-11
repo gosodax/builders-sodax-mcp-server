@@ -3,6 +3,7 @@
  */
 
 import type { Request, Response } from "express";
+import { noteRefusal } from "./services/httpGuards.js";
 import { logger } from "./services/logger.js";
 import { partnerFeeFromRequest } from "./services/partnerFee.js";
 import {
@@ -27,6 +28,7 @@ export function messageContext(session: RequestContext, req: Request, res: Respo
   const apiKey = callerApiKey(req);
   if (session.apiKey === undefined || apiKey === session.apiKey) return { ...session, apiKey };
   const message = "Send each message with the x-api-key this SSE session was opened with.";
+  noteRefusal(res, "SSE_KEY_MISMATCH");
   res.status(403).json({ jsonrpc: "2.0", error: { code: -32000, message }, id: null });
   return undefined;
 }
@@ -47,6 +49,7 @@ export function resolveConnection(
     return { context: { apiKey: parseApiKey(rawKey), partnerFee }, toolsets };
   } catch (error) {
     if (!(error instanceof ConnectionError)) throw error;
+    noteRefusal(res, error.code);
     res
       .status(error.httpStatus)
       .json({ jsonrpc: "2.0", error: { code: error.rpcCode, message: error.message }, id: null });

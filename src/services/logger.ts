@@ -146,9 +146,15 @@ if (requested !== undefined && !requestedIsValid) {
  * bare TypeError. Only a code-shaped value is taken, since viem puts the raw RPC error object in `cause`.
  */
 export function errorName(error: unknown): string {
-  const own = error as { code?: unknown; cause?: { code?: unknown } } | undefined;
-  for (const code of [own?.code, own?.cause?.code]) {
-    if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return code;
-  }
-  return error instanceof Error ? error.name : typeof error;
+  return (
+    errorCode(error) ??
+    errorCode((error as { cause?: unknown } | undefined)?.cause) ??
+    (error instanceof Error ? error.name : typeof error)
+  );
+}
+
+/** A value's `code` when it is code-shaped (ECONNRESET, UND_ERR_SOCKET), else none. */
+export function errorCode(value: unknown): string | undefined {
+  const code = (value as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : undefined;
 }

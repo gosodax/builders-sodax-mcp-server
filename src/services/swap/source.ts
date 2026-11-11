@@ -96,25 +96,24 @@ function namesChain(query: string, chainKey: string): boolean {
 
 /** The receipt, or `null` while the tx isn't mined. */
 export function readReceipt(chain: ChainInfo, txHash: string): Promise<EvmReceipt | null> {
-  return chainRead(chain, "receipt", () => getEvmReceipt(chain.key, txHash));
+  return chainRead(chain, () => getEvmReceipt(chain.key, txHash));
 }
 
 /** Whether the chain's node knows the tx at all, mined or pending. */
 export function seenOnChain(chain: ChainInfo, txHash: string): Promise<boolean> {
-  return chainRead(chain, "transaction", () => isTxKnown(chain.key, txHash));
+  return chainRead(chain, () => isTxKnown(chain.key, txHash));
 }
 
 /** The chain's latest block: a ready quote reads it to check the RPC its track will need. */
 export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
-  return chainRead(chain, "block", () => blockNumber(chain.key));
+  return chainRead(chain, () => blockNumber(chain.key));
 }
 
-/** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. */
-export async function chainRead<T>(chain: ChainInfo, op: string, read: () => Promise<T>): Promise<T> {
+/** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. Its record is the read's own ("Chain read", sodax.ts). */
+export async function chainRead<T>(chain: ChainInfo, read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch {
-    logger.warn({ "chain.key": chain.key, "sdk.call": op }, "Chain read failed");
     throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${chain.name} right now.`);
   }
 }

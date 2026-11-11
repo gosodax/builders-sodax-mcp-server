@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import express from "express";
+import express, { type Request, type Response } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { notifyError } from "./discord.js";
 import {
@@ -247,6 +247,16 @@ describe("jsonErrorHandler", () => {
     app.use(jsonErrorHandler);
     return serve(app);
   }
+
+  it("names the refusal on the request's record even when the headers were already sent", () => {
+    // A 4xx: no error record and no alert throttle for the tests after this one.
+    const err = Object.assign(new Error("too large"), { status: 413, type: "entity.too.large" });
+    const res = { headersSent: true, locals: {} as Record<string, unknown> };
+    const next = vi.fn();
+    jsonErrorHandler(err, { method: "POST", path: "/mcp" } as Request, res as unknown as Response, next);
+    expect(next).toHaveBeenCalledWith(err);
+    expect(res.locals.refusal).toBe("BODY_TOO_LARGE");
+  });
 
   it("answers malformed JSON on /mcp with a JSON-RPC parse error", async () => {
     const url = await errorApp();

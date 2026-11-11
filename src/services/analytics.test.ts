@@ -29,8 +29,9 @@ async function wrapTool(key: string | undefined, handler: () => Promise<unknown>
   withAnalytics(server as never);
   registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never);
   const info = vi.spyOn(logger, "info");
+  const warn = vi.spyOn(logger, "warn");
   const error = vi.spyOn(logger, "error");
-  return { call: () => tools.test_tool(), info, error, getRequestContext };
+  return { call: () => tools.test_tool(), info, warn, error, getRequestContext };
 }
 
 /** The wrapped tool called once: the PostHog event's properties. */
@@ -200,12 +201,39 @@ describe("tool call records", () => {
         "gen_ai.tool.name": "test_tool",
         "duration.ms": expect.any(Number),
         "tool.outcome": "error",
-        "error.type": "TypeError",
+        // Named as a returned failure would be; the class is on err.
+        "error.type": "INTERNAL",
       },
       "Tool call",
     );
     expect(JSON.stringify(error.mock.calls)).not.toContain("secret detail");
     expect(info).not.toHaveBeenCalledWith(expect.anything(), "Tool call");
+  });
+
+  it("logs a bug that threw undefined at error level too", async () => {
+    const { call, warn, error } = await wrapTool(
+      undefined,
+      async () => {
+        const { markFailure } = await import("./toolFailure.js");
+        return markFailure({ content: [], isError: true }, { code: "INTERNAL", thrown: undefined });
+      },
+      "api",
+    );
+    await call();
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "INTERNAL" }), "Tool call");
+    expect(warn).not.toHaveBeenCalledWith(expect.anything(), "Tool call");
+  });
+
+  it("sends PostHog a thrown failure's code too", async () => {
+    const { call } = await wrapTool(
+      "phc_test",
+      async () => {
+        throw new TypeError("x");
+      },
+      "api",
+    );
+    await call().catch(() => undefined);
+    expect(capture.mock.calls.at(-1)?.[0]?.properties).toMatchObject({ success: false, error_code: "INTERNAL" });
   });
 
   it("names the caller by a hash of its key, never the key, under a name the gateway doesn't redact", async () => {
@@ -227,7 +255,9 @@ describe("tool call records", () => {
         hubTxHash: "0xhub",
         intentHash: "0xintent",
         amount: "5",
+        usdValue: "250",
         from: { chain: { key: "0xa4b1.arbitrum" } },
+        to: { chain: { key: "0x2105.base" } },
       },
     }));
     await call();
@@ -241,7 +271,67 @@ describe("tool call records", () => {
       "hub_tx.hash": "0xhub",
       "intent.hash": "0xintent",
       "chain.key": "0xa4b1.arbitrum",
+      "dst_chain.key": "0x2105.base",
+      "swap.usd_bucket": "100-1k",
     });
     expect(JSON.stringify(record)).not.toContain("amount");
+  });
+
+  it.each([
+    ["UPSTREAM_5XX", 503, "warn"],
+    ["UPSTREAM_4XX", 400, "info"],
+  ] as const)("names a data tool's failure (%s) and levels it by whose it is", async (code, status, level) => {
+    const { call, info, warn, error } = await wrapTool(
+      undefined,
+      async () => {
+        const { failedResult } = await import("./toolFailure.js");
+        const { HttpError } = await import("./http.js");
+        return failedResult(new Error("Failed to fetch intent", { cause: new HttpError(`HTTP ${status}`, status) }));
+      },
+      "api",
+    );
+    await call();
+    const records = Object.entries({ info, warn, error }).flatMap(([name, spy]) =>
+      spy.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => ({ level: name, fields })),
+    );
+    expect(records).toEqual([
+      { level, fields: expect.objectContaining({ "tool.outcome": "error", "error.type": code }) },
+    ]);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("warns on a swap tool's failure on SODAX's side, and keeps the caller's at info", async () => {
+    const failing = (code: string) => async () => ({
+      content: [],
+      isError: true,
+      structuredContent: { status: "error", error: { code } },
+    });
+    const ours = await wrapTool(undefined, failing("CHAIN_UNAVAILABLE"));
+    await ours.call();
+    expect(ours.warn).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "CHAIN_UNAVAILABLE" }), "Tool call");
+    const theirs = await wrapTool(undefined, failing("INVALID_AMOUNT"));
+    await theirs.call();
+    expect(theirs.info).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "INVALID_AMOUNT" }), "Tool call");
+  });
+
+  it("logs a failure nothing explains at error level, with its class and frames, never its text", async () => {
+    const { call, error } = await wrapTool(
+      undefined,
+      async () => {
+        const { failedResult } = await import("./toolFailure.js");
+        return failedResult(new RangeError("secret detail"));
+      },
+      "api",
+    );
+    await call();
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: { type: "RangeError", stack: expect.stringMatching(/^ {4}at /) },
+        "tool.outcome": "error",
+        "error.type": "INTERNAL",
+      }),
+      "Tool call",
+    );
+    expect(JSON.stringify(error.mock.calls)).not.toContain("secret detail");
   });
 });

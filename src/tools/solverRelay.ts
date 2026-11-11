@@ -13,6 +13,7 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getRelayPacket, getRelayTransactionPackets, submitRelayTx } from "../services/relay.js";
 import { getSolverOracle, getSolverQuote } from "../services/solver.js";
+import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
@@ -107,10 +108,7 @@ export function registerSolverRelayTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -171,10 +169,7 @@ export function registerSolverRelayTools(server: McpServer): void {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         const hint = quoteErrorHint(message);
-        return {
-          content: [{ type: "text", text: hint ? `Error: ${message}\n\n${hint}` : `Error: ${message}` }],
-          isError: true,
-        };
+        return failedResult(error, hint ? `Error: ${message}\n\n${hint}` : `Error: ${message}`);
       }
     },
   );
@@ -222,10 +217,7 @@ export function registerSolverRelayTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -277,10 +269,7 @@ export function registerSolverRelayTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -322,10 +311,7 @@ export function registerSolverRelayTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );

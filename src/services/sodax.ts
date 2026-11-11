@@ -28,12 +28,13 @@ type Sdk = typeof import("@sodax/sdk");
 
 let loaded: { sdk: Sdk; sodax: InstanceType<Sdk["Sodax"]> } | undefined;
 
-// The SDK logs raw errors and data; only its own message gets through, without URLs.
+// The SDK logs raw errors and data; only its own message gets through, without URLs, as an attribute so the
+// record's body stays one searchable constant.
 export const sdkLogger = {
   debug: () => {},
   info: () => {},
-  warn: (message: string) => logger.warn({ source: "sodax-sdk" }, redact(String(message))),
-  error: (message: string) => logger.error({ source: "sodax-sdk" }, redact(String(message))),
+  warn: (message: string) => logger.warn({ "sdk.message": redact(String(message)) }, "SODAX SDK warning"),
+  error: (message: string) => logger.error({ "sdk.message": redact(String(message)) }, "SODAX SDK error"),
 };
 
 /** The RPC fields of a chain's packaged config that `SODAX_RPC_URL_*` may replace (see `parseRpcOverrides`). */

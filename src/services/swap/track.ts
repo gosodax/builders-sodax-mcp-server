@@ -217,7 +217,10 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
   markSubmitted(quote.quoteId);
-  logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Submitted a swap deposit");
+  logger.info(
+    { "chain.key": chain.key, "quote.id": quote.quoteId, "tx.hash": txHash, "intent.hash": base.intentHash },
+    "Submitted a swap deposit",
+  );
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 

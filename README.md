@@ -117,7 +117,11 @@ every transaction; the server never signs.
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
 `sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub)
-or an EVM spoke chain, not on non-EVM chains yet; the destination can be any SODAX swap chain. On Sonic the swap calls
+or an EVM spoke chain, not on non-EVM chains yet; the destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
+aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a 2-of-2 that Bound co-signs and
+broadcasts, behind a login token that expires in minutes), which an agent's wallet can't drive. A Stacks swap needs the
+sender's public key and post-conditions the wallet must add itself, and the SDK can't build a Stacks cancel yet (it
+passes the address where the public key goes). On Sonic the swap calls
 the intents contract directly, so its approval goes to that contract. Every result the tools return carries
 a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 

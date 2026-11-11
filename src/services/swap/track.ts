@@ -96,7 +96,7 @@ export type TrackState =
 
 export type TrackResult = SwapRef & TrackState;
 
-// One check per caller, quote and tx at a time: submit-tx allows 10 a minute for this server's whole IP.
+// One check per caller, quote and tx at a time: submit-tx allows 10 a minute per IP unless the key's org has a limit.
 const inFlight = new Map<string, Promise<TrackResult>>();
 
 // Agents can't wait between calls, so a call waits briefly for the swap to move on. Mutable for tests.
@@ -200,7 +200,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
   // backend's canceller, as its own expired rows are.
   if (Date.now() >= deadlineMs(quote)) return relayForRefund(base, quote, source);
-  // Each submit costs one of the 10 a minute this server's IP gets: a retry sooner than told waits.
+  // Each submit counts against submit-tx's limit (per IP, or the key's org): a retry sooner than told waits.
   const waitMs = (quote.submitRetryAt ?? 0) - Date.now();
   if (waitMs > 0) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "This deposit was submitted moments ago.", {

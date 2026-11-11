@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
+import { EvmHubProvider, EvmSolverService, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { INTENT } from "../tools/__fixtures__/swapBackend.js";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  bounded,
   cancelPayload,
   checksumValid,
   connectionFor,
@@ -14,6 +16,7 @@ import {
   evmChainIdFor,
   initSodax,
   intentChainId,
+  intentHash,
   packagedToken,
   parseRpcOverrides,
   rebuildSwapTx,
@@ -50,6 +53,24 @@ describe("before initSodax", () => {
     const fresh = await import("./sodax.js");
     expect(() => fresh.approveCalldata(USER, USER, 1n)).toThrow("initSodax");
     expect(fresh.encodeRecipient("0xa4b1.arbitrum", USER)).toBeUndefined();
+  });
+});
+
+describe("intentHash", () => {
+  it("is the SDK's hash of the same struct with its numbers as bigints, the hub's id of the intent", () => {
+    const hash = intentHash(INTENT);
+    expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(hash).toBe(
+      EvmSolverService.getIntentHash({
+        ...INTENT,
+        intentId: 7n,
+        inputAmount: 5_000_000n,
+        minOutputAmount: 4_941_968n,
+        deadline: BigInt(INTENT.deadline),
+        srcChain: 23n,
+        dstChain: 146n,
+      } as Parameters<typeof EvmSolverService.getIntentHash>[0]),
+    );
   });
 });
 
@@ -345,15 +366,15 @@ describe("walletBalance", () => {
 });
 
 describe("sdkLogger", () => {
-  it("passes on only the SDK's message, never its error or data", () => {
+  it("passes on only the SDK's message, never its error or data, under one constant body", () => {
     const warn = vi.spyOn(logger, "warn");
     const error = vi.spyOn(logger, "error");
     sdkLogger.debug();
     sdkLogger.info();
     sdkLogger.warn("balance read failed");
     sdkLogger.error("rpc failed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "balance read failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "rpc failed" }, "SODAX SDK error");
   });
 
   it("passes the message on without URLs", () => {
@@ -361,8 +382,8 @@ describe("sdkLogger", () => {
     const error = vi.spyOn(logger, "error");
     sdkLogger.warn("read from https://rpc.example/KEY failed");
     sdkLogger.error("socket wss://rpc.example/KEY closed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "read from <url> failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "socket <url> closed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "read from <url> failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "socket <url> closed" }, "SODAX SDK error");
   });
 });
 
@@ -451,16 +472,38 @@ describe("parseRpcOverrides", () => {
   });
 
   // Solana's client refuses some of these when the SDK is built, which would stop the boot; the log redaction
-  // misses a URL without `//`, which would show a key.
+  // misses a URL without `//`, and stops at `'` or `<`, which would show a key.
   it.each([
     "HTTPS://x.example/secret-key",
-    " https://x.example/secret-key",
     "https:x.example/secret-key",
     "https:/x.example/secret-key",
     "https://",
+    "https://x.example/v1/abc'secret-key",
+    "https://x.example/<secret-key>",
   ])("skips %j: only an https:// URL as written is taken", rpcUrl => {
     quiet();
     expect(parseRpcOverrides(rpcConfig({ solana: { rpcUrl } }))).toEqual({});
+  });
+
+  it("never names a key or field that isn't shaped like one: a URL pasted as a key stays out of the log", () => {
+    const warn = quiet();
+    parseRpcOverrides(
+      rpcConfig({
+        "https://polygon.example/v2/secret-key": { rpcUrl: "https://x.example" },
+        sonic: { "https://rpc.example/secret-key": true },
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      { "rpc_config.skipped": "(an unknown key), sonic.(an unknown field)" },
+      "RPC_CONFIG entries this server can't apply",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-key");
+  });
+
+  it("takes a URL with surrounding whitespace, as a secret set from a file has, trimmed", () => {
+    expect(parseRpcOverrides(rpcConfig({ sonic: { rpcUrl: " https://sonic.example/key\n" } }))).toEqual({
+      sonic: { rpcUrl: "https://sonic.example/key" },
+    });
   });
 
   it.each(["not json secret-key", "[]", "null", '"https://x.example/secret-key"'])(
@@ -496,6 +539,7 @@ describe("parseRpcOverrides", () => {
       INJECTIVE: ["rpcUrl"],
       EVM: ["rpcUrl"],
     };
+    // rpc_url included: no packaged config has it, so no chain takes it.
     const fields = ["rpcUrl", "rpc_url", "grpc_url", "debugRpcUrl", "horizonRpcUrl", "sorobanRpcUrl"];
     const all = Object.fromEntries(fields.map(field => [field, "https://x.example"]));
     quiet();
@@ -532,5 +576,29 @@ describe("connectionFor", () => {
     expect(connectionFor("0xa4b1.arbitrum")).toBe("0x4555aC13D7338D9E671584C1D118c06B2a3C88eD");
     expect(connectionFor("sonic")).toBeUndefined();
     expect(connectionFor("not-a-chain")).toBeUndefined();
+  });
+});
+
+describe("chain read records", () => {
+  it("logs what was read, where and how long, and a timeout by its name", async () => {
+    const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
+    await expect(bounded({ label: "receipt", chainKey: "sonic" }, () => Promise.resolve(1))).resolves.toBe(1);
+    expect(info).toHaveBeenCalledWith(
+      { "sdk.call": "receipt", "chain.key": "sonic", "duration.ms": expect.any(Number) },
+      "Chain read",
+    );
+    await expect(bounded({ label: "balance", timeoutMs: 1 }, () => new Promise(() => {}))).rejects.toThrow(
+      "SDK call failed",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      {
+        "sdk.call": "balance",
+        "chain.key": undefined,
+        "duration.ms": expect.any(Number),
+        "error.type": "TimeoutError",
+      },
+      "Chain read",
+    );
   });
 });

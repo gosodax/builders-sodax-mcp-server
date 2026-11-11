@@ -17,7 +17,7 @@ import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 export const RETRY_AFTER_SEC = 15;
 
 /** The swap a track or cancel call is about. */
-export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string };
+export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
 /** What checking a source tx needs. */
 export interface SourceChain {
@@ -52,7 +52,10 @@ const unsupportedSource = (chain: ChainInfo) =>
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
-  logger.error({ chainKey, field, token }, "The live SODAX config differs from the SDK's");
+  logger.error(
+    { "chain.key": chainKey, field, "token.address": token },
+    "The live SODAX config differs from the SDK's",
+  );
   return new ActionError("SWAP_MISMATCH", "The SODAX config doesn't agree with the SDK's.", { details: { chainKey } });
 }
 
@@ -93,25 +96,24 @@ function namesChain(query: string, chainKey: string): boolean {
 
 /** The receipt, or `null` while the tx isn't mined. */
 export function readReceipt(chain: ChainInfo, txHash: string): Promise<EvmReceipt | null> {
-  return chainRead(chain, "receipt", () => getEvmReceipt(chain.key, txHash));
+  return chainRead(chain, () => getEvmReceipt(chain.key, txHash));
 }
 
 /** Whether the chain's node knows the tx at all, mined or pending. */
 export function seenOnChain(chain: ChainInfo, txHash: string): Promise<boolean> {
-  return chainRead(chain, "transaction", () => isTxKnown(chain.key, txHash));
+  return chainRead(chain, () => isTxKnown(chain.key, txHash));
 }
 
 /** The chain's latest block: a ready quote reads it to check the RPC its track will need. */
 export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
-  return chainRead(chain, "block", () => blockNumber(chain.key));
+  return chainRead(chain, () => blockNumber(chain.key));
 }
 
-/** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. */
-export async function chainRead<T>(chain: ChainInfo, op: string, read: () => Promise<T>): Promise<T> {
+/** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. Its record is the read's own ("Chain read", sodax.ts). */
+export async function chainRead<T>(chain: ChainInfo, read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch {
-    logger.warn({ chainKey: chain.key, op }, "Chain read failed");
     throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${chain.name} right now.`);
   }
 }

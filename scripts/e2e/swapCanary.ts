@@ -10,8 +10,8 @@
  * Env: MCP_URL, SODAX_API_KEY, E2E_WALLET_PRIVATE_KEY; optional AMOUNT (default 5), RPC_CONFIG (the server's,
  * for its Arbitrum and Base `rpcUrl`), E2E_DRY_RUN=1 (quote only: nothing is signed, no balance needed).
  *
- * From `src/` it imports types, `sameHex` and the retryable error codes (errors.ts loads only constants.ts,
- * which loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the
+ * From `src/` it imports types, helpers from constants.ts (`sameHex`, the RPC_CONFIG reader) and the retryable error
+ * codes (errors.ts loads only constants.ts, which loads nothing), so no SDK code runs in the process that holds the key. It isn't isolated from the
  * server, though: on the runner the server runs as the same user and could read this process's environment.
  */
 
@@ -109,7 +109,7 @@ type Env = ReturnType<typeof readEnv>;
 /** A side's RPC from `RPC_CONFIG`, read as the server reads it; none for viem's default. Never its value in a message. */
 function rpcUrlFor(config: unknown, key: string): string | undefined {
   const entry = isRecord(config) ? config[key] : undefined;
-  const url = isRecord(entry) ? entry.rpcUrl : undefined;
+  const url = isRecord(entry) && typeof entry.rpcUrl === "string" ? entry.rpcUrl.trim() : undefined;
   return isRpcUrl(url) ? url : undefined;
 }
 

@@ -8,8 +8,7 @@
 
 import { SODAX_SOLVER_BASE_URL } from "../constants.js";
 import type { OraclePrice, QuoteRequest, QuoteResponse } from "../types.js";
-import { fetchJson } from "./http.js";
-import { logger } from "./logger.js";
+import { BadResponseError, fetchJson } from "./http.js";
 import { TtlCache } from "./ttlCache.js";
 
 const cache = new TtlCache();
@@ -34,15 +33,15 @@ export async function getSolverOracle(baseUrl = SODAX_SOLVER_BASE_URL): Promise<
       // Surface contract drift loudly rather than silently caching an empty
       // list — a 2xx response with an unexpected shape is almost certainly
       // an upstream change we want to know about.
-      throw new Error(`Unexpected oracle response shape: expected array, got ${typeof data}`);
+      throw new BadResponseError(`Unexpected oracle response shape: expected array, got ${typeof data}`);
     }
     const prices = data as OraclePrice[];
     cache.set(cacheKey, prices);
     return prices;
   } catch (error) {
-    logger.warn({ err: error }, "Error fetching solver oracle");
     throw new Error(
       `Failed to fetch solver oracle prices: ${error instanceof Error ? error.message : "Unknown error"}`,
+      { cause: error },
     );
   }
 }
@@ -66,12 +65,15 @@ export async function getSolverQuote(request: QuoteRequest): Promise<QuoteRespon
     // missing-quoted_amount payload would still slip through as `undefined`
     // downstream and surface a confusing TypeError at the tool layer.
     if (typeof data !== "object" || data === null || typeof (data as QuoteResponse).quoted_amount !== "string") {
-      throw new Error(`Unexpected quote response shape: ${JSON.stringify(data)?.slice(0, 200) ?? typeof data}`);
+      throw new BadResponseError(
+        `Unexpected quote response shape: ${JSON.stringify(data)?.slice(0, 200) ?? typeof data}`,
+      );
     }
     return data as QuoteResponse;
   } catch (error) {
-    logger.error({ err: error }, "Error fetching solver quote");
-    throw new Error(`Failed to fetch solver quote: ${error instanceof Error ? error.message : "Unknown error"}`);
+    throw new Error(`Failed to fetch solver quote: ${error instanceof Error ? error.message : "Unknown error"}`, {
+      cause: error,
+    });
   }
 }
 

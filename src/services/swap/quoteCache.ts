@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
+import { runWithRequestContext, tagOf } from "../requestContext.js";
 import { ActionError } from "./errors.js";
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
 
@@ -43,8 +44,8 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 const quotes = new Map<string, CachedQuote>();
 // Per key, its unclaimed quotes' expiry in epoch ms, by quoteId.
 const openByKey = new Map<string, Map<string, number>>();
-let lastSweepAt = 0;
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
+let sweepTimer: NodeJS.Timeout | undefined;
 
 /**
  * Refuses a key with too many open quotes, or any key while the cache is full of quotes it can't drop;
@@ -82,24 +83,58 @@ function makeRoom(now: number): boolean {
   for (const cached of quotes.values()) {
     if (cached.depositTxHash === undefined && Number(cached.deadline) * 1000 <= now) {
       drop(cached);
+      logUnused(cached, "evicted");
       return true;
     }
   }
   return false;
 }
 
+/** Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute. */
 function sweep(now: number): void {
-  lastSweepAt = now;
-  for (const cached of quotes.values()) if (cached.expiresAt <= now) drop(cached);
+  for (const cached of quotes.values()) {
+    if (cached.expiresAt > now) continue;
+    drop(cached);
+    if (cached.depositTxHash === undefined) logUnused(cached, "expired");
+  }
+  if (quotes.size === 0) stopSweeping();
+}
+
+/**
+ * The drop-off between quote and deposit (#110): a quote gone without one, expired, or evicted past its deadline
+ * from a full cache. Outside the request that swept it, whose record it isn't.
+ */
+function logUnused(quote: CachedQuote, reason: "expired" | "evicted"): void {
+  runWithRequestContext({}, () =>
+    logger.info(
+      {
+        "quote.id": quote.quoteId,
+        "quote.drop_reason": reason,
+        "chain.key": quote.srcChainKey,
+        "dst_chain.key": quote.dstChainKey,
+        "caller.key_hash": tagOf(quote.keyHash),
+      },
+      "Swap quote expired unused",
+    ),
+  );
+}
+
+/** Once a minute while quotes are cached, so an unused one is recorded near its expiry, a minute's worth at a time. */
+function startSweeping(): void {
+  // Created outside any request, so its runs don't carry the one that started it.
+  sweepTimer ??= runWithRequestContext({}, () => setInterval(() => sweep(Date.now()), SWEEP_INTERVAL_MS).unref());
+}
+
+function stopSweeping(): void {
+  clearInterval(sweepTimer);
+  sweepTimer = undefined;
 }
 
 export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): CachedQuote {
   checkQuoteRoom(quote.keyHash);
-  const now = Date.now();
-  // Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute.
-  if (now - lastSweepAt >= SWEEP_INTERVAL_MS) sweep(now);
   const entry = { ...quote, quoteId: randomUUID(), expiresAt: Number(quote.deadline) * 1000 + GRACE_MS };
   quotes.set(entry.quoteId, entry);
+  startSweeping();
   const open = openByKey.get(entry.keyHash) ?? new Map<string, number>();
   open.set(entry.quoteId, entry.expiresAt);
   openByKey.set(entry.keyHash, open);
@@ -118,14 +153,10 @@ function close(quote: CachedQuote): void {
   if (open?.size === 0) openByKey.delete(quote.keyHash);
 }
 
-/** The quote, `undefined` if it's gone, or `"key_mismatch"` if another key made it. */
+/** The quote, `undefined` if it's gone or expired (the sweep drops it), or `"key_mismatch"` if another key made it. */
 export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | "key_mismatch" | undefined {
   const quote = quotes.get(quoteId);
-  if (!quote) return undefined;
-  if (quote.expiresAt <= Date.now()) {
-    drop(quote);
-    return undefined;
-  }
+  if (!quote || quote.expiresAt <= Date.now()) return undefined;
   return quote.keyHash === keyHash ? quote : "key_mismatch";
 }
 
@@ -184,8 +215,8 @@ export function openQuotes(now = Date.now()): { open: number; openUntil: string 
 }
 
 export function clearQuoteCache(): void {
+  stopSweeping();
   quotes.clear();
   openByKey.clear();
-  lastSweepAt = 0;
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
 }

@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { CACHE_DURATION_MS, CHAIN_KEY_PATTERN, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
-import { runWithRequestContext } from "../requestContext.js";
+import { getRequestContext, runWithRequestContext, withoutCredentials } from "../requestContext.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getSwapTokens } from "./swapsApi.js";
@@ -84,14 +84,19 @@ export function getSwapCatalog(): Promise<SwapCatalog> {
     }
     return Promise.resolve(current.catalog);
   }
-  inFlight ??= refreshCatalog();
+  // A caller that waits on another request's refresh has no records of it: the link is this one.
+  if (inFlight) logger.info({ "refresh.request.id": refreshRequestId }, "Waiting for the catalog refresh in flight");
+  else inFlight = refreshCatalog();
   return inFlight;
 }
 
+let refreshRequestId: string | undefined;
+
 function refreshCatalog(): Promise<SwapCatalog> {
   const startedIn = generation;
-  // Shared by every caller, so no caller's key: one bad key can't fail the load for the others.
-  return runWithRequestContext({}, loadCatalog)
+  refreshRequestId = getRequestContext().requestId;
+  // Shared by every caller, so no caller's key: one bad key can't fail the load for the others. The id stays.
+  return runWithRequestContext(withoutCredentials(), loadCatalog)
     .then(
       catalog => {
         if (startedIn === generation) cached = { catalog, fetchedAt: Date.now() };
@@ -105,6 +110,11 @@ function refreshCatalog(): Promise<SwapCatalog> {
     .finally(() => {
       if (startedIn === generation) inFlight = undefined;
     });
+}
+
+/** Seconds since the catalog was fetched, for the heartbeat; none before the first fetch. */
+export function swapCatalogAgeSec(): number | undefined {
+  return cached && Math.round((Date.now() - cached.fetchedAt) / 1000);
 }
 
 /** Make the next call refresh, while the current catalog still covers an outage. */

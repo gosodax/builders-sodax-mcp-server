@@ -8,7 +8,7 @@
 import { SODAX_ENV } from "../../constants.js";
 import { COLOR, postToDiscord, truncate } from "../discord.js";
 import { logger, redact } from "../logger.js";
-import { callerKeyHash } from "../requestContext.js";
+import { callerKeyHash, callerKeyTag } from "../requestContext.js";
 
 export type AlertKind =
   | "unknown_quote"
@@ -58,23 +58,33 @@ let held: Record<Budget, string[]> = { public: [], checked: [], tools: [] };
 let dropped = 0;
 let summary: NodeJS.Timeout | undefined;
 
+interface AlertFields {
+  chainKey?: string;
+  txHash?: string;
+  quoteId?: string;
+  deadline?: string;
+  tool?: string;
+  code?: string;
+  /** Which failure: a fixed message or an error class, never input or upstream text. */
+  reason?: string;
+}
+
+// Each field's name in the log, the one every other record uses, so a swap's quote.id or tx.hash finds its alert.
+const LOG_NAMES: Record<keyof AlertFields, string> = {
+  chainKey: "chain.key",
+  txHash: "tx.hash",
+  quoteId: "quote.id",
+  deadline: "deadline",
+  tool: "gen_ai.tool.name",
+  code: "error.type",
+  reason: "reason",
+};
+
 /**
  * Logs the alert and posts it, or holds it for the hourly post when its budget is spent. False when
  * it was neither posted nor held (that post is full): only the log has it.
  */
-export function alertOperator(
-  kind: AlertKind,
-  fields: {
-    chainKey?: string;
-    txHash?: string;
-    quoteId?: string;
-    deadline?: string;
-    tool?: string;
-    code?: string;
-    /** Which failure: a fixed message or an error class, never input or upstream text. */
-    reason?: string;
-  },
-): boolean {
+export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
   // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
     kind === "swap_error"
@@ -88,7 +98,8 @@ export function alertOperator(
 
   // Enough to tell callers apart, not to look a key up.
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
-  logger.error({ alert: kind, ...tagged }, TITLES[kind]);
+  const named = Object.entries(fields).map(([name, value]) => [LOG_NAMES[name as keyof AlertFields], value]);
+  logger.error({ alert: kind, ...Object.fromEntries(named), "caller.key_hash": callerKeyTag() }, TITLES[kind]);
   const budget: Budget = kind === "swap_error" ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
   const verdict = spend(budget, now);
   sent.delete(key);

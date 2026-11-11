@@ -7,23 +7,27 @@
  * SDK documentation proxied from docs.sodax.com/mcp.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express, { type Express, Request, Response } from "express";
+import { ClientNotificationSchema, ClientRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import express, { type Express, type NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { messageContext, resolveConnection } from "./connection.js";
+import { callerApiKey, messageContext, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
-import { hashClientIp, shutdownAnalytics } from "./services/analytics.js";
+import { CLIENT_ID_KEYED, POSTHOG_ENABLED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
-import { notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
+import { isDiscordConfigured, notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import {
   type SseLease,
@@ -33,19 +37,29 @@ import {
   jsonErrorHandler,
   limitBody,
   mcpGetNotAllowed,
+  noteRefusal,
+  rateLimitHandler,
+  refusalOf,
+  requestRoute,
 } from "./services/httpGuards.js";
 import { formatNetworkCount, renderLandingPage } from "./services/landingPage.js";
 import { logger } from "./services/logger.js";
+import type { OtelLogs } from "./services/otel.js";
 import { partnerFeeFromEnv } from "./services/partnerFee.js";
 import {
   apiKeyStatus,
   describeProfiles,
+  parseProfile,
   parseSwapToolsEnabled,
   profileFromArgs,
+  profileFromRequest,
   selectToolsets,
 } from "./services/profiles.js";
 import {
   type RequestContext,
+  getRequestContext,
+  hashTag,
+  keyTag,
   parseApiKey,
   runWithRequestContext,
   setFallbackRequestContext,
@@ -53,6 +67,7 @@ import {
 import { type RpcOverride, initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { openQuotes } from "./services/swap/quoteCache.js";
+import { swapCatalogAgeSec } from "./services/swap/tokens.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
 
@@ -78,22 +93,22 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
     const tools = await fetchDocsTools({ force: true });
 
     if (tools.length > 0) {
-      logger.info({ toolCount: tools.length }, "✅ SDK docs proxy initialized");
+      logger.info({ "tool.count": tools.length }, "SDK docs proxy initialized");
       return true;
     }
-    logger.warn("⚠️ SDK docs returned 0 tools");
+    logger.warn("SDK docs returned 0 tools");
   } catch (error) {
     logger.warn({ err: error, attempt }, "SDK docs proxy attempt failed");
   }
 
   // Retry if we haven't exceeded max attempts
   if (retryCount < MAX_DOCS_RETRIES - 1) {
-    logger.info({ delayMs: DOCS_RETRY_DELAY }, "Retrying SDK docs proxy init");
+    logger.info({ "retry.delay_ms": DOCS_RETRY_DELAY }, "Retrying SDK docs proxy init");
     await new Promise(resolve => setTimeout(resolve, DOCS_RETRY_DELAY));
     return warmDocsCache(retryCount + 1);
   }
 
-  logger.warn({ maxAttempts: MAX_DOCS_RETRIES }, "⚠️ SDK docs proxy unavailable. Meta-tools still available.");
+  logger.warn({ "retry.max_attempts": MAX_DOCS_RETRIES }, "SDK docs proxy unavailable; meta-tools still available");
   // Alert loudly: a dead docs proxy silently degrades conceptual answers (see
   // the Mintlify migration incident). Best-effort — no-op if Discord isn't set.
   void notifyError(
@@ -129,7 +144,15 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   const server = await createServer(toolsets);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info("SODAX Builders MCP server running via stdio");
+  logger.info(
+    {
+      // The SDK, and so the overrides, load only with the swap tools.
+      ...bootConfig(toolsets.swap ? rpcOverrides : {}, swapToolsEnabled),
+      "mcp.transport": "stdio",
+      "partner_fee.set": !!partnerFee,
+    },
+    "SODAX Builders MCP server started",
+  );
 }
 
 async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
@@ -150,7 +173,103 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
-  listen(createHttpApp(swapToolsEnabled), swapToolsEnabled);
+  listen(createHttpApp(swapToolsEnabled), bootConfig(swapToolsEnabled ? rpcOverrides : {}, swapToolsEnabled));
+}
+
+// The methods a client sends, from the SDK's own schemas: anything else is "other", so a client can't shape the record.
+const MCP_METHODS = new Set<string>(
+  [...ClientRequestSchema.options, ...ClientNotificationSchema.options].map(schema => schema.shape.method.value),
+);
+
+/** What the client asked for: a protocol method, "batch" for an array, "other" for any other body; none when nothing was parsed. */
+function mcpMethod(body: unknown): string | undefined {
+  if (body === undefined) return undefined;
+  if (Array.isArray(body)) return "batch";
+  const method = body && typeof body === "object" ? (body as { method?: unknown }).method : undefined;
+  return typeof method === "string" && MCP_METHODS.has(method) ? method : "other";
+}
+
+// Control and format characters, line and paragraph separators, and lone surrogates.
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
+
+/** A client-chosen label (a user agent, a client name), cut to `max` and without control characters; none when blank. */
+function label(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Cut before cleaning: the value can be as long as a header or a body.
+  return (
+    value
+      .slice(0, max * 2)
+      .replace(UNPRINTABLE, "")
+      .trim()
+      .slice(0, max)
+      // The cut may split a surrogate pair.
+      .replace(/\p{Cs}/gu, "") || undefined
+  );
+}
+
+/** Which client connects, from `initialize`: the one message that names it. Nothing else of a body is logged. */
+function clientFields(body: unknown): Record<string, string | undefined> {
+  if (mcpMethod(body) !== "initialize") return {};
+  // Any shape: optional chaining reads nothing from a primitive, and label() takes strings only.
+  const { params } = body as {
+    params?: { clientInfo?: { name?: unknown; version?: unknown }; protocolVersion?: unknown };
+  };
+  return {
+    "mcp.client.name": label(params?.clientInfo?.name, 64),
+    "mcp.client.version": label(params?.clientInfo?.version, 64),
+    "mcp.protocol.version": label(params?.protocolVersion, 32),
+  };
+}
+
+/**
+ * One "HTTP request" record per MCP request (#110), the ones a guard refuses included, and the request id every
+ * other record of the request carries: the context opens here and the handlers extend it with the connection's.
+ * On GET /sse the record is the session's: 200 and its length. Not for /health and the pages. A refusal names
+ * its guard (`error.type`); the caller's key is a status and a hash, never the key.
+ */
+function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
+  const requestId = randomUUID();
+  const clientId = hashClientIp(req.ip || "unknown");
+  const started = Date.now();
+  const connection = {
+    // A POST /messages runs with its SSE session's profile, named on that session's GET /sse.
+    "mcp.profile": requestRoute(req) === "/messages" ? undefined : parseProfile(profileFromRequest(req)),
+    "caller.key_status": apiKeyStatus(req.get("x-api-key")),
+    "caller.key_hash": keyTag(callerApiKey(req)),
+    "user_agent.original": label(req.get("user-agent"), 256),
+  };
+  // A message names its session in the URL; GET /sse sets it once its session opens. Never the id itself: a
+  // session's messages may be sent with the id alone.
+  if (requestRoute(req) === "/messages" && typeof req.query.sessionId === "string") {
+    res.locals.sessionTag = hashTag(req.query.sessionId);
+  }
+  // "close" follows "finish", and comes alone when the client went away first; it may run outside the context.
+  res.once("close", () => {
+    const status = res.statusCode;
+    const refusal = refusalOf(res);
+    // A limiter logs its refusals once per window (rateLimitHandler); one record each would let a flood write the log.
+    // The SSE cap's 429 is no limiter's: those come after the MCP limiter, so they stay at info.
+    logger[refusal === "RATE_LIMITED" ? "debug" : "info"](
+      {
+        "request.id": requestId,
+        "http.request.method": req.method,
+        "http.route": requestRoute(req),
+        // None when the client left before the answer.
+        "http.response.status_code": res.headersSent ? status : undefined,
+        "duration.ms": Date.now() - started,
+        "error.type": refusal,
+        "mcp.method.name": mcpMethod(req.body),
+        ...clientFields(req.body),
+        ...connection,
+        "mcp.session.id_hash": res.locals.sessionTag,
+        "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
+      },
+      "HTTP request",
+    );
+  });
+  // The id a builder can quote when reporting a problem; every record of the request carries it.
+  res.setHeader("X-Request-Id", requestId);
+  runWithRequestContext({ requestId, clientId }, next);
 }
 
 /** The routes and their guards, without the docs warm-up or a listener, so a test can serve them. */
@@ -176,13 +295,16 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }),
   );
 
+  // Before the limiters: a refused request is a request too. Routed, so /MCP and /mcp/ count like the handlers do.
+  app.all(["/mcp", "/messages", "/sse"], logMcpRequests);
+
   // Rate limiting
   const limiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
-    message: limitBody("Too many requests, please try again later."),
+    handler: rateLimitHandler(limitBody("Too many requests, please try again later.")),
   });
   app.use(limiter);
 
@@ -270,6 +392,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
+      unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
 
@@ -281,20 +404,23 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     asyncHandler(async (req: Request, res: Response) => {
       const connection = resolveConnection(req, res, swapToolsEnabled);
       if (!connection) return;
-      const clientId = hashClientIp(req.ip || "unknown");
-      const requestServer = await createServer(connection.toolsets, clientId);
+      const requestServer = await createServer(connection.toolsets, getRequestContext().clientId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
       res.on("close", () => transport.close());
       await requestServer.connect(transport);
-      await runWithRequestContext(connection.context, () => transport.handleRequest(req, res, req.body));
+      // The request's context (logMcpRequests) plus the connection's: one id on every record (#110).
+      await runWithRequestContext({ ...getRequestContext(), ...connection.context }, () =>
+        transport.handleRequest(req, res, req.body),
+      );
     }),
   );
 
   // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
   const sseLimiter = new SseSessionLimiter();
+  openSseSessions = () => sseLimiter.sessions;
   // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
   const sseSessions = new Map<
     string,
@@ -312,6 +438,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       // An idle session ends its stream; the close handlers below clean up.
       const lease = sseLimiter.open(ip, () => res.end());
       if (!lease) {
+        noteRefusal(res, "SSE_SESSION_LIMIT");
         res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
         return;
       }
@@ -321,10 +448,13 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         lease.release();
       });
 
-      const sseServer = await createServer(connection.toolsets, hashClientIp(ip));
+      const sseServer = await createServer(connection.toolsets, getRequestContext().clientId);
       if (closed) return;
       const transport = new SSEServerTransport("/messages", res);
       sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
+      // The session's own record comes when it closes; this one says it opened, under the id its messages carry.
+      res.locals.sessionTag = hashTag(transport.sessionId);
+      logger.info({ "mcp.session.id_hash": res.locals.sessionTag }, "SSE session opened");
 
       res.on("close", () => {
         sseSessions.delete(transport.sessionId);
@@ -343,6 +473,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       const sessionId = req.query.sessionId as string;
       const session = sseSessions.get(sessionId);
       if (!session) {
+        noteRefusal(res, "SSE_SESSION_NOT_FOUND");
         res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
         return;
       }
@@ -350,7 +481,9 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       const context = messageContext(session.context, req, res);
       if (!context) return;
       session.lease.touch();
-      await runWithRequestContext(context, () => session.transport.handlePostMessage(req, res, req.body));
+      await runWithRequestContext({ ...getRequestContext(), ...context }, () =>
+        session.transport.handlePostMessage(req, res, req.body),
+      );
     }),
   );
 
@@ -403,13 +536,11 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
   return app;
 }
 
-function listen(app: Express, swapToolsEnabled: boolean): void {
+/** `boot`: the boot record's settings (`bootConfig`). */
+function listen(app: Express, boot: ReturnType<typeof bootConfig>): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info(
-      { port, sodaxEnv: SODAX_ENV, swapToolsEnabled },
-      `SODAX Builders MCP server running on http://0.0.0.0:${port}`,
-    );
+    logger.info({ ...boot, "mcp.transport": "http", "server.port": port }, "SODAX Builders MCP server started");
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,
@@ -423,12 +554,70 @@ function listen(app: Express, swapToolsEnabled: boolean): void {
     // notify: true → POST a summary to DISCORD_WEBHOOK_URL when drift is found
     // and the webhook is set (prod). Empty/unset webhook (staging) = silent.
     void checkApiDrift({ notify: true }).catch(err => {
-      logger.warn({ err }, "⚠️  API drift check threw unexpectedly");
+      logger.warn({ err }, "API drift check threw unexpectedly");
     });
   });
 }
 
+let otel: OtelLogs | undefined;
+
+/** The open SSE sessions of the app serving, for the heartbeat; none before it serves. */
+let openSseSessions = () => 0;
+
+/** How this server was started (#110): what a record can't otherwise say. Names only, never a URL or a key. */
+export function bootConfig(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean) {
+  return {
+    "app.version": SERVER_VERSION,
+    "sodax.env": SODAX_ENV,
+    "swap_tools.enabled": swapToolsEnabled,
+    "rpc_overrides.chains": Object.keys(rpcOverrides).sort().join(",") || undefined,
+    "posthog.enabled": POSTHOG_ENABLED,
+    "discord.enabled": isDiscordConfigured(),
+    "log.level": logger.level,
+  };
+}
+
+const LOOP_SAMPLE_MS = 10;
+
+/** What the heartbeat carries besides its export counts (#110): the cheapest time series this server has. */
+export function serverGauges(): () => Record<string, unknown> {
+  const loopDelay = monitorEventLoopDelay({ resolution: LOOP_SAMPLE_MS });
+  loopDelay.enable();
+  return () => {
+    // Per beat: the histogram restarts each time. Each sample includes its own interval, which isn't delay.
+    const delayP99Ms = Math.max(0, loopDelay.percentile(99) / 1e6 - LOOP_SAMPLE_MS);
+    loopDelay.reset();
+    const { rss, heapUsed } = process.memoryUsage();
+    return {
+      "swap_quotes.open": openQuotes().open,
+      "sse.sessions": openSseSessions(),
+      "process.memory.rss_bytes": rss,
+      "process.memory.heap_used_bytes": heapUsed,
+      "event_loop.delay_p99_ms": Math.round(delayP99Ms * 10) / 10,
+      "swap_catalog.age_s": swapCatalogAgeSec(),
+      "docs_proxy.healthy": getCachedDocsHealth().healthy,
+    };
+  };
+}
+
 async function main(): Promise<void> {
+  // The OTLP destination (#110) and its SDK load only when asked for; first, so a config error below ships too.
+  if (process.env.OTEL_LOGS_ENABLED === "true") {
+    try {
+      const { startOtelLogs } = await import("./services/otel.js");
+      // Read from the first beat, five minutes on; the event-loop sampling starts only if shipping does.
+      let readGauges: (() => Record<string, unknown>) | undefined;
+      otel = startOtelLogs(process.env, {
+        serviceVersion: SERVER_VERSION,
+        instanceId: process.env.HOSTNAME,
+        gauges: () => readGauges?.() ?? {},
+      });
+      if (otel) readGauges = serverGauges();
+    } catch (error) {
+      // An optional destination: if it can't start, the logs stay on stderr and the server still serves.
+      logger.warn({ err: error }, "Unified logging stays off");
+    }
+  }
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
@@ -457,8 +646,13 @@ function fatalExit(context: string, error: unknown): void {
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
-      clearTimeout(force);
-      process.exit(1);
+      // What the OTLP batch still holds; a stuck export is cut by the force timer.
+      void Promise.resolve(otel?.forceFlush())
+        .catch(() => {})
+        .finally(() => {
+          clearTimeout(force);
+          process.exit(1);
+        });
     });
   });
 }
@@ -468,14 +662,18 @@ function fatalExit(context: string, error: unknown): void {
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  logger.info({ signal }, "Shutting down");
+  // The open quotes are in memory: a restart drops them.
+  const open = openQuotes().open;
+  logger.info({ signal, "swap_quotes.open": open }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal, openQuotes().open);
+  await notifyServerStopping(signal, open);
   await shutdownAnalytics();
+  // A failing export rejects the shutdown; the exit must still happen.
+  await Promise.race([otel?.shutdown().catch(() => {}), sleep(2000, undefined, { ref: false })]);
   process.exit(0);
 }
 

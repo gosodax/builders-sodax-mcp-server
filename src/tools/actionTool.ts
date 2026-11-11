@@ -9,10 +9,10 @@
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import { logger } from "../services/logger.js";
 import { alertOperator } from "../services/swap/alerts.js";
 import { ALERTED_CODES, ActionError } from "../services/swap/errors.js";
 import { screenSecrets } from "../services/swap/secrets.js";
+import { markFailure } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 
 type ActionOutput = Record<string, unknown> & { status: string; nextStep: string };
@@ -35,8 +35,6 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       screenSecrets(args);
       return toResult(await run(args));
     } catch (error) {
-      // The logger strips URLs from `err`: SDK and viem errors carry the RPC URL.
-      if (!(error instanceof ActionError)) logger.error({ err: error, tool: name }, "Swap tool failed");
       const failure =
         error instanceof ActionError ? error : new ActionError("INTERNAL", "The tool failed unexpectedly.");
       if (ALERTED_CODES.includes(failure.code)) {
@@ -56,7 +54,10 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       const nextStep = failureAdvice
         ? failureAdvice(failure, Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC))
         : failure.nextStep;
-      return toResult({ status: "error", ...out, nextStep }, true);
+      const result = toResult({ status: "error", ...out, nextStep }, true);
+      // An unexpected error is a bug: its "Tool call" record is the error, with its class and stack (never its
+      // message: SDK and viem errors can carry what the agent sent).
+      return error instanceof ActionError ? result : markFailure(result, { code: failure.code, thrown: error });
     }
   };
   // ToolCallback<Args> is a conditional type TypeScript can't narrow while Args is generic;

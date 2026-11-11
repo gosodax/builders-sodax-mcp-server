@@ -42,7 +42,11 @@ describe("alertOperator", () => {
     setFallbackRequestContext({ apiKey: "sodax_secret_key" });
     alertOperator("unknown_quote", FIELDS);
     const keyHash = callerKeyHash().slice(0, 12);
-    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ keyHash }), expect.any(String));
+    // The log uses the Tool call record's 16 characters, so the two join; Discord shows 12.
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ "caller.key_hash": callerKeyHash().slice(0, 16) }),
+      expect.any(String),
+    );
     const body = String(fetch.mock.calls[0][1]?.body);
     expect(body).toContain(keyHash);
     expect(body).not.toContain(callerKeyHash());

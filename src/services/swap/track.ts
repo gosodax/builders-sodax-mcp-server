@@ -8,7 +8,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, isHubChain } from "../sodax.js";
+import { type EvmReceipt, intentHash, isHubChain } from "../sodax.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
@@ -125,7 +125,7 @@ export async function trackSwap(input: { txHash: string; quoteId?: string; chain
 
 async function track(txHash: string, source: SwapSource, quoteId?: string): Promise<TrackResult> {
   const { chain, quote } = source;
-  const base = { txHash, chain, ...(quoteId && { quoteId }) };
+  const base = { txHash, chain, ...(quoteId && { quoteId }), ...(quote && { intentHash: intentHash(quote.intent) }) };
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
   const row = await getSubmitTxStatus(txHash, chain.key).catch(error => {
@@ -217,7 +217,10 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
   markSubmitted(quote.quoteId);
-  logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Submitted a swap deposit");
+  logger.info(
+    { "chain.key": chain.key, "quote.id": quote.quoteId, "tx.hash": txHash, "intent.hash": base.intentHash },
+    "Submitted a swap deposit",
+  );
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 
@@ -297,7 +300,7 @@ export async function relayForRefund(
   }
   if (relayed) {
     markRelayedForRefund(quote);
-    logger.info({ chainKey: chain.key, quoteId: quote.quoteId }, "Relayed an expired swap deposit for refund");
+    logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Relayed an expired swap deposit for refund");
     return { ...base, status: "expired_refunding" };
   }
   // The claim stays, so the next call tries the relay again.
@@ -335,7 +338,7 @@ function fromStatus(row: SubmitTxStatus, quote?: CachedQuote): TrackState {
     }
     default: {
       const known = STAGES.includes(row.status);
-      if (!known) logger.warn({ status: row.status }, "Unknown submit-tx status");
+      if (!known) logger.warn({ "upstream.status": row.status }, "Unknown submit-tx status");
       // A status added upstream may be final: worth polling only while the quote can still be filled.
       const fillable = quote !== undefined && Date.now() < deadlineMs(quote);
       if (!known && !fillable) return { status: "unknown" };

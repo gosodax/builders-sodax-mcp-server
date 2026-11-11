@@ -11,7 +11,7 @@ function fakeReq(query: Record<string, unknown>, headers: Record<string, string>
 
 /** Resolves a connection, by default with the switch on; `res` records what a refusal sent. */
 function resolve(req: Request, swapToolsEnabled = true) {
-  const res = { status: vi.fn(), json: vi.fn() };
+  const res = { status: vi.fn(), json: vi.fn(), locals: {} as Record<string, unknown> };
   res.status.mockReturnValue(res);
   return { connection: resolveConnection(req, res as unknown as Response, swapToolsEnabled), res };
 }
@@ -43,6 +43,7 @@ describe("resolveConnection", () => {
       const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": raw }));
       expect(connection).toBeUndefined();
       expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.locals.refusal).toBe("API_KEY_MALFORMED");
       expect(res.json).toHaveBeenCalledWith({
         jsonrpc: "2.0",
         error: {
@@ -60,6 +61,7 @@ describe("resolveConnection", () => {
     const { connection, res } = resolve(fakeReq({ profile: "swap" }));
     expect(connection).toBeUndefined();
     expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.locals.refusal).toBe("API_KEY_REQUIRED");
     expect(res.json.mock.calls[0][0].error.message).toContain("Send it in the x-api-key header");
   });
 
@@ -67,6 +69,8 @@ describe("resolveConnection", () => {
     const { connection, res } = resolve(fakeReq({}, { "x-sodax-profile": "bogus" }));
     expect(connection).toBeUndefined();
     expect(res.status).toHaveBeenCalledWith(400);
+    // The request's log record names the refusal.
+    expect(res.locals.refusal).toBe("UNKNOWN_PROFILE");
     expect(res.json).toHaveBeenCalledWith({
       jsonrpc: "2.0",
       error: { code: -32602, message: "Unknown profile. Use builder, swap, all." },
@@ -106,6 +110,7 @@ describe("resolveConnection", () => {
       const { connection, res } = resolve(fakeReq({ profile: "swap" }, { "x-api-key": KEY }), false);
       expect(connection).toBeUndefined();
       expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.locals.refusal).toBe("SWAP_PROFILE_OFF");
       expect(res.json).toHaveBeenCalledWith({
         jsonrpc: "2.0",
         error: { code: -32602, message: "The swap profile is turned off on this server. Use builder or all." },
@@ -130,13 +135,14 @@ describe("resolveConnection", () => {
     const { connection, res } = resolve(fakeReq({ partnerFeeBps: "25" }, { "x-api-key": `Bearer ${KEY}` }));
     expect(connection).toBeUndefined();
     expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.locals.refusal).toBe("INVALID_PARTNER_FEE");
     expect(debug).not.toHaveBeenCalled();
   });
 });
 
 describe("messageContext", () => {
   function onSession(session: { apiKey?: string }, headers: Record<string, string>) {
-    const res = { status: vi.fn(), json: vi.fn() };
+    const res = { status: vi.fn(), json: vi.fn(), locals: {} as Record<string, unknown> };
     res.status.mockReturnValue(res);
     return { context: messageContext(session, fakeReq({}, headers), res as unknown as Response), res };
   }
@@ -153,6 +159,7 @@ describe("messageContext", () => {
       const { context, res } = onSession({ apiKey: KEY }, headers);
       expect(context).toBeUndefined();
       expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.locals.refusal).toBe("SSE_KEY_MISMATCH");
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ error: expect.objectContaining({ code: -32000 }) }),
       );

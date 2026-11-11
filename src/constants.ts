@@ -2,7 +2,7 @@
  * Constants for the SODAX Builders MCP Server
  */
 
-const SODAX_API_ORIGINS = {
+export const SODAX_API_ORIGINS = {
   production: "https://api.sodax.com",
   canary: "https://canary-api.sodax.com",
 } as const;
@@ -145,19 +145,26 @@ export const isSodaxKey = (match: string) => /[A-Z0-9-]/.test(match.slice(6));
 // Live chain keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
 export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
 
+/** An error code a log record or analytics event may carry (`error.type`): `UPSTREAM_5XX`, `INVALID_AMOUNT`. */
+export const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
+
 /** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
 export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** A parseable https URL: the OTLP endpoint's check. RPC URLs take the stricter `isRpcUrl`. */
+export const isHttpsUrl = (value: string): boolean => URL.canParse(value) && new URL(value).protocol === "https:";
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * An RPC URL the swap tools take: `https://` as written, lowercase and without whitespace. Every chain client accepts
- * that form (Solana's refuses `HTTPS:` or a missing `//` at boot), and the log redaction recognises it. Never http:
- * track trusts what the RPC answers, and a paid key would travel in the clear.
+ * An RPC URL the swap tools take: `https://` as written, lowercase, without whitespace and without the characters the
+ * log redaction stops at (`"'\\<>`), so all of it is masked in a logged error. Every chain client accepts that form
+ * (Solana's refuses `HTTPS:` or a missing `//` at boot). Never http: track trusts what the RPC answers, and a paid key
+ * would travel in the clear.
  */
 export const isRpcUrl = (value: unknown): value is string =>
-  typeof value === "string" && /^https:\/\/\S+$/.test(value) && URL.canParse(value);
+  typeof value === "string" && /^https:\/\/[^\s"'\\<>]+$/.test(value) && URL.canParse(value);
 
 /**
  * `RPC_CONFIG`'s JSON, or undefined when it doesn't parse: as an env value may hold it, wrapped in single quotes,

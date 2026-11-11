@@ -3,14 +3,16 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { logger, redactErr } from "../services/logger.js";
+import { withAnalytics } from "../services/analytics.js";
+import { logger } from "../services/logger.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { ActionError } from "../services/swap/errors.js";
 import { registerActionTool } from "./actionTool.js";
 
-/** A tool that takes one string, `value`, and runs `run` with it. */
+/** A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is. */
 async function callTool(value: string, run: () => Promise<never | { status: string; nextStep: string }>) {
   const server = new McpServer({ name: "test", version: "0.0.0" });
+  withAnalytics(server);
   // Non-empty annotations: the SDK reads an empty object here as a second input schema.
   registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -33,6 +35,12 @@ beforeEach(() => {
   clearAlerts();
   errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
+
+/** The fields of each swap_error alert logged, none of the other error records. */
+const alertFields = () =>
+  errors.mock.calls
+    .map(([fields]) => fields as { alert?: string; "error.type"?: string; "chain.key"?: string })
+    .filter(fields => fields.alert === "swap_error");
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -79,15 +87,26 @@ describe("registerActionTool", () => {
     expect(JSON.stringify(errors.mock.calls)).not.toContain("abandon");
   });
 
-  it("logs an unexpected error without any URL in it, and alerts once", async () => {
+  it("logs an unexpected error once, as its Tool call: class and stack, never the message; and alerts once", async () => {
     await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
     await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
-    const logged = errors.mock.calls.find(([fields]) => (fields as { err?: unknown }).err)?.[0] as { err: unknown };
-    expect(JSON.stringify(redactErr(logged.err))).toContain("<url>");
-    expect(JSON.stringify(redactErr(logged.err))).not.toContain("KEY");
+    const records = errors.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      "gen_ai.tool.name": "test_action_tool",
+      "tool.outcome": "error",
+      "error.type": "INTERNAL",
+      err: { type: "Error", stack: expect.stringMatching(/^ {4}at /) },
+    });
+    // No second record for the same failure, and the message (an RPC URL here) in none.
+    const others = errors.mock.calls.filter(
+      ([fields, msg]) => msg !== "Tool call" && !(fields as { alert?: string }).alert,
+    );
+    expect(others).toEqual([]);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("rpc.example");
     const alerts = errors.mock.calls.filter(([fields]) => (fields as { alert?: string }).alert === "swap_error");
     expect(alerts).toHaveLength(1);
-    expect(alerts[0][0]).toMatchObject({ tool: "test_action_tool", code: "INTERNAL" });
+    expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "test_action_tool", "error.type": "INTERNAL" });
   });
 
   it("posts an unexpected error to Discord by its class only, never its message", async () => {
@@ -105,7 +124,7 @@ describe("registerActionTool", () => {
     await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
     await callFailingTool(new ActionError("RATE_LIMITED", "Slow down."));
     await callFailingTool(new ActionError("INVALID_ADDRESS", "Bad address."));
-    const alerted = errors.mock.calls.map(([fields]) => (fields as { code?: string }).code).filter(Boolean);
+    const alerted = alertFields().map(fields => fields["error.type"]);
     expect(alerted).toEqual(["SWAP_MISMATCH"]);
   });
 
@@ -121,7 +140,7 @@ describe("registerActionTool", () => {
     for (const chainKey of ["sonic", "0xa4b1.arbitrum", "sonic"]) {
       await callFailingTool(new ActionError("SWAP_MISMATCH", "The config doesn't agree.", { details: { chainKey } }));
     }
-    const chains = errors.mock.calls.map(([fields]) => (fields as { chainKey?: string }).chainKey).filter(Boolean);
+    const chains = alertFields().map(fields => fields["chain.key"]);
     expect(chains).toEqual(["sonic", "0xa4b1.arbitrum"]);
   });
 });

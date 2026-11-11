@@ -117,6 +117,25 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("wallets", () => {
+  it("reads each side's RPC from RPC_CONFIG as the server does, else viem's default", () => {
+    const defaults = wallets(ACCOUNT).map(side => side.client.transport.url);
+    vi.stubEnv(
+      "RPC_CONFIG",
+      JSON.stringify({
+        "0xa4b1.arbitrum": { rpcUrl: "https://arb.example/key\n" },
+        "0x2105.base": { rpcUrl: "http://base" },
+      }),
+    );
+    const [arbitrum, base] = wallets(ACCOUNT);
+    expect(arbitrum.client.transport.url).toBe("https://arb.example/key");
+    expect(arbitrum.lookup.transport.url).toBe("https://arb.example/key");
+    // Not https: viem's default, as the server skips it.
+    expect(base.client.transport.url).toBe(defaults[1]);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe("sendSteps", () => {
   it("returns the swap's hash once the node takes it, without looking it up", async () => {
     const methods = fakeRpc({ ...CHAIN, eth_sendRawTransaction: [{ result: `0x${"cd".repeat(32)}` }] });

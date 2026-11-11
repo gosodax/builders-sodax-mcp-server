@@ -7,7 +7,7 @@
 
 import { SODAX_SWAP_ORACLE_BASE_URL, sameHex } from "../../constants.js";
 import type { OraclePrice } from "../../types.js";
-import { runWithRequestContext } from "../requestContext.js";
+import { runWithRequestContext, withoutCredentials } from "../requestContext.js";
 import { bounded } from "../sodax.js";
 import { getSolverOracle } from "../solver.js";
 import { HUB_RELAY_ID } from "./sourceTx.js";
@@ -24,10 +24,9 @@ async function oraclePrices(): Promise<OraclePrice[] | null> {
   if (Date.now() < skipUntil) return null;
   try {
     // Cached and backed off for every caller, so read without the caller's key: one key's 401 or 429
-    // would otherwise blank the prices, and the off-market check, for everyone.
-    return await bounded(
-      () => runWithRequestContext({}, () => getSolverOracle(SODAX_SWAP_ORACLE_BASE_URL)),
-      ORACLE_WAIT_MS,
+    // would otherwise blank the prices, and the off-market check, for everyone. The request's id stays.
+    return await bounded({ label: "oracle prices", timeoutMs: ORACLE_WAIT_MS }, () =>
+      runWithRequestContext(withoutCredentials(), () => getSolverOracle(SODAX_SWAP_ORACLE_BASE_URL)),
     );
   } catch {
     skipUntil = Date.now() + SKIP_AFTER_FAILURE_MS;

@@ -5,7 +5,8 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
-import { SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { SODAX_API_BASE_URL, SODAX_API_ORIGINS, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { errorName, logger } from "./logger.js";
 import { getRequestContext } from "./requestContext.js";
 
 interface FetchJsonOptions {
@@ -33,6 +34,9 @@ function forwardedApiKey(url: string): string | undefined {
   return KEYED_BASE_URLS.some(base => href.startsWith(base)) ? apiKey : undefined;
 }
 
+// SODAX's own API hosts, every route on them: they get the request's id, so their logs can name the request ours do.
+const SODAX_ORIGINS = new Set<string>(Object.values(SODAX_API_ORIGINS));
+
 /**
  * A non-2xx response. The message is the one callers already show; the parts ride along for
  * callers that map them. The raw body is not kept, so logging the error stays small.
@@ -41,17 +45,28 @@ export class HttpError extends Error {
   readonly apiMessage?: string;
   readonly apiCode?: unknown;
   readonly retryAfterSec?: number;
+  /** Sent with the caller's key: a 429 is that key's quota, not this server's. */
+  readonly keyed: boolean;
 
   constructor(
     message: string,
     readonly status: number,
-    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number } = {},
+    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number; keyed?: boolean } = {},
   ) {
     super(message);
     this.name = "HttpError";
     this.apiMessage = parts.apiMessage;
     this.apiCode = parts.apiCode;
     this.retryAfterSec = parts.retryAfterSec;
+    this.keyed = parts.keyed ?? false;
+  }
+}
+
+/** A 2xx answer that isn't what the API promised: an empty body, not JSON, or JSON of another shape. */
+export class BadResponseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "BadResponseError";
   }
 }
 
@@ -119,31 +134,119 @@ function extractApiErrorMessage(obj: Record<string, unknown>): string | undefine
   return undefined;
 }
 
+const isParam = (segment: string) => segment.startsWith(":");
+const paramCount = (parts: string[]) => parts.filter(isParam).length;
+
+// Fewest parameters first, so a static word wins: `asset/all` before `asset/:reserveAddress`.
+const routes: { parts: string[]; route: string }[] = [];
+
+/** Templates (`/intent/user/:userAddress`) of the routes a client calls under `baseUrl`. */
+export function addRouteTemplates(baseUrl: string, templates: readonly string[]): void {
+  const base = new URL(baseUrl).pathname;
+  for (const template of templates) {
+    const parts = `${base}${template}`.split("/");
+    routes.push({ parts, route: parts.map(part => (isParam(part) ? "*" : part)).join("/") });
+  }
+  routes.sort((a, b) => paramCount(a.parts) - paramCount(b.parts));
+}
+
+// What a static path segment looks like: a plain lowercase word. Hashes, addresses, account names and chain keys don't.
+const WORD = /^([a-z][a-z0-9_-]{0,22})?$/;
+
+/**
+ * The route a path belongs to: a registered template's, static segments kept and parameters masked; else a guess that
+ * masks every segment from the fifth on (the SODAX APIs put their parameters there: `/v1/be/intent/user/<address>`)
+ * and, before that, any that isn't a plain word. Either way no hash, address or account name is logged.
+ */
+export function routeOf(pathname: string): string {
+  const segments = pathname.split("/");
+  const known = routes.find(
+    ({ parts }) => parts.length === segments.length && parts.every((part, i) => isParam(part) || part === segments[i]),
+  );
+  return known?.route ?? segments.map((segment, i) => (i >= 5 || !WORD.test(segment) ? "*" : segment)).join("/");
+}
+
+/**
+ * `fetch` with one log record per upstream call (#110), written once `read` has the body: the route with its ids
+ * and addresses masked, the status or the error's name, and the time to the whole answer, so a body that never
+ * arrives is a failed call, not a fast one. `ok` decides the record's level.
+ */
+export async function timedFetch<T>(
+  url: string,
+  init: RequestInit,
+  ok: (response: Response) => boolean,
+  read: (response: Response) => Promise<T>,
+): Promise<{ response: Response; body: T }> {
+  const { origin, hostname, pathname } = new URL(url);
+  const { requestId } = getRequestContext();
+  let sent = init;
+  if (requestId && SODAX_ORIGINS.has(origin)) {
+    const headers = new Headers(init.headers);
+    headers.set("X-Request-Id", requestId);
+    sent = { ...init, headers };
+  }
+  const started = Date.now();
+  const fields = () => ({
+    "http.request.method": init.method ?? "GET",
+    "server.address": hostname,
+    "url.template": routeOf(pathname),
+    "duration.ms": Date.now() - started,
+  });
+  let response: Response;
+  try {
+    response = await fetch(url, sent);
+  } catch (error) {
+    logger.warn({ ...fields(), "error.type": errorName(error) }, "Upstream call");
+    throw error;
+  }
+  let body: T;
+  try {
+    body = await read(response);
+  } catch (error) {
+    logger.warn(
+      { ...fields(), "http.response.status_code": response.status, "error.type": errorName(error) },
+      "Upstream call",
+    );
+    throw error;
+  }
+  logger[ok(response) ? "info" : "warn"](
+    { ...fields(), "http.response.status_code": response.status },
+    "Upstream call",
+  );
+  return { response, body };
+}
+
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
   const apiKey = forwardedApiKey(url);
-  const response = await fetch(url, {
-    method,
-    headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
-    redirect: apiKey ? "error" : "follow",
-    signal: AbortSignal.timeout(timeout),
-  });
+  const { response, body: text } = await timedFetch(
+    url,
+    {
+      method,
+      headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
+      redirect: apiKey ? "error" : "follow",
+      signal: AbortSignal.timeout(timeout),
+    },
+    response => response.ok || (allow404 && response.status === 404),
+    response => response.text(),
+  );
 
   if (allow404 && response.status === 404) {
     return null;
   }
 
   if (!response.ok) {
-    const { message: apiMessage, code: apiCode } = parseApiError(await response.text().catch(() => ""));
+    const { message: apiMessage, code: apiCode } = parseApiError(text);
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
     throw new HttpError(apiMessage ? `${base} - ${apiMessage}` : base, response.status, {
       apiMessage,
       apiCode,
       retryAfterSec: retryAfterSeconds(response.headers.get("Retry-After")),
+      keyed: apiKey !== undefined,
     });
   }
 
@@ -154,12 +257,17 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   // fetchJson, throw a clearer error instead of returning undefined-as-T,
   // which would otherwise lie about the Promise<T> contract and let an
   // undefined parsed value leak into callers (caching, destructuring etc).
-  const text = (await response.text()).trim();
-  if (!text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
     if (allow404) return null;
-    throw new Error(`Empty response body from ${url}`);
+    throw new BadResponseError(`Empty response body from ${url}`);
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch (error) {
+    // The parser's own message, as callers have always shown it.
+    throw new BadResponseError(error instanceof Error ? error.message : "Invalid JSON", { cause: error });
+  }
 }
 
 export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}): Promise<T> {

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../logger.js";
+import { getRequestContext, runWithRequestContext } from "../requestContext.js";
 import {
   checkQuoteRoom,
   claimDeposit,
@@ -64,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("quoteCache", () => {
@@ -73,6 +76,44 @@ describe("quoteCache", () => {
     expect(getCachedQuote(quoteId, KEY)?.quoteId).toBe(quoteId);
     vi.setSystemTime(NOW + 45 * 60_000);
     expect(getCachedQuote(quoteId, KEY)).toBeUndefined();
+  });
+
+  it("records each quote that expires without a deposit within a minute, outside the request that started the sweep", () => {
+    const unused = runWithRequestContext({ requestId: "first-quote" }, () => quoteDue(15));
+    const deposited = quoteDue(15);
+    claimDeposit(deposited.quoteId, "0x01");
+    const seen: (string | undefined)[] = [];
+    const info = vi.spyOn(logger, "info").mockImplementation((() => {
+      seen.push(getRequestContext().requestId);
+    }) as never);
+    // Expiry is 30 minutes past the deadline; the sweep runs once a minute.
+    vi.advanceTimersByTime(45 * 60_000 - 1);
+    expect(info).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    expect(info.mock.calls).toEqual([
+      [
+        {
+          "quote.id": unused.quoteId,
+          "quote.drop_reason": "expired",
+          "chain.key": "0xa4b1.arbitrum",
+          "dst_chain.key": "sonic",
+          "caller.key_hash": KEY.slice(0, 16),
+        },
+        "Swap quote expired unused",
+      ],
+    ]);
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("leaves an expired quote to the sweep: a lookup finds nothing and writes no record of its own", () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const { quoteId } = quoteDue(15);
+    vi.setSystemTime(NOW + 45 * 60_000);
+    expect(getCachedQuote(quoteId, KEY)).toBeUndefined();
+    expect(getCachedQuote(quoteId, "b".repeat(64))).toBeUndefined();
+    expect(info).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    expect(info).toHaveBeenCalledTimes(1);
   });
 
   it("serves a quote only to the key that made it, and says so to another", () => {
@@ -115,6 +156,7 @@ describe("quoteCache", () => {
   });
 
   it("when full, drops an expired quote, then an unclaimed one past its deadline, never a live or claimed one", () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
     const live = quoteDue(15);
     const expired = quoteDue(-31);
     const pastDeadline = quoteDue(-1);
@@ -137,6 +179,16 @@ describe("quoteCache", () => {
     expect(refusal(() => quoteDue(15))).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 60 } });
     expect(() => checkQuoteRoom("c".repeat(64))).toThrow("too many open swap quotes");
     for (const kept of [live, claimed, relayed, next]) expect(getCachedQuote(kept.quoteId, KEY)).toBeDefined();
+    const dropped = info.mock.calls
+      .filter(([, msg]) => msg === "Swap quote expired unused")
+      .map(([fields]) => [
+        (fields as Record<string, string>)["quote.id"],
+        (fields as Record<string, string>)["quote.drop_reason"],
+      ]);
+    expect(dropped).toEqual([
+      [expired.quoteId, "expired"],
+      [pastDeadline.quoteId, "evicted"],
+    ]);
   });
 
   it("makes a key with 1,000 open quotes wait until one leaves the cache, never dropping another key's", () => {

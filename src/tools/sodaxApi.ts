@@ -43,6 +43,7 @@ import {
   resolveChainSupport,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { pinnedSourceOf } from "../services/swap/source.js";
 import { expireSwapCatalog } from "../services/swap/tokens.js";
 import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
@@ -114,7 +115,11 @@ export function registerSodaxApiTools(server: McpServer): void {
             content: [
               {
                 type: "text",
-                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains.`,
+                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains. ${
+                  pinnedSourceOf(result.chainKey)
+                    ? "This server's swap tools (with a SODAX API key) can start a swap from it."
+                    : "This server's swap tools can't start a swap from it yet: only from Sonic and EVM chains."
+                }`,
               },
             ],
           };

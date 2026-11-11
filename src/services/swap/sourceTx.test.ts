@@ -1,3 +1,6 @@
+import { IntentCreatedEventAbi, IntentsAbi } from "@sodax/sdk";
+import { solverConfig } from "@sodax/types";
+import { getAbiItem, toEventSelector } from "viem";
 import { describe, expect, it } from "vitest";
 import {
   ASSET_MANAGER,
@@ -11,12 +14,15 @@ import {
 } from "./__fixtures__/deposit.js";
 import { abiEncode, rlpList } from "./__fixtures__/encode.js";
 import {
+  INTENT_CANCELLED_TOPIC,
+  INTENT_CREATED_TOPIC,
   SEND_MESSAGE_SELECTOR,
   checkDeposit,
   decodeMessage,
   decodeRlpList,
   decodeSendMessage,
   holdsCancel,
+  hubIntentHashes,
 } from "./sourceTx.js";
 
 const WANT = {
@@ -119,5 +125,30 @@ describe("decodeSendMessage", () => {
   it("refuses another function or cut-off arguments", () => {
     expect(decodeSendMessage(`0xa9059cbb${abiEncode([146n, CREATOR, "0x0102"]).slice(2)}`)).toBeUndefined();
     expect(decodeSendMessage(SEND_MESSAGE_SELECTOR)).toBeUndefined();
+  });
+});
+
+describe("hubIntentHashes", () => {
+  const INTENTS = solverConfig.intentsContract;
+  const hash = `0x${"A".repeat(64)}`;
+  const log = (address: string, topic: string) => ({ address, topics: [topic], data: `${hash}${"0".repeat(64)}` });
+
+  it("takes the topics from the SDK's intents contract ABI", () => {
+    expect(INTENT_CREATED_TOPIC).toBe(toEventSelector(IntentCreatedEventAbi));
+    expect(INTENT_CANCELLED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: IntentsAbi, name: "IntentCancelled" })));
+  });
+
+  it("reads the hash, lowercased, from the intents contract's logs under that topic only", () => {
+    const receipt = {
+      reverted: false,
+      logs: [
+        log(INTENTS.toUpperCase().replace("0X", "0x"), INTENT_CREATED_TOPIC),
+        log(INTENTS, INTENT_CANCELLED_TOPIC),
+        log(`0x${"1".repeat(40)}`, INTENT_CREATED_TOPIC),
+        { address: INTENTS, topics: [INTENT_CREATED_TOPIC], data: "0x12" },
+      ],
+    };
+    expect(hubIntentHashes(receipt, INTENTS, INTENT_CREATED_TOPIC)).toEqual([hash.toLowerCase()]);
+    expect(hubIntentHashes(receipt, INTENTS, INTENT_CANCELLED_TOPIC)).toEqual([hash.toLowerCase()]);
   });
 });

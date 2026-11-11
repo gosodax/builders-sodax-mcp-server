@@ -141,9 +141,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
   const to = resolveSide(catalog, input.toChain, input.toToken, "to");
-  // Only a chain track can prove the deposit on: nothing else would submit the swap. The chain id
-  // and swap contract are pinned from the SDK config.
-  const { chainId, assetManager: swapContract } = sourceChainFor(catalog, from.chain);
+  // Only a chain track can prove the swap on: nothing else would submit it. The chain id and swap
+  // contract are pinned from the SDK config.
+  const { chainId, swapContract } = sourceChainFor(catalog, from.chain);
   // Five EVM chains share one asset manager, so the live chain id must agree with the pinned one.
   if (from.config.chainId !== chainId) throw configDisagrees(from.chain.key, "chainId");
   const dstEvm = to.config.type === "EVM";
@@ -370,7 +370,7 @@ function findMismatch(
     from: SwapsApiToken;
     to: SwapsApiToken;
     fee: bigint;
-    /** The contract the swap calls: the spoke's asset manager. */
+    /** The contract the swap calls: the spoke's asset manager, or the hub's intents contract. */
     swapContract: string;
     hubWallet: string;
     /** The SDK's rebuild of the swap tx, if it could. */

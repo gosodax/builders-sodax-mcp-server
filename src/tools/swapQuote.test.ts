@@ -1,5 +1,5 @@
 import { EvmSolverService, Sodax } from "@sodax/sdk";
-import { spokeChainConfig } from "@sodax/types";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { logger } from "../services/logger.js";
@@ -250,7 +250,7 @@ describe("sodax_swap_quote", () => {
       "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
     );
     expect(out.nextStep).toContain(
-      "then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.",
+      "Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap, or starts its refund.",
     );
     expect(out.nextStep).not.toContain("don't send");
   });
@@ -797,17 +797,35 @@ describe("sodax_swap_quote", () => {
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch: "rebuild" }), expect.any(String));
   });
 
-  // A hub swap has no connection Message for track to check, so nothing could submit it.
-  it.each([
-    ["USDC", SONIC_USDC],
-    ["native S", "native"],
-  ])("refuses a swap from Sonic (%s) until track can check one", async (_case, fromToken) => {
-    const calls = stubSwaps();
-    const sonic = { fromChain: "sonic", fromToken, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+  // From the hub the swap tx is `createIntent` on the intents contract, and an approval goes to that contract.
+  it("builds a swap from Sonic that calls the intents contract, approved to it", async () => {
+    const intents = solverConfig.intentsContract;
+    stubSwaps({ approveData: approveData(intents, 5_000_000n) });
+    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
     const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
-    expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
-    expect(out.nextStep).toContain("not from Sonic or non-EVM chains");
-    expect(calls).toEqual([]);
+    expect(out.status).toBe("ready");
+    expect(out.steps.map((step: { kind: string }) => step.kind)).toEqual(["approve", "swap"]);
+    expect(out.steps[0].tx.data).toBe(approveData(intents, 5_000_000n));
+    expect(out.steps[1].tx).toMatchObject({ to: intents, value: "0x0", chainId: "0x92" });
+  });
+
+  it("refuses a swap from Sonic whose approval goes to an asset manager instead", async () => {
+    stubSwaps();
+    const sonic = { fromChain: "sonic", fromToken: SONIC_USDC, toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+    const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
+    expect(out.error.code).toBe("SWAP_MISMATCH");
+  });
+
+  it("builds a swap of native S from Sonic with its value, and no approval", async () => {
+    stubSwaps();
+    const sonic = { fromChain: "sonic", fromToken: "native", toChain: "0xa4b1.arbitrum", toToken: ARB_USDC };
+    const { out } = await quote({ ...sonic, amount: "5", fromAddress: USER });
+    expect(out.status).toBe("ready");
+    expect(out.steps).toHaveLength(1);
+    expect(out.steps[0].tx).toMatchObject({
+      to: solverConfig.intentsContract,
+      value: `0x${(5n * 10n ** 18n).toString(16)}`,
+    });
   });
 
   // The SDK names a hub token in the intent as is: native S stays 0x0…0, not its hub asset wS.

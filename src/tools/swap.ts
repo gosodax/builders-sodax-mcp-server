@@ -103,7 +103,7 @@ export function registerSwapTools(server: McpServer): void {
     "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
       fromChain: chainArg().describe(
-        'Source chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+        'Source chain, Sonic or an EVM chain (not a non-EVM chain yet): name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
       ),
       fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
       toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
@@ -336,7 +336,7 @@ function quoteNextStep(quote: SwapQuote): string {
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
-    `Once they confirm, have their wallet send the steps in order, each mined before the next (a swap sent before its approve is mined fails)${batch}, then call sodax_swap_track with the quoteId and the swap transaction's hash, all before it expires.`,
+    `Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}. Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap, or starts its refund.`,
   ].join(" ");
 }
 
@@ -381,7 +381,11 @@ export function trackNextStep(result: TrackResult): string {
     case "awaiting_source_confirmation":
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`
-        : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise don't resend it, and ${POLL}`;
+        : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
+            result.stopAfter
+              ? `call sodax_swap_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}: if ${chain} still hasn't seen it by then, it wasn't sent in time and nothing was swapped.`
+              : POLL
+          }`;
     case "source_not_found": {
       // A sped-up or replaced tx has a new hash; its deposit still matches the quote.
       const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
@@ -463,5 +467,7 @@ export function cancelNextStep(result: CancelResult): string {
       return "That transaction isn't the cancel for this swap; ask for the cancel transaction's hash.";
     case "cancel_relayed":
       return "The cancel is on its way to the hub; call sodax_swap_track to see the swap reported as cancelled.";
+    case "cancel_confirmed":
+      return "The swap is cancelled on the hub and the funds are on their way back to the user; call sodax_swap_track to see it reported as cancelled.";
   }
 }

@@ -483,6 +483,28 @@ export function cancelPayload(intent: IntentJson): string | undefined {
 }
 
 /**
+ * The cancel of a swap from the hub, as the SDK builds its own: the user's wallet router running
+ * `cancelIntent(intent)` on the intents contract, from the intent's source address, no value. `undefined` if
+ * the SDK can't, or if it would call anything but the packaged wallet router.
+ */
+export async function hubCancelTx(
+  intent: IntentJson,
+): Promise<{ from: string; to: string; value: string; data: string } | undefined> {
+  try {
+    const result = await sdk().sodax.swaps.createCancelIntent({
+      params: { srcChainKey: HUB_CHAIN_KEY, intent: toSdkIntent(intent) },
+      raw: true,
+    });
+    if (!result.ok) return undefined;
+    const { from, to, value, data } = result.value as { from: string; to: string; value: bigint; data: string };
+    const router = spokeChainConfig.sonic.addresses.walletRouter;
+    return to.toLowerCase() === router.toLowerCase() && value === 0n ? { from, to, value: "0", data } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The calls that create `intent`, as the SDK builds them (byte for byte, `intentId` included): what a spoke
  * deposit carries to the user's hub wallet, or from the hub (`hubSource`) the tx's own calldata.
  * `undefined` if the SDK can't.

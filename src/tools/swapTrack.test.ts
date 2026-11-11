@@ -8,7 +8,7 @@ import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -43,6 +43,7 @@ beforeEach(() => {
   clearCache();
   clearQuoteCache();
   clearAlerts();
+  clearUnseenMemo();
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -632,7 +633,6 @@ describe("sodax_swap_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sonic" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {

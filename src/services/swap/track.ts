@@ -172,7 +172,8 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return {
       ...base,
       status: "awaiting_source_confirmation",
-      seenOnChain: seen,
+      // A checked deposit was read before: a node that has lost it now is behind.
+      seenOnChain: seen || claimed,
       retryAfterSec: RETRY_AFTER_SEC,
       ...(!seen && !claimed && stopAfterMs && { stopAfter: new Date(stopAfterMs).toISOString() }),
     };

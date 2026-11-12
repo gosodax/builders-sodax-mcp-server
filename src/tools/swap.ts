@@ -337,7 +337,7 @@ function quoteNextStep(quote: SwapQuote): string {
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
     `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
-    `Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}. Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap, or starts its refund.`,
+    `Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}. Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap${isHubChain(from.chain.key) ? "" : ", or starts its refund"}.`,
   ].join(" ");
 }
 
@@ -448,11 +448,12 @@ function failedNextStep({ canCancel, outcome }: Extract<TrackResult, { status: "
 }
 
 const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" }>["reason"], string> = {
-  not_submitted: "This swap was never submitted, so there's no intent to cancel: call sodax_swap_track first.",
+  not_submitted:
+    "The swap service has no record of this swap, so it can't be cancelled here. If it came from sodax_swap_quote, call sodax_swap_track with its quoteId first; a swap made elsewhere is cancelled where it was made.",
   solved: "The swap is already complete; there's nothing to cancel.",
   cancelled: "The swap is already cancelled.",
   refunding: "The swap is already being refunded to the user.",
-  not_on_hub_yet: "The swap hasn't reached the hub yet; call sodax_swap_track until it has, then cancel.",
+  not_on_hub_yet: "The swap service hasn't processed this swap yet; call sodax_swap_track until it has, then cancel.",
   not_sent:
     "The swap transaction isn't mined, or it failed, so nothing was sent and there's nothing to cancel. If it's still pending, the user can cancel or replace it in their wallet; if it gets mined, call sodax_swap_cancel again.",
 };
@@ -462,6 +463,10 @@ export function cancelNextStep(result: CancelResult): string {
   const chain = result.chain.name;
   switch (result.status) {
     case "not_cancellable":
+      // A tx on the hub that created an intent needs no record to be refunded: the backend's canceller reads the chain.
+      if (result.reason === "not_submitted" && isHubChain(result.chain.key)) {
+        return `The swap service has no record of this swap, so it can't be cancelled here. If that transaction created a swap on ${chain}, its intent is there already: unless a solver fills it first, it's refunded to the user once it expires, and they must not send it again.`;
+      }
       return NOT_CANCELLABLE[result.reason];
     case "deposit_unsubmitted":
       if (isHubChain(result.chain.key)) {

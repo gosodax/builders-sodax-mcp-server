@@ -197,6 +197,14 @@ describe("a swap from Sonic, the hub", () => {
       expect(out.nextStep).toContain("don't call sodax_swap_track");
     });
 
+    it("says, without its quote or a backend row, that an intent on Sonic is refunded once expired", async () => {
+      stubBackend({ row: null });
+      const { out } = await cancel({ txHash: SONIC_TX, chain: "sonic" });
+      expect(out).toMatchObject({ status: "not_cancellable", reason: "not_submitted" });
+      expect(out.nextStep).toContain("its intent is there already");
+      expect(out.nextStep).not.toContain("call sodax_swap_track");
+    });
+
     it("isn't confirmed by a tx that cancelled another intent", async () => {
       vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CANCELLED_TOPIC, [OTHER_HASH]));
       stubBackend({ row, hubIntent: HUB_INTENT });

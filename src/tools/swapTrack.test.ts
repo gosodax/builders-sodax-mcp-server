@@ -789,7 +789,8 @@ describe("sodax_swap_track", () => {
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out.nextStep).not.toContain("hasn't seen this transaction");
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
@@ -864,7 +865,7 @@ describe("a tx no node has seen", () => {
     claimDeposit(quoteId, TX);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
     expect(out.stopAfter).toBeUndefined();
     expect(out.nextStep).not.toContain("nothing was swapped");
   });

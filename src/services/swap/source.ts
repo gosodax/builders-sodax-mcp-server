@@ -6,7 +6,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, blockNumber, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
+import { type EvmReceipt, blockNumber, evmChainIdFor, getEvmReceipt, isTxKnown, pinnedSourceOf } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
@@ -23,17 +23,18 @@ export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; inte
 export interface SourceChain {
   /** The EVM chain id, for the steps a wallet sends. */
   chainId: number;
-  connection: string;
-  assetManager: string;
+  /** What the swap tx calls: a spoke's asset manager, or the hub's intents contract. */
+  swapContract: string;
+  /** A spoke's `connection`, whose log proves a deposit. None on the hub: the swap tx itself creates the intent. */
+  connection?: string;
 }
 
 export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote };
 
 /**
- * A chain a swap can start from: an EVM spoke whose `connection` log proves the deposit. The hub
- * has none, so nothing could prove or submit a swap from it yet. All three are pinned from the SDK
- * config, so a deposit already sent is checked whatever the live config says; the quote refuses a
- * live chain id that disagrees.
+ * A chain a swap can start from: an EVM spoke, whose `connection` log proves the deposit, or the hub,
+ * whose intents contract logs the intent the swap tx created. Pinned from the SDK config, so a deposit
+ * already sent is checked whatever the live config says; the quote refuses a live chain id that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
   if (catalog.chains[chain.key]?.type !== "EVM") throw unsupportedSource(chain);
@@ -42,7 +43,7 @@ export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceCh
 
 /** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
 function pinnedSource(chain: ChainInfo): SourceChain {
-  const source = evmSpokeFor(chain.key);
+  const source = pinnedSourceOf(chain.key);
   if (!source) throw unsupportedSource(chain);
   return source;
 }

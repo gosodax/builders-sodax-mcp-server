@@ -6,7 +6,7 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { cancelPayload, createIntentPayload, intentChainId, intentHash, userHubWallet } from "../sodax.js";
+import { cancelPayload, createIntentPayload, hubCancelTx, intentChainId, intentHash, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
 import { type CachedQuote, claimDeposit } from "./quoteCache.js";
@@ -19,7 +19,7 @@ import {
   resolveSource,
   whyNotCancellable,
 } from "./source.js";
-import { HUB_RELAY_ID, checkDeposit, decodeSendMessage, depositMessages, holdsCancel } from "./sourceTx.js";
+import { HUB_RELAY_ID, INTENT_CANCELLED_TOPIC, decodeSendMessage, holdsCancel, hubLogged } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
 import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
 
@@ -33,7 +33,9 @@ export type CancelState =
   | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
   | { status: "cancel_failed" }
   | { status: "not_a_cancel_tx" }
-  | { status: "cancel_relayed" };
+  | { status: "cancel_relayed" }
+  /** A swap from the hub: the cancel ran there, so nothing is relayed. */
+  | { status: "cancel_confirmed" };
 
 export type CancelResult = SwapRef & CancelState;
 
@@ -98,19 +100,24 @@ export async function cancelSwap(input: {
     });
   }
   if (!receipt || !cancelTxHash) {
-    const { tx } = await buildCheckedCancel(source, intent);
+    const tx = await buildCheckedCancel(source, intent);
     return {
       ...base,
       status: "ready",
       steps: [{ kind: "cancel", chainId: source.chainId, tx: toStepTx(tx, source.chainId) }],
     };
   }
+  const { connection } = source;
+  if (!connection) {
+    const cancelled = hubLogged(receipt, source.swapContract, INTENT_CANCELLED_TOPIC, intentHash(intent));
+    return { ...base, status: cancelled ? "cancel_confirmed" : "not_a_cancel_tx" };
+  }
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
 
   const isCancel = holdsCancel(receipt, {
-    connection: source.connection,
+    connection,
     srcAddress: intent.srcAddress,
     srcChain: intent.srcChain,
     creator: intent.creator,
@@ -125,7 +132,7 @@ export async function cancelSwap(input: {
 
 /**
  * A quote's tx with no backend row: nothing reached the hub to cancel. Its deposit stays on chain unswapped;
- * only track would submit it, and from its deadline on it's relayed for refund as track does. `undefined`
+ * only track would submit it, and from its deadline on it's refunded as track does. `undefined`
  * for a mined tx that isn't this quote's deposit, which track reports on.
  */
 async function unsubmittedDeposit(
@@ -140,7 +147,7 @@ async function unsubmittedDeposit(
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
   if (claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
-  const refund = await relayForRefund(base, quote);
+  const refund = await relayForRefund(base, quote, source);
   return refund.status === "expired_refunding" ? { ...base, status: "not_cancellable", reason: "refunding" } : refund;
 }
 
@@ -150,23 +157,21 @@ const quoteMismatch = (message: string) =>
   });
 
 /**
- * Without a quote, the hub intent must be the tracked deposit's: from this chain, sent in that tx by the
- * intent's source address to its creator with the calls that create this very intent, and the creator
- * must be that address's hub wallet, so its cancel reaches it.
+ * Without a quote, the hub intent must be the tracked swap's: from this chain, and alone in that tx, either a
+ * deposit by the intent's source address to its creator with the calls that create this very intent, or on the
+ * hub the intents contract's log of it. The creator must be that address's hub wallet, so its cancel reaches it.
  */
 async function isDepositsIntent(source: SwapSource, txHash: string, intent: Intent): Promise<boolean> {
   if (intent.srcChain !== intentChainId(source.chain.key)) return false;
-  const payload = createIntentPayload(intent);
-  if (!payload) return false;
+  // A deposit must carry the calls that create this intent; a hub swap is matched by the intent's hash alone.
+  const payload = source.connection ? createIntentPayload(intent) : "";
+  if (payload === undefined) return false;
   const receipt = await readReceipt(source.chain, txHash);
   // The deposit reached the hub, so it's mined: a node without its receipt is behind.
   if (!receipt) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${source.chain.name} right now.`);
-  const { connection, assetManager } = source;
-  // As track: the backend relays a tx's first deposit only, so it can't tell two apart.
-  if (depositMessages(receipt, connection, assetManager).length > 1) return false;
-  const relayData = { address: intent.creator, payload };
-  const want = { connection, assetManager, srcChain: intent.srcChain, srcAddress: intent.srcAddress, relayData };
-  if (checkDeposit(receipt, want) !== "match") return false;
+  // As track checks a quote's: alone in its tx.
+  const swap = { intent, srcAddress: intent.srcAddress, relayData: { address: intent.creator, payload } };
+  if (checkQuoteDeposit(receipt, source, swap) !== "match") return false;
   const hubWallet = await userHubWallet(source.chain.key, intent.srcAddress).catch(() => {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
   });
@@ -182,8 +187,15 @@ function differingFields(quoted: Intent, hub: Intent): (keyof Intent)[] {
  * The cancel the backend builds, checked before anyone signs it: from the intent's source address,
  * to the chain's `connection`, no value, sending the user's hub wallet exactly the SDK's
  * `cancelIntent(intent)` call. The payload is what that wallet runs, so nothing else may pass.
+ * From the hub the SDK builds it here: the wallet router runs that call, with no relay to check.
  */
-async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{ tx: EvmTx; payload: string }> {
+async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<EvmTx> {
+  const { connection } = source;
+  if (!connection) {
+    const hubTx = await hubCancelTx(intent);
+    if (!hubTx) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
+    return hubTx;
+  }
   const tx = await buildCancel(source.chain.key, intent);
   const message = decodeSendMessage(tx.data);
   const payload = cancelPayload(intent);
@@ -191,7 +203,7 @@ async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{
     !message ||
     !payload ||
     !same(tx.from, intent.srcAddress) ||
-    !same(tx.to, source.connection) ||
+    !same(tx.to, connection) ||
     BigInt(tx.value) !== 0n ||
     message.dstChainId !== HUB_RELAY_ID ||
     !same(message.dstAddress, intent.creator) ||
@@ -205,5 +217,5 @@ async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<{
       details: { chainKey: source.chain.key },
     });
   }
-  return { tx, payload };
+  return tx;
 }

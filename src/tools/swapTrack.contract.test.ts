@@ -4,13 +4,22 @@
  * every POST to the Swaps API is refused here, so nothing is submitted or relayed, and nothing is signed.
  */
 
-import { spokeChainConfig } from "@sodax/types";
+import { IntentsAbi } from "@sodax/sdk";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { http, createPublicClient, decodeFunctionData } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
-import { evmSpokeFor, getEvmReceipt, initSodax, isHubChain } from "../services/sodax.js";
+import { getEvmReceipt, initSodax, intentHash, isHubChain, pinnedSourceOf } from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { DEPOSIT_TX } from "../services/swap/__fixtures__/deposit.js";
-import { HUB_RELAY_ID, decodeRlpList, depositMessages } from "../services/swap/sourceTx.js";
+import {
+  HUB_RELAY_ID,
+  INTENT_CREATED_TOPIC,
+  decodeRlpList,
+  depositMessages,
+  hubIntentHashes,
+} from "../services/swap/sourceTx.js";
+import { getHubIntent } from "../services/swap/swapsApi.js";
 import { getSwapCatalog } from "../services/swap/tokens.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callTool } from "./__fixtures__/swapClient.js";
@@ -108,6 +117,40 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     expect(swapsPosts()).toEqual([]);
   });
 
+  // A swap from Sonic is proven by this log, so its layout is checked on real hub txs: the topic, the contract, and
+  // the hash as its first data word, equal to the SDK's hash of the intent the Swaps API reads from the same tx.
+  it.each(TRACKED)("finds the intent's hash in the IntentCreated log of hub tx $hubTxHash", async ({ hubTxHash }) => {
+    const receipt = await getEvmReceipt("sonic", hubTxHash);
+    const intent = await getHubIntent(hubTxHash);
+    const logged = hubIntentHashes(
+      receipt ?? { reverted: true, logs: [] },
+      solverConfig.intentsContract,
+      INTENT_CREATED_TOPIC,
+    );
+    expect(logged).toEqual([intentHash(intent).toLowerCase()]);
+  });
+
+  // A wallet's own swap from Sonic: the hash logged is of the intent in its createIntent calldata, as sent.
+  it("finds the hash of the intent a wallet sent from Sonic in its IntentCreated log", async () => {
+    const hash = "0x01ff71f704e9d91a76b787c36d10a466e071224be547dd295b36b7db267ba002";
+    const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
+    const tx = await client.getTransaction({ hash });
+    expect(tx.to?.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
+    const { functionName, args } = decodeFunctionData({ abi: IntentsAbi, data: tx.input });
+    expect(functionName).toBe("createIntent");
+    const sent = Object.fromEntries(
+      Object.entries(args?.[0] ?? {}).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value]),
+    ) as unknown as Parameters<typeof intentHash>[0];
+    expect(sent.srcChain).toBe("146");
+    const receipt = await getEvmReceipt("sonic", hash);
+    const logged = hubIntentHashes(
+      receipt ?? { reverted: true, logs: [] },
+      solverConfig.intentsContract,
+      INTENT_CREATED_TOPIC,
+    );
+    expect(logged).toEqual([intentHash(sent).toLowerCase()]);
+  });
+
   it("finds a connection and an https RPC in the SDK config for every EVM source chain", async () => {
     const catalog = await getSwapCatalog();
     const configs = (await getAllChainsConfigs()) as Record<string, { addresses?: { connection?: string } }>;
@@ -115,9 +158,9 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     const sources = Object.keys(catalog.chains).filter(key => catalog.chains[key]?.type === "EVM" && !isHubChain(key));
     expect(sources.length).toBeGreaterThan(5);
     for (const key of sources) {
-      const packaged = evmSpokeFor(key);
+      const packaged = pinnedSourceOf(key);
       expect(packaged, key).toBeDefined();
-      expect(packaged?.connection.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
+      expect(packaged?.connection?.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
       expect(new URL(String(rpcs[key]?.rpcUrl)).protocol, key).toBe("https:");
     }
   });

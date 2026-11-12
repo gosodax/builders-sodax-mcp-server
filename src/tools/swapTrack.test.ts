@@ -8,7 +8,7 @@ import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -43,6 +43,7 @@ beforeEach(() => {
   clearCache();
   clearQuoteCache();
   clearAlerts();
+  clearUnseenMemo();
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -632,7 +633,6 @@ describe("sodax_swap_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sonic" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {
@@ -646,7 +646,9 @@ describe("sodax_swap_track", () => {
     stubBackend();
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
-    expect((out.error.supportedChains as { key: string }[]).map(chain => chain.key)).not.toContain("sonic");
+    const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
+    expect(listed).toContain("sonic");
+    expect(listed).not.toContain("sui");
   });
 
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
@@ -787,7 +789,8 @@ describe("sodax_swap_track", () => {
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out.nextStep).not.toContain("hasn't seen this transaction");
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
@@ -811,5 +814,83 @@ describe("sodax_swap_track", () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("a tx no node has seen", () => {
+  beforeEach(() => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+  });
+
+  it("is read from the chain once per 10 seconds, however often it's tracked", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(NOW + 11_000);
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("once seen, is read only for its receipt until it's mined", async () => {
+    vi.mocked(isTxKnown).mockResolvedValue(true);
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+  });
+
+  it("is waited for within a call, as a tx just sent may not have reached this node, read once per 10 seconds", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 8_000 });
+    const calls = stubBackend({
+      status: () => {
+        vi.setSystemTime(Date.now() + 2_000);
+        return Response.json({ message: "Swap transaction not found" }, { status: 404 });
+      },
+    });
+    await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status?")).length).toBeGreaterThan(3);
+    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a checked deposit with a lagging RPC no stop time: it was sent", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, TX);
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out.stopAfter).toBeUndefined();
+    expect(out.nextStep).not.toContain("nothing was swapped");
+  });
+
+  it("reads the chain again before a final answer, whatever it remembered", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    const stopAfter = Number(DEADLINE) * 1000 + 5 * 60 * 1000;
+    vi.setSystemTime(stopAfter - 5_000);
+    await track({ txHash: TX, quoteId });
+    // Within the 10 seconds it remembers "unseen", but past the stop time: the tx was mined meanwhile.
+    vi.setSystemTime(stopAfter + 1_000);
+    vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).not.toBe("source_not_found");
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("tells the agent when to stop: the quote's deadline and the 5 minutes a late tx gets", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, stopAfter });
+    expect(out.nextStep).toContain(`until ${stopAfter}`);
+    vi.setSystemTime(Date.parse(stopAfter) + 1000);
+    expect((await track({ txHash: TX, quoteId: cacheQuote().quoteId })).out.status).toBe("source_not_found");
   });
 });

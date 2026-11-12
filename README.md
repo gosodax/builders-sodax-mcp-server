@@ -98,7 +98,8 @@ every transaction; the server never signs.
 1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
    destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
    needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
-   `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
+   `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined (track it even
+   after). Without the addresses it returns a price only.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
@@ -106,14 +107,23 @@ every transaction; the server never signs.
 3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
-   deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. While
-   the result has `retryAfterSec`, call it again after that many seconds.
+   deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
+   Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
+   there once expired, unless a solver filled it first. While the result has `retryAfterSec`, call it again after
+   that many seconds. A tx no node has seen comes with `stopAfter`: track is called until then, and once more after.
+   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
-   then call it again with `cancelTxHash`.
+   then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
+   relay: the second call confirms it on the hub (`cancel_confirmed`).
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
-`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on an EVM spoke
-chain for now (not Sonic, the hub); the destination can be any SODAX swap chain. Every result the tools return carries
+`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub)
+or an EVM spoke chain, not on non-EVM chains yet; the destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
+aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a 2-of-2 that Bound co-signs and
+broadcasts, behind a login token that expires in minutes), which an agent's wallet can't drive. A Stacks swap needs the
+sender's public key and post-conditions the wallet must add itself, and the SDK can't build a Stacks cancel yet (it
+passes the address where the public key goes). On Sonic the swap calls
+the intents contract directly, so its approval goes to that contract. Every result the tools return carries
 a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 
 The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
@@ -210,7 +220,7 @@ The swap tools never sign or move funds. They also:
 |------|-------------|
 | `sodax_swap_quote` | Quote a cross-chain swap; with `fromAddress`, the transactions for the user's wallet to sign |
 | `sodax_swap_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
-| `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay |
+| `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay (none from Sonic) |
 | `sodax_get_balance` | A wallet's native balance on a chain and, optionally, one token's |
 | `sodax_resolve_token` | Look up a token on a chain: address, decimals and hub asset |
 

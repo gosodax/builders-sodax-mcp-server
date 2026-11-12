@@ -8,7 +8,7 @@
  */
 
 import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
-import { encodeRecipient, evmSpokeFor } from "../sodax.js";
+import { encodeRecipient, pinnedSourceOf } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { rejectHex64, rejectHex64Account } from "./secrets.js";
@@ -64,9 +64,9 @@ export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourc
   });
 }
 
-/** A chain a swap can start from: an EVM spoke whose deposits the SDK config can prove. */
+/** A chain a swap can start from: EVM in the live catalog, and a source in the SDK config (the hub or an EVM spoke). */
 export function isSwapSource(catalog: SwapCatalog, chainKey: string): boolean {
-  return catalog.chains[chainKey]?.type === "EVM" && evmSpokeFor(chainKey) !== undefined;
+  return catalog.chains[chainKey]?.type === "EVM" && pinnedSourceOf(chainKey) !== undefined;
 }
 
 /** The chains within two typos of the query, by name or key, closest first. */

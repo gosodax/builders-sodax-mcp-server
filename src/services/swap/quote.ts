@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { ZERO_ADDRESS_PATTERN, sameHex as same } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN, isRecord, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { callerKeyHash } from "../requestContext.js";
@@ -15,7 +15,6 @@ import {
   type SwapTx,
   approveCalldata,
   buildNonEvmDeposit,
-  callsPinnedTarget,
   createIntentPayload,
   encodeRecipient,
   intentChainId,
@@ -36,6 +35,7 @@ import {
   type EvmSource,
   type NonEvmSource,
   type SourceChain,
+  checkPinnedTarget,
   configDisagrees,
   isHubSource,
   readBlockNumber,
@@ -170,7 +170,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
 
   const amount = parseUnits(input.amount, from.token.decimals);
   const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
-  // The recipient defaults to the sender between EVM chains.
+  // An Ethereum-style NEAR account sends through a relayer to its own account contract, a deposit track can't see.
+  if (fromAddress?.startsWith("0x") && source.family === "NEAR") {
+    throw new ActionError("INVALID_ADDRESS", "Swaps from an Ethereum-style (0x) NEAR account aren't supported here.", {
+      nextStep: "Ask the user for a named NEAR account (such as alice.near) or a 64-hex implicit one to send from.",
+      details: { field: "fromAddress" },
+    });
+  }
   const toAddress = input.toAddress
     ? checkAddress(input.toAddress, to.chain, "toAddress")
     : defaultsToSender
@@ -337,9 +343,8 @@ async function prepareEvmSwap(
 }
 
 /**
- * A non-EVM spoke's step: the SDK builds the deposit here from the checked intent and payload, as its own swaps
- * do. The Swaps API's tx isn't used: blockhash, sequence and fees make it differ from any rebuild, so it couldn't
- * be checked byte for byte. A Stellar source the SDK says needs more trustline room is refused: no changeTrust step.
+ * A non-EVM spoke's step, built here by the SDK from the checked intent and payload: blockhash, sequence and fees
+ * make the Swaps API's own build differ from any rebuild, so it can't be checked byte for byte.
  */
 async function prepareNonEvmSwap(
   request: IntentRequest,
@@ -376,14 +381,7 @@ async function prepareNonEvmSwap(
       nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
     });
   });
-  const apiTo = (built.tx as { to?: unknown } | null)?.to;
-  // The SDK reads Solana's programs and Sui's package from the chain: a wrong one is this server's RPC, not the API.
-  if (!callsPinnedTarget(request.srcChainKey, "swap", raw, apiTo)) {
-    logger.error({ "chain.key": request.srcChainKey }, "The SDK built a swap to another program than expected");
-    throw new ActionError("SWAP_MISMATCH", "The swap built here calls another program than expected.", {
-      details: { chainKey: request.srcChainKey },
-    });
-  }
+  checkPinnedTarget(request.srcChainKey, "swap", raw, isRecord(built.tx) ? built.tx.to : undefined);
   return { steps: [toNonEvmStep("swap", source.family, request.srcChainKey, raw)] };
 }
 

@@ -302,8 +302,8 @@ export function checkQuoteDeposit(
   if (sourceTx.family !== "EVM") {
     if (swapsIn(sourceTx) === 0) return "not_a_deposit";
     const carries = carriesPayload(sourceTx.tx, quote.relayData.payload, sourceTx.family);
-    // A NEAR wallet may sign from another account than the quoted one; elsewhere the built tx names the signer, and
-    // a deposit without this quote's payload is another quote's or someone else's.
+    // A NEAR or EIP-712 Injective wallet may send from another account than the quoted one; elsewhere the built tx
+    // names the signer, and a deposit without this quote's payload is another quote's or someone else's.
     const { signer } = sourceTx.tx;
     if (signer !== undefined && signer !== quote.srcAddress) return carries ? "other_sender" : "not_a_deposit";
     return carries ? "match" : "mismatch";

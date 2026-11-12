@@ -246,6 +246,10 @@ describe("the readers' parsers", () => {
     expect(nearTxFrom(stopped, AM)).toMatchObject({ failed: true, signer: "alice.near" });
   });
 
+  it("names an Injective tx's sender, as an EIP-712 wallet's Compat message carries it", () => {
+    expect(injective.signer).toBe(fixtures.injective.body.tx.body.messages[0].sender);
+  });
+
   it("names a NEAR tx's signer, a meta-transaction's own sender rather than its relayer", () => {
     expect(nearTxFrom(fixtures.near.outcome)?.signer).toBe(fixtures.near.outcome.transaction.signer_id);
   });

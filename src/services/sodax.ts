@@ -266,9 +266,8 @@ for (const config of Object.values(chainConfigs)) {
 }
 
 /**
- * A chain's source from the packaged config, if a swap can start there: the hub, whose intents contract logs the
- * intent the swap tx creates; an EVM spoke, whose `connection` proves a deposit; or a non-EVM spoke, whose swap tx
- * carries the quoted payload.
+ * A chain's source from the packaged config, if a swap can start there: the hub (its intents contract logs the
+ * intent), an EVM spoke (its `connection` proves a deposit) or a non-EVM one (its tx carries the quoted payload).
  */
 export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
   const type = chainConfigs[chainKey]?.chain?.type;
@@ -297,6 +296,7 @@ const asEvmAddress = (value: unknown) =>
 
 const SDK_CALL_TIMEOUT_MS = 15_000;
 const RPC_CALL_TIMEOUT_MS = 8_000;
+const INJECTIVE_TRY_MS = 2_500;
 
 /**
  * A bounded call whose failure (timeout included) carries no text of its own. One log record per call
@@ -726,17 +726,19 @@ const NON_EVM_READERS: Record<
     }
   },
   async INJECTIVE(_chainKey, txHash) {
-    const { rest } = sdk().sodax.spoke.injective.endpoints;
-    // The public LCD balances over nodes that keep different history, so a tx some still have is asked again.
+    const url = `${sdk().sodax.spoke.injective.endpoints.rest}/cosmos/tx/v1beta1/txs/${txHash}`;
+    // The public LCD balances over nodes that keep different history, so a tx some still have is asked again, as is a
+    // slow node. Unknown only if every node said so; each try fits in the read's own bound.
+    let slow: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const url = `${rest}/cosmos/tx/v1beta1/txs/${txHash}`;
-        // Each try within the read's own bound, so none outlives the call that waited for it.
-        return injectiveTxFrom(await fetchJson<unknown>(url, { timeout: Math.floor(RPC_CALL_TIMEOUT_MS / 3) }));
+        return injectiveTxFrom(await fetchJson<unknown>(url, { timeout: INJECTIVE_TRY_MS }));
       } catch (error) {
-        if (!injectiveNodeLacksTx(error)) throw error;
+        if (error instanceof Error && error.name === "TimeoutError") slow = error;
+        else if (!injectiveNodeLacksTx(error)) throw error;
       }
     }
+    if (slow) throw slow;
     return null;
   },
 };
@@ -755,7 +757,6 @@ function injectiveNodeLacksTx(error: unknown): boolean {
  * How a non-EVM tx names the chain's asset manager: as bytes its raw tx holds (Solana's program id, Stellar's
  * contract id, Sui's asset manager object), or as the contract its calls name (NEAR, Injective).
  */
-// From the packaged config alone, so the chain support tool answers the same without the SDK loaded.
 const ASSET_MANAGER_MARKERS: Record<NonEvmSourceType, (assetManager: string) => Uint8Array | string> = {
   NEAR: assetManager => assetManager,
   INJECTIVE: assetManager => assetManager,
@@ -766,6 +767,7 @@ const ASSET_MANAGER_MARKERS: Record<NonEvmSourceType, (assetManager: string) => 
   STELLAR: assetManager => base32Bytes(assetManager).subarray(1, 33),
 };
 
+/** From the packaged config alone, so the chain support tool answers the same without the SDK loaded. */
 export function assetManagerMarker(chainKey: string, type: NonEvmSourceType): Uint8Array | string | undefined {
   const assetManager = chainConfigs[chainKey]?.addresses?.assetManager;
   if (typeof assetManager !== "string") return undefined;

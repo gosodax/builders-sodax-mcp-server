@@ -6,17 +6,32 @@
 
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { cancelPayload, createIntentPayload, hubCancelTx, intentChainId, intentHash, userHubWallet } from "../sodax.js";
+import {
+  buildNonEvmCancel,
+  callsPinnedTarget,
+  cancelPayload,
+  createIntentPayload,
+  decodeAddress,
+  hubCancelTx,
+  intentChainId,
+  intentHash,
+  relayNeedsData,
+  userHubWallet,
+} from "../sodax.js";
 import { ActionError } from "./errors.js";
+import { type NonEvmStep, carriesPayload, toNonEvmStep } from "./nonEvmSource.js";
 import { type StepTx, toStepTx } from "./quote.js";
 import { type CachedQuote, claimDeposit } from "./quoteCache.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,
+  type SourceTx,
   type SwapRef,
   type SwapSource,
-  readReceipt,
+  isHubSource,
+  readSourceTx,
   resolveSource,
+  sourceTxHash,
   whyNotCancellable,
 } from "./source.js";
 import { HUB_RELAY_ID, INTENT_CANCELLED_TOPIC, decodeSendMessage, holdsCancel, hubLogged } from "./sourceTx.js";
@@ -29,7 +44,7 @@ export type CancelState =
   | { status: "deposit_unsubmitted"; retryAfterSec: number }
   /** That refund's relay failed; the next call tries again. */
   | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
-  | { status: "ready"; steps: [{ kind: "cancel"; chainId: number; tx: StepTx }] }
+  | { status: "ready"; steps: [CancelStep] }
   | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
   | { status: "cancel_failed" }
   | { status: "not_a_cancel_tx" }
@@ -39,14 +54,17 @@ export type CancelState =
 
 export type CancelResult = SwapRef & CancelState;
 
+/** What the user's wallet sends to cancel: an EVM tx, or a non-EVM spoke's raw tx. */
+export type CancelStep = { kind: "cancel"; chainId: number; tx: StepTx } | NonEvmStep;
+
 export async function cancelSwap(input: {
   txHash: string;
   quoteId?: string;
   chain?: string;
   cancelTxHash?: string;
 }): Promise<CancelResult> {
-  const txHash = input.txHash.toLowerCase();
   const source = await resolveSource(input);
+  const txHash = sourceTxHash(source, input.txHash);
   const { quote } = source;
   const base: SwapRef = {
     txHash,
@@ -77,8 +95,8 @@ export async function cancelSwap(input: {
     throw quoteMismatch("That quote has no checked deposit in this transaction.");
   }
 
-  const cancelTxHash = input.cancelTxHash?.toLowerCase();
-  const receipt = cancelTxHash ? await readReceipt(source.chain, cancelTxHash) : undefined;
+  const cancelTxHash = input.cancelTxHash && sourceTxHash(source, input.cancelTxHash, "cancelTxHash");
+  const receipt = cancelTxHash ? await readSourceTx(source, cancelTxHash, quote?.srcAddress) : undefined;
   if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
   if (receipt?.reverted) return { ...base, status: "cancel_failed" };
 
@@ -99,35 +117,48 @@ export async function cancelSwap(input: {
       details: { chainKey: source.chain.key },
     });
   }
-  if (!receipt || !cancelTxHash) {
-    const tx = await buildCheckedCancel(source, intent);
-    return {
-      ...base,
-      status: "ready",
-      steps: [{ kind: "cancel", chainId: source.chainId, tx: toStepTx(tx, source.chainId) }],
-    };
-  }
-  const { connection } = source;
-  if (!connection) {
-    const cancelled = hubLogged(receipt, source.swapContract, INTENT_CANCELLED_TOPIC, intentHash(intent));
+  if (!receipt || !cancelTxHash) return { ...base, status: "ready", steps: [await cancelStep(source, intent)] };
+  if (receipt.family === "EVM" && isHubSource(receipt.source)) {
+    const cancelled = hubLogged(
+      receipt.receipt,
+      receipt.source.swapContract,
+      INTENT_CANCELLED_TOPIC,
+      intentHash(intent),
+    );
     return { ...base, status: cancelled ? "cancel_confirmed" : "not_a_cancel_tx" };
   }
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
+  if (!holdsIntentCancel(receipt, intent, payload, decodeAddress(source.chain.key, intent.srcAddress))) {
+    return { ...base, status: "not_a_cancel_tx" };
+  }
+  const data = relayNeedsData(source.chain.key) ? { address: intent.creator, payload } : undefined;
+  if (!(await relaySpokeTx(intent.srcChain, cancelTxHash, data))) {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
+  }
+  return { ...base, status: "cancel_relayed" };
+}
 
-  const isCancel = holdsCancel(receipt, {
+/**
+ * Whether a spoke tx is the intent's cancel: on an EVM spoke, the `connection` message from the intent's source
+ * address to its creator with exactly `payload`; on a non-EVM one, a tx carrying `payload` (Solana: its keccak),
+ * which the relay reads, or on Solana checks against, before anything reaches the hub.
+ */
+function holdsIntentCancel(sourceTx: SourceTx, intent: Intent, payload: string, sender?: string): boolean {
+  if (sourceTx.family !== "EVM") {
+    const { signer } = sourceTx.tx;
+    return carriesPayload(sourceTx.tx, payload, sourceTx.family) && (signer === undefined || signer === sender);
+  }
+  const { connection } = sourceTx.source;
+  if (!connection) return false;
+  return holdsCancel(sourceTx.receipt, {
     connection,
     srcAddress: intent.srcAddress,
     srcChain: intent.srcChain,
     creator: intent.creator,
     payload,
   });
-  if (!isCancel) return { ...base, status: "not_a_cancel_tx" };
-  if (!(await relaySpokeTx(intent.srcChain, cancelTxHash))) {
-    throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
-  }
-  return { ...base, status: "cancel_relayed" };
 }
 
 /**
@@ -140,9 +171,9 @@ async function unsubmittedDeposit(
   source: SwapSource,
   quote: CachedQuote,
 ): Promise<CancelResult | undefined> {
-  const receipt = await readReceipt(source.chain, base.txHash);
+  const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
   if (!receipt || receipt.reverted) return { ...base, status: "not_cancellable", reason: "not_sent" };
-  if (checkQuoteDeposit(receipt, source, quote) !== "match") return undefined;
+  if (checkQuoteDeposit(receipt, quote) !== "match") return undefined;
   if (Date.now() < deadlineMs(quote)) {
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
@@ -164,15 +195,24 @@ const quoteMismatch = (message: string) =>
 async function isDepositsIntent(source: SwapSource, txHash: string, intent: Intent): Promise<boolean> {
   if (intent.srcChain !== intentChainId(source.chain.key)) return false;
   // A deposit must carry the calls that create this intent; a hub swap is matched by the intent's hash alone.
-  const payload = source.connection ? createIntentPayload(intent) : "";
-  if (payload === undefined) return false;
-  const receipt = await readReceipt(source.chain, txHash);
-  // The deposit reached the hub, so it's mined: a node without its receipt is behind.
-  if (!receipt) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${source.chain.name} right now.`);
+  const payload = isHubSource(source) ? "" : createIntentPayload(intent);
+  // The SDK takes the sender as its chain spells it; the intent holds it encoded.
+  const sender = decodeAddress(source.chain.key, intent.srcAddress);
+  if (payload === undefined || sender === undefined) return false;
+  const receipt = await readSourceTx(source, txHash, sender);
+  if (!receipt) {
+    const { name } = source.chain;
+    // The deposit reached the hub, so it's mined: an EVM node without its receipt is behind, while a public non-EVM
+    // node drops older txs for good, and calling again won't help.
+    if (source.family === "EVM") throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${name} right now.`);
+    throw new ActionError("QUOTE_NOT_FOUND", `Without its quote, this server can't check this swap on ${name}.`, {
+      nextStep: `${name}'s node no longer has the swap's transaction. Call sodax_swap_cancel again with its quoteId if the user has it; if not, tell the user this server can't cancel it, that it is safe on the SODAX hub, and to give SODAX support its transaction hash.`,
+    });
+  }
   // As track checks a quote's: alone in its tx.
-  const swap = { intent, srcAddress: intent.srcAddress, relayData: { address: intent.creator, payload } };
-  if (checkQuoteDeposit(receipt, source, swap) !== "match") return false;
-  const hubWallet = await userHubWallet(source.chain.key, intent.srcAddress).catch(() => {
+  const swap = { intent, srcAddress: sender, relayData: { address: intent.creator, payload } };
+  if (checkQuoteDeposit(receipt, swap) !== "match") return false;
+  const hubWallet = await userHubWallet(source.chain.key, sender).catch(() => {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
   });
   return same(hubWallet, intent.creator);
@@ -184,17 +224,35 @@ function differingFields(quoted: Intent, hub: Intent): (keyof Intent)[] {
 }
 
 /**
- * The cancel the backend builds, checked before anyone signs it: from the intent's source address,
- * to the chain's `connection`, no value, sending the user's hub wallet exactly the SDK's
- * `cancelIntent(intent)` call. The payload is what that wallet runs, so nothing else may pass.
- * From the hub the SDK builds it here: the wallet router runs that call, with no relay to check.
+ * The cancel step, checked or built before anyone signs it. From an EVM spoke the backend builds it, and it must be
+ * from the intent's source address, to the chain's `connection`, no value, sending the user's hub wallet exactly
+ * the SDK's `cancelIntent(intent)` call: that payload is what the wallet runs, so nothing else may pass. From the
+ * hub (the wallet router runs that call) and from a non-EVM spoke the SDK builds it here, as its own clients do.
  */
-async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<EvmTx> {
+async function cancelStep(source: SwapSource, intent: Intent): Promise<CancelStep> {
+  if (source.family !== "EVM") {
+    const { chain } = source;
+    const raw = await buildNonEvmCancel(chain.key, intent).catch(() => {
+      throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
+    });
+    if (!callsPinnedTarget(chain.key, "cancel", raw)) {
+      logger.error({ "chain.key": chain.key }, "The SDK built a cancel to another program than the packaged one");
+      throw new ActionError("SWAP_MISMATCH", "The cancel built here calls another program than expected.", {
+        details: { chainKey: chain.key },
+      });
+    }
+    return toNonEvmStep("cancel", source.family, chain.key, raw);
+  }
+  const step = (tx: EvmTx): CancelStep => ({
+    kind: "cancel",
+    chainId: source.chainId,
+    tx: toStepTx(tx, source.chainId),
+  });
   const { connection } = source;
   if (!connection) {
     const hubTx = await hubCancelTx(intent);
     if (!hubTx) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
-    return hubTx;
+    return step(hubTx);
   }
   const tx = await buildCancel(source.chain.key, intent);
   const message = decodeSendMessage(tx.data);
@@ -217,5 +275,5 @@ async function buildCheckedCancel(source: SwapSource, intent: Intent): Promise<E
       details: { chainKey: source.chain.key },
     });
   }
-  return tx;
+  return step(tx);
 }

@@ -22,8 +22,7 @@ export type AlertKind =
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
-  other_quote_deposit:
-    "Swap deposit tracked under another quote of its sender's: relay it by hand if its own isn't tracked",
+  other_quote_deposit: "Swap deposit tracked under another quote: relay it by hand if its own isn't tracked",
   other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",

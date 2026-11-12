@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { wordlist as czech } from "@scure/bip39/wordlists/czech";
 import { wordlist as french } from "@scure/bip39/wordlists/french";
 import { wordlist as italian } from "@scure/bip39/wordlists/italian";
@@ -5,6 +6,25 @@ import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
 import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
 import { describe, expect, it } from "vitest";
 import { findSecret, screenSecrets, secretRefusalText } from "./secrets.js";
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const toBase58 = (bytes: Uint8Array) => {
+  let value = BigInt(`0x${Buffer.from(bytes).toString("hex") || "0"}`);
+  let text = "";
+  while (value > 0n) {
+    text = BASE58_ALPHABET[Number(value % 58n)] + text;
+    value /= 58n;
+  }
+  return "1".repeat(bytes.findIndex(byte => byte !== 0)) + text;
+};
+
+/** A fresh ed25519 keypair as Solana and NEAR store a secret key: its seed, then its public key, in base58. */
+function solanaSecretKey(): string {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const seed = Buffer.from(String(privateKey.export({ format: "jwk" }).d), "base64url");
+  const pub = Buffer.from(String(publicKey.export({ format: "jwk" }).x), "base64url");
+  return toBase58(Buffer.concat([seed, pub]));
+}
 
 // Test secrets are built here, never real-looking keys: base58 / base32 filler of the right length.
 const base58 = (length: number) => "9".repeat(length);
@@ -87,7 +107,22 @@ describe("findSecret", () => {
 
   it("takes a Solana signature's shape for a tx hash in a tx-hash field, and nothing else", () => {
     expect(findSecret(base58(88), { txHash: true })).toBeUndefined();
+    // A signature's halves are unrelated; a secret key's second half is its first half's public key.
+    expect(findSecret(solanaSecretKey(), { txHash: true })).toBe("private_key");
+    const signature = "DfcrzDf8SEv2C5uxXvBtBXhSVWBy79ydLbpEefhLaT5wmR4vbrHbCpZkcmNWtPjAMK2aHZgbTCaToCMuzr8VhS7";
+    expect(findSecret(signature, { txHash: true })).toBeUndefined();
     expect(findSecret(ABANDON, { txHash: true })).toBe("seed_phrase");
+  });
+
+  it("finds a NEAR secret key as near-cli exports it, and a Solana CLI keypair file, in any field", () => {
+    const near = `ed25519:${solanaSecretKey()}`;
+    const keypairFile = JSON.stringify([...Array(64).keys()]);
+    for (const value of [near, keypairFile]) {
+      expect(findSecret(value)).toBe("private_key");
+      expect(findSecret(value, { txHash: true })).toBe("private_key");
+    }
+    // A NEAR public key is 32 bytes.
+    expect(findSecret(`ed25519:${base58(44)}`)).toBeUndefined();
   });
 });
 

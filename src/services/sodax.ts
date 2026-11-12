@@ -1,0 +1,520 @@
+/**
+ * The SODAX SDK, behind narrow functions. The SDK itself is loaded only for the swap tools (it
+ * pulls in every chain's client library): `initSodax()` runs once at boot (see index.ts). Its packaged
+ * config (`@sodax/types`) is plain data and is read directly.
+ *
+ * Every call here keeps SDK errors in: their text can carry RPC URLs (paid ones embed keys),
+ * request bodies and addresses, so callers only ever see `undefined` or a bare error.
+ */
+
+import {
+  type EvmSpokeOnlyChainKey,
+  HUB_CHAIN_KEY,
+  type SpokeChainKey,
+  getIntentRelayChainId,
+  isBitcoinChainKey,
+  isNativeToken,
+  isStellarChainKey,
+  isSuiChainKey,
+  solverConfig,
+  spokeChainConfig,
+} from "@sodax/types";
+import {
+  CHAIN_KEY_PATTERN,
+  EVM_ADDRESS_PATTERN,
+  SODAX_API_ORIGIN,
+  isRecord,
+  isRpcUrl,
+  parseRpcConfigJson,
+} from "../constants.js";
+import { errorName, logger, redact } from "./logger.js";
+import type { BuiltIntent } from "./swap/swapsApi.js";
+
+type Sdk = typeof import("@sodax/sdk");
+
+let loaded: { sdk: Sdk; sodax: InstanceType<Sdk["Sodax"]> } | undefined;
+
+// The SDK logs raw errors and data; only its own message gets through, without URLs, as an attribute so the
+// record's body stays one searchable constant.
+export const sdkLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (message: string) => logger.warn({ "sdk.message": redact(String(message)) }, "SODAX SDK warning"),
+  error: (message: string) => logger.error({ "sdk.message": redact(String(message)) }, "SODAX SDK error"),
+};
+
+// The RPC fields a chain's config may have, in the SDK's names (see `parseRpcOverrides`).
+const RPC_FIELD_NAMES = ["rpcUrl", "grpc_url", "debugRpcUrl", "horizonRpcUrl", "sorobanRpcUrl"] as const;
+type RpcField = (typeof RPC_FIELD_NAMES)[number];
+export type RpcOverride = Partial<Record<RpcField, string>>;
+
+/** `chains` overrides the packaged RPC per chain key; the SDK deep-merges each patch into that chain's config. */
+export async function initSodax(chains: Record<string, RpcOverride> = {}): Promise<void> {
+  if (loaded) return;
+  const sdk = await import("@sodax/sdk");
+  // The hub provider reads its own config, not the Sonic spoke's, so the override goes to both.
+  const hubRpcUrl = chains[HUB_CHAIN_KEY]?.rpcUrl;
+  const options = {
+    api: { baseURL: `${SODAX_API_ORIGIN}/v1` },
+    logger: sdkLogger,
+    chains,
+    ...(hubRpcUrl && { hub: { rpcUrl: hubRpcUrl } }),
+  };
+  loaded = { sdk, sodax: new sdk.Sodax(options as ConstructorParameters<Sdk["Sodax"]>[0]) };
+}
+
+type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> };
+const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
+
+/**
+ * What an `RPC_CONFIG` entry may set, by chain key: the RPC fields that chain's packaged config has, so they follow
+ * the SDK. Injective's `rpcUrl` is among them though its provider uses fixed mainnet endpoints (the README says so):
+ * skipping it would warn on every boot over a value the backend's own format includes.
+ */
+function readRpcFields(): Map<string, ReadonlySet<string>> {
+  const fields = new Map<string, ReadonlySet<string>>();
+  for (const [chainKey, config] of Object.entries(chainConfigs)) {
+    const present = config ? RPC_FIELD_NAMES.filter(field => field in config) : [];
+    if (present.length > 0) fields.set(chainKey, new Set(present));
+  }
+  return fields;
+}
+const RPC_FIELDS = readRpcFields();
+
+// A key of the secret-bearing value, as a warning names it: a URL pasted as a key would otherwise reach the logs.
+const nameOf = (key: string) => (CHAIN_KEY_PATTERN.test(key) ? key : "(an unknown key)");
+const fieldNameOf = (field: string) => (/^[A-Za-z_]{1,32}$/.test(field) ? field : "(an unknown field)");
+
+/**
+ * `RPC_CONFIG`, in the format the SODAX backend uses: an object keyed by chain key in the SDK's own field names
+ * (`{"sonic":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"}}`), so the same value works in both. A chain or
+ * field it leaves out, or leaves blank, keeps the SDK's packaged RPC, and so does every chain without it.
+ *
+ * It never stops the server: the value is shared with services on other SDK versions, so an entry this server can't
+ * apply (an unknown chain or field, a value that isn't an https URL) is skipped with one warning naming it, never its
+ * value (paid URLs embed keys).
+ */
+export function parseRpcOverrides(env: NodeJS.ProcessEnv): Record<string, RpcOverride> {
+  const legacy = Object.keys(env).filter(name => name.startsWith("SODAX_RPC_URL_"));
+  if (legacy.length > 0) {
+    logger.warn({ "rpc_config.legacy": legacy.join(", ") }, "SODAX_RPC_URL_* is no longer read: set RPC_CONFIG");
+  }
+  const raw = env.RPC_CONFIG?.trim();
+  if (!raw) return {};
+  const config = parseRpcConfigJson(raw);
+  if (!isRecord(config)) {
+    logger.warn("RPC_CONFIG isn't a JSON object; every chain uses its packaged RPC");
+    return {};
+  }
+  const overrides: Record<string, RpcOverride> = {};
+  const skipped: string[] = [];
+  for (const [chainKey, entry] of Object.entries(config)) {
+    const fields = RPC_FIELDS.get(chainKey);
+    if (!fields || !isRecord(entry)) {
+      skipped.push(nameOf(chainKey));
+      continue;
+    }
+    for (const [field, raw] of Object.entries(entry)) {
+      // Trimmed: a secret pasted or set from a file often ends in a newline. Blank, as a workflow writes an unset
+      // secret: not set.
+      const value = typeof raw === "string" ? raw.trim() : raw;
+      if (value === "") continue;
+      if (fields.has(field) && isRpcUrl(value)) overrides[chainKey] = { ...overrides[chainKey], [field]: value };
+      else skipped.push(`${nameOf(chainKey)}.${fieldNameOf(field)}`);
+    }
+  }
+  if (skipped.length > 0) {
+    logger.warn({ "rpc_config.skipped": skipped.join(", ") }, "RPC_CONFIG entries this server can't apply");
+  }
+  return overrides;
+}
+
+function sdk() {
+  if (!loaded) throw new Error("The SODAX SDK isn't loaded: initSodax() runs at boot when the server has swap tools");
+  return loaded;
+}
+
+export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
+
+/**
+ * The hub's id of an intent (IF-11: keccak256 of the ABI-encoded `createIntent` struct), as `GET /intent/:intentHash`
+ * and the solver name it, from the struct the Swaps API built. Verified against the data API's own hashes.
+ */
+export function intentHash(intent: BuiltIntent["intent"]): string {
+  const uint = (value: string) => BigInt(value);
+  return sdk().sdk.EvmSolverService.getIntentHash({
+    ...intent,
+    intentId: uint(intent.intentId),
+    inputAmount: uint(intent.inputAmount),
+    minOutputAmount: uint(intent.minOutputAmount),
+    deadline: uint(intent.deadline),
+    srcChain: uint(intent.srcChain),
+    dstChain: uint(intent.dstChain),
+  } as Parameters<Sdk["EvmSolverService"]["getIntentHash"]>[0]);
+}
+
+/** A recipient as intents carry it, or `undefined` if the address isn't valid for the chain (EIP-55 included). */
+export function encodeRecipient(chainKey: string, address: string): string | undefined {
+  try {
+    // The SDK pads a short Sui address, an EVM one included, to 32 bytes: only the full form is taken.
+    if (isSuiChainKey(chainKey as SpokeChainKey) && !/^0x[0-9a-fA-F]{64}$/.test(address)) return undefined;
+    // It also takes a Stellar contract (C…) or muxed (M…) address and a Bitcoin testnet one; only a
+    // Stellar account and a Bitcoin mainnet address are wallets a swap should pay.
+    if (isStellarChainKey(chainKey as SpokeChainKey) && !address.startsWith("G")) return undefined;
+    if (isBitcoinChainKey(chainKey as SpokeChainKey) && !/^(1|3|bc1)/i.test(address)) return undefined;
+    // Catalog chain keys are the SDK's; an unknown one throws like a bad address.
+    const encoded = sdk().sdk.encodeAddress(chainKey as SpokeChainKey, address);
+    // The SDK encodes any Stacks version, testnet (ST…, St…, SN…) included: only mainnet single- or multi-sig
+    // (0x16, 0x14) is taken, in a standard (0x05) or contract (0x06) principal.
+    if (chainConfigs[chainKey]?.chain?.type === "STACKS" && !/^0x0[56]1[46]/.test(encoded)) return undefined;
+    return encoded;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The contract a swap from this chain calls, from the packaged config: the hub intents contract
+ * from the hub, else the spoke's asset manager.
+ */
+export function swapContractFor(chainKey: string): string | undefined {
+  const contract = isHubChain(chainKey)
+    ? solverConfig.intentsContract
+    : chainConfigs[chainKey]?.addresses?.assetManager;
+  return asEvmAddress(contract);
+}
+
+/** A chain's EVM chain id, from the packaged config. */
+export function evmChainIdFor(chainKey: string): number | undefined {
+  const chain = chainConfigs[chainKey]?.chain;
+  return chain?.type === "EVM" && typeof chain.chainId === "number" ? chain.chainId : undefined;
+}
+
+/** A token as the packaged config lists it on a chain (addresses compared as the SDK does), if it does. */
+export function packagedToken(chainKey: string, address: string): { decimals: number; hubAsset: string } | undefined {
+  type Token = { address: string; decimals: number; hubAsset: string };
+  const config = spokeChainConfig as Record<string, { supportedTokens?: Record<string, Token> } | undefined>;
+  const wanted = address.toLowerCase();
+  return Object.values(config[chainKey]?.supportedTokens ?? {}).find(token => token.address.toLowerCase() === wanted);
+}
+
+/** A chain's id in an intent (`srcChain`, `dstChain`): the relay's, not the EVM one (Arbitrum is 23). */
+export function intentChainId(chainKey: string): string | undefined {
+  const id: unknown = getIntentRelayChainId(chainKey as SpokeChainKey);
+  return typeof id === "bigint" ? id.toString() : undefined;
+}
+
+/**
+ * Whether an EVM address is all lowercase or carries a valid EIP-55 checksum, as the SDK takes it
+ * (it drops a fee paid to an all-uppercase one). Unchecked before initSodax: only the swap tools
+ * use such an address, and they load the SDK at boot.
+ */
+export function checksumValid(address: string): boolean {
+  const hex = address.slice(2);
+  if (!loaded || hex === hex.toLowerCase()) return true;
+  return encodeRecipient(HUB_CHAIN_KEY, address) !== undefined;
+}
+
+/**
+ * The spoke's `connection` contract, from the packaged config. Its `Message` log is the proof that a
+ * deposit or a cancel was sent to the hub. The hub has none.
+ */
+export function connectionFor(chainKey: string): string | undefined {
+  return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
+}
+
+/** An EVM spoke's chain id, `connection` and asset manager from the packaged config, if it has all three. */
+export function evmSpokeFor(
+  chainKey: string,
+): { chainId: number; connection: string; assetManager: string } | undefined {
+  const chainId = evmChainIdFor(chainKey);
+  const connection = connectionFor(chainKey);
+  const assetManager = swapContractFor(chainKey);
+  return chainId !== undefined && connection && assetManager ? { chainId, connection, assetManager } : undefined;
+}
+
+const asEvmAddress = (value: unknown) =>
+  typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
+
+const SDK_CALL_TIMEOUT_MS = 15_000;
+const RPC_CALL_TIMEOUT_MS = 8_000;
+
+/**
+ * A bounded call whose failure (timeout included) carries no text of its own. One log record per call
+ * (#110): what was read, on which chain, how long it took, and whether it worked.
+ */
+export async function bounded<T>(
+  { label, chainKey, timeoutMs = SDK_CALL_TIMEOUT_MS }: { label: string; chainKey?: string; timeoutMs?: number },
+  call: () => Promise<T>,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const started = Date.now();
+  const fields = { "sdk.call": label, "chain.key": chainKey };
+  try {
+    const result = await Promise.race([
+      call(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
+      }),
+    ]);
+    logger.info({ ...fields, "duration.ms": Date.now() - started }, "Chain read");
+    return result;
+  } catch (error) {
+    logger.warn({ ...fields, "duration.ms": Date.now() - started, "error.type": errorName(error) }, "Chain read");
+    throw new Error("SDK call failed");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The user's own hub wallet for an address on a chain (an intent's creator). One hub RPC read, cached by the SDK. */
+export function userHubWallet(chainKey: string, address: string): Promise<string> {
+  return bounded({ label: "hub wallet", chainKey }, () =>
+    sdk().sodax.hubProvider.getUserHubWalletAddress(address, chainKey as SpokeChainKey),
+  );
+}
+
+export interface EvmReceipt {
+  reverted: boolean;
+  logs: { address: string; topics: string[]; data: string }[];
+}
+
+// viem's not-found errors are told apart by name; their messages carry the RPC URL.
+const isNotFound = (error: unknown) =>
+  error instanceof Error && /^Transaction(Receipt)?NotFoundError$/.test(error.name);
+
+/** A mined tx's receipt on an EVM spoke, or `null` while it isn't mined. Fails as a bare error. */
+export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmReceipt | null> {
+  return bounded({ label: "receipt", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
+      return {
+        reverted: status !== "success",
+        logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
+      };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  });
+}
+
+/** An EVM spoke's latest block number: proof its RPC answers. Fails as a bare error. */
+export function blockNumber(chainKey: string): Promise<bigint> {
+  return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    return client.getBlockNumber();
+  });
+}
+
+/** Whether an EVM spoke's node knows the tx at all, mined or pending. */
+export function isTxKnown(chainKey: string, txHash: string): Promise<boolean> {
+  return bounded({ label: "tx known", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
+    try {
+      await client.getTransaction({ hash: txHash as `0x${string}` });
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
+  });
+}
+
+// Horizon's 404, as the SDK's own `isHorizonNotFound` checks: stellar-sdk's `NotFoundError` is named "Error".
+const isHorizonNotFound = (error: unknown) =>
+  (error as { response?: { status?: unknown } } | undefined)?.response?.status === 404;
+
+// Whether a failed native read says the account doesn't exist yet (unfunded), per family; told apart
+// without the messages, which carry the RPC URL.
+function isMissingAccount(chainKey: string, error: unknown): boolean {
+  switch (chainConfigs[chainKey]?.chain?.type) {
+    case "STELLAR":
+      return isHorizonNotFound(error);
+    case "NEAR":
+      return error instanceof Error && error.name === "AccountDoesNotExistError";
+    default:
+      return false;
+  }
+}
+
+/**
+ * A wallet's balance of a catalog token in base units, the native coin included (Hedera's scaled by the
+ * SDK). `null` only from a native read on Stellar or NEAR whose account doesn't exist yet: a NEAR token
+ * read fails the same way for a token contract that doesn't exist. A failed read fails as a bare error:
+ * never reported as 0. One read per token: the SDK's batch read reports a failed token as 0.
+ */
+export function walletBalance(chainKey: string, address: string, token: { address: string }): Promise<bigint | null> {
+  return bounded({ label: "balance", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const result = await sdk().sodax.spoke.getWalletBalance({
+      srcChainKey: chainKey as SpokeChainKey,
+      srcAddress: address as never,
+      // Only the address is read, to tell the native coin from a token contract.
+      token: token as never,
+    });
+    if (result.ok) return result.value;
+    if (isNativeToken(chainKey as SpokeChainKey, token.address) && isMissingAccount(chainKey, result.error))
+      return null;
+    throw new Error("balance read failed");
+  });
+}
+
+/**
+ * Whether the SDK can check a Stellar recipient for the token: one that needs a trustline needs it listed
+ * in the packaged config, which lists only some.
+ */
+export function stellarRecipientCheckable(token: string): boolean {
+  const wanted = token.toLowerCase();
+  return (
+    !sdk().sodax.spoke.stellar.requiresTrustline(token) ||
+    spokeChainConfig.stellar.trustlineConfigs.some(config => config.contractId.toLowerCase() === wanted)
+  );
+}
+
+/**
+ * Whether a NEAR account has storage for the token, or a Stellar account a trustline for the amount. A
+ * Stellar account that doesn't exist yet can't receive XLM or a trustline token.
+ */
+export function recipientReady(
+  chainType: "NEAR" | "STELLAR",
+  token: string,
+  address: string,
+  amount: bigint,
+): Promise<boolean> {
+  const { near, stellar } = sdk().sodax.spoke;
+  if (chainType === "NEAR") return bounded({ label: "near storage" }, () => near.isStorageRegistered(token, address));
+  return bounded({ label: "stellar trustline" }, async () => {
+    try {
+      if (stellar.requiresTrustline(token)) return await stellar.hasSufficientTrustline(token, amount, address);
+      const { chain, nativeToken } = spokeChainConfig.stellar;
+      if (token.toLowerCase() === nativeToken.toLowerCase()) {
+        // Reads the account, which fails as for a trustline token when it doesn't exist.
+        await stellar.getWalletBalance({
+          srcChainKey: chain.key,
+          srcAddress: address as never,
+          token: { address: token } as never,
+        });
+      }
+      return true;
+    } catch (error) {
+      if (isHorizonNotFound(error)) return false;
+      throw error;
+    }
+  });
+}
+
+/** The intent fields `createIntent` takes, as the Swaps API returns them. */
+export interface IntentJson {
+  intentId: string;
+  creator: string;
+  inputToken: string;
+  outputToken: string;
+  inputAmount: string;
+  minOutputAmount: string;
+  deadline: string;
+  allowPartialFill: boolean;
+  srcChain: string;
+  dstChain: string;
+  srcAddress: string;
+  dstAddress: string;
+  solver: string;
+  data: string;
+}
+
+export interface SwapTx {
+  to: string;
+  value: bigint;
+  data: string;
+  /** The relay payload: what the hub wallet runs, or the hub `createIntent` itself. */
+  payload: string;
+}
+
+/**
+ * The swap tx for an intent, rebuilt by the SDK the way it builds its own: from a spoke, `deposit`
+ * on the asset manager (gross amount, Hedera's value scaling) carrying the hub calls that create
+ * the intent; from the hub, `createIntent` on the intents contract. `undefined` if the SDK can't.
+ */
+export async function rebuildSwapTx(params: {
+  srcChainKey: string;
+  srcAddress: string;
+  token: string;
+  /** The gross amount the user sends (the intent's input plus any partner fee). */
+  amount: bigint;
+  intent: IntentJson;
+}): Promise<SwapTx | undefined> {
+  const { srcChainKey, srcAddress, token, amount, intent } = params;
+  const hub = isHubChain(srcChainKey);
+  const payload = createIntentPayload(intent, hub);
+  if (!payload) return undefined;
+  try {
+    const { sodax } = sdk();
+    if (hub) {
+      // As the SDK's Sonic path does: value only when the hub asset is the hub's native token.
+      const native = intent.inputToken.toLowerCase() === spokeChainConfig.sonic.nativeToken.toLowerCase();
+      return { to: solverConfig.intentsContract, value: native ? amount : 0n, data: payload, payload };
+    }
+    const tx = await sodax.spoke.evm.deposit<true>({
+      srcChainKey: srcChainKey as Parameters<typeof sodax.spoke.evm.deposit>[0]["srcChainKey"],
+      srcAddress: srcAddress as `0x${string}`,
+      token: token as `0x${string}`,
+      to: intent.creator as `0x${string}`,
+      amount,
+      data: payload as `0x${string}`,
+      raw: true,
+    });
+    return { to: tx.to, value: BigInt(tx.value), data: tx.data, payload };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What a cancel sends the user's hub wallet: one `cancelIntent(intent)` call on the intents contract,
+ * as the SDK builds it for its own cancels. `undefined` if the SDK can't.
+ */
+export function cancelPayload(intent: IntentJson): string | undefined {
+  try {
+    const result = sdk().sodax.swaps.getCancelIntentRelayData(toSdkIntent(intent));
+    return result.ok ? result.value.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The calls that create `intent`, as the SDK builds them (byte for byte, `intentId` included): what a spoke
+ * deposit carries to the user's hub wallet, or from the hub (`hubSource`) the tx's own calldata.
+ * `undefined` if the SDK can't.
+ */
+export function createIntentPayload(intent: IntentJson, hubSource = false): string | undefined {
+  try {
+    return sdk().sdk.EvmSolverService.reconstructCreateIntentData(
+      toSdkIntent(intent),
+      solverConfig.intentsContract,
+      hubSource,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+type SdkIntent = Parameters<Sdk["EvmSolverService"]["reconstructCreateIntentData"]>[0];
+
+/** The SDK's Intent takes the numbers as bigints; the rest is the same hex the API returned. */
+function toSdkIntent(intent: IntentJson): SdkIntent {
+  return {
+    ...intent,
+    intentId: BigInt(intent.intentId),
+    inputAmount: BigInt(intent.inputAmount),
+    minOutputAmount: BigInt(intent.minOutputAmount),
+    deadline: BigInt(intent.deadline),
+    srcChain: BigInt(intent.srcChain),
+    dstChain: BigInt(intent.dstChain),
+  } as unknown as SdkIntent;
+}
+
+/** `approve(spender, amount)` calldata on an ERC-20, as the SDK encodes it. */
+export function approveCalldata(token: string, spender: string, amount: bigint): string {
+  return sdk().sdk.Erc20Service.encodeApprove(token as `0x${string}`, spender as `0x${string}`, amount).data;
+}

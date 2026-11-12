@@ -2,12 +2,13 @@
  * SODAX API Tools
  *
  * MCP tool definitions for accessing live SODAX API data.
- * Provides 28 tools for developers and integration partners.
+ * Provides SODAX API tools for developers and integration partners.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { chainDisplayName } from "../constants.js";
 import {
   clearCache,
   getAllChainsConfigs,
@@ -30,7 +31,7 @@ import {
   getPartners,
   getRelayChainIdMap,
   getSolverIntent,
-  getSupportedChains,
+  getSupportedChainsDetailed,
   getSwapTokens,
   getTokenSupply,
   getTotalSupply,
@@ -39,8 +40,11 @@ import {
   getUserTransactions,
   getVolume,
   getVolumeStats,
+  resolveChainSupport,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { expireSwapCatalog } from "../services/swap/tokens.js";
+import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
@@ -72,20 +76,69 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ format }) => {
       try {
-        const chains = await getSupportedChains();
+        const chains = await getSupportedChainsDetailed();
+        // JSON: the {key, name} objects. Markdown: a readable "Name — `key`"
+        // list, since the raw keys (0x2105.base, injective-1) read awkwardly.
+        // The key is what other tools take as `chainId`, so it's always shown.
+        const text =
+          format === ResponseFormat.JSON
+            ? formatResponse(chains, format)
+            : `## Supported Chains (${chains.length})\n\n${chains.map(c => `- **${c.name}** — \`${c.key}\``).join("\n")}`;
+        return {
+          content: [{ type: "text", text }],
+        };
+      } catch (error) {
+        return failedResult(error);
+      }
+    },
+  );
+
+  // Tool: Check chain support (name/ticker → supported?)
+  registerAppTool(
+    server,
+    "config",
+    "sodax_check_chain_support",
+    "Check whether SODAX supports a specific blockchain, given its name, ticker, or chain key (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
+    {
+      chain: z
+        .string()
+        .min(1)
+        .describe("Chain name, ticker, or key — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base'"),
+    },
+    READ_ONLY,
+    async ({ chain }) => {
+      try {
+        const result = await resolveChainSupport(chain);
+        if (result.supported && result.chainKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains.`,
+              },
+            ],
+          };
+        }
+        if (result.windingDownKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `⚠️ **${chainDisplayName(result.windingDownKey)}** (\`${result.windingDownKey}\`) is being wound down on SODAX and is no longer counted as a supported network. Do not build new integrations against it.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}`,
+              },
+            ],
+          };
+        }
         return {
           content: [
             {
               type: "text",
-              text: formatResponse(chains, format),
+              text: `❌ No chain matching "${chain}" was found in the live SODAX registry. Check the supported list below before concluding it is unsupported — the chain may be listed under a different name or key.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}\n\nIf you expected a match, try the exact chain key or call sodax_get_supported_chains.`,
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -101,7 +154,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list.",
+          "Filter tokens by spoke chain key (e.g. 'sonic', 'ethereum', '0x2105.base', 'hedera'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -125,10 +178,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -165,10 +215,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -212,10 +259,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -308,10 +352,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -342,10 +383,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -386,10 +424,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -422,10 +457,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -462,10 +494,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -497,10 +526,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -531,10 +557,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -565,10 +588,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -599,10 +619,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -633,10 +650,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -652,7 +666,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list.",
+          "Filter by source spoke chain key (e.g. 'sonic', 'ethereum', 'hedera'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -674,10 +688,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -710,10 +721,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -744,10 +752,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -784,10 +789,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -823,10 +825,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -863,10 +862,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -908,10 +904,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -948,10 +941,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -991,10 +981,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1034,10 +1021,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1076,10 +1060,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1117,10 +1098,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1151,10 +1129,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1185,10 +1160,7 @@ export function registerSodaxApiTools(server: McpServer): void {
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1206,6 +1178,7 @@ export function registerSodaxApiTools(server: McpServer): void {
       const solverBefore = getSolverCacheStats();
       clearCache();
       clearSolverCache();
+      expireSwapCatalog();
       const total = apiBefore.size + solverBefore.size;
       return {
         content: [

@@ -8,8 +8,8 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile
+# Install dependencies. No install scripts: native add-ons fall back to their JS builds.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source
 COPY . .
@@ -39,12 +39,19 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 COPY --from=builder /app/dist ./dist
 
 # Create non-root user for security (use 1001 to avoid clash with base image's 1000)
+# The app only reads /app, so it stays root-owned: a recursive chown would copy node_modules into
+# another layer.
 RUN addgroup -g 1001 -S appgroup && \
     adduser -S -u 1001 -G appgroup appuser
-RUN chown -R appuser:appgroup /app
 
 # Set environment
 ENV NODE_ENV=production
+
+# The running commit, the `service.version` of the unified logging records. Coolify passes it as a build argument
+# when "Include Source Commit in Build" is on; without it the records carry the package version. Last, so a new
+# commit rebuilds no other layer.
+ARG SOURCE_COMMIT=""
+ENV GIT_SHA=${SOURCE_COMMIT}
 
 USER appuser
 

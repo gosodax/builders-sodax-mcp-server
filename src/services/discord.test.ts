@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isDiscordConfigured, notifyError, notifyServerStarted, postToDiscord } from "./discord.js";
+import {
+  isDiscordConfigured,
+  notifyError,
+  notifyServerStarted,
+  notifyServerStopping,
+  postToDiscord,
+} from "./discord.js";
 
 const WEBHOOK = "https://discord.test/webhook";
 const originalWebhook = process.env.DISCORD_WEBHOOK_URL;
@@ -77,23 +83,43 @@ describe("postToDiscord", () => {
 });
 
 describe("notifyServerStarted", () => {
-  it("posts a green 'Server started' embed with version/env/transport/port", async () => {
+  it("posts a green 'Server started' embed with version/env/SODAX_ENV/transport/port", async () => {
     process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
     const fetchSpy = stubFetch();
-    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production", port: 3000 });
+    await notifyServerStarted({
+      version: "1.2.3",
+      transport: "http",
+      env: "production",
+      sodaxEnv: "canary",
+      port: 3000,
+    });
     const payload = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
     const embed = payload.embeds[0];
     expect(embed.title).toContain("Server started");
     expect(embed.color).toBe(0x2ecc71);
     const fieldValues = embed.fields.map((f: { value: string }) => f.value);
-    expect(fieldValues).toEqual(expect.arrayContaining(["1.2.3", "production", "http", "3000"]));
+    expect(fieldValues).toEqual(expect.arrayContaining(["1.2.3", "production", "canary", "http", "3000"]));
   });
 
   it("is silent when no webhook is configured", async () => {
     delete process.env.DISCORD_WEBHOOK_URL;
     const fetchSpy = stubFetch();
-    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production" });
+    await notifyServerStarted({ version: "1.2.3", transport: "http", env: "production", sodaxEnv: "production" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("notifyServerStopping", () => {
+  it("says how many open swap quotes the stop loses, and nothing about quotes when there are none", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await notifyServerStopping("SIGTERM", 2);
+    await notifyServerStopping("SIGTERM");
+    const [lost, clean] = fetchSpy.mock.calls.map(call => JSON.parse(call[1].body as string).embeds[0].description);
+    expect(lost).toBe(
+      'Received `SIGTERM`\n2 open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".',
+    );
+    expect(clean).toBe("Received `SIGTERM`");
   });
 });
 
@@ -108,5 +134,14 @@ describe("notifyError", () => {
     expect(embed.color).toBe(0xe74c3c);
     expect(embed.description).toContain("boom");
     expect(payload.content).toContain("```");
+  });
+
+  it("posts no URL from the message or the stack", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    const fetchSpy = stubFetch();
+    await notifyError("Uncaught exception", new Error("request to https://rpc.example/KEY failed"));
+    const body = fetchSpy.mock.calls[0][1].body as string;
+    expect(body).toContain("request to <url> failed");
+    expect(body).not.toContain("KEY");
   });
 });

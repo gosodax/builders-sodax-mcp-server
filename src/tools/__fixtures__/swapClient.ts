@@ -1,0 +1,42 @@
+/** An in-process MCP client on a swap-only server. Not built. */
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createServer } from "../../server.js";
+import { initSodax } from "../../services/sodax.js";
+import type { SwapQuote } from "../../services/swap/quote.js";
+
+export async function swapClient(): Promise<Client> {
+  // The swap tools need the SDK, which the server loads at boot.
+  await initSodax();
+  const server = await createServer({ builder: false, swap: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await client.connect(clientTransport);
+  return client;
+}
+
+/** Any quote outcome's fields, so a test can assert on whichever one it expects. */
+export type QuoteOut = Partial<Extract<SwapQuote, { status: "ready" }>> &
+  Partial<Extract<SwapQuote, { status: "price_only" }>> & {
+    nextStep: string;
+    error: { code: string } & Record<string, unknown>;
+  };
+
+/** Any outcome's fields, so a test can assert on whichever one it expects. */
+export type ToolOut = Record<string, unknown> & {
+  status: string;
+  nextStep: string;
+  error: { code: string } & Record<string, unknown>;
+};
+
+/** Calls a swap tool on a fresh connection and closes it. */
+export async function callTool<Out = ToolOut>(name: string, args: Record<string, unknown>) {
+  const client = await swapClient();
+  const result = await client.callTool({ name, arguments: args });
+  await client.close();
+  return { isError: result.isError, out: result.structuredContent as Out };
+}
+
+export const callQuote = (args: Record<string, unknown>) => callTool<QuoteOut>("sodax_swap_quote", args);

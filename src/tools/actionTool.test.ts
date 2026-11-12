@@ -1,0 +1,146 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { withAnalytics } from "../services/analytics.js";
+import { logger } from "../services/logger.js";
+import { clearAlerts } from "../services/swap/alerts.js";
+import { ActionError } from "../services/swap/errors.js";
+import { registerActionTool } from "./actionTool.js";
+
+/** A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is. */
+async function callTool(value: string, run: () => Promise<never | { status: string; nextStep: string }>) {
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  withAnalytics(server);
+  // Non-empty annotations: the SDK reads an empty object here as a second input schema.
+  registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await client.connect(clientTransport);
+  const result = await client.callTool({ name: "test_action_tool", arguments: { value } });
+  await client.close();
+  return result;
+}
+
+const callFailingTool = (error: unknown) =>
+  callTool("x", async () => {
+    throw error;
+  });
+
+let errors: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  clearAlerts();
+  errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+});
+
+/** The fields of each swap_error alert logged, none of the other error records. */
+const alertFields = () =>
+  errors.mock.calls
+    .map(([fields]) => fields as { alert?: string; "error.type"?: string; "chain.key"?: string })
+    .filter(fields => fields.alert === "swap_error");
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+describe("registerActionTool", () => {
+  it("returns an ActionError with its code, details and next step", async () => {
+    const error = new ActionError("UNSUPPORTED_CHAIN", "No.", { nextStep: "Ask the user.", details: { hint: 1 } });
+    const result = await callFailingTool(error);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      status: "error",
+      error: { code: "UNSUPPORTED_CHAIN", message: "No.", hint: 1 },
+      nextStep: "Ask the user.",
+    });
+  });
+
+  it("never lets details overwrite the code or message", async () => {
+    const error = new ActionError("UNSUPPORTED_CHAIN", "No.", { details: { code: 404, message: "spoof" } });
+    const result = await callFailingTool(error);
+    expect(result.structuredContent).toMatchObject({ error: { code: "UNSUPPORTED_CHAIN", message: "No." } });
+  });
+
+  it("gives each code a default next step", async () => {
+    const result = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
+    expect(result.structuredContent).toMatchObject({ nextStep: expect.stringContaining("Retry in a minute") });
+  });
+
+  it("turns anything else into INTERNAL without leaking its message", async () => {
+    const result = await callFailingTool(new Error("details that must stay server-side"));
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: "error", error: { code: "INTERNAL" } });
+    expect(JSON.stringify(result)).not.toContain("must stay server-side");
+  });
+
+  it("refuses a secret before the tool runs, naming the field, never the value", async () => {
+    const run = vi.fn();
+    const phrase = `${"abandon ".repeat(11)}about`;
+    const result = await callTool(phrase, run);
+    expect(result.structuredContent).toMatchObject({ error: { code: "SECRET_REJECTED", field: "value" } });
+    expect(run).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("abandon");
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("abandon");
+  });
+
+  it("logs an unexpected error once, as its Tool call: class and stack, never the message; and alerts once", async () => {
+    await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
+    await callFailingTool(new Error("request to https://rpc.example/KEY failed"));
+    const records = errors.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      "gen_ai.tool.name": "test_action_tool",
+      "tool.outcome": "error",
+      "error.type": "INTERNAL",
+      err: { type: "Error", stack: expect.stringMatching(/^ {4}at /) },
+    });
+    // No second record for the same failure, and the message (an RPC URL here) in none.
+    const others = errors.mock.calls.filter(
+      ([fields, msg]) => msg !== "Tool call" && !(fields as { alert?: string }).alert,
+    );
+    expect(others).toEqual([]);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("rpc.example");
+    const alerts = errors.mock.calls.filter(([fields]) => (fields as { alert?: string }).alert === "swap_error");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "test_action_tool", "error.type": "INTERNAL" });
+  });
+
+  it("posts an unexpected error to Discord by its class only, never its message", async () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    await callFailingTool(new TypeError("details that must stay server-side, from https://rpc.example/KEY"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = String(fetch.mock.calls[0][1]?.body);
+    expect(body).toContain("TypeError");
+    expect(body).not.toContain("must stay server-side");
+    expect(body).not.toContain("KEY");
+  });
+
+  it("alerts on a swap the service built wrong, but not on what the agent or an outage can fix", async () => {
+    await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
+    await callFailingTool(new ActionError("RATE_LIMITED", "Slow down."));
+    await callFailingTool(new ActionError("INVALID_ADDRESS", "Bad address."));
+    const alerted = alertFields().map(fields => fields["error.type"]);
+    expect(alerted).toEqual(["SWAP_MISMATCH"]);
+  });
+
+  it("keeps two different failures with the same code apart", async () => {
+    await callFailingTool(new ActionError("SWAP_MISMATCH", "The config doesn't agree."));
+    await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
+    await callFailingTool(new ActionError("SWAP_MISMATCH", "Built a different swap."));
+    const reasons = errors.mock.calls.map(([fields]) => (fields as { reason?: string }).reason).filter(Boolean);
+    expect(reasons).toEqual(["The config doesn't agree.", "Built a different swap."]);
+  });
+
+  it("alerts once per chain the failure names", async () => {
+    for (const chainKey of ["sonic", "0xa4b1.arbitrum", "sonic"]) {
+      await callFailingTool(new ActionError("SWAP_MISMATCH", "The config doesn't agree.", { details: { chainKey } }));
+    }
+    const chains = alertFields().map(fields => fields["chain.key"]);
+    expect(chains).toEqual(["sonic", "0xa4b1.arbitrum"]);
+  });
+});

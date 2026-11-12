@@ -5,7 +5,12 @@
  * Provides access to chains, tokens, transactions, volume, and more.
  */
 
-import { CACHE_DURATION_MS, NETWORK_COUNT_EXCLUDED_CHAIN_KEYS, SODAX_API_BASE_URL } from "../constants.js";
+import {
+  CHAIN_ALIASES,
+  NETWORK_COUNT_EXCLUDED_CHAIN_KEYS,
+  SODAX_API_BASE_URL,
+  chainDisplayName,
+} from "../constants.js";
 import type {
   MoneyMarketAsset,
   OrderbookEntry,
@@ -17,33 +22,34 @@ import type {
   VolumeData,
   VolumeStats,
 } from "../types.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
-import { logger } from "./logger.js";
+import { TOOL_CONTRACT } from "./apiDriftCheck.js";
+import { addRouteTemplates, fetchJson, fetchJsonOrNull } from "./http.js";
+import { InputError } from "./toolFailure.js";
+import { TtlCache } from "./ttlCache.js";
 
-// Cache for API responses
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
+const cache = new TtlCache();
 
-const cache = new Map<string, CacheEntry<unknown>>();
-
-function getCached<T>(key: string): T | null {
-  const entry = cache.get(key) as CacheEntry<T> | undefined;
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_DURATION_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-function setCache<T>(key: string, data: T): void {
-  cache.set(key, { data, timestamp: Date.now() });
-}
+// The routes this client calls are the drift check's contract, so their log records keep their static segments (#110).
+addRouteTemplates(
+  SODAX_API_BASE_URL,
+  Object.keys(TOOL_CONTRACT).map(key => key.split(" ")[1]),
+);
 
 function apiUrl(path: string): string {
   return `${SODAX_API_BASE_URL}${path}`;
+}
+
+// Hashes, addresses and chain keys across all supported chains (0x-hex, base58,
+// bech32, "name.near", "0.0.123", "injective-1") fit this set.
+const PATH_PARAM_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/** Validates user input bound for a URL path segment and returns it encoded. */
+function pathParam(name: string, value: string): string {
+  const trimmed = value.trim();
+  if (!PATH_PARAM_PATTERN.test(trimmed) || trimmed === "." || trimmed === "..") {
+    throw new InputError(`Invalid ${name}: use only letters, digits, ".", "_" or "-" (max 128 characters)`);
+  }
+  return encodeURIComponent(trimmed);
 }
 
 /**
@@ -55,19 +61,38 @@ function apiUrl(path: string): string {
  */
 export async function getSupportedChains(): Promise<string[]> {
   const cacheKey = "chains";
-  const cached = getCached<string[]>(cacheKey);
+  const cached = cache.get<string[]>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    setCache(cacheKey, chains);
+    cache.set(cacheKey, chains);
     return chains;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch supported chains");
-    throw new Error("Failed to fetch supported chains from SODAX API");
+    throw new Error("Failed to fetch supported chains from SODAX API", { cause: error });
   }
+}
+
+export interface ChainInfo {
+  /** Canonical chain key — pass this as `chainId` to other tools. */
+  key: string;
+  /** Human-readable name, e.g. "Injective" for "injective-1". */
+  name: string;
+}
+
+/**
+ * Supported chains with human display names attached. `getSupportedChains`
+ * returns raw keys (what the API and other tools use); this pairs each with a
+ * readable name for presentation. Wound-down chains (ICON) are left out so the
+ * list agrees with sodax_check_chain_support and the app-wide network count.
+ */
+export async function getSupportedChainsDetailed(): Promise<ChainInfo[]> {
+  const chains = await getSupportedChains();
+  return chains
+    .filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key))
+    .map(key => ({ key, name: chainDisplayName(key) }));
 }
 
 /**
@@ -85,12 +110,13 @@ export async function getIntegratedNetworksCount(): Promise<number> {
  * Get available tokens for swapping on a specific chain
  */
 export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
-  const cacheKey = `tokens-${chainId || "all"}`;
-  const cached = getCached<SwapToken[]>(cacheKey);
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
+  const cacheKey = `tokens-${chain || "all"}`;
+  const cached = cache.get<SwapToken[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/swap/${chainId}/tokens` : "/config/swap/tokens";
+    const endpoint = chain ? `/config/swap/${chain}/tokens` : "/config/swap/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
     // API returns object keyed by chain ID, flatten if getting all
     let tokens: SwapToken[] = [];
@@ -109,25 +135,122 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
         tokens = (dataObj.data as SwapToken[]) || [];
       }
     }
-    setCache(cacheKey, tokens);
+    cache.set(cacheKey, tokens);
     return tokens;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch swap tokens");
-    throw new Error("Failed to fetch swap tokens from SODAX API");
+    throw new Error("Failed to fetch swap tokens from SODAX API", { cause: error });
   }
+}
+
+export interface ChainSupport {
+  query: string;
+  /** True when the query resolved to a chain in the LIVE registry. */
+  supported: boolean;
+  /** Canonical live chain key (e.g. "hedera", "0x2105.base") if resolved. */
+  chainKey: string | null;
+  /** Human display name of the resolved chain, if any. */
+  displayName: string | null;
+  /** How the query matched (the alias/key/suffix that resolved it), if any. */
+  matchedAs: string | null;
+  /**
+   * Live key of a wound-down chain (e.g. "0x1.icon") the query named, if it
+   * matched no supported chain — so the reply can say "being wound down"
+   * rather than a bare "not found".
+   */
+  windingDownKey: string | null;
+  /** The live supported-chain keys, for context and suggestions. */
+  supportedChains: string[];
+}
+
+// Trailing words users append to a chain name that never change which chain
+// they mean. Only stripped after a space, so a bare "chain" query is untouched.
+const CHAIN_QUALIFIER_SUFFIX =
+  /\s+(?:smart chain|c-chain|chain|network|mainnet|blockchain|protocol|pos|evm|hashgraph)$/;
+
+/**
+ * Resolve a human chain name / ticker / key to a key that IS in `liveChains`.
+ *
+ * The returned key is always drawn from `liveChains` (never a hardcoded alias
+ * spelling), and all comparisons are case-insensitive, so a match can never be
+ * defeated by the live registry re-casing or reformatting a key. A live match
+ * (exact key, dotted suffix, or Cosmos `<slug>-<n>` slug) is tried before the
+ * alias table, and an alias is resolved back to the live key it names.
+ */
+export function resolveChainKey(query: string, liveChains: string[]): { key: string | null; matchedAs: string | null } {
+  const norm = query.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!norm) return { key: null, matchedAs: null };
+
+  // Does `needle` name a live key — as the key itself, its dotted suffix, or
+  // its Cosmos slug (strip `-<n>`)? All lower-cased.
+  const matchLive = (needle: string): string | undefined =>
+    liveChains.find(k => {
+      const kl = k.toLowerCase();
+      return kl === needle || kl.split(".").pop() === needle || kl.replace(/-\d+$/, "") === needle;
+    });
+
+  // Try the query as typed, then with a trailing qualifier dropped
+  // ("Robinhood Chain", "Avalanche C-Chain", "Polygon PoS", "BNB Smart Chain"),
+  // so common phrasings don't produce a confident "unsupported".
+  const stripped = norm.replace(CHAIN_QUALIFIER_SUFFIX, "");
+  const candidates = stripped && stripped !== norm ? [norm, stripped] : [norm];
+
+  for (const needle of candidates) {
+    // 1. The query directly names a live chain.
+    const direct = matchLive(needle);
+    if (direct) return { key: direct, matchedAs: needle };
+
+    // 2. The query is a known name/ticker/alias — map it to its canonical key,
+    //    then resolve THAT back to the live registry's spelling.
+    for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
+      if (!aliases.includes(needle)) continue;
+      const cl = canonical.toLowerCase();
+      const viaAlias = matchLive(cl) ?? matchLive(cl.split(".").pop() ?? cl) ?? matchLive(cl.replace(/-\d+$/, ""));
+      if (viaAlias) return { key: viaAlias, matchedAs: needle };
+    }
+  }
+
+  return { key: null, matchedAs: null };
+}
+
+/**
+ * Answer "does SODAX support chain X?" in one hop. Resolves a name/ticker/key
+ * against the LIVE `/config/spoke/chains` registry (minus wound-down chains, to
+ * match the app-wide network count), so the answer is always current.
+ */
+export async function resolveChainSupport(query: string): Promise<ChainSupport> {
+  const all = await getSupportedChains();
+  // Exclude wound-down chains (ICON) so this agrees with /health, /api, the
+  // landing page and README, which all report the filtered count.
+  const supportedChains = all.filter(key => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(key));
+  const { key, matchedAs } = resolveChainKey(query, supportedChains);
+  const windingDownKey = key
+    ? null
+    : resolveChainKey(
+        query,
+        all.filter(k => NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(k)),
+      ).key;
+  return {
+    query,
+    supported: key !== null,
+    chainKey: key,
+    displayName: key ? chainDisplayName(key) : null,
+    matchedAs,
+    windingDownKey,
+    supportedChains,
+  };
 }
 
 /**
  * Look up a transaction/intent by hash
  */
 export async function getTransaction(txHash: string): Promise<Transaction | null> {
+  const hash = pathParam("txHash", txHash);
   try {
-    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${txHash}`));
+    const data = await fetchJsonOrNull<{ data?: Transaction } | Transaction>(apiUrl(`/intent/tx/${hash}`));
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch transaction");
-    throw new Error("Failed to fetch transaction from SODAX API");
+    throw new Error("Failed to fetch transaction from SODAX API", { cause: error });
   }
 }
 
@@ -143,6 +266,7 @@ export async function getUserTransactions(
     toBlock?: number;
   },
 ): Promise<Transaction[]> {
+  const address = pathParam("userAddress", userAddress);
   try {
     const params = new URLSearchParams();
     if (options?.limit !== undefined) params.append("limit", options.limit.toString());
@@ -151,13 +275,12 @@ export async function getUserTransactions(
     if (options?.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/intent/user/${userAddress}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/intent/user/${address}${queryString ? `?${queryString}` : ""}`);
     const data = await fetchJson<{ items?: Transaction[]; data?: Transaction[] }>(url);
     // API returns { items, total, offset, limit }
     return data?.items || data?.data || [];
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch user transactions");
-    throw new Error("Failed to fetch user transactions from SODAX API");
+    throw new Error("Failed to fetch user transactions from SODAX API", { cause: error });
   }
 }
 
@@ -185,7 +308,7 @@ export async function getVolume(options: {
 }): Promise<VolumeData> {
   // Build cache key from significant params
   const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
-  const cached = getCached<VolumeData>(cacheKey);
+  const cached = cache.get<VolumeData>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -208,11 +331,10 @@ export async function getVolume(options: {
     const queryString = params.toString();
     const url = apiUrl(`/solver/volume${queryString ? `?${queryString}` : ""}`);
     const volumeData = await fetchJson<VolumeData>(url);
-    setCache(cacheKey, volumeData);
+    cache.set(cacheKey, volumeData);
     return volumeData;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch volume");
-    throw new Error("Failed to fetch volume data from SODAX API");
+    throw new Error("Failed to fetch volume data from SODAX API", { cause: error });
   }
 }
 
@@ -222,16 +344,15 @@ export async function getVolume(options: {
  */
 export async function getVolumeStats(): Promise<VolumeStats> {
   const cacheKey = "volume-stats";
-  const cached = getCached<VolumeStats>(cacheKey);
+  const cached = cache.get<VolumeStats>(cacheKey);
   if (cached) return cached;
 
   try {
     const stats = await fetchJson<VolumeStats>(apiUrl("/solver/volume/stats"));
-    setCache(cacheKey, stats);
+    cache.set(cacheKey, stats);
     return stats;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch volume stats");
-    throw new Error("Failed to fetch volume stats from SODAX API");
+    throw new Error("Failed to fetch volume stats from SODAX API", { cause: error });
   }
 }
 
@@ -269,8 +390,7 @@ export async function getOrderbook(options: {
     // API returns { total, data }
     return (data as { data?: OrderbookEntry[] })?.data || (data as OrderbookEntry[]) || [];
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch orderbook");
-    throw new Error("Failed to fetch orderbook from SODAX API");
+    throw new Error("Failed to fetch orderbook from SODAX API", { cause: error });
   }
 }
 
@@ -279,7 +399,7 @@ export async function getOrderbook(options: {
  */
 export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
   const cacheKey = `mm-assets-${chainId || "all"}`;
-  const cached = getCached<MoneyMarketAsset[]>(cacheKey);
+  const cached = cache.get<MoneyMarketAsset[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -289,11 +409,10 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     const assets = Array.isArray(data)
       ? (data as MoneyMarketAsset[])
       : (data as { data?: MoneyMarketAsset[] })?.data || [];
-    setCache(cacheKey, assets);
+    cache.set(cacheKey, assets);
     return assets;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market assets");
-    throw new Error("Failed to fetch money market assets from SODAX API");
+    throw new Error("Failed to fetch money market assets from SODAX API", { cause: error });
   }
 }
 
@@ -301,15 +420,15 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
  * Get user's money market position
  */
 export async function getUserPosition(userAddress: string): Promise<UserPosition | null> {
+  const address = pathParam("userAddress", userAddress);
   try {
     const data = await fetchJsonOrNull<{ data?: UserPosition } | UserPosition>(
-      apiUrl(`/moneymarket/position/${userAddress}`),
+      apiUrl(`/moneymarket/position/${address}`),
     );
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch user position");
-    throw new Error("Failed to fetch user position from SODAX API");
+    throw new Error("Failed to fetch user position from SODAX API", { cause: error });
   }
 }
 
@@ -318,7 +437,7 @@ export async function getUserPosition(userAddress: string): Promise<UserPosition
  */
 export async function getPartners(chainId?: number): Promise<Partner[]> {
   const cacheKey = `partners-${chainId ?? "all"}`;
-  const cached = getCached<Partner[]>(cacheKey);
+  const cached = cache.get<Partner[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -329,11 +448,10 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     const data = await fetchJson<unknown>(url);
     const dataObj = data as { data?: Partner[]; partners?: Partner[] } | Partner[];
     const partners = Array.isArray(dataObj) ? dataObj : dataObj?.data || dataObj?.partners || [];
-    setCache(cacheKey, partners);
+    cache.set(cacheKey, partners);
     return partners;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch partners");
-    throw new Error("Failed to fetch partners from SODAX API");
+    throw new Error("Failed to fetch partners from SODAX API", { cause: error });
   }
 }
 
@@ -342,18 +460,17 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
  */
 export async function getTokenSupply(): Promise<TokenSupply> {
   const cacheKey = "token-supply";
-  const cached = getCached<TokenSupply>(cacheKey);
+  const cached = cache.get<TokenSupply>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<{ data?: TokenSupply } | TokenSupply>(apiUrl("/sodax/supply"));
     // API returns data directly
     const supply = (data as { data?: TokenSupply })?.data || (data as TokenSupply);
-    setCache(cacheKey, supply);
+    cache.set(cacheKey, supply);
     return supply;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch token supply");
-    throw new Error("Failed to fetch token supply from SODAX API");
+    throw new Error("Failed to fetch token supply from SODAX API", { cause: error });
   }
 }
 
@@ -362,16 +479,15 @@ export async function getTokenSupply(): Promise<TokenSupply> {
  */
 export async function getAllConfig(): Promise<unknown> {
   const cacheKey = "config-all";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/all"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch all config");
-    throw new Error("Failed to fetch config from SODAX API");
+    throw new Error("Failed to fetch config from SODAX API", { cause: error });
   }
 }
 
@@ -380,16 +496,15 @@ export async function getAllConfig(): Promise<unknown> {
  */
 export async function getRelayChainIdMap(): Promise<unknown> {
   const cacheKey = "relay-chain-id-map";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/relay/chain-id-map"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch relay chain ID map");
-    throw new Error("Failed to fetch relay chain ID map from SODAX API");
+    throw new Error("Failed to fetch relay chain ID map from SODAX API", { cause: error });
   }
 }
 
@@ -398,16 +513,15 @@ export async function getRelayChainIdMap(): Promise<unknown> {
  */
 export async function getAllChainsConfigs(): Promise<unknown> {
   const cacheKey = "all-chains-configs";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/all-chains-configs"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch all chains configs");
-    throw new Error("Failed to fetch spoke chain configs from SODAX API");
+    throw new Error("Failed to fetch spoke chain configs from SODAX API", { cause: error });
   }
 }
 
@@ -415,18 +529,18 @@ export async function getAllChainsConfigs(): Promise<unknown> {
  * Get hub (Sonic) assets representing spoke tokens
  */
 export async function getHubAssets(chainId?: string): Promise<unknown> {
-  const cacheKey = `hub-assets-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
+  const cacheKey = `hub-assets-${chain || "all"}`;
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/hub/${chainId}/assets` : "/config/hub/assets";
+    const endpoint = chain ? `/config/hub/${chain}/assets` : "/config/hub/assets";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch hub assets");
-    throw new Error("Failed to fetch hub assets from SODAX API");
+    throw new Error("Failed to fetch hub assets from SODAX API", { cause: error });
   }
 }
 
@@ -434,18 +548,18 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
  * Get money market supported tokens
  */
 export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
-  const cacheKey = `mm-tokens-${chainId || "all"}`;
-  const cached = getCached<unknown>(cacheKey);
+  const chain = chainId ? pathParam("chainId", chainId) : undefined;
+  const cacheKey = `mm-tokens-${chain || "all"}`;
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
-    const endpoint = chainId ? `/config/money-market/${chainId}/tokens` : "/config/money-market/tokens";
+    const endpoint = chain ? `/config/money-market/${chain}/tokens` : "/config/money-market/tokens";
     const data = await fetchJson<unknown>(apiUrl(endpoint));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market tokens");
-    throw new Error("Failed to fetch money market tokens from SODAX API");
+    throw new Error("Failed to fetch money market tokens from SODAX API", { cause: error });
   }
 }
 
@@ -454,16 +568,15 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
  */
 export async function getMoneyMarketReserveAssets(): Promise<unknown> {
   const cacheKey = "mm-reserve-assets";
-  const cached = getCached<unknown>(cacheKey);
+  const cached = cache.get<unknown>(cacheKey);
   if (cached) return cached;
 
   try {
     const data = await fetchJson<unknown>(apiUrl("/config/money-market/reserve-assets"));
-    setCache(cacheKey, data);
+    cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market reserve assets");
-    throw new Error("Failed to fetch money market reserve assets from SODAX API");
+    throw new Error("Failed to fetch money market reserve assets from SODAX API", { cause: error });
   }
 }
 
@@ -485,8 +598,7 @@ export async function getAmmNftPositions(options?: {
     const url = apiUrl(`/amm/nft-positions${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch AMM NFT positions");
-    throw new Error("Failed to fetch AMM NFT positions from SODAX API");
+    throw new Error("Failed to fetch AMM NFT positions from SODAX API", { cause: error });
   }
 }
 
@@ -498,6 +610,8 @@ export async function getAmmPoolCandles(
   poolId: string,
   options?: { interval?: string; from?: number; to?: number },
 ): Promise<unknown> {
+  const chain = pathParam("chainId", chainId);
+  const pool = pathParam("poolId", poolId);
   try {
     const params = new URLSearchParams();
     if (options?.interval) params.append("interval", options.interval);
@@ -505,11 +619,10 @@ export async function getAmmPoolCandles(
     if (options?.to) params.append("to", options.to.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/amm/pools/${chainId}/${poolId}/candles${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/amm/pools/${chain}/${pool}/candles${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch AMM pool candles");
-    throw new Error("Failed to fetch AMM pool candles from SODAX API");
+    throw new Error("Failed to fetch AMM pool candles from SODAX API", { cause: error });
   }
 }
 
@@ -517,13 +630,13 @@ export async function getAmmPoolCandles(
  * Look up an intent by its intent hash (not tx hash)
  */
 export async function getIntent(intentHash: string): Promise<unknown> {
+  const hash = pathParam("intentHash", intentHash);
   try {
-    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${intentHash}`));
+    const data = await fetchJsonOrNull<{ data?: unknown }>(apiUrl(`/intent/${hash}`));
     if (data === null) return null;
     return data?.data ?? data ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch intent");
-    throw new Error("Failed to fetch intent from SODAX API");
+    throw new Error("Failed to fetch intent from SODAX API", { cause: error });
   }
 }
 
@@ -531,16 +644,16 @@ export async function getIntent(intentHash: string): Promise<unknown> {
  * Get solver intent details by intent hash
  */
 export async function getSolverIntent(intentHash: string, includeAll?: boolean): Promise<unknown> {
+  const hash = pathParam("intentHash", intentHash);
   try {
     const params = new URLSearchParams();
     if (includeAll) params.append("includeAll", "true");
 
     const queryString = params.toString();
-    const url = apiUrl(`/solver/intents/${intentHash}${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/solver/intents/${hash}${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch solver intent");
-    throw new Error("Failed to fetch solver intent from SODAX API");
+    throw new Error("Failed to fetch solver intent from SODAX API", { cause: error });
   }
 }
 
@@ -548,11 +661,11 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
  * Get a single money market asset by reserve address
  */
 export async function getMoneyMarketAsset(reserveAddress: string): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
-    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserveAddress}`));
+    return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserve}`));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market asset");
-    throw new Error("Failed to fetch money market asset from SODAX API");
+    throw new Error("Failed to fetch money market asset from SODAX API", { cause: error });
   }
 }
 
@@ -563,17 +676,17 @@ export async function getMoneyMarketAssetBorrowers(
   reserveAddress: string,
   options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
     const params = new URLSearchParams();
     if (options?.offset) params.append("offset", options.offset.toString());
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/borrowers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserve}/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch asset borrowers");
-    throw new Error("Failed to fetch money market asset borrowers from SODAX API");
+    throw new Error("Failed to fetch money market asset borrowers from SODAX API", { cause: error });
   }
 }
 
@@ -584,17 +697,17 @@ export async function getMoneyMarketAssetSuppliers(
   reserveAddress: string,
   options?: { offset?: number; limit?: number },
 ): Promise<unknown> {
+  const reserve = pathParam("reserveAddress", reserveAddress);
   try {
     const params = new URLSearchParams();
     if (options?.offset) params.append("offset", options.offset.toString());
     if (options?.limit) params.append("limit", options.limit.toString());
 
     const queryString = params.toString();
-    const url = apiUrl(`/moneymarket/asset/${reserveAddress}/suppliers${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/moneymarket/asset/${reserve}/suppliers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch asset suppliers");
-    throw new Error("Failed to fetch money market asset suppliers from SODAX API");
+    throw new Error("Failed to fetch money market asset suppliers from SODAX API", { cause: error });
   }
 }
 
@@ -614,8 +727,7 @@ export async function getMoneyMarketBorrowers(options?: {
     const url = apiUrl(`/moneymarket/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch borrowers");
-    throw new Error("Failed to fetch money market borrowers from SODAX API");
+    throw new Error("Failed to fetch money market borrowers from SODAX API", { cause: error });
   }
 }
 
@@ -623,16 +735,16 @@ export async function getMoneyMarketBorrowers(options?: {
  * Get partner summary by receiver address
  */
 export async function getPartnerSummary(receiver: string, chainId?: string): Promise<unknown> {
+  const partner = pathParam("receiver", receiver);
   try {
     const params = new URLSearchParams();
     if (chainId) params.append("chainId", chainId);
 
     const queryString = params.toString();
-    const url = apiUrl(`/partners/${receiver}/summary${queryString ? `?${queryString}` : ""}`);
+    const url = apiUrl(`/partners/${partner}/summary${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch partner summary");
-    throw new Error("Failed to fetch partner summary from SODAX API");
+    throw new Error("Failed to fetch partner summary from SODAX API", { cause: error });
   }
 }
 
@@ -643,8 +755,7 @@ export async function getTotalSupply(): Promise<unknown> {
   try {
     return await fetchJson<unknown>(apiUrl("/sodax/total_supply"));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch total supply");
-    throw new Error("Failed to fetch total supply from SODAX API");
+    throw new Error("Failed to fetch total supply from SODAX API", { cause: error });
   }
 }
 
@@ -655,8 +766,7 @@ export async function getCirculatingSupply(): Promise<unknown> {
   try {
     return await fetchJson<unknown>(apiUrl("/sodax/circulating_supply"));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch circulating supply");
-    throw new Error("Failed to fetch circulating supply from SODAX API");
+    throw new Error("Failed to fetch circulating supply from SODAX API", { cause: error });
   }
 }
 
@@ -671,8 +781,5 @@ export function clearCache(): void {
  * Get cache statistics
  */
 export function getCacheStats(): { size: number; keys: string[] } {
-  return {
-    size: cache.size,
-    keys: Array.from(cache.keys()),
-  };
+  return cache.stats();
 }

@@ -1,5 +1,5 @@
 /**
- * `sodax_swap_track`: the backend's status first, then the source tx on chain, then one submit.
+ * `sodax_swap_submit_and_track`: the backend's status first, then the source tx on chain, then one submit.
  * Never blocks or polls: each call says where the swap is, and repeated calls never resubmit.
  *
  * Only the quote cache and chain data are trusted (ADR §Safety rules): the intent and relay

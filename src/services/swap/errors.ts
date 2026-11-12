@@ -1,6 +1,6 @@
 /** Failures the swap tools return as `{ status: "error", error: { code, message }, nextStep }` with `isError`. */
 
-import { API_KEYS_DOCS_URL } from "../../constants.js";
+import { GET_A_KEY } from "../../constants.js";
 
 export type ActionErrorCode =
   | "UNSUPPORTED_CHAIN"
@@ -47,14 +47,13 @@ const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SOD
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
-  UNSUPPORTED_SOURCE:
-    "Swaps can only start from an EVM spoke chain such as Arbitrum or Base for now, not from Sonic or non-EVM chains; ask the user to send from one.",
+  UNSUPPORTED_SOURCE: "A swap can't start from that chain yet: ask the user to swap from another one.",
   UNKNOWN_TOKEN:
     "Call sodax_resolve_token for that token (error.side says which, when there are two) and follow its nextStep.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",
-  AMOUNT_TOO_LOW: "Ask the user for a larger amount.",
+  AMOUNT_TOO_LOW: "Ask the user whether to quote a larger amount.",
   DEADLINE_TOO_SHORT: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
   SWAP_REJECTED:
@@ -69,7 +68,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   QUOTE_MISMATCH: "That quoteId is for another source chain: pass the quoteId this transaction was made from.",
   QUOTE_KEY_MISMATCH:
     "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
-  API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header: ${API_KEYS_DOCS_URL}`,
+  API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header. ${GET_A_KEY}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
   CHAIN_UNAVAILABLE: RETRY_LATER,
   UPSTREAM_UNAVAILABLE: RETRY_LATER,

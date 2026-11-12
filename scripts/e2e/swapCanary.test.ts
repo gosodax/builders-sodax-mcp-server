@@ -279,7 +279,7 @@ describe("track", () => {
   const quote = (expiresInMs: number) =>
     ({
       expiresAt: new Date(Date.now() + expiresInMs).toISOString(),
-      afterSend: { tool: "sodax_swap_track", args: { quoteId: "q-1" }, needs: "txHash" },
+      afterSend: { tool: "sodax_swap_submit_and_track", args: { quoteId: "q-1" }, needs: "txHash" },
     }) as never;
   const reply = (out: object, isError = false) => ({ isError, out: out as never });
 
@@ -294,7 +294,7 @@ describe("track", () => {
     await settle(tracked);
     await expect(tracked).resolves.toBeUndefined();
     expect(call).toHaveBeenCalledTimes(4);
-    expect(call).toHaveBeenCalledWith(ENV, "sodax_swap_track", { quoteId: "q-1", txHash: "0xabc" });
+    expect(call).toHaveBeenCalledWith(ENV, "sodax_swap_submit_and_track", { quoteId: "q-1", txHash: "0xabc" });
     expect(logs).toEqual(expect.arrayContaining(["[setup] McpError -32001, retrying", "[setup] Error 429, retrying"]));
     expect(logs.join("\n")).not.toMatch(/rpc\.example|10\.0\.0\.1/);
   });

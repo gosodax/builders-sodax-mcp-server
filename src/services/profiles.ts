@@ -5,7 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { API_KEYS_DOCS_URL } from "../constants.js";
+import { GET_A_KEY } from "../constants.js";
 import { MAX_API_KEY_LENGTH, parseApiKey } from "./requestContext.js";
 
 const PROFILES = ["builder", "swap", "all"] as const;
@@ -67,9 +67,9 @@ export function parseSwapToolsEnabled(value: string | undefined): boolean {
 }
 
 // What's wrong with the caller's key and how to fix it. The value is never echoed.
-const SEND_A_KEY = `Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`;
+const SEND_A_KEY = `Send it in the x-api-key header (SODAX_API_KEY on stdio). ${GET_A_KEY}`;
 const NOT_A_SODAX_KEY = `The x-api-key value (SODAX_API_KEY on stdio) isn't a SODAX API key (a sodax_… key alone, at most ${MAX_API_KEY_LENGTH} characters)`;
-const KEY_DROPPED = `${NOT_A_SODAX_KEY}, so calls go out without one: ${API_KEYS_DOCS_URL}`;
+const KEY_DROPPED = `${NOT_A_SODAX_KEY}, so calls go out without one. ${GET_A_KEY}`;
 
 interface SelectOptions {
   apiKey: ApiKeyStatus;
@@ -105,7 +105,7 @@ export function selectToolsets(requested: unknown, opts: SelectOptions): ToolSel
     throw new ConnectionError(
       403,
       "API_KEY_MALFORMED",
-      `A SODAX API key is required for the swap profile. ${NOT_A_SODAX_KEY}: ${API_KEYS_DOCS_URL}`,
+      `A SODAX API key is required for the swap profile. ${NOT_A_SODAX_KEY}. ${GET_A_KEY}`,
     );
   }
   const toolsets = {

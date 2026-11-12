@@ -95,7 +95,9 @@ describe("resolveConnection", () => {
   ])("tells a %j connection (switch on: %j) its malformed key is dropped", (query, swapToolsEnabled) => {
     const { connection } = resolve(fakeReq(query, { "x-api-key": `Bearer ${KEY}` }), swapToolsEnabled);
     expect(connection?.apiKey).toBeUndefined();
-    expect(connection?.toolsets.keyHint).toMatch(/^The x-api-key value .* so calls go out without one: /);
+    expect(connection?.toolsets.keyHint).toMatch(
+      /^The x-api-key value .* so calls go out without one\. .*https:\/\/portal\.sodax\.com/,
+    );
   });
 
   it("doesn't log about a connection that sent no key", () => {

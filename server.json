@@ -195,7 +195,7 @@
       "description": "Quote a cross-chain swap; with the user's address, the transactions their wallet signs (swap tools)"
     },
     {
-      "name": "sodax_swap_track",
+      "name": "sodax_swap_submit_and_track",
       "description": "Submit and track a swap once the user's wallet has sent it (swap tools)"
     },
     {

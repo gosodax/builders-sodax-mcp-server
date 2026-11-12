@@ -133,7 +133,9 @@ export const BRAND_COLORS = {
   accent: "#FFD54F",
 } as const;
 
-export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-keys";
+/** Where a SODAX API key comes from, for every message that asks for one. */
+export const GET_A_KEY =
+  "An organisation's Owner or Admin creates one in the partner portal, https://portal.sodax.com (API keys, then Create key). How to use it: https://docs.sodax.com/developers/how-to/api-keys";
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;

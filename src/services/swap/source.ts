@@ -6,9 +6,20 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, blockNumber, evmChainIdFor, getEvmReceipt, isTxKnown, pinnedSourceOf } from "../sodax.js";
+import {
+  type EvmReceipt,
+  type NonEvmSourceType,
+  blockNumber,
+  evmChainIdFor,
+  getEvmReceipt,
+  isTxKnown,
+  pinnedSourceOf,
+  readNonEvmTx,
+  sourceChainKeys,
+} from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
+import { type NonEvmTx, normalizeTxHash, txHashFormat } from "./nonEvmSource.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
 import { chainIdQuery, resolveSwapChain, toChain } from "./resolver.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
@@ -19,8 +30,11 @@ export const RETRY_AFTER_SEC = 15;
 /** The swap a track or cancel call is about. */
 export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
-/** What checking a source tx needs. */
-export interface SourceChain {
+/** What checking a source tx needs: on an EVM chain (the hub included), or a non-EVM spoke. */
+export type SourceChain = EvmSource | NonEvmSource;
+
+export interface EvmSource {
+  family: "EVM";
   /** The EVM chain id, for the steps a wallet sends. */
   chainId: number;
   /** What the swap tx calls: a spoke's asset manager, or the hub's intents contract. */
@@ -29,16 +43,40 @@ export interface SourceChain {
   connection?: string;
 }
 
+/** A non-EVM spoke: its swap tx carries the quoted relay payload, which proves the deposit. */
+export interface NonEvmSource {
+  family: NonEvmSourceType;
+  /** The asset manager, as the SDK config names it. */
+  swapContract: string;
+  /** How its tx names the asset manager (`assetManagerMarker`): track's proof of a deposit. */
+  marker: Uint8Array | string;
+}
+
 export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote };
 
+/** The hub: its swap tx creates the intent itself, so nothing is relayed and an unsubmitted intent is refunded. */
+export const isHubSource = (source: SourceChain) => source.family === "EVM" && !source.connection;
+
+/** A tx hash as the source chain spells it (`normalizeTxHash`); one that can't be its chain's is refused. */
+export function sourceTxHash(source: SwapSource, value: string, field = "txHash"): string {
+  const txHash = normalizeTxHash(source.family, value);
+  if (txHash === undefined) {
+    throw new ActionError("INVALID_TX_HASH", `That isn't a transaction hash on ${source.chain.name}.`, {
+      details: { field, format: txHashFormat(source.family) },
+    });
+  }
+  return txHash;
+}
+
 /**
- * A chain a swap can start from: an EVM spoke, whose `connection` log proves the deposit, or the hub,
- * whose intents contract logs the intent the swap tx created. Pinned from the SDK config, so a deposit
- * already sent is checked whatever the live config says; the quote refuses a live chain id that disagrees.
+ * A chain a swap can start from (`pinnedSourceOf`), of the family the live catalog says. Pinned from the SDK
+ * config, so a deposit already sent is checked whatever the live config says; the quote refuses a live chain id
+ * that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
-  if (catalog.chains[chain.key]?.type !== "EVM") throw unsupportedSource(chain);
-  return pinnedSource(chain);
+  const source = pinnedSource(chain);
+  if (catalog.chains[chain.key]?.type !== source.family) throw unsupportedSource(chain);
+  return source;
 }
 
 /** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
@@ -48,8 +86,11 @@ function pinnedSource(chain: ChainInfo): SourceChain {
   return source;
 }
 
+// The chains named in the error: the swap profile has no chain support tool to ask.
 const unsupportedSource = (chain: ChainInfo) =>
-  new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`);
+  new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`, {
+    details: { sourceChains: sourceChainKeys() },
+  });
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
@@ -95,17 +136,36 @@ function namesChain(query: string, chainKey: string): boolean {
   return id !== undefined && id === evmChainIdFor(chainKey);
 }
 
-/** The receipt, or `null` while the tx isn't mined. */
-export function readReceipt(chain: ChainInfo, txHash: string): Promise<EvmReceipt | null> {
-  return chainRead(chain, () => getEvmReceipt(chain.key, txHash));
+/** A source tx that ran, with the source it was read from: an EVM receipt, or a non-EVM chain's tx. */
+export type SourceTx =
+  | { family: "EVM"; reverted: boolean; receipt: EvmReceipt; source: EvmSource }
+  | { family: NonEvmSourceType; reverted: boolean; tx: NonEvmTx; source: NonEvmSource };
+
+/**
+ * The source tx once it ran, or `null` before. `sender` routes a NEAR lookup; any account does on public nodes.
+ */
+export async function readSourceTx(source: SwapSource, txHash: string, sender?: string): Promise<SourceTx | null> {
+  const { chain } = source;
+  if (source.family === "EVM") {
+    const receipt = await chainRead(chain, () => getEvmReceipt(chain.key, txHash));
+    return receipt && { family: "EVM", reverted: receipt.reverted, receipt, source };
+  }
+  const { family } = source;
+  const tx = await chainRead(chain, () => readNonEvmTx(chain.key, family, txHash, sender));
+  return tx && { family, reverted: tx.failed, tx, source };
 }
 
-/** Whether the chain's node knows the tx at all, mined or pending. */
-export function seenOnChain(chain: ChainInfo, txHash: string): Promise<boolean> {
+/**
+ * Whether the chain's node knows the tx at all, mined or pending. Only an EVM node says: a non-EVM tx is
+ * reported unseen until it ran.
+ */
+export function seenOnChain(source: SwapSource, txHash: string): Promise<boolean> {
+  const { chain } = source;
+  if (source.family !== "EVM") return Promise.resolve(false);
   return chainRead(chain, () => isTxKnown(chain.key, txHash));
 }
 
-/** The chain's latest block: a ready quote reads it to check the RPC its track will need. */
+/** An EVM or NEAR chain's latest block: a ready quote reads it to check the RPC its track will need. */
 export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
   return chainRead(chain, () => blockNumber(chain.key));
 }

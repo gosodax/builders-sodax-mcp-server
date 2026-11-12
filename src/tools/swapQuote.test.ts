@@ -7,6 +7,7 @@ import { callerKeyHash, setFallbackRequestContext } from "../services/requestCon
 import {
   type IntentJson,
   blockNumber,
+  buildNonEvmDeposit,
   intentHash,
   rebuildSwapTx,
   recipientReady,
@@ -33,6 +34,8 @@ vi.mock("../services/sodax.js", async importOriginal => {
     blockNumber: vi.fn(async () => 1n),
     recipientReady: vi.fn(actual.recipientReady),
     rebuildSwapTx: vi.fn(actual.rebuildSwapTx),
+    // A non-EVM swap tx is built here by the SDK, which reads that chain.
+    buildNonEvmDeposit: vi.fn(async () => SUI_RAW_TX),
   };
 });
 
@@ -61,6 +64,15 @@ const word = (value: bigint | string) =>
 const approveData = (spender: string, amount: bigint | string) => `0x095ea7b3${word(spender)}${word(BigInt(amount))}`;
 
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
+const SUI_USER = `0x${"5".repeat(64)}`;
+const SUI_TO_SONIC = { fromChain: "sui", fromToken: "native", toChain: "sonic", toToken: SONIC_USDC, toAddress: USER };
+// What the SDK's raw Sui build returns, as the mocked `buildNonEvmDeposit` does.
+const SUI_RAW_TX = {
+  from: SUI_USER,
+  to: "0xa17a::asset_manager::transfer",
+  value: 5_000_000_000n,
+  data: '{"version":1}',
+};
 
 interface SwapsStub {
   /** Replace the recorded token list and chain config. */
@@ -131,6 +143,13 @@ function stubSwaps(stub: SwapsStub = {}) {
       // live builds match it byte for byte, see sodax.test.ts).
       if (stub.buildSec) vi.setSystemTime(Date.now() + stub.buildSec * 1000);
       const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
+      if (body.srcChainKey === "sui") {
+        // A non-EVM tx the server builds its own of: only the Sui package it calls is compared.
+        const payload = stub.relayPayload ?? sdk.createIntentPayload(intent);
+        const to = stub.swapTo ?? SUI_RAW_TX.to;
+        const tx = { from: body.srcAddress, to, value: body.inputAmount, data: "{}" };
+        return Response.json({ tx, intent, relayData: { address: stub.relayAddress ?? HUB_WALLET, payload } });
+      }
       const signed = await sdk.rebuildSwapTx({
         srcChainKey: body.srcChainKey,
         srcAddress: body.srcAddress,
@@ -320,10 +339,18 @@ describe("sodax_swap_quote", () => {
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
     ["a source approve that isn't one", { approveData: "0xa9059cbb" }, "approval"],
     // The JSON is right; only what the user signs differs from what the SDK builds for it.
-    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "tx.data"],
-    ["another recipient in the signed intent", { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } }, "tx.data"],
-    ["another fee receiver in the signed intent", { signedIntent: { data: `0x01${"0".repeat(128)}` } }, "tx.data"],
-    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "tx.data"],
+    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "relay payload"],
+    [
+      "another recipient in the signed intent",
+      { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } },
+      "relay payload",
+    ],
+    [
+      "another fee receiver in the signed intent",
+      { signedIntent: { data: `0x01${"0".repeat(128)}` } },
+      "relay payload",
+    ],
+    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "relay payload"],
     ["a relay payload that isn't what's signed", { relayPayload: "0x" }, "relay payload"],
   ])("refuses a built swap with %s, naming the check", async (_case, stub, mismatch) => {
     stubSwaps(stub);
@@ -420,7 +447,7 @@ describe("sodax_swap_quote", () => {
 
   it.each([
     ["a withdraw-only token sent", { fromToken: "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40" }, "RESTRICTED_TOKEN"],
-    ["a non-EVM source", { fromChain: "sui", fromToken: "native" }, "UNSUPPORTED_SOURCE"],
+    ["a source swaps can't start from here", { fromChain: "0x1.icon", fromToken: "ICX" }, "UNSUPPORTED_SOURCE"],
     ["an amount with a comma", { amount: "1,000" }, "INVALID_AMOUNT"],
     ["an ambiguous token", { toToken: "USD" }, "UNKNOWN_TOKEN"],
     ["a bad sender", { fromAddress: "0x1234" }, "INVALID_ADDRESS"],
@@ -454,15 +481,15 @@ describe("sodax_swap_quote", () => {
   it.each([
     ["fromChain", "Arbitrm", "0xa4b1.arbitrum", false],
     ["toChain", "sonci", "sonic", true],
-  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsSui) => {
+  ])("suggests a misspelled %s, listing only chains that side can take", async (side, typo, key, listsIcon) => {
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, [side]: typo, amount: "5" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key }] });
     const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
     expect(listed).toContain("0xa4b1.arbitrum");
-    // A swap starts on Sonic too, but on no non-EVM chain yet; it can end on either.
-    expect(listed).toContain("sonic");
-    expect(listed.includes("sui")).toBe(listsSui);
+    // A swap starts on Sonic and Sui too, and can end on either, but can't start on ICON.
+    expect(listed).toEqual(expect.arrayContaining(["sonic", "sui"]));
+    expect(listed.includes("0x1.icon")).toBe(listsIcon);
     expect(calls).toEqual([]);
   });
 
@@ -940,6 +967,103 @@ describe("sodax_swap_quote", () => {
       }),
       "Swaps API call failed",
     );
+  });
+});
+
+describe("sodax_swap_quote from a non-EVM chain", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+    clearUsdBackoff();
+    clearSwapCatalogCache();
+    clearCache();
+    clearQuoteCache();
+    vi.mocked(buildNonEvmDeposit).mockClear();
+    vi.mocked(blockNumber).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, no batch", async () => {
+    const calls = stubSwaps();
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.status).toBe("ready");
+    expect(out.steps).toEqual([
+      {
+        kind: "swap",
+        chainKey: "sui",
+        chainType: "SUI",
+        tx: { from: SUI_USER, to: SUI_RAW_TX.to, value: "5000000000", data: SUI_RAW_TX.data },
+      },
+    ]);
+    expect(out.batch).toBeUndefined();
+    const relayData = (await calls.find(call => call.path === "/intents")) as { body: Record<string, unknown> };
+    expect(relayData.body).toMatchObject({ srcChainKey: "sui", srcAddress: SUI_USER });
+    const cached = getCachedQuote(out.quoteId, callerKeyHash());
+    expect(buildNonEvmDeposit).toHaveBeenCalledWith({
+      srcChainKey: "sui",
+      srcAddress: SUI_USER,
+      token: spokeChainConfig.sui.nativeToken,
+      amount: 5_000_000_000n,
+      to: HUB_WALLET,
+      payload: typeof cached === "object" ? cached.relayData.payload : "",
+    });
+    // The build reads Sui; no EVM block is read for it.
+    expect(blockNumber).not.toHaveBeenCalled();
+    expect(calls.map(call => call.path)).not.toContain("/approve");
+    expect(out.nextStep).toContain("have their Sui wallet send the swap step before it expires");
+    expect(out.nextStep).toContain("Transaction.from");
+  });
+
+  it("asks for the recipient: a Sui sender's address isn't theirs on an EVM chain", async () => {
+    const calls = stubSwaps();
+    const { toAddress: _, ...args } = SUI_TO_SONIC;
+    const { out } = await quote({ ...args, amount: "5", fromAddress: SUI_USER });
+    expect(out).toMatchObject({ status: "price_only", missing: ["toAddress"] });
+    expect(calls.map(call => call.path)).not.toContain("/intents");
+  });
+
+  it.each([
+    ["another sender in the intent", { intent: { srcAddress: `0x${"6".repeat(64)}` } }, "srcAddress"],
+    ["a relay payload that isn't the SDK's for the intent", { relayPayload: "0x01" }, "relay payload"],
+    ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
+  ])("refuses %s, building nothing", async (_case, stub, mismatch) => {
+    stubSwaps(stub);
+    const error = vi.spyOn(logger, "error");
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.error.code).toBe("SWAP_MISMATCH");
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch, "chain.key": "sui" }), expect.any(String));
+    expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a build whose Sui package isn't the one the Swaps API's own build calls", async () => {
+    stubSwaps({ swapTo: "0xbad::asset_manager::transfer" });
+    const error = vi.spyOn(logger, "error");
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.error.code).toBe("SWAP_MISMATCH");
+    // The SDK read the package from the chain: the log points at this server's build, not the Swaps API.
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ "chain.key": "sui" }),
+      "The SDK built a swap to another program than expected",
+    );
+  });
+
+  it("refuses a token the SDK says needs an approval, which only Stellar's trustline would", async () => {
+    stubSwaps({ valid: false });
+    const { out } = await quote({ ...SUI_TO_SONIC, fromToken: "USDC", amount: "5", fromAddress: SUI_USER });
+    expect(out.error.code).toBe("SWAP_REJECTED");
+    expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+  });
+
+  it("is CHAIN_UNAVAILABLE, with no quote kept, when the build can't read the chain", async () => {
+    stubSwaps();
+    vi.mocked(buildNonEvmDeposit).mockRejectedValueOnce(new Error("SDK call failed"));
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
+    expect(out.error.message).toBe("Couldn't prepare the swap on Sui right now.");
+    expect(out.nextStep).toContain("holds the amount plus fees");
   });
 });
 

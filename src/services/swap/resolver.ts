@@ -64,9 +64,10 @@ export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourc
   });
 }
 
-/** A chain a swap can start from: EVM in the live catalog, and a source in the SDK config (the hub or an EVM spoke). */
+/** A chain a swap can start from: a source in the SDK config, of the family the live catalog says (`sourceChainFor`). */
 export function isSwapSource(catalog: SwapCatalog, chainKey: string): boolean {
-  return catalog.chains[chainKey]?.type === "EVM" && pinnedSourceOf(chainKey) !== undefined;
+  const source = pinnedSourceOf(chainKey);
+  return source !== undefined && catalog.chains[chainKey]?.type === source.family;
 }
 
 /** The chains within two typos of the query, by name or key, closest first. */

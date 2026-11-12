@@ -138,6 +138,42 @@ export const API_KEYS_DOCS_URL = "https://docs.sodax.com/developers/how-to/api-k
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+// 64 hex characters, 0x or not: a Stellar or Injective tx hash, or as well a private key.
+export const HEX_64 = /^(?:0x)?([0-9a-fA-F]{64})$/;
+// Base58's characters, for a character class: no 0, O, I or l.
+export const BASE58 = "1-9A-HJ-NP-Za-km-z";
+// 64 bytes in base58: a Solana tx signature, or as well a Solana or NEAR secret key.
+export const BASE58_64_BYTES = new RegExp(`^[${BASE58}]{86,88}$`);
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/** The bytes of unpadded RFC 4648 base32, as Stellar's StrKey spells a key: version byte, key, checksum. */
+export function base32Bytes(text: string): Uint8Array {
+  const bytes: number[] = [];
+  let value = 0;
+  let bits = 0;
+  for (const char of text) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index === -1) throw new Error("not base32");
+    value = ((value << 5) | index) & 0xffff;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >>> bits) & 0xff);
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+/** The bytes of text made of BASE58 characters only; each leading "1" is a zero byte. */
+export function base58Bytes(text: string): Uint8Array {
+  let value = 0n;
+  for (const char of text) value = value * 58n + BigInt(BASE58_ALPHABET.indexOf(char));
+  const hex = value === 0n ? "" : value.toString(16);
+  const zeros = text.length - text.replace(/^1+/, "").length;
+  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(hex.length % 2 ? `0${hex}` : hex, "hex")]);
+}
 // A SODAX API key is `sodax_` + base64url. Global: use with match/replace, which reset it, never test.
 export const SODAX_KEY_PATTERN = /sodax_[A-Za-z0-9_-]{24,}/g;
 /** A SODAX_KEY_PATTERN match that is a key: a tool name (`sodax_get_supported_chains`) has no capital, digit or `-`. */

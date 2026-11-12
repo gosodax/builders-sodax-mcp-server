@@ -633,7 +633,7 @@ describe("sodax_swap_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
+    [{ chain: "0x1.icon" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {
     const calls = stubBackend();
@@ -647,8 +647,8 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
     const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
-    expect(listed).toContain("sonic");
-    expect(listed).not.toContain("sui");
+    expect(listed).toEqual(expect.arrayContaining(["sonic", "sui"]));
+    expect(listed).not.toContain("0x1.icon");
   });
 
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
@@ -812,7 +812,17 @@ describe("sodax_swap_track", () => {
     });
     await client.close();
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
+    expect(JSON.stringify(result.content)).toContain("Must be a transaction hash as the wallet shows it.");
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["a Solana signature", "5".repeat(88)],
+    ["a bare 64-hex value", "a".repeat(64)],
+  ])("refuses %s as a hash on an EVM chain, saying what one looks like there", async (_case, txHash) => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash, chain: ARBITRUM });
+    expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", format: "0x and 64 hex characters" });
     expect(calls).toEqual([]);
   });
 });

@@ -7,9 +7,15 @@ import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { callerKeyHash, parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
+import type { EvmStep } from "../services/swap/quote.js";
 import { getCachedQuote } from "../services/swap/quoteCache.js";
 import { formatUnits } from "../services/swap/units.js";
-import { callQuote } from "./__fixtures__/swapClient.js";
+import { type QuoteOut, callQuote } from "./__fixtures__/swapClient.js";
+
+const SOLANA_SENDER = "7pDfGNrY3Be2yYW496rYzLQHVJzMDUyTWK2eguhZkPAx";
+
+/** A quote's steps from an EVM source. */
+const evmSteps = (out: QuoteOut) => (out.steps ?? []) as EvmStep[];
 
 const USER = "0x000000000000000000000000000000000000dEaD";
 const ARB_USDC = { fromChain: "0xa4b1.arbitrum", fromToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" };
@@ -34,12 +40,12 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     // The solver oracle prices the hub asset: 5 USDC is about $5. Canary's oracle can be down: then null.
     if (out.usdValue !== null) expect(Math.abs(Number(out.usdValue) - 5)).toBeLessThan(0.5);
     if (process.env.SODAX_ENV === "production") expect(out.usdValue).not.toBeNull();
-    expect(out.steps?.map(step => [step.kind, step.chainId])).toEqual([
+    expect(evmSteps(out).map(step => [step.kind, step.chainId])).toEqual([
       ["approve", 42161],
       ["swap", 42161],
     ]);
     const configs = (await getAllChainsConfigs()) as Record<string, { addresses: { assetManager: string } }>;
-    expect(out.steps?.[1].tx.to.toLowerCase()).toBe(configs["0xa4b1.arbitrum"].addresses.assetManager.toLowerCase());
+    expect(evmSteps(out)[1].tx.to.toLowerCase()).toBe(configs["0xa4b1.arbitrum"].addresses.assetManager.toLowerCase());
     const cached = getCachedQuote(String(out.quoteId), callerKeyHash());
     if (typeof cached !== "object") throw new Error(`quote not cached: ${cached}`);
     expect(out.to?.minimumAmount).toBe(formatUnits(BigInt(String(cached.intent.minOutputAmount)), 6));
@@ -58,7 +64,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       fromAddress: USER,
     });
     expect(out.status).toBe("ready");
-    const swap = out.steps?.find(step => step.kind === "swap");
+    const swap = evmSteps(out).find(step => step.kind === "swap");
     expect(swap?.tx.to.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
   });
 
@@ -111,7 +117,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     });
     expect(out.error ?? {}).toEqual({});
     expect(out.status).toBe("ready");
-    expect(out.steps?.at(-1)?.tx.value).toBe(`0x${(1000n * 10n ** 18n).toString(16)}`);
+    expect(evmSteps(out).at(-1)?.tx.value).toBe(`0x${(1000n * 10n ** 18n).toString(16)}`);
   });
 
   it("matches the SDK's packaged asset manager for every EVM spoke the live config names", async () => {
@@ -138,7 +144,7 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       fromAddress: USER,
     });
     expect(out.steps?.map(step => step.kind)).toEqual(["swap"]);
-    expect(out.steps?.[0].tx.value).toBe(`0x${(2n * 10n ** 15n).toString(16)}`);
+    expect(evmSteps(out)[0].tx.value).toBe(`0x${(2n * 10n ** 15n).toString(16)}`);
   });
 
   it.each([
@@ -170,12 +176,35 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       "RESTRICTED_TOKEN",
     ],
     [
-      "a Solana source",
-      { fromChain: "solana", fromToken: "native", ...TO_BASE_USDC, amount: "1" },
+      "a Bitcoin source, which this server doesn't start swaps from",
+      { fromChain: "bitcoin", fromToken: "native", ...TO_BASE_USDC, amount: "1" },
       "UNSUPPORTED_SOURCE",
     ],
   ])("refuses %s", async (_case, args, code) => {
     const { out } = await callQuote(args);
     expect(out.error.code).toBe(code);
+  });
+
+  // The live intent passes the same checks as an EVM one, and the SDK builds the tx here from it: a Solana build
+  // reads the chain but needs no funded sender. The sender is a real Solana swapper's public address.
+  it("builds a swap from Solana: one step, the SDK's raw tx, from the checked intent", async () => {
+    const { out } = await callQuote({
+      fromChain: "solana",
+      fromToken: "native",
+      ...TO_BASE_USDC,
+      amount: "0.05",
+      fromAddress: SOLANA_SENDER,
+      toAddress: USER,
+    });
+    expect(out.error ?? {}).toEqual({});
+    expect(out.steps).toEqual([
+      {
+        kind: "swap",
+        chainKey: "solana",
+        chainType: "SOLANA",
+        tx: expect.objectContaining({ from: SOLANA_SENDER, to: spokeChainConfig.solana.addresses.assetManager }),
+      },
+    ]);
+    expect(out.nextStep).toContain("its blockhash expires");
   });
 });

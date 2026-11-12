@@ -242,7 +242,7 @@ describe("sodax_swap_cancel", () => {
       const calls = stubBackend({ row: null });
       const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_sent" });
-      expect(out.nextStep).toContain("nothing was sent and there's nothing to cancel");
+      expect(out.nextStep).toContain("nothing was sent and there's nothing to cancel yet");
       expect(out.nextStep).toContain("cancel or replace it in their wallet");
       expect(posts(calls)).toEqual([]);
     });

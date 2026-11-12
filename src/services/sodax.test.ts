@@ -3,11 +3,14 @@ import { createRequire } from "node:module";
 import { EvmHubProvider, EvmSolverService, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { base58Bytes } from "../constants.js";
 import { INTENT } from "../tools/__fixtures__/swapBackend.js";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  blockNumber,
   bounded,
+  callsPinnedTarget,
   cancelPayload,
   checksumValid,
   connectionFor,
@@ -19,6 +22,7 @@ import {
   intentHash,
   packagedToken,
   parseRpcOverrides,
+  readNonEvmTx,
   rebuildSwapTx,
   recipientReady,
   sdkLogger,
@@ -568,6 +572,87 @@ describe("initSodax", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
     await expect(fresh.recipientReady("NEAR", "usdc.near", "alice.near", 1n)).rejects.toThrow("SDK call failed");
     expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://near.example/key");
+  });
+});
+
+describe("callsPinnedTarget", () => {
+  const { assetManager, connection } = spokeChainConfig.solana.addresses;
+  const SUI_TO = "0xe5f0::asset_manager::transfer";
+
+  it("holds a Solana build, whose programs the SDK reads from the chain, to the packaged ones", () => {
+    // A tx's account keys are 32-byte program ids, as the deposit's message lists them.
+    const passing = (...programs: string[]) =>
+      Buffer.concat([Buffer.alloc(4), ...programs.map(program => Buffer.from(base58Bytes(program)))]).toString(
+        "base64",
+      );
+    expect(callsPinnedTarget("solana", "swap", { to: assetManager, data: passing(assetManager, connection) })).toBe(
+      true,
+    );
+    expect(callsPinnedTarget("solana", "swap", { to: assetManager, data: passing(assetManager) })).toBe(false);
+    expect(callsPinnedTarget("solana", "swap", { to: assetManager })).toBe(false);
+    expect(callsPinnedTarget("solana", "cancel", { to: connection })).toBe(true);
+    expect(callsPinnedTarget("solana", "swap", { to: connection, data: passing(connection) })).toBe(false);
+    expect(callsPinnedTarget("solana", "cancel", { to: assetManager })).toBe(false);
+  });
+
+  it("holds a Sui swap, whose upgraded package the SDK reads from the chain, to the Swaps API's own build", () => {
+    expect(callsPinnedTarget("sui", "swap", { to: SUI_TO }, SUI_TO)).toBe(true);
+    expect(callsPinnedTarget("sui", "swap", { to: SUI_TO }, "0xbad::asset_manager::transfer")).toBe(false);
+    expect(callsPinnedTarget("sui", "swap", { to: SUI_TO })).toBe(false);
+  });
+
+  it("takes the rest, built from the packaged config", () => {
+    expect(callsPinnedTarget("sui", "cancel", { to: "anything" })).toBe(true);
+    expect(callsPinnedTarget("near", "swap", { signerId: "alice.near" })).toBe(true);
+  });
+});
+
+describe("blockNumber", () => {
+  it("reads NEAR's final block, so a quote finds a dead NEAR RPC before the user sends anything", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const { id } = JSON.parse(String(init?.body));
+      return Response.json({ jsonrpc: "2.0", id, result: { header: { height: 12345 } } });
+    });
+    expect(await blockNumber("near")).toBe(12345n);
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+      method: "block",
+      params: { finality: "final" },
+    });
+  });
+});
+
+describe("readNonEvmTx on Injective", () => {
+  const HASH = "AC4D677E8C4FDAB97FE347E2276A8037B046A2B6482FE73A101F04742D616A96";
+  const reply = (status: number, body: unknown) => Response.json(body, { status });
+
+  const notFound = () => reply(404, { code: 5, message: `tx not found: ${HASH}` });
+
+  it("reads the node's own NotFound, asked three times, as a tx it doesn't know", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => notFound());
+    expect(await readNonEvmTx("injective-1", "INJECTIVE", HASH)).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("reads a tx in blocks the node has pruned as one it doesn't know, not as an outage", async () => {
+    const pruned = { code: 2, message: "height 191258705 is not available, lowest height is 191260445", details: [] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => reply(500, pruned));
+    expect(await readNonEvmTx("injective-1", "INJECTIVE", HASH)).toBeNull();
+  });
+
+  it("fails on any other 500, rather than read the tx as never sent", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => reply(500, { code: 2, message: "internal error" }));
+    await expect(readNonEvmTx("injective-1", "INJECTIVE", HASH)).rejects.toThrow();
+  });
+
+  it("reads a tx one node has dropped from the next node that keeps it", async () => {
+    const tx = { tx: { body: { messages: [] } }, tx_response: { code: 0 } };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(notFound()).mockResolvedValueOnce(reply(200, tx));
+    expect(await readNonEvmTx("injective-1", "INJECTIVE", HASH)).toMatchObject({ failed: false, calls: [] });
+  });
+
+  it("fails on a 404 from anything in front of the node, rather than read the tx as never sent", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(reply(404, { message: "Not Found" }));
+    await expect(readNonEvmTx("injective-1", "INJECTIVE", HASH)).rejects.toThrow();
   });
 });
 

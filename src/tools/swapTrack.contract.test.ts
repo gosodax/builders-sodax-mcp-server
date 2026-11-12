@@ -160,7 +160,8 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     for (const key of sources) {
       const packaged = pinnedSourceOf(key);
       expect(packaged, key).toBeDefined();
-      expect(packaged?.connection?.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
+      const connection = packaged?.family === "EVM" ? packaged.connection : undefined;
+      expect(connection?.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
       expect(new URL(String(rpcs[key]?.rpcUrl)).protocol, key).toBe("https:");
     }
   });

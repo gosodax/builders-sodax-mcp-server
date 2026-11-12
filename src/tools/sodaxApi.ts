@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { chainDisplayName } from "../constants.js";
+import { parseSwapToolsEnabled } from "../services/profiles.js";
 import { pinnedSourceOf } from "../services/sodax.js";
 import {
   clearCache,
@@ -116,9 +117,12 @@ export function registerSodaxApiTools(server: McpServer): void {
               {
                 type: "text",
                 text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains. ${
-                  pinnedSourceOf(result.chainKey)
-                    ? "This server's swap tools (with a SODAX API key) can start a swap from it."
-                    : "This server's swap tools can't start a swap from it yet."
+                  // The kill switch was read at boot, so a value it refused never reaches here.
+                  !parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED)
+                    ? "This server's swap tools are turned off."
+                    : pinnedSourceOf(result.chainKey)
+                      ? "This server's swap tools (with a SODAX API key) can start a swap from it."
+                      : "This server's swap tools can't start a swap from it yet."
                 }`,
               },
             ],

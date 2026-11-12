@@ -426,7 +426,7 @@ export function trackNextStep(result: TrackResult): string {
       const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
       // Public non-EVM nodes keep recent txs only, so an older swap reads as unknown too.
       if (isNonEvmChain(result.chain.key)) {
-        return `${chain}'s node doesn't have this transaction: it may be older than the node keeps, or not a ${chain} transaction. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+        return `${chain}'s node doesn't have this transaction: it may be older than the node keeps, or not a transaction on ${chain}. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
       }
       return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
     }

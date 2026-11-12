@@ -1050,6 +1050,31 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     );
   });
 
+  it("refuses an Ethereum-style NEAR sender before any upstream call: its deposit runs where track can't see it", async () => {
+    const tokens = JSON.parse(fixtureText("swap-tokens.json"));
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    const { symbol, name, decimals, address, hubAsset } = spokeChainConfig.near.supportedTokens.NEAR;
+    tokens.near = [{ symbol, name, decimals, address, chainKey: "near", hubAsset }];
+    configs.near = {
+      chain: { id: "near", chainId: "near", name: "NEAR", type: "NEAR" },
+      addresses: {},
+      nativeToken: "NEAR",
+    };
+    const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+    const near = {
+      fromChain: "near",
+      fromToken: "native",
+      toChain: "sonic",
+      toToken: SONIC_USDC,
+      toAddress: USER,
+      amount: "5",
+    };
+    const { out } = await quote({ ...near, fromAddress: `0x${"ab".repeat(20)}` });
+    expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "fromAddress" });
+    expect(out.error.message).toContain("Ethereum-style");
+    expect(calls.map(call => call.path)).toEqual([]);
+  });
+
   it("refuses a token the SDK says needs an approval, which only Stellar's trustline would", async () => {
     stubSwaps({ valid: false });
     const { out } = await quote({ ...SUI_TO_SONIC, fromToken: "USDC", amount: "5", fromAddress: SUI_USER });

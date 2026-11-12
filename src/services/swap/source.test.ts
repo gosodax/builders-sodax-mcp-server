@@ -42,7 +42,14 @@ describe("sourceChainFor", () => {
     expect(() => sourceChainFor(fixtureCatalog(), toChain("0x1.icon"))).toThrow(
       expect.objectContaining({
         code: "UNSUPPORTED_SOURCE",
-        details: { sourceChains: expect.arrayContaining(["sonic", "0xa4b1.arbitrum", "solana", "near"]) },
+        // As the live catalog has them: the fixture's.
+        details: {
+          sourceChains: expect.arrayContaining([
+            { key: "sonic", name: "Sonic" },
+            { key: "0xa4b1.arbitrum", name: "Arbitrum" },
+            { key: "sui", name: "Sui" },
+          ]),
+        },
       }),
     );
   });

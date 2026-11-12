@@ -644,6 +644,21 @@ describe("readNonEvmTx on Injective", () => {
     await expect(readNonEvmTx("injective-1", "INJECTIVE", HASH)).rejects.toThrow();
   });
 
+  const timeout = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+
+  it("asks a slow node's question again, and reads the tx from the next node", async () => {
+    const tx = { tx: { body: { messages: [] } }, tx_response: { code: 0 } };
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(timeout()).mockResolvedValueOnce(reply(200, tx));
+    expect(await readNonEvmTx("injective-1", "INJECTIVE", HASH)).toMatchObject({ failed: false });
+  });
+
+  it("fails, rather than read the tx as unknown, when a node was too slow to answer", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(timeout())
+      .mockImplementation(async () => notFound());
+    await expect(readNonEvmTx("injective-1", "INJECTIVE", HASH)).rejects.toThrow();
+  });
+
   it("reads a tx one node has dropped from the next node that keeps it", async () => {
     const tx = { tx: { body: { messages: [] } }, tx_response: { code: 0 } };
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(notFound()).mockResolvedValueOnce(reply(200, tx));

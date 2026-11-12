@@ -10,6 +10,7 @@ import {
   type EvmReceipt,
   type NonEvmSourceType,
   blockNumber,
+  callsPinnedTarget,
   evmChainIdFor,
   getEvmReceipt,
   isTxKnown,
@@ -21,7 +22,7 @@ import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type NonEvmTx, normalizeTxHash, txHashFormat } from "./nonEvmSource.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
-import { chainIdQuery, resolveSwapChain, toChain } from "./resolver.js";
+import { chainIdQuery, isSwapSource, resolveSwapChain, toChain } from "./resolver.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
 import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 
@@ -74,8 +75,8 @@ export function sourceTxHash(source: SwapSource, value: string, field = "txHash"
  * that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
-  const source = pinnedSource(chain);
-  if (catalog.chains[chain.key]?.type !== source.family) throw unsupportedSource(chain);
+  const source = pinnedSourceOf(chain.key);
+  if (!source || !isSwapSource(catalog, chain.key)) throw unsupportedSource(chain, catalog);
   return source;
 }
 
@@ -86,11 +87,25 @@ function pinnedSource(chain: ChainInfo): SourceChain {
   return source;
 }
 
-// The chains named in the error: the swap profile has no chain support tool to ask.
-const unsupportedSource = (chain: ChainInfo) =>
-  new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here yet.`, {
-    details: { sourceChains: sourceChainKeys() },
+// The chains named in the error, as UNSUPPORTED_CHAIN names them: the swap profile has no chain support tool to ask.
+const unsupportedSource = (chain: ChainInfo, catalog?: SwapCatalog) => {
+  const keys = catalog ? Object.keys(catalog.tokens).filter(key => isSwapSource(catalog, key)) : sourceChainKeys();
+  return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here.`, {
+    details: { sourceChains: keys.map(toChain) },
   });
+};
+
+/**
+ * Refuses a non-EVM build to another program than the pinned one (`callsPinnedTarget`). The SDK reads Solana's
+ * programs and Sui's package from the chain, so a wrong one is this server's RPC, not the Swaps API.
+ */
+export function checkPinnedTarget(chainKey: string, kind: "swap" | "cancel", raw: unknown, expected?: unknown): void {
+  if (callsPinnedTarget(chainKey, kind, raw, expected)) return;
+  logger.error({ "chain.key": chainKey }, `The SDK built a ${kind} to another program than expected`);
+  throw new ActionError("SWAP_MISMATCH", `The ${kind} built here calls another program than expected.`, {
+    details: { chainKey },
+  });
+}
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {

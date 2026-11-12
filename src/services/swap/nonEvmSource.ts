@@ -17,9 +17,12 @@ export interface NonEvmTx {
   bytes: Uint8Array;
   /** NEAR's function calls (an `ft_transfer_call`'s `msg` as its own) and Injective's contract executions. */
   calls: { contract: string; args: unknown }[];
-  /** NEAR's signer, a meta-transaction's sender: only a NEAR wallet picks the account, so only there can it differ. */
+  /** The account that sent it where a wallet may pick it: NEAR's signer (a meta-transaction's sender), Injective's. */
   signer?: string;
 }
+
+/** The families whose reader sets `signer`; elsewhere the built tx names the sender and none is read. */
+export const SIGNER_READ: readonly NonEvmSourceType[] = ["NEAR", "INJECTIVE"];
 
 const BASE58_32_BYTES = new RegExp(`^[${BASE58}]{32,44}$`);
 // The length alone lets through text that decodes to another size, which a node refuses as an error, not as unknown.
@@ -108,7 +111,14 @@ type NearReceipt = z.infer<typeof nearOutcomeSchema>["receipts_outcome"][number]
 const injectiveTxSchema = z.object({
   tx: z.object({
     body: z.object({
-      messages: z.array(z.object({ "@type": z.string(), contract: z.string().optional(), msg: z.unknown() })),
+      messages: z.array(
+        z.object({
+          "@type": z.string(),
+          sender: z.string().optional(),
+          contract: z.string().optional(),
+          msg: z.unknown(),
+        }),
+      ),
     }),
   }),
   tx_response: z.object({ code: z.number() }),
@@ -173,10 +183,8 @@ function depositReceipt(receipts: NearReceipt[], firstId: string, assetManager: 
 }
 
 /**
- * A NEAR tx from its JSON-RPC outcome, or `null` until every receipt has run. A shape it doesn't know throws.
- * Failed only if the tx, its first call or the asset manager's receipt of the deposit failed, which moves nothing
- * (a token's `ft_resolve_transfer` refunds a rejected `ft_on_transfer`). NEAR doesn't roll back a later receipt's
- * failure across contracts, so whether such a deposit went through is the relay's to judge, never "send it again".
+ * A NEAR tx from its RPC outcome, or `null` until every receipt ran. Failed only where nothing moved (the asset
+ * manager rejected or never ran the deposit); a later receipt's failure isn't rolled back, so it's the relay's to judge.
  */
 export function nearTxFrom(raw: unknown, assetManager?: string): NonEvmTx | null {
   const stage = nearStageSchema.parse(raw).final_execution_status;
@@ -207,10 +215,15 @@ const INJECTIVE_EXECUTES = ["/cosmwasm.wasm.v1.MsgExecuteContract", "/injective.
 /** An Injective tx from the chain's REST `GET /cosmos/tx/v1beta1/txs/{hash}`: its contract executions. */
 export function injectiveTxFrom(body: unknown): NonEvmTx {
   const { tx, tx_response } = injectiveTxSchema.parse(body);
-  const calls = tx.body.messages
-    .filter(message => INJECTIVE_EXECUTES.includes(message["@type"]) && message.contract)
-    .map(({ contract, msg }) => ({ contract: String(contract), args: typeof msg === "string" ? parseJson(msg) : msg }));
-  return { failed: tx_response.code !== 0, bytes: new Uint8Array(), calls };
+  const executes = tx.body.messages.filter(
+    message => INJECTIVE_EXECUTES.includes(message["@type"]) && message.contract,
+  );
+  const calls = executes.map(({ contract, msg }) => ({
+    contract: String(contract),
+    args: typeof msg === "string" ? parseJson(msg) : msg,
+  }));
+  const signer = executes[0]?.sender;
+  return { failed: tx_response.code !== 0, bytes: new Uint8Array(), calls, ...(signer !== undefined && { signer }) };
 }
 
 /** A Solana tx from `connection.getTransaction`, or `null` until it's confirmed. */
@@ -229,6 +242,7 @@ export function stellarTxFrom(result: { status: string; envelopeXdr?: unknown })
   if (result.status === "NOT_FOUND") return null;
   if (result.status !== "SUCCESS" && result.status !== "FAILED") throw new Error("unknown Stellar tx status");
   const envelope = result.envelopeXdr;
+  if (envelope === undefined) throw new Error("a Stellar tx without its envelope");
   const bytes =
     typeof envelope === "string" ? Buffer.from(envelope, "base64") : (envelope as { toXDR(): Buffer }).toXDR();
   return { failed: result.status === "FAILED", bytes, calls: [] };

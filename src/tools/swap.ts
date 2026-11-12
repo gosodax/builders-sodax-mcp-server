@@ -12,7 +12,7 @@ import { type NonEvmSourceType, isHubChain, pinnedSourceOf } from "../services/s
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
-import { isAnyTxHash } from "../services/swap/nonEvmSource.js";
+import { SIGNER_READ, isAnyTxHash } from "../services/swap/nonEvmSource.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
@@ -358,7 +358,7 @@ const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
     "data is the transaction envelope (XDR, public network), which the wallet signs and submits; any other transaction from the account first makes it unusable",
   SUI: "data is the transaction as JSON (Transaction.from), with its sender set, which that account's wallet signs and executes",
   INJECTIVE:
-    "the wallet signs signedDoc in direct mode (bodyBytes and authInfoBytes in base64) and broadcasts it; any other transaction from the account first makes it unusable",
+    "the wallet signs signedDoc in direct mode (bodyBytes and authInfoBytes in base64) and broadcasts it, or an EIP-712 wallet sends the same contract execution from that account; any other transaction from the account first makes the signed one unusable",
 };
 
 // A swap from the hub is an intent there already: it's filled or, once expired, refunded without an operator.
@@ -371,6 +371,16 @@ const safe = ({ alerted, chain }: { alerted: boolean; chain: { key: string; name
 const isNonEvmChain = (chainKey: string) => {
   const family = pinnedSourceOf(chainKey)?.family;
   return family !== undefined && family !== "EVM";
+};
+/** A tx its node can't confirm: a non-EVM node can't tell one in flight from one never sent; a batch id is EVM's. */
+const unseen = ({ key, name }: { key: string; name: string }) =>
+  isNonEvmChain(key)
+    ? `${name} hasn't confirmed this transaction yet. Check that the user's wallet really sent it and that this is its transaction hash`
+    : `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
+// Its reader doesn't name the sender, so a deposit for another quote may be anyone's.
+const senderUnknown = (chainKey: string) => {
+  const family = pinnedSourceOf(chainKey)?.family;
+  return family !== undefined && family !== "EVM" && !SIGNER_READ.includes(family);
 };
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
 const retryRefund = (tool: string, seconds: number) =>
@@ -387,8 +397,7 @@ function notSubmittedNextStep(result: Extract<TrackResult, { status: "not_submit
   const deposit = safe(result);
   switch (result.reason) {
     case "deposit_mismatch":
-      // A non-EVM deposit's sender isn't decoded here: it may be anyone's.
-      if (isNonEvmChain(result.chain.key)) {
+      if (senderUnknown(result.chain.key)) {
         return `That transaction is a SODAX deposit, but not this quote's, and this server can't tell who sent it. If the user sent it from another quote, track it with that quoteId; if they no longer have it, ${deposit}. If it isn't theirs, ask for this swap's transaction hash.`;
       }
       return `That transaction is a SODAX deposit for another quote: track it with the quoteId it was made from. Without that quoteId, ${deposit}.`;
@@ -416,7 +425,7 @@ export function trackNextStep(result: TrackResult): string {
     case "awaiting_source_confirmation":
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`
-        : `${chain} hasn't ${isNonEvmChain(result.chain.key) ? "confirmed this transaction yet" : "seen this transaction"}. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
+        : `${unseen(result.chain)}; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
             result.stopAfter
               ? `call sodax_swap_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}, then once more and follow that answer.`
               : POLL

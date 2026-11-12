@@ -8,7 +8,6 @@ import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import {
   buildNonEvmCancel,
-  callsPinnedTarget,
   cancelPayload,
   createIntentPayload,
   decodeAddress,
@@ -28,6 +27,7 @@ import {
   type SourceTx,
   type SwapRef,
   type SwapSource,
+  checkPinnedTarget,
   isHubSource,
   readSourceTx,
   resolveSource,
@@ -235,12 +235,7 @@ async function cancelStep(source: SwapSource, intent: Intent): Promise<CancelSte
     const raw = await buildNonEvmCancel(chain.key, intent).catch(() => {
       throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
     });
-    if (!callsPinnedTarget(chain.key, "cancel", raw)) {
-      logger.error({ "chain.key": chain.key }, "The SDK built a cancel to another program than the packaged one");
-      throw new ActionError("SWAP_MISMATCH", "The cancel built here calls another program than expected.", {
-        details: { chainKey: chain.key },
-      });
-    }
+    checkPinnedTarget(chain.key, "cancel", raw);
     return toNonEvmStep("cancel", source.family, chain.key, raw);
   }
   const step = (tx: EvmTx): CancelStep => ({

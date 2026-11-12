@@ -12,14 +12,7 @@ import { wordlist as french } from "@scure/bip39/wordlists/french";
 import { wordlist as italian } from "@scure/bip39/wordlists/italian";
 import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
 import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
-import {
-  BASE58,
-  BASE58_64_BYTES,
-  HEX_64 as HEX64,
-  SODAX_KEY_PATTERN,
-  base58Bytes,
-  isSodaxKey,
-} from "../../constants.js";
+import { BASE58, BASE58_64_BYTES, HEX_64, SODAX_KEY_PATTERN, base58Bytes, isSodaxKey } from "../../constants.js";
 import { ActionError } from "./errors.js";
 import { AMOUNT_PATTERN } from "./units.js";
 
@@ -138,7 +131,7 @@ export function screenSecrets(args: Record<string, unknown>): void {
     if (kind) throw secretRefusal(kind, field);
     const notA = NOT_HEX64_FIELDS.get(field);
     // 64 decimal digits are an amount, if a huge one.
-    if (notA && HEX64.test(value) && !AMOUNT_PATTERN.test(value)) throw hex64Refusal(notA, field);
+    if (notA && HEX_64.test(value) && !AMOUNT_PATTERN.test(value)) throw hex64Refusal(notA, field);
   }
 }
 
@@ -147,7 +140,7 @@ export function screenSecrets(args: Record<string, unknown>): void {
  * in the wrong field. Called where the chain is known, after the value failed to be an address or token.
  */
 export function rejectHex64(value: string, field: string, chainName: string, expected: "address" | "token"): void {
-  if (!HEX64.test(value)) return;
+  if (!HEX_64.test(value)) return;
   throw hex64Refusal(`${expected === "address" ? "an address" : "a token"} on ${chainName}`, field);
 }
 
@@ -156,7 +149,7 @@ export function rejectHex64(value: string, field: string, chainName: string, exp
  * package id): a token this list doesn't have, or a private key; the refusal says it may be either.
  */
 export function rejectHex64Account(value: string, field: string, chainName: string): void {
-  if (!HEX64.test(value)) return;
+  if (!HEX_64.test(value)) return;
   throw new ActionError(
     "SECRET_REJECTED",
     `That's a 64-hex value: no token SODAX swaps on ${chainName} has that address, and it may be a private key.`,
@@ -181,7 +174,7 @@ export function secretRefusalText(value: string, field: SecretField): string | u
   const kind = findSecret(value, { txHash: field.txHash });
   const refusal = kind
     ? secretRefusal(kind)
-    : field.notHex64 && HEX64.test(value.trim())
+    : field.notHex64 && HEX_64.test(value.trim())
       ? hex64Refusal(field.notHex64)
       : undefined;
   return refusal && `${refusal.code}: ${refusal.message} ${refusal.nextStep}`;

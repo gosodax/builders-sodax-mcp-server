@@ -168,6 +168,25 @@ describe("a swap from a non-EVM spoke", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("isn't submitted when an Injective wallet sent the deposit from another account than the quoted one", async () => {
+    const quote = cacheQuote({
+      srcChainKey: "injective-1",
+      srcAddress: "inj1q8t36glg95q42rv2j4xm7gk79y9zhd2de8fdmt",
+      intent: { ...INTENT, srcChain: "19" },
+      relayData: { address: CREATOR, payload: PAYLOAD },
+    });
+    const data = [...Buffer.from(PAYLOAD.slice(2), "hex")];
+    const calls = [{ contract: "inj1dg6tm62uup53wn2kn97caeqfwt0sukx3qjk8rw", args: { transfer: { data } } }];
+    vi.mocked(readNonEvmTx).mockResolvedValue({ failed: false, bytes: new Uint8Array(), calls, signer: "inj1other" });
+    const backend = stubBackend();
+    const { out } = await track({
+      txHash: "AC4D677E8C4FDAB97FE347E2276A8037B046A2B6482FE73A101F04742D616A96",
+      quoteId: quote.quoteId,
+    });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "other_sender" });
+    expect(submits(backend)).toEqual([]);
+  });
+
   it("submits a NEAR deposit signed by the quoted account", async () => {
     vi.mocked(readNonEvmTx).mockResolvedValue(nearTx("alice.near"));
     const calls = stubBackend();

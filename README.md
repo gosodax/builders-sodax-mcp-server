@@ -95,8 +95,8 @@ amount sent, is part of the quote, and is never a tool input.
 With the `swap` profile, or `all` with a key, an agent swaps for a user like this. The user's wallet signs and sends
 every transaction; the server never signs.
 
-1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
-   destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
+1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` unless both
+   chains are EVM (then it defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
    needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
    `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined (track it even
    after). Without the addresses it returns a price only.

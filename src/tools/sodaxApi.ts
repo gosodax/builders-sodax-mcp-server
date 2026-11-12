@@ -122,7 +122,7 @@ export function registerSodaxApiTools(server: McpServer): void {
                     ? "This server's swap tools are turned off."
                     : pinnedSourceOf(result.chainKey)
                       ? "This server's swap tools (with a SODAX API key) can start a swap from it."
-                      : "This server's swap tools can't start a swap from it yet."
+                      : "This server's swap tools can't start a swap from it."
                 }`,
               },
             ],

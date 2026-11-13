@@ -4,25 +4,18 @@
  * the one way to read a chain (`chainRead`), which the balance tool uses too.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import {
-  type EvmReceipt,
-  type NonEvmSourceType,
-  blockNumber,
-  callsPinnedTarget,
-  evmChainIdFor,
-  getEvmReceipt,
-  isTxKnown,
-  pinnedSourceOf,
-  readNonEvmTx,
-  sourceChainKeys,
-} from "../sodax.js";
+import { evmChainIdFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
-import { type NonEvmTx, normalizeTxHash, txHashFormat } from "./nonEvmSource.js";
-import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
+import { getCachedQuote } from "./quoteCache.js";
 import { chainIdQuery, isSwapSource, resolveSwapChain, toChain } from "./resolver.js";
+import { depositMessages } from "./sourceTx.js";
+import { hexBytes } from "./sources/bytes.js";
+import { pinnedSourceOf, sourceChainKeys } from "./sources/index.js";
+import type { SourceChain, SourceTx, SwapSource } from "./sources/types.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
 import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 
@@ -31,39 +24,16 @@ export const RETRY_AFTER_SEC = 15;
 /** The swap a track or cancel call is about. */
 export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
-/** What checking a source tx needs: on an EVM chain (the hub included), or a non-EVM spoke. */
-export type SourceChain = EvmSource | NonEvmSource;
-
-export interface EvmSource {
-  family: "EVM";
-  /** The EVM chain id, for the steps a wallet sends. */
-  chainId: number;
-  /** What the swap tx calls: a spoke's asset manager, or the hub's intents contract. */
-  swapContract: string;
-  /** A spoke's `connection`, whose log proves a deposit. None on the hub: the swap tx itself creates the intent. */
-  connection?: string;
-}
-
-/** A non-EVM spoke: its swap tx carries the quoted relay payload, which proves the deposit. */
-export interface NonEvmSource {
-  family: NonEvmSourceType;
-  /** The asset manager, as the SDK config names it. */
-  swapContract: string;
-  /** How its tx names the asset manager (`assetManagerMarker`): track's proof of a deposit. */
-  marker: Uint8Array | string;
-}
-
-export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote };
-
 /** The hub: its swap tx creates the intent itself, so nothing is relayed and an unsubmitted intent is refunded. */
-export const isHubSource = (source: SourceChain) => source.family === "EVM" && !source.connection;
+export const isHubSource = (source: SourceChain) => source.kind === "hub";
 
-/** A tx hash as the source chain spells it (`normalizeTxHash`); one that can't be its chain's is refused. */
+/** A tx hash as the source chain spells it; one that can't be its chain's is refused before anything is read. */
 export function sourceTxHash(source: SwapSource, value: string, field = "txHash"): string {
-  const txHash = normalizeTxHash(source.family, value);
+  const { format, spell } = source.adapter.txHash;
+  const txHash = spell(value.trim());
   if (txHash === undefined) {
     throw new ActionError("INVALID_TX_HASH", `That isn't a transaction hash on ${source.chain.name}.`, {
-      details: { field, format: txHashFormat(source.family) },
+      details: { field, format },
     });
   }
   return txHash;
@@ -94,18 +64,6 @@ const unsupportedSource = (chain: ChainInfo, catalog?: SwapCatalog) => {
     details: { sourceChains: keys.map(toChain) },
   });
 };
-
-/**
- * Refuses a non-EVM build to another program than the pinned one (`callsPinnedTarget`). The SDK reads Solana's
- * programs and Sui's package from the chain, so a wrong one is this server's RPC, not the Swaps API.
- */
-export function checkPinnedTarget(chainKey: string, kind: "swap" | "cancel", raw: unknown, expected?: unknown): void {
-  if (callsPinnedTarget(chainKey, kind, raw, expected)) return;
-  logger.error({ "chain.key": chainKey }, `The SDK built a ${kind} to another program than expected`);
-  throw new ActionError("SWAP_MISMATCH", `The ${kind} built here calls another program than expected.`, {
-    details: { chainKey },
-  });
-}
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
@@ -151,38 +109,43 @@ function namesChain(query: string, chainKey: string): boolean {
   return id !== undefined && id === evmChainIdFor(chainKey);
 }
 
-/** A source tx that ran, with the source it was read from: an EVM receipt, or a non-EVM chain's tx. */
-export type SourceTx =
-  | { family: "EVM"; reverted: boolean; receipt: EvmReceipt; source: EvmSource }
-  | { family: NonEvmSourceType; reverted: boolean; tx: NonEvmTx; source: NonEvmSource };
-
-/**
- * The source tx once it ran, or `null` before. `sender` routes a NEAR lookup; any account does on public nodes.
- */
-export async function readSourceTx(source: SwapSource, txHash: string, sender?: string): Promise<SourceTx | null> {
-  const { chain } = source;
-  if (source.family === "EVM") {
-    const receipt = await chainRead(chain, () => getEvmReceipt(chain.key, txHash));
-    return receipt && { family: "EVM", reverted: receipt.reverted, receipt, source };
-  }
-  const { family } = source;
-  const tx = await chainRead(chain, () => readNonEvmTx(chain.key, family, txHash, sender));
-  return tx && { family, reverted: tx.failed, tx, source };
+/** The source tx once it ran, as what it proves (`SourceTx`), or `null` before. `sender` routes a NEAR lookup. */
+export function readSourceTx(source: SwapSource, txHash: string, sender?: string): Promise<SourceTx | null> {
+  return chainRead(source.chain, () => source.adapter.read(source, txHash, sender));
 }
 
-/**
- * Whether the chain's node knows the tx at all, mined or pending. Only an EVM node says: a non-EVM tx is
- * reported unseen until it ran.
- */
+/** Whether the chain's node knows the tx at all, mined or pending; a node that can't say answers false. */
 export function seenOnChain(source: SwapSource, txHash: string): Promise<boolean> {
-  const { chain } = source;
-  if (source.family !== "EVM") return Promise.resolve(false);
-  return chainRead(chain, () => isTxKnown(chain.key, txHash));
+  return chainRead(source.chain, () => source.adapter.seen(source, txHash));
 }
 
-/** An EVM or NEAR chain's latest block: a ready quote reads it to check the RPC its track will need. */
-export function readBlockNumber(chain: ChainInfo): Promise<bigint> {
-  return chainRead(chain, () => blockNumber(chain.key));
+/** How many swaps the tx sends: intents created on the hub, or deposits from a spoke, whichever quote they're for. */
+export function swapsIn(source: SourceChain, sourceTx: SourceTx): number {
+  if (sourceTx.kind === "hub") return sourceTx.created.length;
+  return source.kind === "spoke" ? depositMessages(sourceTx.messages, source.depositor).length : 0;
+}
+
+/**
+ * A relay payload as a spoke's message carries it: from Solana only its keccak, so the relay takes the payload with
+ * the tx and checks it against that.
+ */
+export function committedPayload(source: SourceChain, payload: string): string {
+  if (!source.adapter.commitsHash) return payload;
+  return `0x${Buffer.from(keccak_256(hexBytes(payload))).toString("hex")}`;
+}
+
+/** What a spoke's deposit of the swap must say (`checkDeposit`): its asset manager, source, sender, recipient, payload. */
+export function depositTerms(
+  source: SourceChain,
+  swap: { intent: { srcChain: string; srcAddress: string }; relayData: { address: string; payload: string } },
+) {
+  return {
+    assetManager: source.kind === "spoke" ? source.depositor : "",
+    srcChain: swap.intent.srcChain,
+    srcAddress: swap.intent.srcAddress,
+    to: swap.relayData.address,
+    data: committedPayload(source, swap.relayData.payload),
+  };
 }
 
 /** A failed read is `CHAIN_UNAVAILABLE`, carrying no RPC text. Its record is the read's own ("Chain read", sodax.ts). */

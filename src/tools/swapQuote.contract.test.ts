@@ -7,8 +7,8 @@ import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { callerKeyHash, parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
-import type { EvmStep } from "../services/swap/quote.js";
 import { getCachedQuote } from "../services/swap/quoteCache.js";
+import type { EvmStep } from "../services/swap/sources/types.js";
 import { formatUnits } from "../services/swap/units.js";
 import { type QuoteOut, callQuote } from "./__fixtures__/swapClient.js";
 

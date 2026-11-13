@@ -42,7 +42,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum, base } from "viem/chains";
 import { isRecord, isRpcUrl, parseRpcConfigJson, sameHex } from "../../src/constants.js";
 import { type ActionErrorCode, RETRYABLE_CODES } from "../../src/services/swap/errors.js";
-import type { EvmStep, SwapQuote } from "../../src/services/swap/quote.js";
+import type { SwapQuote } from "../../src/services/swap/quote.js";
+import type { EvmStep } from "../../src/services/swap/sources/types.js";
 import type { TrackResult } from "../../src/services/swap/track.js";
 import type { AfterSend } from "../../src/tools/swap.js";
 

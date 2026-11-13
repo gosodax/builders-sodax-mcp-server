@@ -16,6 +16,7 @@ export type AlertKind =
   | "other_sender_deposit"
   | "quote_used"
   | "multiple_deposits"
+  | "failed_tx_deposit"
   | "refund_relay_failed"
   | "submit_rejected"
   | "swap_error";
@@ -26,6 +27,7 @@ const TITLES: Record<AlertKind, string> = {
   other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
+  failed_tx_deposit: "Swap deposit in a transaction that failed after it ran: not submitted, recover it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
   swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
@@ -44,7 +46,8 @@ const POSTS_PER_HOUR = { public: 5, checked: 20, tools: 5 };
 const MAX_HELD = 12;
 // Discord's limit on that post's description; the deposits this server checked are listed first.
 const HELD_TEXT_MAX = 4096;
-const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit"];
+// A failed tx's deposit is never checked against the quote named with it.
+const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit", "failed_tx_deposit"];
 const HOUR_MS = 60 * 60 * 1000;
 
 type Budget = keyof typeof POSTS_PER_HOUR;

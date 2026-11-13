@@ -986,7 +986,7 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     vi.restoreAllMocks();
   });
 
-  it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, no batch", async () => {
+  it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, its sender set, no batch", async () => {
     const calls = stubSwaps();
     const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
     expect(out.status).toBe("ready");
@@ -995,7 +995,13 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
         kind: "swap",
         chainKey: "sui",
         chainType: "SUI",
-        tx: { from: SUI_USER, to: SUI_RAW_TX.to, value: "5000000000", data: SUI_RAW_TX.data },
+        // The SDK leaves a Sui tx's sender unset: the wallet would sign as whichever account is active.
+        tx: {
+          from: SUI_USER,
+          to: SUI_RAW_TX.to,
+          value: "5000000000",
+          data: JSON.stringify({ version: 1, sender: SUI_USER }),
+        },
       },
     ]);
     expect(out.batch).toBeUndefined();

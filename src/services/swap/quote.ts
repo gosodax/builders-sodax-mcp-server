@@ -6,54 +6,36 @@
  * the steps, and the cached quote is what tracking later submits.
  */
 
-import { createHash } from "node:crypto";
-import { ZERO_ADDRESS_PATTERN, isRecord, sameHex as same } from "../../constants.js";
+import { ZERO_ADDRESS_PATTERN, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { callerKeyHash } from "../requestContext.js";
 import {
-  type SwapTx,
-  approveCalldata,
-  buildNonEvmDeposit,
   createIntentPayload,
   encodeRecipient,
   intentChainId,
   intentHash,
   isHubChain,
   packagedToken,
-  rebuildSwapTx,
   stellarRecipientCheckable,
   userHubWallet,
 } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
-import { type NonEvmStep, toNonEvmStep } from "./nonEvmSource.js";
 import { checkQuoteRoom, putQuote } from "./quoteCache.js";
 import { checkAddress, resolveExactly } from "./resolver.js";
+import { chainRead, configDisagrees, isHubSource, sourceChainFor } from "./source.js";
+import { swapMismatch } from "./sources/evm.js";
+import type { SourceChain, SwapBatch, SwapStep } from "./sources/types.js";
 import {
-  type EvmSource,
-  type NonEvmSource,
-  type SourceChain,
-  checkPinnedTarget,
-  configDisagrees,
-  isHubSource,
-  readBlockNumber,
-  sourceChainFor,
-} from "./source.js";
-import {
-  type Approval,
   type BuiltIntent,
-  type EvmTx,
   type IntentRequest,
-  asEvmTx,
-  buildApprove,
   buildIntent,
   checkAllowance,
   getDeadline,
   getQuote,
   leavesTimeToSend,
-  parseEvmTx,
 } from "./swapsApi.js";
 import { type SwapCatalog, type SwapChain, type SwapsApiToken, canUseAs, getSwapCatalog } from "./tokens.js";
 import { formatUnits, parseUnits } from "./units.js";
@@ -86,27 +68,6 @@ interface QuoteSummary {
   usdValue: string | null;
   /** The expected amount received in USD, likewise. */
   usdOut: string | null;
-}
-
-/** A step an EVM wallet sends; a non-EVM spoke's swap is a `NonEvmStep`. */
-export interface EvmStep {
-  kind: "reset_approve" | "approve" | "swap";
-  chainId: number;
-  tx: StepTx;
-}
-export type SwapStep = EvmStep | NonEvmStep;
-
-/** `value` and `chainId` are hex quantities. */
-export type StepTx = EvmTx & { chainId: string };
-
-/**
- * EIP-5792 `wallet_sendCalls`, for wallets that batch: it replaces the steps it lists. Its `calls` are
- * those steps' `{to, value, data}` in order, left to the agent so the calldata isn't returned twice.
- */
-export interface SwapBatch {
-  replaces: EvmStep["kind"][];
-  method: "wallet_sendCalls";
-  params: [{ version: "2.0.0"; chainId: string; from: string; atomicRequired: true }];
 }
 
 export type SwapQuote =
@@ -162,27 +123,22 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const source = sourceChainFor(catalog, from.chain);
   const { swapContract } = source;
   // Five EVM chains share one asset manager, so the live chain id must agree with the pinned one.
-  if (source.family === "EVM" && from.config.chainId !== source.chainId) {
+  if (source.chainId !== undefined && from.config.chainId !== source.chainId) {
     throw configDisagrees(from.chain.key, "chainId");
   }
   // An EVM sender's address is theirs on an EVM destination too; any other pair needs the recipient given.
-  const defaultsToSender = to.config.type === "EVM" && source.family === "EVM";
+  const defaultsToSender = to.config.type === "EVM" && source.adapter.family === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
   const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
-  // An Ethereum-style NEAR account sends through a relayer to its own account contract, a deposit track can't see.
-  if (fromAddress?.startsWith("0x") && source.family === "NEAR") {
-    throw new ActionError("INVALID_ADDRESS", "Swaps from an Ethereum-style (0x) NEAR account aren't supported here.", {
-      nextStep: "Ask the user for a named NEAR account (such as alice.near) or a 64-hex implicit one to send from.",
-      details: { field: "fromAddress" },
-    });
-  }
+  if (fromAddress !== undefined) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
     ? checkAddress(input.toAddress, to.chain, "toAddress")
     : defaultsToSender
       ? fromAddress
       : undefined;
   const ready = fromAddress !== undefined && toAddress !== undefined;
+  const { probe } = source.adapter;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
@@ -202,9 +158,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
     usdSent,
-    // A dead source RPC fails the quote before any steps, not the track after the user has sent them. A
-    // non-EVM swap tx is built here, which reads its chain, except NEAR's.
-    ready && (source.family === "EVM" || source.family === "NEAR") ? readBlockNumber(from.chain) : undefined,
+    // A dead source RPC fails the quote before any steps, not the track after the user has sent them: where building
+    // the swap doesn't read the chain, the source reads it first.
+    ready && probe ? chainRead(from.chain, () => probe(from.chain.key)) : undefined,
   ]);
   const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
   if (minOutput === 0n) {
@@ -287,10 +243,10 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const want = { from: from.token, to: to.token, fee, hubWallet };
   const intentMismatch = findIntentMismatch(request, source, want, built);
   if (intentMismatch) throw swapMismatch(request, intentMismatch, built.tx);
-  const prepared =
-    source.family === "EVM"
-      ? await prepareEvmSwap(request, source, want, built, approved)
-      : await prepareNonEvmSwap(request, source, from.chain, from.token.symbol, built, approved);
+  const prepared = await source.adapter.prepareSwap(
+    { ...source, chain: from.chain },
+    { request, built, approved, symbol: from.token.symbol },
+  );
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {
     throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
@@ -315,93 +271,6 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     checks: { balance: "not_checked", recipient },
     ...prepared,
   };
-}
-
-/**
- * The EVM steps: the Swaps API's swap tx (and any approval) checked byte for byte against the SDK's rebuild, as
- * `findEvmTxMismatch` says, then the approve and swap as one batch.
- */
-async function prepareEvmSwap(
-  request: IntentRequest,
-  source: EvmSource,
-  want: IntentWant,
-  built: BuiltIntent,
-  approved: boolean,
-): Promise<{ steps: SwapStep[]; batch?: SwapBatch }> {
-  const tx = parseEvmTx(built.tx);
-  const approval = approved ? undefined : await buildApprove(request);
-  const expected = await rebuildSwapTx({
-    srcChainKey: request.srcChainKey,
-    srcAddress: request.srcAddress,
-    token: request.inputToken,
-    amount: request.inputAmount,
-    intent: built.intent,
-  });
-  const mismatch = findEvmTxMismatch(request, source.swapContract, expected, tx, approval);
-  if (mismatch) throw swapMismatch(request, mismatch, tx);
-  return toSteps(tx, approval, source.chainId, request.srcAddress);
-}
-
-/**
- * A non-EVM spoke's step, built here by the SDK from the checked intent and payload: blockhash, sequence and fees
- * make the Swaps API's own build differ from any rebuild, so it can't be checked byte for byte.
- */
-async function prepareNonEvmSwap(
-  request: IntentRequest,
-  source: NonEvmSource,
-  chain: ChainInfo,
-  symbol: string,
-  built: BuiltIntent,
-  approved: boolean,
-): Promise<{ steps: SwapStep[] }> {
-  // Only Stellar has an approval of its own: trustline room. The swap service says no other family needs one.
-  if (!approved && source.family === "STELLAR") {
-    throw new ActionError("SWAP_REJECTED", `The wallet's ${symbol} trustline has too little room for this amount.`, {
-      nextStep: `Tell the user their Stellar wallet must raise its ${symbol} trustline limit by the amount sent, then quote again.`,
-    });
-  }
-  if (!approved) {
-    throw new ActionError(
-      "SWAP_REJECTED",
-      `The swap service says ${symbol} on ${chain.name} needs an approval this server can't build.`,
-      { nextStep: `Tell the user a swap of ${symbol} from ${chain.name} isn't available here for now.` },
-    );
-  }
-  // The SDK reads the chain to build it, and a wallet it can't build for (no account, too little for fees) fails
-  // the same way as an outage: the swap service built it a moment ago, so a retry is more likely to help.
-  const raw = await buildNonEvmDeposit({
-    srcChainKey: request.srcChainKey,
-    srcAddress: request.srcAddress,
-    token: request.inputToken,
-    amount: request.inputAmount,
-    to: built.intent.creator,
-    payload: built.relayData.payload,
-  }).catch(() => {
-    throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
-      nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
-    });
-  });
-  checkPinnedTarget(request.srcChainKey, "swap", raw, isRecord(built.tx) ? built.tx.to : undefined);
-  return { steps: [toNonEvmStep("swap", source.family, request.srcChainKey, raw)] };
-}
-
-/** Possibly a compromised or broken upstream: enough to investigate, no user addresses. */
-function swapMismatch(request: IntentRequest, mismatch: string, builtTx: unknown): ActionError {
-  const { srcChainKey, dstChainKey } = request;
-  const tx = asEvmTx(builtTx);
-  const dataSha256 = tx && createHash("sha256").update(tx.data.toLowerCase()).digest("hex");
-  logger.error(
-    {
-      mismatch,
-      "chain.key": srcChainKey,
-      "dst_chain.key": dstChainKey,
-      ...(tx && { "tx.to": tx.to, "tx.data_sha256": dataSha256 }),
-    },
-    "The Swaps API built a swap that doesn't match the quote",
-  );
-  return new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.", {
-    details: { chainKey: srcChainKey },
-  });
 }
 
 function resolveSide(
@@ -489,75 +358,4 @@ function findIntentMismatch(
     ["relay payload", payload !== undefined && same(relayData.payload, payload)],
   ];
   return checks.find(([, ok]) => !ok)?.[0];
-}
-
-/**
- * The EVM swap tx must be, byte for byte, the one the SDK builds for the checked intent, and any approval
- * `approve(the pinned swap contract, exact amount)` on the source token. Names the first check that fails.
- */
-function findEvmTxMismatch(
-  request: IntentRequest,
-  /** The contract the swap calls: the spoke's asset manager, or the hub's intents contract. */
-  swapContract: string,
-  /** The SDK's rebuild of the swap tx, if it could. */
-  expected: SwapTx | undefined,
-  tx: EvmTx,
-  approval?: Approval,
-): string | undefined {
-  const approves = (step: EvmTx, amount: bigint) =>
-    same(step.from, request.srcAddress) &&
-    same(step.to, request.inputToken) &&
-    BigInt(step.value) === 0n &&
-    same(step.data, approveCalldata(request.inputToken, swapContract, amount));
-  const checks: [string, boolean][] = [
-    ["tx.from", same(tx.from, request.srcAddress)],
-    ["rebuild", expected !== undefined],
-    ["tx.to", same(tx.to, expected?.to ?? "")],
-    ["tx.value", BigInt(tx.value) === expected?.value],
-    ["tx.data", same(tx.data, expected?.data ?? "")],
-    [
-      "approval",
-      !approval ||
-        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
-    ],
-  ];
-  return checks.find(([, ok]) => !ok)?.[0];
-}
-
-/**
- * Hex quantities, as `eth_sendTransaction` takes them. The chain id is in the tx: several chains share the
- * contracts a step calls, so a wallet on another network must refuse it rather than send it there.
- */
-export function toStepTx(tx: EvmTx, chainId: number): StepTx {
-  return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
-}
-
-/** The steps in order and, with an approval, the approve and swap as one batch. A reset stays out: it must land first. */
-function toSteps(
-  swapTx: EvmTx,
-  approval: Approval | undefined,
-  chainId: number,
-  from: string,
-): { steps: SwapStep[]; batch?: SwapBatch } {
-  const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx, chainId) };
-  if (!approval) return { steps: [swap] };
-  const approve: SwapStep = { kind: "approve", chainId, tx: toStepTx(approval.tx, chainId) };
-  const reset: SwapStep[] = approval.resetTx
-    ? [{ kind: "reset_approve", chainId, tx: toStepTx(approval.resetTx, chainId) }]
-    : [];
-  return {
-    steps: [...reset, approve, swap],
-    batch: {
-      replaces: ["approve", "swap"],
-      method: "wallet_sendCalls",
-      params: [
-        {
-          version: "2.0.0",
-          chainId: `0x${chainId.toString(16)}`,
-          from,
-          atomicRequired: true,
-        },
-      ],
-    },
-  };
 }

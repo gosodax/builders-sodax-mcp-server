@@ -2,6 +2,7 @@ import { IntentCreatedEventAbi, IntentsAbi } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
 import { getAbiItem, toEventSelector } from "viem";
 import { describe, expect, it } from "vitest";
+import type { EvmReceipt } from "../sodax.js";
 import {
   ASSET_MANAGER,
   CONNECTION,
@@ -19,6 +20,7 @@ import {
   INTENT_CREATED_TOPIC,
   SEND_MESSAGE_SELECTOR,
   checkDeposit,
+  connectionMessages,
   decodeMessage,
   decodeRlpList,
   decodeSendMessage,
@@ -27,12 +29,15 @@ import {
 } from "./sourceTx.js";
 
 const WANT = {
-  connection: CONNECTION,
   assetManager: ASSET_MANAGER,
   srcChain: "23",
   srcAddress: USER,
-  relayData: RELAY_DATA,
+  to: RELAY_DATA.address,
+  data: RELAY_DATA.payload,
 };
+/** The receipt's messages from the Arbitrum `connection`, as an EVM spoke's evidence. */
+const messagesOf = (receipt: EvmReceipt, connection = CONNECTION) => connectionMessages(receipt, connection);
+const MESSAGES = messagesOf(RECEIPT);
 
 describe("decodeMessage", () => {
   it("decodes the live deposit: from Arbitrum's asset manager to the hub, with an RLP payload of 5 items", () => {
@@ -71,49 +76,50 @@ describe("decodeRlpList", () => {
 
 describe("checkDeposit", () => {
   it("matches the quote's own deposit", () => {
-    expect(checkDeposit(RECEIPT, WANT)).toBe("match");
+    expect(checkDeposit(MESSAGES, WANT)).toBe("match");
   });
 
   it("calls the sender's deposit for another intent a mismatch", () => {
     const flipped = `${RELAY_DATA.payload.slice(0, -2)}${RELAY_DATA.payload.endsWith("00") ? "01" : "00"}`;
-    expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, payload: flipped } })).toBe("mismatch");
-    expect(checkDeposit(RECEIPT, { ...WANT, relayData: { ...RELAY_DATA, address: CREATOR } })).toBe("mismatch");
+    expect(checkDeposit(MESSAGES, { ...WANT, data: flipped })).toBe("mismatch");
+    expect(checkDeposit(MESSAGES, { ...WANT, to: CREATOR })).toBe("mismatch");
   });
 
   it("tells this intent's deposit from another address apart", () => {
-    expect(checkDeposit(RECEIPT, { ...WANT, srcAddress: CREATOR })).toBe("other_sender");
+    expect(checkDeposit(MESSAGES, { ...WANT, srcAddress: CREATOR })).toBe("other_sender");
   });
 
   it("finds no deposit of the quote's in someone else's, or in a message from another chain or to another hub", () => {
-    const someoneElse = { ...WANT, srcAddress: CREATOR, relayData: { address: CREATOR, payload: "0x01" } };
-    expect(checkDeposit(RECEIPT, someoneElse)).toBe("not_a_deposit");
-    expect(checkDeposit(RECEIPT, { ...WANT, srcChain: "30" })).toBe("not_a_deposit");
+    const someoneElse = { ...WANT, srcAddress: CREATOR, to: CREATOR, data: "0x01" };
+    expect(checkDeposit(MESSAGES, someoneElse)).toBe("not_a_deposit");
+    expect(checkDeposit(MESSAGES, { ...WANT, srcChain: "30" })).toBe("not_a_deposit");
     const toAnotherHub = receiptWith({ dstChainId: 147n, payload: MESSAGE?.payload ?? "0x" });
-    expect(checkDeposit(toAnotherHub, WANT)).toBe("not_a_deposit");
+    expect(checkDeposit(messagesOf(toAnotherHub), WANT)).toBe("not_a_deposit");
   });
 
   it("finds no deposit from another contract, another sender (an approve's case) or another event", () => {
-    expect(checkDeposit(RECEIPT, { ...WANT, connection: ASSET_MANAGER })).toBe("not_a_deposit");
-    expect(checkDeposit(RECEIPT, { ...WANT, assetManager: USER })).toBe("not_a_deposit");
+    expect(checkDeposit(messagesOf(RECEIPT, ASSET_MANAGER), WANT)).toBe("not_a_deposit");
+    expect(checkDeposit(MESSAGES, { ...WANT, assetManager: USER })).toBe("not_a_deposit");
     const otherEvent = { reverted: false, logs: [{ ...RECEIPT.logs[0], topics: [`0x${"1".repeat(64)}`] }] };
-    expect(checkDeposit(otherEvent, WANT)).toBe("not_a_deposit");
-    expect(checkDeposit({ reverted: false, logs: [] }, WANT)).toBe("not_a_deposit");
+    expect(checkDeposit(messagesOf(otherEvent), WANT)).toBe("not_a_deposit");
+    expect(checkDeposit([], WANT)).toBe("not_a_deposit");
   });
 });
 
 describe("holdsCancel", () => {
   const PAYLOAD = `0x${"ef".repeat(40)}`;
-  const want = { connection: CONNECTION, srcAddress: USER, srcChain: "23", creator: CREATOR, payload: PAYLOAD };
+  const want = { srcAddress: USER, srcChain: "23", creator: CREATOR, payload: PAYLOAD };
+  const cancelOf = (receipt: EvmReceipt) => holdsCancel(messagesOf(receipt), want);
 
   it("finds the user's message to their hub wallet with the cancel payload", () => {
-    expect(holdsCancel(receiptWith({ srcAddress: USER, payload: PAYLOAD }), want)).toBe(true);
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: PAYLOAD }))).toBe(true);
   });
 
   it("refuses another payload, sender, recipient or contract", () => {
-    expect(holdsCancel(receiptWith({ srcAddress: USER, payload: "0x01" }), want)).toBe(false);
-    expect(holdsCancel(receiptWith({ payload: PAYLOAD }), want)).toBe(false);
-    expect(holdsCancel(receiptWith({ srcAddress: USER, dstAddress: USER, payload: PAYLOAD }), want)).toBe(false);
-    expect(holdsCancel(receiptWith({ srcAddress: USER, payload: PAYLOAD }, ASSET_MANAGER), want)).toBe(false);
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: "0x01" }))).toBe(false);
+    expect(cancelOf(receiptWith({ payload: PAYLOAD }))).toBe(false);
+    expect(cancelOf(receiptWith({ srcAddress: USER, dstAddress: USER, payload: PAYLOAD }))).toBe(false);
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: PAYLOAD }, ASSET_MANAGER))).toBe(false);
   });
 });
 

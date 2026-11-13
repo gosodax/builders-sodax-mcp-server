@@ -122,6 +122,8 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
 
 /** `rpcOverrides`: the RPC overrides the swap tools read through, already checked. */
 async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
+  // stdout carries the JSON-RPC, and the SDK logs some failures with console.log (Solana's IDL fetch).
+  console.log = console.info = console.debug = console.error;
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");

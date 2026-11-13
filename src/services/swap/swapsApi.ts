@@ -44,12 +44,26 @@ const intentSchema = z.object({
   data: z.string().regex(HEX_DATA),
 });
 
+// The swap tx's shape is the source family's: an EVM one is parsed where it's used (`parseEvmTx`).
 const builtIntentSchema = z.object({
-  tx: evmTxSchema,
+  tx: z.unknown(),
   intent: intentSchema,
   relayData: z.object({ address: evmAddress, payload: z.string().regex(HEX_DATA) }),
 });
 export type BuiltIntent = z.infer<typeof builtIntentSchema>;
+
+/** The Swaps API's swap tx, if it's an EVM one. */
+export function asEvmTx(tx: unknown): EvmTx | undefined {
+  const parsed = evmTxSchema.safeParse(tx);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** The Swaps API's swap tx from an EVM source; any other shape is a swap it built wrong. */
+export function parseEvmTx(tx: unknown): EvmTx {
+  const evmTx = asEvmTx(tx);
+  if (!evmTx) throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
+  return evmTx;
+}
 export type Intent = BuiltIntent["intent"];
 
 // Non-EVM destinations have their own fill hash formats.
@@ -197,10 +211,15 @@ export async function buildCancel(srcChainKey: string, intent: Intent): Promise<
 /**
  * Asks the relay to carry a mined spoke tx to the hub; `chainId` is the relay id (an intent's `srcChain`).
  * Through the Swaps API, not the relay itself (`relay.ts`), so the caller's key and limits apply (ADR §Cancel).
+ * `data` is the relay data the tx committed only the hash of (Solana), which the relay can't read from the chain.
  */
-export async function relaySpokeTx(chainId: string, txHash: string): Promise<boolean> {
+export async function relaySpokeTx(
+  chainId: string,
+  txHash: string,
+  data?: { address: string; payload: string },
+): Promise<boolean> {
   const schema = z.object({ result: z.object({ success: z.boolean() }) });
-  const { result } = await call(schema, "/intents/submit", { chainId, txHash });
+  const { result } = await call(schema, "/intents/submit", { chainId, txHash, ...(data && { data }) });
   return result.success;
 }
 

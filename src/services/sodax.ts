@@ -9,6 +9,8 @@
 
 import {
   type EvmSpokeOnlyChainKey,
+  type GetAddressType,
+  type GetTokenAddressType,
   HUB_CHAIN_KEY,
   type SpokeChainKey,
   getIntentRelayChainId,
@@ -29,8 +31,6 @@ import {
   sameHex,
 } from "../constants.js";
 import { errorName, logger, redact } from "./logger.js";
-import type { SourceChain } from "./swap/source.js";
-import type { BuiltIntent } from "./swap/swapsApi.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -136,13 +136,16 @@ function sdk() {
   return loaded;
 }
 
+/** The SDK's spoke clients, for the source adapters' own reads, which they make inside `bounded`. */
+export const spokeClients = () => sdk().sodax.spoke;
+
 export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
 
 /**
  * The hub's id of an intent (IF-11: keccak256 of the ABI-encoded `createIntent` struct), as `GET /intent/:intentHash`
  * and the solver name it, from the struct the Swaps API built. Verified against the data API's own hashes.
  */
-export function intentHash(intent: BuiltIntent["intent"]): string {
+export function intentHash(intent: IntentJson): string {
   const uint = (value: string) => BigInt(value);
   return sdk().sdk.EvmSolverService.getIntentHash({
     ...intent,
@@ -170,6 +173,15 @@ export function encodeRecipient(chainKey: string, address: string): string | und
     // (0x16, 0x14) is taken, in a standard (0x05) or contract (0x06) principal.
     if (chainConfigs[chainKey]?.chain?.type === "STACKS" && !/^0x0[56]1[46]/.test(encoded)) return undefined;
     return encoded;
+  } catch {
+    return undefined;
+  }
+}
+
+/** An address as its chain spells it, from its encoding in an intent (`encodeRecipient`'s inverse), if the SDK can. */
+export function decodeAddress(chainKey: string, encoded: string): string | undefined {
+  try {
+    return sdk().sdk.reverseEncodeAddress(chainKey as SpokeChainKey, encoded as `0x${string}`);
   } catch {
     return undefined;
   }
@@ -225,24 +237,12 @@ export function connectionFor(chainKey: string): string | undefined {
   return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
 }
 
-/**
- * A chain's source from the packaged config, if a swap can start there: the hub, whose intents contract logs the
- * intent the swap tx creates, or an EVM spoke, whose `connection` proves a deposit. The quote, the source-chain
- * suggestions and the chain support tool all ask this.
- */
-export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
-  const chainId = evmChainIdFor(chainKey);
-  const swapContract = swapContractFor(chainKey);
-  const connection = connectionFor(chainKey);
-  if (chainId === undefined || !swapContract || (!connection && !isHubChain(chainKey))) return undefined;
-  return { chainId, swapContract, ...(connection && { connection }) };
-}
-
 const asEvmAddress = (value: unknown) =>
   typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
 
 const SDK_CALL_TIMEOUT_MS = 15_000;
-const RPC_CALL_TIMEOUT_MS = 8_000;
+/** A single RPC read's bound. */
+export const RPC_CALL_TIMEOUT_MS = 8_000;
 
 /**
  * A bounded call whose failure (timeout included) carries no text of its own. One log record per call
@@ -305,9 +305,13 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   });
 }
 
-/** An EVM spoke's latest block number: proof its RPC answers. Fails as a bare error. */
+/** An EVM spoke's or NEAR's latest block number: proof its RPC answers. Fails as a bare error. */
 export function blockNumber(chainKey: string): Promise<bigint> {
-  return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, () => {
+  return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    if (chainConfigs[chainKey]?.chain?.type === "NEAR") {
+      const block = await sdk().sodax.spoke.near.rpcProvider.viewBlock({ finality: "final" });
+      return BigInt(block.header.height);
+    }
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     return client.getBlockNumber();
   });
@@ -516,6 +520,53 @@ export async function hubCancelTx(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A non-EVM spoke's swap tx, built by the SDK as its own swaps build theirs: a deposit of `amount` (gross) of `token`
+ * to the user's hub wallet `to`, carrying `payload`. Unsigned, as the SDK returns it raw. Reads the chain (account,
+ * blockhash, coins, fees), so it fails as a bare error.
+ */
+export function buildNonEvmDeposit(params: {
+  srcChainKey: string;
+  srcAddress: string;
+  token: string;
+  amount: bigint;
+  to: string;
+  payload: string;
+}): Promise<unknown> {
+  const { srcChainKey, srcAddress, token, amount, to, payload } = params;
+  return bounded({ label: "deposit build", chainKey: srcChainKey }, async () => {
+    // Only the values are cast: a parameter the SDK renames fails the type check, not the deposit.
+    const result = await sdk().sodax.spoke.deposit({
+      srcChainKey: srcChainKey as SpokeChainKey,
+      srcAddress: srcAddress as GetAddressType<SpokeChainKey>,
+      token: token as GetTokenAddressType<SpokeChainKey>,
+      to: to as `0x${string}`,
+      amount,
+      data: payload as `0x${string}`,
+      raw: true,
+      // As the EVM rebuild: the Swaps API's own build of this swap already ran the hub simulation.
+      skipSimulation: true,
+    });
+    if (!result.ok) throw new Error("deposit build failed");
+    return result.value;
+  });
+}
+
+/**
+ * The cancel of a swap from a non-EVM spoke, as the SDK builds its own: a `connection` message from the intent's
+ * source address to its creator carrying `cancelIntent(intent)`. Unsigned and raw; fails as a bare error.
+ */
+export function buildNonEvmCancel(srcChainKey: string, intent: IntentJson): Promise<unknown> {
+  return bounded({ label: "cancel build", chainKey: srcChainKey }, async () => {
+    const result = await sdk().sodax.swaps.createCancelIntent({
+      params: { srcChainKey: srcChainKey as SpokeChainKey, intent: toSdkIntent(intent) },
+      raw: true,
+    });
+    if (!result.ok) throw new Error("cancel build failed");
+    return result.value;
+  });
 }
 
 /**

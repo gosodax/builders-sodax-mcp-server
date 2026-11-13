@@ -95,15 +95,19 @@ amount sent, is part of the quote, and is never a tool input.
 With the `swap` profile, or `all` with a key, an agent swaps for a user like this. The user's wallet signs and sends
 every transaction; the server never signs.
 
-1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
-   destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
+1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` unless both
+   chains are EVM (then it defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
    needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
    `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined (track it even
    after). Without the addresses it returns a price only.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
-   `reset_approve` still goes first.
+   `reset_approve` still goes first. From a non-EVM chain there is one step, with `chainType` instead of `chainId`:
+   its `tx` is the SODAX SDK's unsigned transaction for that family, as the SDK returns it raw (bigints as decimal
+   strings, bytes as base64), built here from the checked intent; the quote's `nextStep` says how the family's
+   wallet sends it. Where the SDK reads what the tx calls from the chain, that is checked first: Solana's program
+   against the packaged one, Sui's package against the Swaps API's own build. A Sui tx carries its sender.
 3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
    `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
@@ -111,25 +115,34 @@ every transaction; the server never signs.
    Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
    there once expired, unless a solver filled it first. While the result has `retryAfterSec`, call it again after
    that many seconds. A tx no node has seen comes with `stopAfter`: track is called until then, and once more after.
-   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked.
+   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked. From any spoke, track
+   reads what the relay signs: the messages the chain's `connection` emitted when the tx ran. It submits a tx holding
+   exactly one deposit, sent by the asset manager from the quote's sender to their hub wallet with the quote's relay
+   payload (from Solana, its keccak). A NEAR tx that failed after its deposit ran isn't submitted: it's reported as
+   held, and alerts the operators. A non-EVM tx's hash goes as the wallet shows it.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
-   relay: the second call confirms it on the hub (`cancel_confirmed`).
+   relay: the second call confirms it on the hub (`cancel_confirmed`). From a non-EVM chain the SDK builds the cancel
+   here. From any spoke it's relayed once the tx ran and its `connection` emitted the user's message to their hub
+   wallet with the intent's cancel payload (from Solana, its keccak).
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
-`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub)
-or an EVM spoke chain, not on non-EVM chains yet; the destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
-aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a 2-of-2 that Bound co-signs and
-broadcasts, behind a login token that expires in minutes), which an agent's wallet can't drive. A Stacks swap needs the
-sender's public key and post-conditions the wallet must add itself, and the SDK can't build a Stacks cancel yet (it
-passes the address where the public key goes). On Sonic the swap calls
-the intents contract directly, so its approval goes to that contract. Every result the tools return carries
+`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub),
+an EVM spoke, or a non-EVM chain of a family listed in `NON_EVM_SOURCE_TYPES` (`src/services/swap/sources/types.ts`);
+`sodax_check_chain_support` says for any chain. The destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
+aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a
+2-of-2 that Bound co-signs and broadcasts, behind a login token that expires in minutes), which an agent's wallet
+can't drive. A Stacks swap needs the sender's public key and post-conditions the wallet must add itself, and the SDK
+can't build a Stacks cancel yet (it passes the address where the public key goes). On Sonic the swap calls the
+intents contract directly, so its approval goes to that contract. A Stellar source whose trustline the SDK says has
+too little room for the amount is refused: the server doesn't build a changeTrust step. Every result the tools return carries
 a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 
 The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
 
 - give the user's address on the source chain, for `fromAddress`;
 - switch to the chain a step's `tx.chainId` names, then send that `tx` (`to`, `value`, `data`) and return its hash;
+  from a non-EVM chain, sign and send the family's raw transaction in the step (see step 2 above);
 - tell when a transaction is mined, since each step must be mined before the next;
 - optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
 
@@ -357,7 +370,7 @@ Coolify injects these directly into the process environment.
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
-| `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, and the quote's NEAR storage and Stellar trustline checks), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |
+| `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, the quote's NEAR storage and Stellar trustline checks, and the swap tx it builds on a non-EVM chain), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Public nodes keep only recent txs, so a swap from a non-EVM chain tracked late may read as not found; an archival endpoint avoids that. Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
@@ -410,7 +423,7 @@ Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
 - A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for or can't check against one (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 

@@ -6,7 +6,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
-import { EVM_TX_HASH_PATTERN, SWAP_USD_WARN } from "../constants.js";
+import { SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
@@ -15,6 +15,8 @@ import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
+import { isAnyTxHash, pinnedSourceOf } from "../services/swap/sources/index.js";
+import type { NonEvmSourceType } from "../services/swap/sources/types.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import {
   DEPOSIT_SAFE,
@@ -28,11 +30,13 @@ import { registerActionTool } from "./actionTool.js";
 
 /**
  * `schema`, plus the SECRET_REJECTED refusal for a value that fails it and looks like a secret: the
- * handler's own screening never sees a value zod rejects.
+ * handler's own screening never sees a value zod rejects. A tx-hash field takes every source family's
+ * format, which some key shapes fit too, so it's screened even when it passes.
  */
-function screened(schema: z.ZodString, field: SecretField = {}) {
+function screened(schema: z.ZodType<string>, field: SecretField = {}) {
   return schema.superRefine((value, ctx) => {
-    const refusal = schema.safeParse(value).success ? undefined : secretRefusalText(value, field);
+    const screen = field.txHash || !schema.safeParse(value).success;
+    const refusal = screen ? secretRefusalText(value, field) : undefined;
     if (refusal) ctx.addIssue({ code: "custom", message: refusal });
   });
 }
@@ -43,7 +47,7 @@ const chainArg = () => textArg(64, 1);
 const tokenArg = () => textArg(128, 1);
 const addressArg = () => textArg(128).optional();
 const txHashArg = () =>
-  screened(z.string().trim().regex(EVM_TX_HASH_PATTERN, "Must be an EVM transaction hash: 0x and 64 hex characters."), {
+  screened(z.string().trim().refine(isAnyTxHash, "Must be a transaction hash as the wallet shows it."), {
     txHash: true,
   });
 const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a quoteId" });
@@ -51,7 +55,7 @@ const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notH
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
   txHash: txHashArg().describe(
-    "Hash of the swap step's transaction on the EVM source chain (0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
+    "Hash of the swap step's transaction on the source chain, as the wallet shows it (EVM: 0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
   quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_quote."),
   chain: chainArg()
@@ -104,7 +108,7 @@ export function registerSwapTools(server: McpServer): void {
     "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. This server never signs or moves funds.",
     {
       fromChain: chainArg().describe(
-        'Source chain, Sonic or an EVM chain (not a non-EVM chain yet): name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+        'Source chain: name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161"). If a swap can\'t start there, the error lists the chains it can.',
       ),
       fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
       toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
@@ -116,7 +120,7 @@ export function registerSwapTools(server: McpServer): void {
         "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
       ),
       toAddress: addressArg().describe(
-        "Recipient on the destination chain. Defaults to fromAddress when the destination is EVM.",
+        "Recipient on the destination chain. Defaults to fromAddress when both chains are EVM.",
       ),
       slippageBps: z
         .number()
@@ -167,7 +171,7 @@ export function registerSwapTools(server: McpServer): void {
       cancelTxHash: txHashArg()
         .optional()
         .describe(
-          "Hash of the cancel transaction (0x and 64 hex characters), once the user's wallet has sent the cancel step.",
+          "Hash of the cancel transaction as the wallet shows it, once the user's wallet has sent the cancel step.",
         ),
     },
     swapActionHints,
@@ -333,13 +337,30 @@ function quoteNextStep(quote: SwapQuote): string {
   const batch = quote.batch
     ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)"
     : "";
+  const [first] = quote.steps;
+  const send =
+    "chainType" in first
+      ? `Once they confirm, have their ${from.chain.name} wallet send the swap step before it expires: ${SIGN_NON_EVM_TX[first.chainType]}.`
+      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't. Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}.`;
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
-    `Their wallet must be on ${from.chain.name} (chain id ${quote.steps[0].chainId}) to send the steps; switch it there first if it isn't.`,
-    `Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}. Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap${isHubChain(from.chain.key) ? "" : ", or starts its refund"}.`,
+    send,
+    `Then call sodax_swap_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: track is what submits the swap${isHubChain(from.chain.key) ? "" : ", or starts its refund"}.`,
   ].join(" ");
 }
+
+// How a family's wallet sends the SDK's raw tx (`steps[].tx`; bigints are decimal strings, bytes base64).
+const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
+  NEAR: "one transaction from signerId to params.contractId calling params.method with params.args, attaching params.deposit (yoctoNEAR) and params.gas",
+  SOLANA:
+    "data is an unsigned v0 transaction (base64) with the user as fee payer, which the wallet signs and sends at once: its blockhash expires in about a minute, and if it expires unsent, call this tool again with the same arguments for a new one",
+  STELLAR:
+    "data is the transaction envelope (XDR, public network), which the wallet signs and submits; any other transaction from the account first makes it unusable",
+  SUI: "data is the transaction as JSON (Transaction.from), with its sender set, which that account's wallet signs and executes",
+  INJECTIVE:
+    "the wallet signs signedDoc in direct mode (bodyBytes and authInfoBytes in base64) and broadcasts it, or an EIP-712 wallet sends the same contract execution from that account; any other transaction from the account first makes the signed one unusable",
+};
 
 // A swap from the hub is an intent there already: it's filled or, once expired, refunded without an operator.
 const safe = ({ alerted, chain }: { alerted: boolean; chain: { key: string; name: string } }) =>
@@ -348,6 +369,15 @@ const safe = ({ alerted, chain }: { alerted: boolean; chain: { key: string; name
     : alerted
       ? DEPOSIT_SAFE
       : DEPOSIT_SAFE_UNALERTED;
+const isNonEvmChain = (chainKey: string) => {
+  const family = pinnedSourceOf(chainKey)?.adapter.family;
+  return family !== undefined && family !== "EVM";
+};
+/** A tx its node can't confirm: a non-EVM node can't tell one in flight from one never sent; a batch id is EVM's. */
+const unseen = ({ key, name }: { key: string; name: string }) =>
+  isNonEvmChain(key)
+    ? `${name} hasn't confirmed this transaction yet. Check that the user's wallet really sent it and that this is its transaction hash`
+    : `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
 const retryRefund = (tool: string, seconds: number) =>
   `To retry the refund, call ${tool} again in about ${seconds} seconds, at most ${MAX_CALLS} times, then stop.`;
@@ -358,12 +388,12 @@ const POLL = `call sodax_swap_track again (it waits up to 20 seconds for the nex
 
 function notSubmittedNextStep(result: Extract<TrackResult, { status: "not_submitted" }>): string {
   if (result.reason === "not_a_deposit") {
-    return "That transaction isn't this quote's swap (it may be the approve, or the swap call failed inside a batch); ask for the swap transaction's hash.";
+    return "That transaction isn't this quote's swap (on an EVM chain it may be the approve, or a swap call that failed inside a batch); ask for the swap transaction's hash.";
   }
   const deposit = safe(result);
   switch (result.reason) {
     case "deposit_mismatch":
-      return `That transaction is a SODAX deposit from this wallet for another quote: track it with the quoteId it was made from. Without that quoteId, ${deposit}.`;
+      return `That transaction is a SODAX deposit for another quote: track it with the quoteId it was made from. Without that quoteId, ${deposit}.`;
     case "other_sender":
       return `That transaction sent this quote's swap from another address than its fromAddress, so this server can't submit it: ${deposit}.`;
     case "quote_used":
@@ -388,7 +418,7 @@ export function trackNextStep(result: TrackResult): string {
     case "awaiting_source_confirmation":
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`
-        : `${chain} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
+        : `${unseen(result.chain)}; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
             result.stopAfter
               ? `call sodax_swap_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}, then once more and follow that answer.`
               : POLL
@@ -396,9 +426,16 @@ export function trackNextStep(result: TrackResult): string {
     case "source_not_found": {
       // A sped-up or replaced tx has a new hash; its deposit still matches the quote.
       const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
+      // Public non-EVM nodes keep recent txs only, so an older swap reads as unknown too.
+      if (isNonEvmChain(result.chain.key)) {
+        return `${chain}'s node doesn't have this transaction: it may be older than the node keeps, or not a transaction on ${chain}. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+      }
       return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
     }
     case "source_failed":
+      if ("depositHeld" in result) {
+        return `The swap transaction failed on ${chain} after its deposit went through, so it can't be swapped: ${safe(result)}.`;
+      }
       return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
     case "not_submitted":
       return notSubmittedNextStep(result);
@@ -455,7 +492,7 @@ const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" 
   refunding: "The swap is already being refunded to the user.",
   not_on_hub_yet: "The swap service hasn't processed this swap yet; call sodax_swap_track until it has, then cancel.",
   not_sent:
-    "The swap transaction isn't mined, or it failed, so nothing was sent and there's nothing to cancel. If it's still pending, the user can cancel or replace it in their wallet; if it gets mined, call sodax_swap_cancel again.",
+    "The swap transaction isn't confirmed, or it failed, so nothing was sent and there's nothing to cancel yet. If it's still pending, call sodax_swap_cancel again once it's confirmed; on an EVM chain the user can also cancel or replace it in their wallet.",
 };
 
 /** Built from enums and catalog names only. */
@@ -475,10 +512,13 @@ export function cancelNextStep(result: CancelResult): string {
       return `The swap's deposit is on ${chain} but was never submitted, so it won't be swapped unless sodax_swap_track is called: don't call it. To get the funds back, call sodax_swap_cancel again with the same arguments in about ${result.retryAfterSec} seconds, once the quote has expired, and this server starts the refund. The deposit is safe meanwhile; the user must not send it again.`;
     case "expired_unsubmitted":
       return `The swap won't be filled and its refund couldn't start: ${safe(result)}. ${retryRefund("sodax_swap_cancel", result.retryAfterSec)}`;
-    case "ready":
-      return `Have the user's wallet send the cancel step on ${chain}, then call sodax_swap_cancel again with the same arguments plus cancelTxHash.`;
+    case "ready": {
+      const [step] = result.steps;
+      const how = "chainType" in step ? ` (${SIGN_NON_EVM_TX[step.chainType]})` : "";
+      return `Have the user's wallet send the cancel step on ${chain}${how}, then call sodax_swap_cancel again with the same arguments plus cancelTxHash.`;
+    }
     case "cancel_awaiting_confirmation":
-      return `The cancel isn't confirmed on ${chain} yet; call sodax_swap_cancel again in about ${result.retryAfterSec} seconds, and don't resend it.`;
+      return `The cancel isn't confirmed on ${chain} yet; call sodax_swap_cancel again in about ${result.retryAfterSec} seconds, and don't resend it. Only if the wallet shows it was never sent (a Solana one expires in about a minute), call sodax_swap_cancel without cancelTxHash for a new one.`;
     case "cancel_failed":
       return `The cancel transaction failed on ${chain}; only gas was spent. Call sodax_swap_cancel without cancelTxHash for a new one.`;
     case "not_a_cancel_tx":

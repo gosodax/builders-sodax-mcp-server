@@ -9,7 +9,7 @@
 import { sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, intentHash, isHubChain } from "../sodax.js";
+import { intentHash, isHubChain } from "../sodax.js";
 import { TtlCache } from "../ttlCache.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError, RETRYABLE_CODES } from "./errors.js";
@@ -24,13 +24,17 @@ import {
 import {
   RETRY_AFTER_SEC,
   type SwapRef,
-  type SwapSource,
-  readReceipt,
+  depositTerms,
+  isHubSource,
+  readSourceTx,
   resolveSource,
   seenOnChain,
+  sourceTxHash,
+  swapsIn,
   whyNotCancellable,
 } from "./source.js";
-import { type DepositCheck, INTENT_CREATED_TOPIC, checkDeposit, depositMessages, hubIntentHashes } from "./sourceTx.js";
+import { type DepositCheck, checkDeposit } from "./sourceTx.js";
+import type { SourceTx, SwapSource } from "./sources/types.js";
 import { MAX_CLOCK_SKEW_SEC, type SubmitTxStatus, getSubmitTxStatus, relaySpokeTx, submitTx } from "./swapsApi.js";
 
 /** The backend's in-flight steps, in order; `pending` is `queued`, `solved` and `failed` are terminal. */
@@ -68,6 +72,8 @@ export type TrackState =
       stopAfter?: string;
     }
   | { status: "source_failed" }
+  /** Failed after its deposit ran (NEAR keeps receipts that ran): not submitted, so the funds wait for an operator. */
+  | { status: "source_failed"; depositHeld: true; alerted: boolean }
   | { status: "source_not_found" }
   | { status: "not_submitted"; reason: "not_a_deposit" }
   | {
@@ -122,9 +128,9 @@ export async function trackSwapWaiting(input: {
 }
 
 export async function trackSwap(input: { txHash: string; quoteId?: string; chain?: string }): Promise<TrackResult> {
-  // The backend keys rows on the exact string, so one spelling per hash.
-  const txHash = input.txHash.toLowerCase();
   const source = await resolveSource(input);
+  // The backend keys rows on the exact string, so one spelling per hash.
+  const txHash = sourceTxHash(source, input.txHash);
   const key = JSON.stringify([callerKeyHash(), source.chain.key, txHash, input.quoteId ?? null]);
   let pending = inFlight.get(key);
   if (!pending) {
@@ -163,9 +169,9 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   const memoKey = `${chain.key}:${txHash}`;
   // A remembered answer saves reads only while the result is to wait anyway: a final one reads the chain again.
   const known = sendable || claimed ? seenTx.get<boolean>(memoKey) : null;
-  const receipt = known === false ? null : await readReceipt(chain, txHash);
+  const receipt = known === false ? null : await readSourceTx(source, txHash, quote?.srcAddress);
   if (!receipt) {
-    const seen = known ?? (await seenOnChain(chain, txHash));
+    const seen = known ?? (await seenOnChain(source, txHash));
     if (known === null) seenTx.set(memoKey, seen);
     // A checked deposit had a receipt, so a missing one now is a lagging RPC, not a tx never sent.
     if (!seen && !sendable && !claimed) return { ...base, status: "source_not_found" };
@@ -178,13 +184,13 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
       ...(!seen && !claimed && stopAfterMs && { stopAfter: new Date(stopAfterMs).toISOString() }),
     };
   }
-  if (receipt.reverted) return { ...base, status: "source_failed" };
+  if (receipt.failed) return failedSource(base, source, receipt);
   if (!quote) return withoutQuote(base, source, receipt);
-  const deposit = checkQuoteDeposit(receipt, source, quote);
+  const deposit = checkQuoteDeposit(source, receipt, quote);
   if (deposit === "multiple_deposits") {
     // A hub swap needs no operator: unsubmitted, its intent is refunded once expired.
     const alerted =
-      Boolean(source.connection) &&
+      !isHubSource(source) &&
       alertOperator("multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "multiple_deposits", alerted };
   }
@@ -230,7 +236,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     // A deposit is still relayed to be refunded: now near the deadline, else on the first call after it. A hub
     // intent is only refunded once expired, so it waits for that call.
     const nearDeadline = Date.now() >= deadlineMs(quote) - REFUND_AT_ONCE_SEC * 1000;
-    if (source.connection && nearDeadline) return relayForRefund(base, quote, source);
+    if (!isHubSource(source) && nearDeadline) return relayForRefund(base, quote, source);
     markSubmitRefused(quote.quoteId);
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
@@ -244,7 +250,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
 
 /** A refused submit's alert: a deposit needs an operator to recover it; a hub intent is refunded once expired. */
 function refused(base: SwapRef, source: SwapSource, quote: CachedQuote): boolean {
-  if (!source.connection) return false;
+  if (isHubSource(source)) return false;
   const fields = { chainKey: base.chain.key, txHash: base.txHash, quoteId: quote.quoteId };
   return alertOperator("submit_rejected", { ...fields, deadline: quote.intent.deadline });
 }
@@ -273,40 +279,37 @@ export function clearUnseenMemo(): void {
   seenTx.clear();
 }
 
-/** How many swaps the receipt sends: deposits from a spoke, intents created on the hub. */
-function swapsIn(receipt: EvmReceipt, source: SwapSource): number {
-  return source.connection
-    ? depositMessages(receipt, source.connection, source.swapContract).length
-    : hubIntentHashes(receipt, source.swapContract, INTENT_CREATED_TOPIC).length;
+/**
+ * Whether the tx holds this quote's swap, and no other: the backend keys a swap on its tx and takes its first,
+ * so it can't tell one from another. From the hub the intents contract must have logged the quoted intent's hash;
+ * from a spoke, of any family, a deposit message must bind the quote's sender, hub wallet and relay payload
+ * (`checkDeposit`), as the relay will read it.
+ */
+export function checkQuoteDeposit(
+  source: SwapSource,
+  sourceTx: SourceTx,
+  quote: Pick<CachedQuote, "intent" | "relayData">,
+): DepositCheck | "multiple_deposits" {
+  if (sourceTx.kind === "hub") {
+    // Another intent is anyone's: the log names no sender to tell the user's own apart, and nothing is stranded.
+    const hash = intentHash(quote.intent);
+    if (!sourceTx.created.some(logged => same(logged, hash))) return "not_a_deposit";
+    return sourceTx.created.length > 1 ? "multiple_deposits" : "match";
+  }
+  const deposit = checkDeposit(sourceTx.messages, depositTerms(source, quote));
+  if (deposit !== "match") return deposit;
+  return swapsIn(source, sourceTx) > 1 ? "multiple_deposits" : "match";
 }
 
 /**
- * Whether the receipt holds this quote's swap, and no other: the backend keys a swap on its tx and takes its
- * first, so it can't tell one from another. From a spoke the deposit must carry the quote's relay payload;
- * from the hub the intents contract must have logged the quoted intent's hash.
+ * A source tx that failed. Only NEAR keeps what ran before the failure: a deposit there is held by the asset
+ * manager and this server doesn't submit it, so a named quote alerts as a stranded deposit does.
  */
-export function checkQuoteDeposit(
-  receipt: EvmReceipt,
-  source: SwapSource,
-  quote: Pick<CachedQuote, "intent" | "srcAddress" | "relayData">,
-): DepositCheck | "multiple_deposits" {
-  const { connection } = source;
-  if (!connection) {
-    const created = hubIntentHashes(receipt, source.swapContract, INTENT_CREATED_TOPIC);
-    // Another intent is anyone's: the log names no sender to tell the user's own apart, and nothing is stranded.
-    const hash = intentHash(quote.intent);
-    if (!created.some(logged => same(logged, hash))) return "not_a_deposit";
-    return created.length > 1 ? "multiple_deposits" : "match";
-  }
-  const deposit = checkDeposit(receipt, {
-    connection,
-    assetManager: source.swapContract,
-    srcChain: quote.intent.srcChain,
-    srcAddress: quote.srcAddress,
-    relayData: quote.relayData,
-  });
-  if (deposit !== "match") return deposit;
-  return swapsIn(receipt, source) > 1 ? "multiple_deposits" : "match";
+function failedSource(base: SwapRef, source: SwapSource, sourceTx: SourceTx): TrackResult {
+  if (swapsIn(source, sourceTx) === 0) return { ...base, status: "source_failed" };
+  const { txHash, chain, quoteId } = base;
+  const alerted = quoteId !== undefined && alertOperator("failed_tx_deposit", { chainKey: chain.key, txHash, quoteId });
+  return { ...base, status: "source_failed", depositHeld: true, alerted };
 }
 
 /**
@@ -321,14 +324,14 @@ function notThisDeposit(base: SwapRef, deposit: Exclude<DepositCheck, "match">, 
 }
 
 /** A mined tx with no quote here (a restart, or its grace period over): a deposit may be stranded. */
-function withoutQuote(base: SwapRef, source: SwapSource, receipt: EvmReceipt): TrackResult {
+function withoutQuote(base: SwapRef, source: SwapSource, sourceTx: SourceTx): TrackResult {
   const { txHash, chain, quoteId } = base;
-  const isDeposit = swapsIn(receipt, source) > 0;
+  const isDeposit = swapsIn(source, sourceTx) > 0;
   // Only a named quoteId alerts, or any public deposit could page an operator; a hub intent needs none.
   const alerted =
     isDeposit &&
     quoteId !== undefined &&
-    Boolean(source.connection) &&
+    !isHubSource(source) &&
     alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
   return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
 }
@@ -343,14 +346,15 @@ export async function relayForRefund(
   source: SwapSource,
 ): Promise<SwapRef & Extract<TrackState, { status: "expired_refunding" | "expired_unsubmitted" }>> {
   const { txHash, chain } = base;
-  if (!source.connection) {
+  if (isHubSource(source)) {
     markRelayedForRefund(quote);
     logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Left an expired hub swap to its refund");
     return { ...base, status: "expired_refunding" };
   }
   let relayed: boolean;
   try {
-    relayed = await relaySpokeTx(quote.intent.srcChain, txHash);
+    const data = source.adapter.commitsHash ? quote.relayData : undefined;
+    relayed = await relaySpokeTx(quote.intent.srcChain, txHash, data);
   } catch (error) {
     // Refused is a relay failure; anything that may pass (a rate limit, an outage, a WAF) is retried.
     if (!isRefusal(error)) throw retryable(error);

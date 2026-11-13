@@ -7,6 +7,7 @@ import { INTENT } from "../tools/__fixtures__/swapBackend.js";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  blockNumber,
   bounded,
   cancelPayload,
   checksumValid,
@@ -568,6 +569,20 @@ describe("initSodax", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 400 }));
     await expect(fresh.recipientReady("NEAR", "usdc.near", "alice.near", 1n)).rejects.toThrow("SDK call failed");
     expect(fetch.mock.calls.map(([url]) => String(url))).toContain("https://near.example/key");
+  });
+});
+
+describe("blockNumber", () => {
+  it("reads NEAR's final block, so a quote finds a dead NEAR RPC before the user sends anything", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const { id } = JSON.parse(String(init?.body));
+      return Response.json({ jsonrpc: "2.0", id, result: { header: { height: 12345 } } });
+    });
+    expect(await blockNumber("near")).toBe(12345n);
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+      method: "block",
+      params: { finality: "final" },
+    });
   });
 });
 

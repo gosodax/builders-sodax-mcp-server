@@ -6,20 +6,17 @@
  * the steps, and the cached quote is what tracking later submits.
  */
 
-import { createHash } from "node:crypto";
 import { ZERO_ADDRESS_PATTERN, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { callerKeyHash } from "../requestContext.js";
 import {
-  type SwapTx,
-  approveCalldata,
+  createIntentPayload,
   encodeRecipient,
   intentChainId,
   intentHash,
   isHubChain,
   packagedToken,
-  rebuildSwapTx,
   stellarRecipientCheckable,
   userHubWallet,
 } from "../sodax.js";
@@ -28,13 +25,12 @@ import { type RecipientCheck, checkRecipient } from "./destination.js";
 import { ActionError } from "./errors.js";
 import { checkQuoteRoom, putQuote } from "./quoteCache.js";
 import { checkAddress, resolveExactly } from "./resolver.js";
-import { configDisagrees, readBlockNumber, sourceChainFor } from "./source.js";
+import { chainRead, configDisagrees, isHubSource, sourceChainFor } from "./source.js";
+import { swapMismatch } from "./sources/evm.js";
+import type { SourceChain, SwapBatch, SwapStep } from "./sources/types.js";
 import {
-  type Approval,
   type BuiltIntent,
-  type EvmTx,
   type IntentRequest,
-  buildApprove,
   buildIntent,
   checkAllowance,
   getDeadline,
@@ -72,25 +68,6 @@ interface QuoteSummary {
   usdValue: string | null;
   /** The expected amount received in USD, likewise. */
   usdOut: string | null;
-}
-
-export interface SwapStep {
-  kind: "reset_approve" | "approve" | "swap";
-  chainId: number;
-  tx: StepTx;
-}
-
-/** `value` and `chainId` are hex quantities. */
-export type StepTx = EvmTx & { chainId: string };
-
-/**
- * EIP-5792 `wallet_sendCalls`, for wallets that batch: it replaces the steps it lists. Its `calls` are
- * those steps' `{to, value, data}` in order, left to the agent so the calldata isn't returned twice.
- */
-export interface SwapBatch {
-  replaces: SwapStep["kind"][];
-  method: "wallet_sendCalls";
-  params: [{ version: "2.0.0"; chainId: string; from: string; atomicRequired: true }];
 }
 
 export type SwapQuote =
@@ -143,20 +120,25 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const to = resolveSide(catalog, input.toChain, input.toToken, "to");
   // Only a chain track can prove the swap on: nothing else would submit it. The chain id and swap
   // contract are pinned from the SDK config.
-  const { chainId, swapContract } = sourceChainFor(catalog, from.chain);
+  const source = sourceChainFor(catalog, from.chain);
+  const { swapContract } = source;
   // Five EVM chains share one asset manager, so the live chain id must agree with the pinned one.
-  if (from.config.chainId !== chainId) throw configDisagrees(from.chain.key, "chainId");
-  const dstEvm = to.config.type === "EVM";
+  if (source.chainId !== undefined && from.config.chainId !== source.chainId) {
+    throw configDisagrees(from.chain.key, "chainId");
+  }
+  // An EVM sender's address is theirs on an EVM destination too; any other pair needs the recipient given.
+  const defaultsToSender = to.config.type === "EVM" && source.adapter.family === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
   const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
-  // An EVM recipient defaults to the sender.
+  if (fromAddress !== undefined) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
     ? checkAddress(input.toAddress, to.chain, "toAddress")
-    : dstEvm
+    : defaultsToSender
       ? fromAddress
       : undefined;
   const ready = fromAddress !== undefined && toAddress !== undefined;
+  const { probe } = source.adapter;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
@@ -176,8 +158,9 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     }),
     ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
     usdSent,
-    // A dead source RPC fails the quote before any steps, not the track after the user has sent them.
-    ready ? readBlockNumber(from.chain) : undefined,
+    // A dead source RPC fails the quote before any steps, not the track after the user has sent them: where building
+    // the swap doesn't read the chain, the source reads it first.
+    ready && probe ? chainRead(from.chain, () => probe(from.chain.key)) : undefined,
   ]);
   const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
   if (minOutput === 0n) {
@@ -221,7 +204,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   if (!ready || deadline === undefined) {
     const missing: ("fromAddress" | "toAddress")[] = [];
     if (!fromAddress) missing.push("fromAddress");
-    if (!toAddress && !dstEvm) missing.push("toAddress");
+    if (!toAddress && !defaultsToSender) missing.push("toAddress");
     return { status: "price_only", ...summary, missing };
   }
 
@@ -257,38 +240,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
     }),
   ]);
-  const approval = approved ? undefined : await buildApprove(request);
-  const expected = await rebuildSwapTx({
-    srcChainKey: request.srcChainKey,
-    srcAddress: fromAddress,
-    token: request.inputToken,
-    amount,
-    intent: built.intent,
-  });
-  const mismatch = findMismatch(
-    request,
-    { from: from.token, to: to.token, fee, swapContract, hubWallet, expected },
-    built,
-    approval,
+  const want = { from: from.token, to: to.token, fee, hubWallet };
+  const intentMismatch = findIntentMismatch(request, source, want, built);
+  if (intentMismatch) throw swapMismatch(request, intentMismatch, built.tx);
+  const prepared = await source.adapter.prepareSwap(
+    { ...source, chain: from.chain },
+    { request, built, approved, symbol: from.token.symbol },
   );
-  if (mismatch) {
-    // Possibly a compromised or broken upstream: enough to investigate, no user addresses.
-    const { srcChainKey, dstChainKey } = request;
-    const dataSha256 = createHash("sha256").update(built.tx.data.toLowerCase()).digest("hex");
-    logger.error(
-      {
-        mismatch,
-        "chain.key": srcChainKey,
-        "dst_chain.key": dstChainKey,
-        "tx.to": built.tx.to,
-        "tx.data_sha256": dataSha256,
-      },
-      "The Swaps API built a swap that doesn't match the quote",
-    );
-    throw new ActionError("SWAP_MISMATCH", "The swap service built a different swap than the one quoted.", {
-      details: { chainKey: srcChainKey },
-    });
-  }
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {
     throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
@@ -311,7 +269,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     fromAddress,
     toAddress,
     checks: { balance: "not_checked", recipient },
-    ...toSteps(built.tx, approval, chainId, fromAddress),
+    ...prepared,
   };
 }
 
@@ -356,103 +314,48 @@ const intentToken = (chainKey: string, token: SwapsApiToken) => (isHubChain(chai
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
 
+/** What the intent must hold besides the request: the tokens as quoted, the partner fee, the user's hub wallet. */
+interface IntentWant {
+  from: SwapsApiToken;
+  to: SwapsApiToken;
+  fee: bigint;
+  hubWallet: string;
+}
+
 /**
- * The Swaps API builds what the user signs, so check it is the swap that was quoted, and name the
- * first check that fails. The intent JSON must say what was asked (input net of the partner fee,
- * minimum, deadline, chains, tokens, recipient as the SDK encodes it, sender, fee envelope, no
- * partial fill, any solver) and be created by the user's own hub wallet. The swap tx must then be,
- * byte for byte, the one the SDK builds for that intent (the relay payload included), and any
- * approval `approve(the pinned swap contract, exact amount)` on the source token.
+ * The intent the Swaps API built must be the one quoted; names the first check that fails. Its JSON must say what
+ * was asked (input net of the partner fee, minimum, deadline, chains, tokens, recipient and sender as the SDK
+ * encodes them, fee envelope, no partial fill, any solver), be created by the user's own hub wallet, and come with
+ * the relay payload the SDK builds for it, which is what the user's hub wallet runs.
  */
-function findMismatch(
+function findIntentMismatch(
   request: IntentRequest,
-  want: {
-    from: SwapsApiToken;
-    to: SwapsApiToken;
-    fee: bigint;
-    /** The contract the swap calls: the spoke's asset manager, or the hub's intents contract. */
-    swapContract: string;
-    hubWallet: string;
-    /** The SDK's rebuild of the swap tx, if it could. */
-    expected?: SwapTx;
-  },
+  source: SourceChain,
+  want: IntentWant,
   built: BuiltIntent,
-  approval?: Approval,
 ): string | undefined {
-  const { intent, tx, relayData } = built;
-  const { partnerFee, expected } = { ...request, ...want };
+  const { intent, relayData } = built;
+  const { partnerFee, srcChainKey } = request;
   // The fee envelope: `0x01`, the fee and the receiver, or `0x` without a fee.
   const feeData = partnerFee ? `0x01${word(want.fee)}${word(partnerFee.address)}` : "0x";
   const recipient = encodeRecipient(request.dstChainKey, request.dstAddress);
-  const approves = (step: EvmTx, amount: bigint) =>
-    same(step.from, request.srcAddress) &&
-    same(step.to, request.inputToken) &&
-    BigInt(step.value) === 0n &&
-    same(step.data, approveCalldata(request.inputToken, want.swapContract, amount));
-
+  const sender = encodeRecipient(srcChainKey, request.srcAddress);
+  const payload = createIntentPayload(intent, isHubSource(source));
   const checks: [string, boolean][] = [
     ["inputAmount", intent.inputAmount === (request.inputAmount - want.fee).toString()],
     ["minOutputAmount", intent.minOutputAmount === request.minOutputAmount.toString()],
     ["deadline", intent.deadline === request.deadline],
-    ["srcChain", intent.srcChain === intentChainId(request.srcChainKey)],
+    ["srcChain", intent.srcChain === intentChainId(srcChainKey)],
     ["dstChain", intent.dstChain === intentChainId(request.dstChainKey)],
-    ["inputToken", same(intent.inputToken, intentToken(request.srcChainKey, want.from))],
+    ["inputToken", same(intent.inputToken, intentToken(srcChainKey, want.from))],
     ["outputToken", same(intent.outputToken, intentToken(request.dstChainKey, want.to))],
     ["dstAddress", recipient !== undefined && same(intent.dstAddress, recipient)],
-    ["srcAddress", same(intent.srcAddress, request.srcAddress)],
+    ["srcAddress", sender !== undefined && same(intent.srcAddress, sender)],
     ["feeData", intent.data.toLowerCase() === feeData],
     ["allowPartialFill", intent.allowPartialFill === false],
     ["solver", ZERO_ADDRESS_PATTERN.test(intent.solver)],
     ["creator", same(intent.creator, want.hubWallet) && same(relayData.address, intent.creator)],
-    ["tx.from", same(tx.from, request.srcAddress)],
-    ["rebuild", expected !== undefined],
-    ["tx.to", same(tx.to, expected?.to ?? "")],
-    ["tx.value", BigInt(tx.value) === expected?.value],
-    ["tx.data", same(tx.data, expected?.data ?? "")],
-    ["relay payload", same(relayData.payload, expected?.payload ?? "")],
-    [
-      "approval",
-      !approval ||
-        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
-    ],
+    ["relay payload", payload !== undefined && same(relayData.payload, payload)],
   ];
   return checks.find(([, ok]) => !ok)?.[0];
-}
-
-/**
- * Hex quantities, as `eth_sendTransaction` takes them. The chain id is in the tx: several chains share the
- * contracts a step calls, so a wallet on another network must refuse it rather than send it there.
- */
-export function toStepTx(tx: EvmTx, chainId: number): StepTx {
-  return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
-}
-
-/** The steps in order and, with an approval, the approve and swap as one batch. A reset stays out: it must land first. */
-function toSteps(
-  swapTx: EvmTx,
-  approval: Approval | undefined,
-  chainId: number,
-  from: string,
-): { steps: SwapStep[]; batch?: SwapBatch } {
-  const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx, chainId) };
-  if (!approval) return { steps: [swap] };
-  const approve: SwapStep = { kind: "approve", chainId, tx: toStepTx(approval.tx, chainId) };
-  const reset: SwapStep[] = approval.resetTx
-    ? [{ kind: "reset_approve", chainId, tx: toStepTx(approval.resetTx, chainId) }]
-    : [];
-  return {
-    steps: [...reset, approve, swap],
-    batch: {
-      replaces: ["approve", "swap"],
-      method: "wallet_sendCalls",
-      params: [
-        {
-          version: "2.0.0",
-          chainId: `0x${chainId.toString(16)}`,
-          from,
-          atomicRequired: true,
-        },
-      ],
-    },
-  };
 }

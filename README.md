@@ -493,6 +493,7 @@ headers. SSE allows 10 open sessions per client and 200 in all, and closes a ses
 
 - **SODAX** — [sodax.com](https://sodax.com)
 - **SDK Documentation** — [docs.sodax.com](https://docs.sodax.com) (proxied automatically)
+- **Architecture decisions** — [ADR 0001: SODAX MCP execution model](docs/adr/0001-sodax-mcp-execution-model.md)
 
 ## License
 

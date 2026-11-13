@@ -5,7 +5,7 @@ import { spokeChainConfig } from "@sodax/types";
 import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EvmStep } from "../../src/services/swap/quote.js";
+import type { EvmStep } from "../../src/services/swap/sources/types.js";
 import { minimumTooLow, sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.

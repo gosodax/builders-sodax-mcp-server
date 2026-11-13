@@ -1,14 +1,17 @@
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
-import { NON_EVM_SOURCE_TYPES, initSodax, pinnedSourceOf } from "../sodax.js";
+import { initSodax } from "../sodax.js";
 import { fixtureCatalog } from "./__fixtures__/catalog.js";
 import { toChain } from "./resolver.js";
 import { sourceChainFor } from "./source.js";
+import { EVM_SPOKE, HUB } from "./sources/evm.js";
+import { pinnedSourceOf } from "./sources/index.js";
+import { SUI } from "./sources/sui.js";
+import { NON_EVM_SOURCE_TYPES } from "./sources/types.js";
 
 const ARBITRUM = toChain("0xa4b1.arbitrum");
 
-// A non-EVM source needs its asset manager marker, which the SDK encodes.
 beforeAll(() => initSodax());
 
 afterEach(() => {
@@ -29,12 +32,15 @@ describe("sourceChainFor", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it("takes sui, a non-EVM spoke, with its asset manager from the SDK config", () => {
+  it("takes sui, a non-EVM spoke, with its asset manager and connection from the SDK config", () => {
+    const { assetManager, connection } = spokeChainConfig.sui.addresses;
     expect(sourceChainFor(fixtureCatalog(), toChain("sui"))).toEqual({
-      family: "SUI",
-      swapContract: spokeChainConfig.sui.addresses.assetManager,
-      // The shared asset manager object, the part of `<package>::asset_manager::<object>` that upgrades keep.
-      marker: Uint8Array.from(Buffer.from(spokeChainConfig.sui.addresses.assetManager.split("::")[2].slice(2), "hex")),
+      kind: "spoke",
+      adapter: SUI,
+      swapContract: assetManager,
+      connection,
+      // As its deposits' messages name it: the UTF-8 of `<package>::asset_manager::<object>`.
+      depositor: `0x${Buffer.from(assetManager).toString("hex")}`,
     });
   });
 
@@ -57,7 +63,8 @@ describe("sourceChainFor", () => {
   // The swap tx itself creates the intent there: track checks the intents contract's log, no connection.
   it("takes sonic, the hub, with the intents contract and no connection", () => {
     expect(sourceChainFor(fixtureCatalog(), toChain("sonic"))).toEqual({
-      family: "EVM",
+      kind: "hub",
+      adapter: HUB,
       chainId: 146,
       swapContract: solverConfig.intentsContract,
     });
@@ -71,8 +78,10 @@ describe("pinnedSourceOf", () => {
   it.each(NON_EVM_SOURCE_TYPES)("finds one %s chain in the SDK config, which a swap can start from", type => {
     const chains = Object.entries(spokeChainConfig).filter(([, config]) => config.chain.type === type);
     expect(chains).toHaveLength(1);
-    // With the marker track proves its deposits by: a chain without one is never a source.
-    expect(pinnedSourceOf(chains[0][0])).toMatchObject({ family: type, marker: expect.anything() });
+    // With the sender track proves its deposits by: a chain without one is never a source.
+    const source = pinnedSourceOf(chains[0][0]);
+    expect(source?.adapter.family).toBe(type);
+    expect(source).toMatchObject({ kind: "spoke", depositor: expect.stringMatching(/^0x/) });
   });
 
   it.each([

@@ -10,7 +10,6 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { chainDisplayName } from "../constants.js";
 import { parseSwapToolsEnabled } from "../services/profiles.js";
-import { pinnedSourceOf } from "../services/sodax.js";
 import {
   clearCache,
   getAllChainsConfigs,
@@ -45,6 +44,7 @@ import {
   resolveChainSupport,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { pinnedSourceOf } from "../services/swap/sources/index.js";
 import { expireSwapCatalog } from "../services/swap/tokens.js";
 import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";

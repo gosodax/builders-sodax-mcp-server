@@ -8,10 +8,11 @@
  */
 
 import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
-import { encodeRecipient, pinnedSourceOf } from "../sodax.js";
+import { encodeRecipient } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { rejectHex64, rejectHex64Account } from "./secrets.js";
+import { pinnedSourceOf } from "./sources/index.js";
 import { type SwapCatalog, type SwapsApiToken, findToken, nativeToken } from "./tokens.js";
 
 export type Resolution =
@@ -67,7 +68,7 @@ export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourc
 /** A chain a swap can start from: a source in the SDK config, of the family the live catalog says (`sourceChainFor`). */
 export function isSwapSource(catalog: SwapCatalog, chainKey: string): boolean {
   const source = pinnedSourceOf(chainKey);
-  return source !== undefined && catalog.chains[chainKey]?.type === source.family;
+  return source !== undefined && catalog.chains[chainKey]?.type === source.adapter.family;
 }
 
 /** The chains within two typos of the query, by name or key, closest first. */

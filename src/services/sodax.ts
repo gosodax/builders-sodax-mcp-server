@@ -16,7 +16,6 @@ import {
   getIntentRelayChainId,
   isBitcoinChainKey,
   isNativeToken,
-  isSolanaChainKey,
   isStellarChainKey,
   isSuiChainKey,
   solverConfig,
@@ -26,26 +25,12 @@ import {
   CHAIN_KEY_PATTERN,
   EVM_ADDRESS_PATTERN,
   SODAX_API_ORIGIN,
-  base32Bytes,
-  base58Bytes,
   isRecord,
   isRpcUrl,
   parseRpcConfigJson,
   sameHex,
 } from "../constants.js";
-import { HttpError, fetchJson } from "./http.js";
 import { errorName, logger, redact } from "./logger.js";
-import {
-  type NonEvmTx,
-  hexBytes,
-  injectiveTxFrom,
-  nearTxFrom,
-  solanaTxFrom,
-  stellarTxFrom,
-  suiTxFrom,
-} from "./swap/nonEvmSource.js";
-import type { SourceChain } from "./swap/source.js";
-import type { BuiltIntent } from "./swap/swapsApi.js";
 
 type Sdk = typeof import("@sodax/sdk");
 
@@ -151,13 +136,16 @@ function sdk() {
   return loaded;
 }
 
+/** The SDK's spoke clients, for the source adapters' own reads, which they make inside `bounded`. */
+export const spokeClients = () => sdk().sodax.spoke;
+
 export const isHubChain = (chainKey: string) => chainKey === HUB_CHAIN_KEY;
 
 /**
  * The hub's id of an intent (IF-11: keccak256 of the ABI-encoded `createIntent` struct), as `GET /intent/:intentHash`
  * and the solver name it, from the struct the Swaps API built. Verified against the data API's own hashes.
  */
-export function intentHash(intent: BuiltIntent["intent"]): string {
+export function intentHash(intent: IntentJson): string {
   const uint = (value: string) => BigInt(value);
   return sdk().sdk.EvmSolverService.getIntentHash({
     ...intent,
@@ -249,54 +237,12 @@ export function connectionFor(chainKey: string): string | undefined {
   return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
 }
 
-/**
- * The non-EVM families a swap can start from. Not Bitcoin (its swaps go through a Bound trading wallet), Stacks
- * (the SDK can't build its cancel) or ICON (being retired).
- */
-export const NON_EVM_SOURCE_TYPES = ["NEAR", "STELLAR", "SUI", "SOLANA", "INJECTIVE"] as const;
-export type NonEvmSourceType = (typeof NON_EVM_SOURCE_TYPES)[number];
-
-const isNonEvmSourceType = (type: unknown): type is NonEvmSourceType =>
-  NON_EVM_SOURCE_TYPES.includes(type as NonEvmSourceType);
-
-const CHAINS_OF_TYPE = new Map<unknown, number>();
-for (const config of Object.values(chainConfigs)) {
-  const type = config?.chain?.type;
-  CHAINS_OF_TYPE.set(type, (CHAINS_OF_TYPE.get(type) ?? 0) + 1);
-}
-
-/**
- * A chain's source from the packaged config, if a swap can start there: the hub (its intents contract logs the
- * intent), an EVM spoke (its `connection` proves a deposit) or a non-EVM one (its tx carries the quoted payload).
- */
-export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
-  const type = chainConfigs[chainKey]?.chain?.type;
-  if (isNonEvmSourceType(type)) {
-    // The readers use the SDK's one service per family: a second chain of a family isn't read right yet.
-    if (CHAINS_OF_TYPE.get(type) !== 1) return undefined;
-    const assetManager = chainConfigs[chainKey]?.addresses?.assetManager;
-    if (typeof assetManager !== "string" || !assetManager) return undefined;
-    // Track proves a deposit by it, so a chain without one is refused at quote time, before anyone deposits.
-    const marker = assetManagerMarker(chainKey, type);
-    return marker === undefined ? undefined : { family: type, swapContract: assetManager, marker };
-  }
-  const chainId = evmChainIdFor(chainKey);
-  const swapContract = swapContractFor(chainKey);
-  const connection = connectionFor(chainKey);
-  if (chainId === undefined || !swapContract || (!connection && !isHubChain(chainKey))) return undefined;
-  return { family: "EVM", chainId, swapContract, ...(connection && { connection }) };
-}
-
-/** Every chain a swap can start from (`pinnedSourceOf`), by key. */
-export const sourceChainKeys = () =>
-  Object.keys(chainConfigs).filter(chainKey => pinnedSourceOf(chainKey) !== undefined);
-
 const asEvmAddress = (value: unknown) =>
   typeof value === "string" && EVM_ADDRESS_PATTERN.test(value) ? value : undefined;
 
 const SDK_CALL_TIMEOUT_MS = 15_000;
-const RPC_CALL_TIMEOUT_MS = 8_000;
-const INJECTIVE_TRY_MS = 2_500;
+/** A single RPC read's bound. */
+export const RPC_CALL_TIMEOUT_MS = 8_000;
 
 /**
  * A bounded call whose failure (timeout included) carries no text of its own. One log record per call
@@ -604,7 +550,7 @@ export function buildNonEvmDeposit(params: {
       skipSimulation: true,
     });
     if (!result.ok) throw new Error("deposit build failed");
-    return withSuiSender(srcChainKey, result.value);
+    return result.value;
   });
 }
 
@@ -619,163 +565,8 @@ export function buildNonEvmCancel(srcChainKey: string, intent: IntentJson): Prom
       raw: true,
     });
     if (!result.ok) throw new Error("cancel build failed");
-    return withSuiSender(srcChainKey, result.value);
+    return result.value;
   });
-}
-
-// The SDK leaves a Sui tx's sender unset, so a wallet would sign as whichever account is active: native SUI split
-// from that account's gas would pay for the quoted sender's swap.
-function withSuiSender(chainKey: string, raw: unknown): unknown {
-  if (!isSuiChainKey(chainKey as SpokeChainKey) || !isRecord(raw)) return raw;
-  if (typeof raw.from !== "string" || typeof raw.data !== "string") return raw;
-  return { ...raw, data: JSON.stringify({ ...JSON.parse(raw.data), sender: raw.from }) };
-}
-
-/**
- * Whether a non-EVM build calls what it must where the SDK reads its target from the chain, so an RPC could move
- * it: Solana's programs (from their IDL) must be the packaged ones, Sui's upgraded package the one `expected` (the
- * Swaps API's own build) names. Every other build takes its contract from the packaged config.
- */
-export function callsPinnedTarget(
-  chainKey: string,
-  kind: "swap" | "cancel",
-  raw: unknown,
-  expected?: unknown,
-): boolean {
-  const { to, data } = isRecord(raw) ? raw : {};
-  const addresses = chainConfigs[chainKey]?.addresses;
-  if (isSolanaChainKey(chainKey as SpokeChainKey)) {
-    const connection = addresses?.connection;
-    if (kind === "cancel") return to === connection;
-    // A deposit passes the connection program too, read from the chain as well: the packaged one must be in the tx.
-    const passes = (program: unknown) =>
-      typeof program === "string" &&
-      typeof data === "string" &&
-      Buffer.from(data, "base64").includes(Buffer.from(base58Bytes(program)));
-    return to === addresses?.assetManager && passes(connection);
-  }
-  if (isSuiChainKey(chainKey as SpokeChainKey) && kind === "swap") return typeof to === "string" && to === expected;
-  return true;
-}
-
-/**
- * Whether the relay needs a tx's relay data with it, as the SDK's own relay submit decides: Solana's tx commits
- * only the payload's hash. Bitcoin's too, but it isn't a source here.
- */
-export function relayNeedsData(chainKey: string): boolean {
-  return isSolanaChainKey(chainKey as SpokeChainKey);
-}
-
-/**
- * A non-EVM tx by hash, or `null` while its chain doesn't know it or hasn't run it. Public nodes prune, so a tx
- * days old reads as unknown too. A response the parser doesn't know fails, as any read does, as a bare error:
- * never as a failed tx.
- */
-export function readNonEvmTx(
-  chainKey: string,
-  type: NonEvmSourceType,
-  txHash: string,
-  sender?: string,
-): Promise<NonEvmTx | null> {
-  return bounded({ label: "non-EVM tx", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, () =>
-    NON_EVM_READERS[type](chainKey, txHash, sender),
-  );
-}
-
-// One reader per family, through the SDK's one service for that family's chain (see `pinnedSourceOf`).
-const NON_EVM_READERS: Record<
-  NonEvmSourceType,
-  (chainKey: string, txHash: string, sender?: string) => Promise<NonEvmTx | null>
-> = {
-  async SOLANA(_chainKey, txHash) {
-    const tx = await sdk().sodax.spoke.solana.connection.getTransaction(txHash, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
-    return solanaTxFrom(tx);
-  },
-  async STELLAR(_chainKey, txHash) {
-    return stellarTxFrom(await sdk().sodax.spoke.stellar.sorobanServer.getTransaction(txHash));
-  },
-  async SUI(_chainKey, txHash) {
-    // The SDK's gRPC client: its transport keeps it private, and only `getTransaction` returns the tx's bytes.
-    const { client } = sdk().sodax.spoke.sui.transport as unknown as {
-      client: { core: { getTransaction(options: { digest: string; include: { bcs: true } }): Promise<unknown> } };
-    };
-    try {
-      return suiTxFrom(await client.core.getTransaction({ digest: txHash, include: { bcs: true } }));
-    } catch (error) {
-      // Only the node's own answer names the digest: a 404 from anything in front of it is an outage.
-      const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
-      if (code === "NOT_FOUND" && typeof message === "string" && message.includes(txHash)) return null;
-      throw error;
-    }
-  },
-  async NEAR(chainKey, txHash, sender) {
-    // The lookup is routed by the sender's account; public nodes track every shard, so any account does.
-    const assetManager = String(chainConfigs[chainKey]?.addresses?.assetManager);
-    const accountId = sender ?? assetManager;
-    try {
-      return nearTxFrom(
-        await sdk().sodax.spoke.near.rpcProvider.viewTransactionStatus({ txHash, accountId, waitUntil: "NONE" }),
-        assetManager,
-      );
-    } catch (error) {
-      if (error instanceof Error && error.name === "UnknownTransactionError") return null;
-      throw error;
-    }
-  },
-  async INJECTIVE(_chainKey, txHash) {
-    const url = `${sdk().sodax.spoke.injective.endpoints.rest}/cosmos/tx/v1beta1/txs/${txHash}`;
-    // The public LCD balances over nodes that keep different history, so a tx some still have is asked again, as is a
-    // slow node. Unknown only if every node said so; each try fits in the read's own bound.
-    let slow: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        return injectiveTxFrom(await fetchJson<unknown>(url, { timeout: INJECTIVE_TRY_MS }));
-      } catch (error) {
-        if (error instanceof Error && error.name === "TimeoutError") slow = error;
-        else if (!injectiveNodeLacksTx(error)) throw error;
-      }
-    }
-    if (slow) throw slow;
-    return null;
-  },
-};
-
-/**
- * The node's own answer that it doesn't have the tx: NotFound (gRPC code 5), or the block it's in pruned ("height N is
- * not available", code 2). A 404 or 500 from anything in front of the node is an outage.
- */
-function injectiveNodeLacksTx(error: unknown): boolean {
-  if (!(error instanceof HttpError)) return false;
-  if (error.status === 404) return error.apiCode === 5;
-  return error.status === 500 && error.apiCode === 2 && /^height \d+ is not available/.test(error.apiMessage ?? "");
-}
-
-/**
- * How a non-EVM tx names the chain's asset manager: as bytes its raw tx holds (Solana's program id, Stellar's
- * contract id, Sui's asset manager object), or as the contract its calls name (NEAR, Injective).
- */
-const ASSET_MANAGER_MARKERS: Record<NonEvmSourceType, (assetManager: string) => Uint8Array | string> = {
-  NEAR: assetManager => assetManager,
-  INJECTIVE: assetManager => assetManager,
-  // `<package>::asset_manager::<object>`: the package is upgraded, the shared object stays.
-  SUI: assetManager => hexBytes(assetManager.split("::").at(-1) ?? ""),
-  SOLANA: assetManager => base58Bytes(assetManager),
-  // The contract id: the StrKey's 32 bytes between its version byte and checksum.
-  STELLAR: assetManager => base32Bytes(assetManager).subarray(1, 33),
-};
-
-/** From the packaged config alone, so the chain support tool answers the same without the SDK loaded. */
-export function assetManagerMarker(chainKey: string, type: NonEvmSourceType): Uint8Array | string | undefined {
-  const assetManager = chainConfigs[chainKey]?.addresses?.assetManager;
-  if (typeof assetManager !== "string") return undefined;
-  try {
-    return ASSET_MANAGER_MARKERS[type](assetManager);
-  } catch {
-    return undefined;
-  }
 }
 
 /**

@@ -115,17 +115,20 @@ every transaction; the server never signs.
    Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
    there once expired, unless a solver filled it first. While the result has `retryAfterSec`, call it again after
    that many seconds. A tx no node has seen comes with `stopAfter`: track is called until then, and once more after.
-   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked. On a non-EVM chain,
-   track submits a tx only once it ran, calls the chain's asset manager and carries the quote's relay payload (from
-   Solana, its keccak). Its hash goes as the wallet shows it.
+   Such a tx is read from the chain at most once every 10 seconds, however often it's tracked. From any spoke, track
+   reads what the relay signs: the messages the chain's `connection` emitted when the tx ran. It submits a tx holding
+   exactly one deposit, sent by the asset manager from the quote's sender to their hub wallet with the quote's relay
+   payload (from Solana, its keccak). A NEAR tx that failed after its deposit ran isn't submitted: it's reported as
+   held, and alerts the operators. A non-EVM tx's hash goes as the wallet shows it.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`). From a non-EVM chain the SDK builds the cancel
-   here, and it's relayed once its tx carries the intent's cancel payload.
+   here. From any spoke it's relayed once the tx ran and its `connection` emitted the user's message to their hub
+   wallet with the intent's cancel payload (from Solana, its keccak).
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
 `sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub),
-an EVM spoke, or a non-EVM chain of a family listed in `NON_EVM_SOURCE_TYPES` (`src/services/sodax.ts`);
+an EVM spoke, or a non-EVM chain of a family listed in `NON_EVM_SOURCE_TYPES` (`src/services/swap/sources/types.ts`);
 `sodax_check_chain_support` says for any chain. The destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
 aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a
 2-of-2 that Bound co-signs and broadcasts, behind a login token that expires in minutes), which an agent's wallet
@@ -420,7 +423,7 @@ Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
 - A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for or can't check against one (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 

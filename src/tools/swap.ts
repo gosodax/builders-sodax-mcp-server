@@ -8,14 +8,15 @@ import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
 import { SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
-import { type NonEvmSourceType, isHubChain, pinnedSourceOf } from "../services/sodax.js";
+import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
-import { SIGNER_READ, isAnyTxHash } from "../services/swap/nonEvmSource.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
+import { isAnyTxHash, pinnedSourceOf } from "../services/swap/sources/index.js";
+import type { NonEvmSourceType } from "../services/swap/sources/types.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import {
   DEPOSIT_SAFE,
@@ -369,7 +370,7 @@ const safe = ({ alerted, chain }: { alerted: boolean; chain: { key: string; name
       ? DEPOSIT_SAFE
       : DEPOSIT_SAFE_UNALERTED;
 const isNonEvmChain = (chainKey: string) => {
-  const family = pinnedSourceOf(chainKey)?.family;
+  const family = pinnedSourceOf(chainKey)?.adapter.family;
   return family !== undefined && family !== "EVM";
 };
 /** A tx its node can't confirm: a non-EVM node can't tell one in flight from one never sent; a batch id is EVM's. */
@@ -377,11 +378,6 @@ const unseen = ({ key, name }: { key: string; name: string }) =>
   isNonEvmChain(key)
     ? `${name} hasn't confirmed this transaction yet. Check that the user's wallet really sent it and that this is its transaction hash`
     : `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
-// Its reader doesn't name the sender, so a deposit for another quote may be anyone's.
-const senderUnknown = (chainKey: string) => {
-  const family = pinnedSourceOf(chainKey)?.family;
-  return family !== undefined && family !== "EVM" && !SIGNER_READ.includes(family);
-};
 const again = (seconds: number) => `call sodax_swap_track again in about ${seconds} seconds`;
 const retryRefund = (tool: string, seconds: number) =>
   `To retry the refund, call ${tool} again in about ${seconds} seconds, at most ${MAX_CALLS} times, then stop.`;
@@ -397,9 +393,6 @@ function notSubmittedNextStep(result: Extract<TrackResult, { status: "not_submit
   const deposit = safe(result);
   switch (result.reason) {
     case "deposit_mismatch":
-      if (senderUnknown(result.chain.key)) {
-        return `That transaction is a SODAX deposit, but not this quote's, and this server can't tell who sent it. If the user sent it from another quote, track it with that quoteId; if they no longer have it, ${deposit}. If it isn't theirs, ask for this swap's transaction hash.`;
-      }
       return `That transaction is a SODAX deposit for another quote: track it with the quoteId it was made from. Without that quoteId, ${deposit}.`;
     case "other_sender":
       return `That transaction sent this quote's swap from another address than its fromAddress, so this server can't submit it: ${deposit}.`;
@@ -440,6 +433,9 @@ export function trackNextStep(result: TrackResult): string {
       return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
     }
     case "source_failed":
+      if ("depositHeld" in result) {
+        return `The swap transaction failed on ${chain} after its deposit went through, so it can't be swapped: ${safe(result)}.`;
+      }
       return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
     case "not_submitted":
       return notSubmittedNextStep(result);

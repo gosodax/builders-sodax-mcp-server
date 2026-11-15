@@ -10,7 +10,7 @@ import { isRecord } from "../../../constants.js";
 import { blockNumber, spokeClients } from "../../sodax.js";
 import { ActionError } from "../errors.js";
 import { utf8Hex } from "./bytes.js";
-import { base58Hash, nonEvmAdapter } from "./nonEvm.js";
+import { base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 /** An account as messages name it: its name's UTF-8 bytes. */
@@ -50,7 +50,9 @@ export function nearEvidence(raw: unknown, connection: string): SpokeEvidence | 
     receipts_outcome.some(receipt => !succeeded(receipt.outcome.status));
   const messages = receipts_outcome
     .filter(({ outcome }) => outcome.executor_id === connection && succeeded(outcome.status))
-    .flatMap(({ outcome }) => outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).map(eventMessage));
+    .flatMap(({ outcome }) =>
+      outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).map(log => readable(() => eventMessage(log))),
+    );
   return { failed, messages };
 }
 

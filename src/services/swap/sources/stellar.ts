@@ -8,7 +8,7 @@ import { HEX_64, base32Bytes } from "../../../constants.js";
 import { spokeClients } from "../../sodax.js";
 import { ActionError } from "../errors.js";
 import { ByteReader, hex } from "./bytes.js";
-import { nonEvmAdapter } from "./nonEvm.js";
+import { UnreadableEvents, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 /** A contract's 32-byte id, from its strkey (`C…`: a version byte, the id, a checksum). */
@@ -30,10 +30,10 @@ export function stellarEvidence(result: StellarResult, connection: string): Spok
   if (result.status === "FAILED") return { failed: true, messages: [] };
   if (result.status !== "SUCCESS") throw new Error("unknown Stellar tx status");
   const perOperation = result.events?.contractEventsXdr;
-  if (!Array.isArray(perOperation)) throw new Error("a Stellar tx without its events");
+  if (!Array.isArray(perOperation)) throw new UnreadableEvents("a Stellar tx without its events");
   const id = Buffer.from(stellarContractId(connection));
   const messages = perOperation.flat().flatMap(event => {
-    const message = connectionMessage(eventBytes(event), id);
+    const message = readable(() => connectionMessage(eventBytes(event), id));
     return message ? [message] : [];
   });
   return { failed: false, messages };

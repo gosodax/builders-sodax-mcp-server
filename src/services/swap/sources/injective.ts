@@ -8,7 +8,7 @@ import { HEX_64 } from "../../../constants.js";
 import { HttpError, fetchJson } from "../../http.js";
 import { spokeClients } from "../../sodax.js";
 import { utf8Hex } from "./bytes.js";
-import { nonEvmAdapter } from "./nonEvm.js";
+import { nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 /** A contract as messages name it: its bech32 address's UTF-8 bytes. */
@@ -33,7 +33,7 @@ export function injectiveEvidence(body: unknown, connection: string): SpokeEvide
   const messages = tx_response.events.flatMap(event => {
     const attribute = (key: string) => event.attributes.find(entry => entry.key === key)?.value;
     if (event.type !== "wasm-Message" || attribute("_contract_address") !== connection) return [];
-    return [eventMessage(attribute)];
+    return [readable(() => eventMessage(attribute))];
   });
   return { failed: false, messages };
 }

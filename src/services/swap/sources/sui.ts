@@ -7,7 +7,7 @@ import { z } from "zod";
 import { isRecord } from "../../../constants.js";
 import { spokeClients } from "../../sodax.js";
 import { ByteReader, hex, utf8Hex } from "./bytes.js";
-import { base58Hash, nonEvmAdapter } from "./nonEvm.js";
+import { base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 /** The asset manager as messages name it: the UTF-8 of its config string, `<package>::asset_manager::<object>`. */
@@ -43,7 +43,7 @@ export function suiEvidence(raw: unknown, connection: string): SpokeEvidence {
   const type = messageType(connection);
   const messages = tx.events.flatMap(event => {
     const [address, ...rest] = event.eventType.split("::");
-    return `${fullAddress(address)}::${rest.join("::")}` === type ? [messageEvent(event.bcs)] : [];
+    return `${fullAddress(address)}::${rest.join("::")}` === type ? [readable(() => messageEvent(event.bcs))] : [];
   });
   return { failed: false, messages };
 }

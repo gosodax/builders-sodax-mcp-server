@@ -8,6 +8,7 @@ import { checkDeposit, depositMessages, holdsCancel } from "../sourceTx.js";
 import { assetManagerSender, pinnedSourceOf } from "./index.js";
 import { injectiveEvidence } from "./injective.js";
 import { nearEvidence } from "./near.js";
+import { UnreadableEvents } from "./nonEvm.js";
 import { solanaEvidence } from "./solana.js";
 import { stellarEvidence } from "./stellar.js";
 import { suiEvidence } from "./sui.js";
@@ -151,8 +152,8 @@ describe("Solana's evidence", () => {
     expect(solanaEvidence({ meta: null }, conn)).toBeNull();
   });
 
-  it("refuses truncated logs or none, as the relay can't attribute them either", () => {
-    expect(() => solanaEvidence(logs(...realLogs.slice(0, 3), "Log truncated"), conn)).toThrow();
+  it("reads truncated logs as unreadable, and refuses a tx without its logs", () => {
+    expect(() => solanaEvidence(logs(...realLogs.slice(0, 3), "Log truncated"), conn)).toThrow(UnreadableEvents);
     expect(() => solanaEvidence({ meta: { err: null, logMessages: null } }, conn)).toThrow();
   });
 });
@@ -191,7 +192,7 @@ describe("Stellar's evidence", () => {
     expect(stellarEvidence(tx([[message]], "FAILED"), conn)).toEqual({ failed: true, messages: [] });
     expect(stellarEvidence({ status: "NOT_FOUND" }, conn)).toBeNull();
     expect(() => stellarEvidence({ status: "PENDING" }, conn)).toThrow();
-    expect(() => stellarEvidence({ status: "SUCCESS" }, conn)).toThrow();
+    expect(() => stellarEvidence({ status: "SUCCESS" }, conn)).toThrow(UnreadableEvents);
   });
 });
 

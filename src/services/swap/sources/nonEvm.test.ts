@@ -1,6 +1,7 @@
 import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { base58Bytes } from "../../../constants.js";
+import { logger } from "../../logger.js";
 import { buildNonEvmCancel, buildNonEvmDeposit, initSodax } from "../../sodax.js";
 import fixtures from "../__fixtures__/non-evm-txs.json" with { type: "json" };
 import { toChain } from "../resolver.js";
@@ -176,6 +177,19 @@ describe("Injective's read", () => {
     expect(await INJECTIVE.read(source(), HASH)).toEqual({ kind: "spoke", failed: false, messages: [] });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(notFound()).mockResolvedValueOnce(reply(200, ran));
     expect(await INJECTIVE.read(source(), HASH)).toEqual({ kind: "spoke", failed: false, messages: [] });
+  });
+
+  it("answers once, as no deposit, for a tx whose connection events it can't read: asking again won't help", async () => {
+    const { tx_response } = fixtures.injective.tx;
+    const message = tx_response.events.find(event => event.type === "wasm-Message") as (typeof tx_response.events)[0];
+    const odd = { ...message, attributes: message.attributes.filter(entry => entry.key !== "payload") };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(reply(200, { tx_response: { code: 0, events: [odd] } }));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    expect(await INJECTIVE.read(source(), HASH)).toEqual({ kind: "spoke", failed: false, messages: [] });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ "tx.hash": HASH }),
+      expect.stringContaining("can't read"),
+    );
   });
 
   it("fails, rather than read the tx as unknown, when a node was too slow to answer", async () => {

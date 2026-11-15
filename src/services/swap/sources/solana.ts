@@ -8,7 +8,7 @@ import { spokeChainConfig } from "@sodax/types";
 import { base58Bytes, isRecord } from "../../../constants.js";
 import { spokeClients } from "../../sodax.js";
 import { ByteReader, hex } from "./bytes.js";
-import { base58Hash, nonEvmAdapter } from "./nonEvm.js";
+import { UnreadableEvents, base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 // Anchor's event discriminator, sha256("event:SendMessage")[0..8].
@@ -22,7 +22,7 @@ type SolanaTx = { meta: { err: unknown; logMessages?: string[] | null } | null }
 
 /**
  * The connection's messages in a tx from `getTransaction`, or `null` until it's confirmed. A failed tx is rolled back
- * whole, so the events it logged first never happened. Truncated logs can't all be read: they throw.
+ * whole, so the events it logged first never happened. Truncated logs can't all be read, so such a tx proves nothing.
  */
 export function solanaEvidence(tx: SolanaTx, connection: string): SpokeEvidence | null {
   if (!tx?.meta) return null;
@@ -33,12 +33,12 @@ export function solanaEvidence(tx: SolanaTx, connection: string): SpokeEvidence 
   const frames: string[] = [];
   const messages: ConnectionMessage[] = [];
   for (const log of logs) {
-    if (log.startsWith("Log truncated")) throw new Error("Solana logs truncated");
+    if (log.startsWith("Log truncated")) throw new UnreadableEvents("Solana logs truncated");
     const invoked = /^Program (\S+) invoke \[\d+\]$/.exec(log);
     if (invoked) frames.push(invoked[1]);
     else if (/^Program \S+ (success|failed)/.test(log)) frames.pop();
     else if (log.startsWith(DATA_PREFIX) && frames.at(-1) === connection) {
-      const message = sendMessageEvent(Buffer.from(log.slice(DATA_PREFIX.length).trim(), "base64"));
+      const message = readable(() => sendMessageEvent(Buffer.from(log.slice(DATA_PREFIX.length).trim(), "base64")));
       if (message) messages.push(message);
     }
   }

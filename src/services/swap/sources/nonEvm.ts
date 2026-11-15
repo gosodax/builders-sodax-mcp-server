@@ -17,6 +17,18 @@ export const base58Hash = (size: 32 | 64) => {
   return (text: string) => (pattern.test(text) && base58Bytes(text).length === size ? text : undefined);
 };
 
+/** The chain answered, but the connection's events in the tx can't all be read: the tx proves no deposit here. */
+export class UnreadableEvents extends Error {}
+
+/** Decodes one of the connection's events; anything it can't read is `UnreadableEvents`. */
+export function readable<T>(decode: () => T): T {
+  try {
+    return decode();
+  } catch (error) {
+    throw error instanceof UnreadableEvents ? error : new UnreadableEvents("an event this server can't read");
+  }
+}
+
 export interface NonEvmFamily {
   family: NonEvmSourceType;
   txHash: SourceAdapter["txHash"];
@@ -44,8 +56,18 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
     async read(source, txHash, sender) {
       if (source.kind !== "spoke") throw new Error("not a spoke");
       const { chain, connection } = source;
-      const evidence = await bounded({ label: "non-EVM tx", chainKey: chain.key, timeoutMs: RPC_CALL_TIMEOUT_MS }, () =>
-        family.fetch({ chainKey: chain.key, connection, txHash, sender }),
+      const evidence = await bounded(
+        { label: "non-EVM tx", chainKey: chain.key, timeoutMs: RPC_CALL_TIMEOUT_MS },
+        async () => {
+          try {
+            return await family.fetch({ chainKey: chain.key, connection, txHash, sender });
+          } catch (error) {
+            if (!(error instanceof UnreadableEvents)) throw error;
+            // Answered once, as no deposit: asking again won't make the events readable.
+            logger.warn({ "chain.key": chain.key, "tx.hash": txHash }, "Source tx events this server can't read");
+            return { failed: false, messages: [] };
+          }
+        },
       );
       return evidence && { kind: "spoke", ...evidence };
     },

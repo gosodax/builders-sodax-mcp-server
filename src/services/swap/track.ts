@@ -79,7 +79,7 @@ export type TrackState =
   | { status: "not_submitted"; reason: "not_a_deposit" }
   | {
       status: "not_submitted";
-      reason: "deposit_mismatch" | "other_sender" | "quote_used" | "multiple_deposits";
+      reason: "deposit_mismatch" | "other_sender" | "quote_used" | "multiple_deposits" | "unverified";
       alerted: boolean;
     }
   | { status: "not_submitted_unknown_quote"; isDeposit: boolean; alerted: boolean }
@@ -162,29 +162,29 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     const alerted = refused(base, source, quote);
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
+  if (claimed) return submitDeposit(base, source, quote);
 
   // An unseen tx is worth waiting for only while its quote can still be sent.
   const stopAfterMs = quote && deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
   const sendable = stopAfterMs !== undefined && Date.now() < stopAfterMs;
   const memoKey = `${chain.key}:${txHash}`;
   // A remembered answer saves reads only while the result is to wait anyway: a final one reads the chain again.
-  const known = sendable || claimed ? seenTx.get<boolean>(memoKey) : null;
+  const known = sendable ? seenTx.get<boolean>(memoKey) : null;
   const receipt = known === false ? null : await readSourceTx(source, txHash, quote?.srcAddress);
   if (!receipt) {
     const seen = known ?? (await seenOnChain(source, txHash));
     if (known === null) seenTx.set(memoKey, seen);
-    // A checked deposit had a receipt, so a missing one now is a lagging RPC, not a tx never sent.
-    if (!seen && !sendable && !claimed) return { ...base, status: "source_not_found" };
+    if (!seen && !sendable) return { ...base, status: "source_not_found" };
     return {
       ...base,
       status: "awaiting_source_confirmation",
-      // A checked deposit was read before: a node that has lost it now is behind.
-      seenOnChain: seen || claimed,
+      seenOnChain: seen,
       retryAfterSec: RETRY_AFTER_SEC,
-      ...(!seen && !claimed && stopAfterMs && { stopAfter: new Date(stopAfterMs).toISOString() }),
+      ...(!seen && stopAfterMs && { stopAfter: new Date(stopAfterMs).toISOString() }),
     };
   }
   if (receipt.failed) return failedSource(base, source, receipt);
+  if (receipt.kind === "spoke" && receipt.unreadable) return unverified(base, quote);
   if (!quote) return withoutQuote(base, source, receipt);
   const deposit = checkQuoteDeposit(source, receipt, quote);
   if (deposit === "multiple_deposits") {
@@ -204,6 +204,15 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "not_submitted", reason: "quote_used", alerted };
   }
   if (row) return { ...base, ...fromStatus(row, quote) };
+  return submitDeposit(base, source, quote);
+}
+
+/**
+ * Submits a checked deposit, or past its deadline relays it for refund. The claim is its proof: it isn't read
+ * again, so a node that has since dropped the tx can't hold up the submit or the refund.
+ */
+async function submitDeposit(base: SwapRef, source: SwapSource, quote: CachedQuote): Promise<TrackResult> {
+  const { txHash, chain } = base;
   // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
   // backend's canceller, as its own expired rows are.
   if (Date.now() >= deadlineMs(quote)) return refundExpired(base, quote, source);
@@ -307,9 +316,21 @@ export function checkQuoteDeposit(
  */
 function failedSource(base: SwapRef, source: SwapSource, sourceTx: SourceTx): TrackResult {
   if (swapsIn(source, sourceTx) === 0) return { ...base, status: "source_failed" };
-  const { txHash, chain, quoteId } = base;
+  const { txHash, chain } = base;
+  // Only a quote this server holds alerts: a made-up quoteId could otherwise spend the alert budget.
+  const quoteId = source.quote?.quoteId;
   const alerted = quoteId !== undefined && alertOperator("failed_tx_deposit", { chainKey: chain.key, txHash, quoteId });
   return { ...base, status: "source_failed", depositHeld: true, alerted };
+}
+
+/**
+ * A tx whose events this server can't all read: it may hold a deposit, so it's neither claimed nor called anything
+ * else. With a quote here, operators check it by hand.
+ */
+function unverified(base: SwapRef, quote?: CachedQuote): TrackResult {
+  const fields = { chainKey: base.chain.key, txHash: base.txHash, quoteId: quote?.quoteId };
+  const alerted = quote !== undefined && alertOperator("unverified_tx", fields);
+  return { ...base, status: "not_submitted", reason: "unverified", alerted };
 }
 
 /**

@@ -777,20 +777,21 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).not.toContain("API key");
   });
 
-  it("keeps waiting when a checked deposit's receipt goes missing, never calling it unsent", async () => {
-    stubBackend({
+  it("doesn't read a checked deposit again: a node that has lost its receipt can't hold up its refund", async () => {
+    const calls = stubBackend({
       submit: () => new Response("", { status: 503 }),
       status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
     });
     const { quoteId } = cacheQuote();
     await track({ txHash: TX, quoteId });
-    // A lagging RPC node, past the point where an unseen tx is no longer waited for.
+    // A node that has dropped the tx, past the deadline: the claim is the proof, so the refund relay runs.
     vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
-    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(getEvmReceipt).mockClear().mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
-    expect(out.nextStep).not.toContain("hasn't seen this transaction");
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(1);
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
@@ -869,15 +870,15 @@ describe("a tx no node has seen", () => {
     expect(isTxKnown).toHaveBeenCalledTimes(1);
   });
 
-  it("gives a checked deposit with a lagging RPC no stop time: it was sent", async () => {
+  it("never calls a checked deposit unsent: it's relayed for refund past its deadline, unread", async () => {
     stubBackend();
     const { quoteId } = cacheQuote();
     claimDeposit(quoteId, TX);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
+    vi.mocked(getEvmReceipt).mockClear();
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
-    expect(out.stopAfter).toBeUndefined();
-    expect(out.nextStep).not.toContain("nothing was swapped");
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
   });
 
   it("reads the chain again before a final answer, whatever it remembered", async () => {

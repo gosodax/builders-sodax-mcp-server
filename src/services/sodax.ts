@@ -305,13 +305,9 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   });
 }
 
-/** An EVM spoke's or NEAR's latest block number: proof its RPC answers. Fails as a bare error. */
+/** An EVM chain's latest block number: proof its RPC answers. Fails as a bare error. */
 export function blockNumber(chainKey: string): Promise<bigint> {
   return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
-    if (chainConfigs[chainKey]?.chain?.type === "NEAR") {
-      const block = await sdk().sodax.spoke.near.rpcProvider.viewBlock({ finality: "final" });
-      return BigInt(block.header.height);
-    }
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     return client.getBlockNumber();
   });
@@ -435,8 +431,6 @@ export interface SwapTx {
   to: string;
   value: bigint;
   data: string;
-  /** The relay payload: what the hub wallet runs, or the hub `createIntent` itself. */
-  payload: string;
 }
 
 /**
@@ -461,7 +455,7 @@ export async function rebuildSwapTx(params: {
     if (hub) {
       // As the SDK's Sonic path does: value only when the hub asset is the hub's native token.
       const native = intent.inputToken.toLowerCase() === spokeChainConfig.sonic.nativeToken.toLowerCase();
-      return { to: solverConfig.intentsContract, value: native ? amount : 0n, data: payload, payload };
+      return { to: solverConfig.intentsContract, value: native ? amount : 0n, data: payload };
     }
     const tx = await sodax.spoke.evm.deposit<true>({
       srcChainKey: srcChainKey as Parameters<typeof sodax.spoke.evm.deposit>[0]["srcChainKey"],
@@ -472,7 +466,7 @@ export async function rebuildSwapTx(params: {
       data: payload as `0x${string}`,
       raw: true,
     });
-    return { to: tx.to, value: BigInt(tx.value), data: tx.data, payload };
+    return { to: tx.to, value: BigInt(tx.value), data: tx.data };
   } catch {
     return undefined;
   }

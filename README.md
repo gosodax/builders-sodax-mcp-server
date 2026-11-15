@@ -119,8 +119,9 @@ every transaction; the server never signs.
    often it's tracked. From any spoke, track reads what the relay signs: the messages the chain's `connection`
    emitted when the tx ran. It submits a tx holding exactly one deposit, sent by the asset manager from the quote's
    sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that failed after
-   its deposit ran isn't submitted: it's reported as held, and alerts the operators. A non-EVM tx's hash goes as the
-   wallet shows it.
+   its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose events can't
+   all be read: it's reported as unverified, which alerts with its quote. A non-EVM tx's hash goes as the wallet
+   shows it.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as

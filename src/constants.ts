@@ -166,10 +166,14 @@ export function base32Bytes(text: string): Uint8Array {
   return Uint8Array.from(bytes);
 }
 
-/** The bytes of text made of BASE58 characters only; each leading "1" is a zero byte. */
+/** The bytes of base58 text; each leading "1" is a zero byte. Any other character throws. */
 export function base58Bytes(text: string): Uint8Array {
   let value = 0n;
-  for (const char of text) value = value * 58n + BigInt(BASE58_ALPHABET.indexOf(char));
+  for (const char of text) {
+    const index = BASE58_ALPHABET.indexOf(char);
+    if (index === -1) throw new Error("not base58");
+    value = value * 58n + BigInt(index);
+  }
   const hex = value === 0n ? "" : value.toString(16);
   const zeros = text.length - text.replace(/^1+/, "").length;
   return Buffer.concat([Buffer.alloc(zeros), Buffer.from(hex.length % 2 ? `0${hex}` : hex, "hex")]);

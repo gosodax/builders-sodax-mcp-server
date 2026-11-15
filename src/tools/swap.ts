@@ -398,6 +398,8 @@ function notSubmittedNextStep(result: Extract<TrackResult, { status: "not_submit
       return `That transaction sent this quote's swap from another address than its fromAddress, so this server can't submit it: ${deposit}.`;
     case "quote_used":
       return `This quote was already used by another transaction, so this one can't become a swap: ${deposit}.`;
+    case "unverified":
+      return `This server can't read all of that transaction's events, so it can't tell whether it holds this swap, and won't submit it. If it is this swap's deposit, ${deposit}. If it isn't, ask for the swap transaction's hash.`;
     case "multiple_deposits":
       return `That transaction holds other SODAX deposits besides this swap, so this server can't submit it: ${deposit}. Next time, send each swap as its own transaction.`;
   }

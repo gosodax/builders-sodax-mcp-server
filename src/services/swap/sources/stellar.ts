@@ -11,11 +11,26 @@ import { ByteReader, hex } from "./bytes.js";
 import { UnreadableEvents, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
-/** A contract's 32-byte id, from its strkey (`C…`: a version byte, the id, a checksum). */
+// A contract strkey's version byte (2 << 3, `C`).
+const CONTRACT_VERSION = 0x10;
+
+/** A contract's 32-byte id, from its strkey: version byte, id, and the CRC16-XModem of both, little-endian. */
 export function stellarContractId(strkey: string): Uint8Array {
   const bytes = base32Bytes(strkey);
-  if (!strkey.startsWith("C") || bytes.length !== 35) throw new Error("not a Stellar contract");
+  const checksum = bytes.length === 35 ? crc16xmodem(bytes.subarray(0, 33)) : -1;
+  if (bytes[0] !== CONTRACT_VERSION || checksum !== bytes[33] + (bytes[34] << 8)) {
+    throw new Error("not a Stellar contract");
+  }
   return bytes.subarray(1, 33);
+}
+
+function crc16xmodem(bytes: Uint8Array): number {
+  let crc = 0;
+  for (const byte of bytes) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  return crc;
 }
 
 /** A contract as messages name it: its address as an `ScVal` (type 18, contract 1) in XDR. */
@@ -55,11 +70,12 @@ function connectionMessage(event: Uint8Array, connection: Buffer): ConnectionMes
   if (!connection.equals(reader.take(32))) return undefined;
   // CONTRACT: the only type a contract emits; then body v0.
   if (reader.uintBE32() !== 1 || reader.uintBE32() !== 0) return undefined;
-  const topics = Array.from({ length: reader.count(4) }, () => scVal(reader));
-  const [topic] = topics;
-  if (topics.length !== 1 || (topic.type !== "string" && topic.type !== "symbol") || topic.value !== "Message") {
-    return undefined;
-  }
+  // Only a `Message` event is read: another of the connection's events is skipped, whatever its topics hold.
+  const topics = reader.count(4);
+  if (topics === 0) return undefined;
+  const type = reader.uintBE32();
+  if ((type !== 14 && type !== 15) || Buffer.from(opaque(reader)).toString("utf8") !== "Message") return undefined;
+  if (topics !== 1) throw new Error("a Message event of unknown shape");
   const data = scVal(reader);
   if (!reader.done || data.type !== "map") throw new Error("a Message event of unknown shape");
   const field = (name: string) => data.value.find(([key]) => key.type === "symbol" && key.value === name)?.[1];
@@ -91,20 +107,14 @@ type ScVal =
 /** The `ScVal`s the connection's `Message` holds; any other type throws. */
 function scVal(reader: ByteReader): ScVal {
   const type = reader.uintBE32();
-  const opaque = () => {
-    const length = reader.uintBE32();
-    const value = reader.take(length);
-    reader.take((4 - (length % 4)) % 4);
-    return value;
-  };
   switch (type) {
     case 9:
       return { type: "u128", value: (reader.uintBE(8) << 64n) + reader.uintBE(8) };
     case 13:
-      return { type: "bytes", value: opaque() };
+      return { type: "bytes", value: opaque(reader) };
     case 14:
     case 15:
-      return { type: type === 14 ? "string" : "symbol", value: Buffer.from(opaque()).toString("utf8") };
+      return { type: type === 14 ? "string" : "symbol", value: Buffer.from(opaque(reader)).toString("utf8") };
     case 17: {
       if (reader.uintBE32() !== 1) throw new Error("an empty map");
       const entries = Array.from({ length: reader.count(8) }, (): [ScVal, ScVal] => [scVal(reader), scVal(reader)]);
@@ -127,3 +137,11 @@ export const STELLAR = nonEvmAdapter({
       nextStep: `Tell the user their Stellar wallet must raise its ${symbol} trustline limit by the amount sent, then quote again.`,
     }),
 });
+
+/** XDR variable opaque bytes, padded to 4. */
+function opaque(reader: ByteReader): Uint8Array {
+  const length = reader.uintBE32();
+  const value = reader.take(length);
+  reader.take((4 - (length % 4)) % 4);
+  return value;
+}

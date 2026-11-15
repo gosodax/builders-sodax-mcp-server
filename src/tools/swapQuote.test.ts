@@ -164,7 +164,10 @@ function stubSwaps(stub: SwapsStub = {}) {
         value: stub.swapValue ?? String(signed.value),
         data: stub.swapData ?? signed.data,
       };
-      const relayData = { address: stub.relayAddress ?? HUB_WALLET, payload: stub.relayPayload ?? signed.payload };
+      // The relay payload the SDK builds for the signed intent, from the hub its own calldata.
+      const signedIntent = { ...intent, ...stub.signedIntent };
+      const payload = stub.relayPayload ?? sdk.createIntentPayload(signedIntent, body.srcChainKey === "sonic");
+      const relayData = { address: stub.relayAddress ?? HUB_WALLET, payload };
       return Response.json({ tx, intent, relayData });
     }
     throw new Error(`unexpected Swaps API call ${path}`);

@@ -7,7 +7,7 @@
 import { spokeChainConfig } from "@sodax/types";
 import { z } from "zod";
 import { isRecord } from "../../../constants.js";
-import { blockNumber, spokeClients } from "../../sodax.js";
+import { RPC_CALL_TIMEOUT_MS, bounded, spokeClients } from "../../sodax.js";
 import { ActionError } from "../errors.js";
 import { utf8Hex } from "./bytes.js";
 import { base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
@@ -16,9 +16,8 @@ import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 /** An account as messages name it: its name's UTF-8 bytes. */
 export const nearSender = utf8Hex;
 
-// NEAR's stages before every receipt has run.
-const IN_FLIGHT = ["NONE", "INCLUDED", "INCLUDED_FINAL"];
-const EXECUTED = ["EXECUTED_OPTIMISTIC", "EXECUTED", "FINAL"];
+// The stages before a tx is final: only a final one is judged.
+const IN_FLIGHT = ["NONE", "INCLUDED", "INCLUDED_FINAL", "EXECUTED_OPTIMISTIC", "EXECUTED"];
 
 // A tx still in flight comes back with its stage and little else.
 const stageSchema = z.object({ final_execution_status: z.string().optional() });
@@ -36,29 +35,36 @@ const messageSchema = z.object({
   payload: z.string(),
 });
 
-const succeeded = (status: unknown) => isRecord(status) && ("SuccessValue" in status || "SuccessReceiptId" in status);
+/** A final outcome's status: anything but success (`Unknown` included) fails it; a shape it doesn't know throws. */
+function succeeded(status: unknown): boolean {
+  if (isRecord(status) && ("SuccessValue" in status || "SuccessReceiptId" in status)) return true;
+  if ((isRecord(status) && "Failure" in status) || status === "Unknown") return false;
+  throw new Error("unknown NEAR outcome status");
+}
 const HEX = /^(?:0x)?((?:[0-9a-fA-F]{2})*)$/;
 
 /** The connection's messages in a tx's RPC outcome, or `null` until every receipt ran. */
 export function nearEvidence(raw: unknown, connection: string): SpokeEvidence | null {
+  // Without its stage, or before it's final, the tx is waited for, not judged.
   const stage = stageSchema.parse(raw).final_execution_status;
-  if (stage !== undefined && IN_FLIGHT.includes(stage)) return null;
-  if (stage !== undefined && !EXECUTED.includes(stage)) throw new Error("unknown NEAR tx stage");
+  if (stage === undefined || IN_FLIGHT.includes(stage)) return null;
+  if (stage !== "FINAL") throw new Error("unknown NEAR tx stage");
   const { transaction_outcome, receipts_outcome } = outcomeSchema.parse(raw);
-  const failed =
-    !succeeded(transaction_outcome.outcome.status) ||
-    receipts_outcome.some(receipt => !succeeded(receipt.outcome.status));
+  const failed = ![transaction_outcome, ...receipts_outcome].every(({ outcome }) => succeeded(outcome.status));
   const messages = receipts_outcome
     .filter(({ outcome }) => outcome.executor_id === connection && succeeded(outcome.status))
     .flatMap(({ outcome }) =>
-      outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).map(log => readable(() => eventMessage(log))),
+      outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).flatMap(log => readable(() => eventMessage(log))),
     );
   return { failed, messages };
 }
 
 /** `EVENT_JSON: {src_chain_id, src_address, dst_chain_id, dst_address, conn_sn, payload}`, the bytes in hex. */
-function eventMessage(log: string): ConnectionMessage {
-  const event = messageSchema.parse(JSON.parse(log.slice("EVENT_JSON:".length)));
+function eventMessage(log: string): ConnectionMessage[] {
+  const json: unknown = JSON.parse(log.slice("EVENT_JSON:".length));
+  // Another event the connection may log (a NEP-297 one, say) isn't a message.
+  if (!isRecord(json) || !("src_chain_id" in json)) return [];
+  const event = messageSchema.parse(json);
   const bytes = (text: string) => {
     const match = HEX.exec(text);
     if (!match) throw new Error("a Message event of unknown shape");
@@ -68,13 +74,15 @@ function eventMessage(log: string): ConnectionMessage {
   if (!Number.isSafeInteger(event.src_chain_id) || !Number.isSafeInteger(event.dst_chain_id)) {
     throw new Error("a Message event of unknown shape");
   }
-  return {
-    srcChainId: BigInt(event.src_chain_id),
-    srcAddress: bytes(event.src_address),
-    dstChainId: BigInt(event.dst_chain_id),
-    dstAddress: bytes(event.dst_address),
-    payload: bytes(event.payload),
-  };
+  return [
+    {
+      srcChainId: BigInt(event.src_chain_id),
+      srcAddress: bytes(event.src_address),
+      dstChainId: BigInt(event.dst_chain_id),
+      dstAddress: bytes(event.dst_address),
+      payload: bytes(event.payload),
+    },
+  ];
 }
 
 export const NEAR = nonEvmAdapter({
@@ -95,8 +103,12 @@ export const NEAR = nonEvmAdapter({
       throw error;
     }
   },
-  // Its swap tx is built without a read, so a dead RPC would only show at track.
-  probe: blockNumber,
+  // Its swap tx is built without a read, so a dead RPC would only show at track: the final block's height first.
+  probe: chainKey =>
+    bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+      const block = await spokeClients().near.rpcProvider.viewBlock({ finality: "final" });
+      return BigInt(block.header.height);
+    }),
   // An Ethereum-style account sends through a relayer to its own account contract, a deposit track can't see.
   checkSender(address) {
     if (!address.startsWith("0x")) return;

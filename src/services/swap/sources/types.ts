@@ -31,6 +31,8 @@ export interface ConnectionMessage {
 export interface SpokeEvidence {
   failed: boolean;
   messages: ConnectionMessage[];
+  /** Its events couldn't all be read: no message list can be trusted complete, so nothing is concluded from it. */
+  unreadable?: true;
 }
 
 /**

@@ -10,7 +10,7 @@ import { injectiveEvidence } from "./injective.js";
 import { nearEvidence } from "./near.js";
 import { UnreadableEvents } from "./nonEvm.js";
 import { solanaEvidence } from "./solana.js";
-import { stellarEvidence } from "./stellar.js";
+import { stellarContractId, stellarEvidence } from "./stellar.js";
 import { suiEvidence } from "./sui.js";
 import type { NonEvmSourceType, SourceChain, SpokeEvidence } from "./types.js";
 
@@ -182,10 +182,25 @@ describe("Stellar's evidence", () => {
     expect(stellarEvidence(tx([[message], [message]]), conn)?.messages).toHaveLength(2);
   });
 
-  it("refuses a value type the connection doesn't emit, rather than skip what may be a deposit", () => {
-    // The topic's type, String (14), turned into U32 (3).
-    expect(() => stellarEvidence(tx([[patched(52, Buffer.from([0, 0, 0, 3]))]]), conn)).toThrow();
-    expect(() => stellarEvidence(tx([[message.slice(0, -8)]]), conn)).toThrow();
+  it("skips another of the connection's events, whatever its topic holds", () => {
+    // The topic's type, String (14), turned into U32 (3): not a Message, so not read further.
+    const other = patched(52, Buffer.from([0, 0, 0, 3]));
+    expect(stellarEvidence(tx([[other, message]]), conn)?.messages).toHaveLength(1);
+  });
+
+  it("calls a Message it can't read unreadable, rather than skip what may be a deposit", () => {
+    const xdr = Buffer.from(message, "base64");
+    // conn_sn's value type, U128 (9), turned into U32 (3).
+    const at = xdr.indexOf(Buffer.from("conn_sn")) + 8;
+    expect(() => stellarEvidence(tx([[patched(at, Buffer.from([0, 0, 0, 3]))]]), conn)).toThrow(UnreadableEvents);
+    expect(() => stellarEvidence(tx([[message.slice(0, -8)]]), conn)).toThrow(UnreadableEvents);
+  });
+
+  it("takes a contract's strkey only with its version byte and checksum", () => {
+    expect(stellarContractId(conn)).toHaveLength(32);
+    const flipped = `${conn.slice(0, 10)}${conn[10] === "A" ? "B" : "A"}${conn.slice(11)}`;
+    expect(() => stellarContractId(flipped)).toThrow();
+    expect(() => stellarContractId("GAG2MWIUHR7RHX7RZLZ6Z3DC42DREGTXIXHGEIHBQ7XOSUAQ3GM2CGQK")).toThrow();
   });
 
   it("reads a failed tx as failed, an unknown one as not yet, and refuses a status or shape it doesn't know", () => {
@@ -245,11 +260,32 @@ describe("NEAR's evidence", () => {
     expect(nearEvidence(withReceipts(connectionFailed), conn)).toEqual({ failed: true, messages: [] });
   });
 
-  it("waits for a tx in flight, and refuses a stage or a Message it doesn't know", () => {
-    expect(nearEvidence({ final_execution_status: "INCLUDED" }, conn)).toBeNull();
+  it("waits for a tx until it's final, and fails a final one with a receipt that didn't succeed, Unknown included", () => {
+    for (const stage of ["INCLUDED", "EXECUTED_OPTIMISTIC", "EXECUTED"]) {
+      expect(nearEvidence({ ...outcome, final_execution_status: stage }, conn)).toBeNull();
+    }
+    const { final_execution_status: _, ...noStage } = outcome;
+    expect(nearEvidence(noStage, conn)).toBeNull();
+    const unknown = receipts.map((receipt, i) =>
+      i === receipts.length - 1 ? { ...receipt, outcome: { ...receipt.outcome, status: "Unknown" } } : receipt,
+    );
+    expect(nearEvidence(withReceipts(unknown), conn)).toMatchObject({ failed: true });
+  });
+
+  it("refuses a stage or a status it doesn't know rather than guess, and skips the connection's other events", () => {
     expect(() => nearEvidence({ ...outcome, final_execution_status: "REVERTED" }, conn)).toThrow();
-    const odd = { ...connectionReceipt, outcome: { ...connectionReceipt.outcome, logs: ['EVENT_JSON: {"a":1}'] } };
-    expect(() => nearEvidence(withReceipts([odd]), conn)).toThrow();
+    const oddStatus = receipts.map((receipt, i) =>
+      i === 0 ? { ...receipt, outcome: { ...receipt.outcome, status: { Pending: {} } } } : receipt,
+    );
+    expect(() => nearEvidence(withReceipts(oddStatus), conn)).toThrow();
+    const logs = [...connectionReceipt.outcome.logs, 'EVENT_JSON:{"standard":"nep297","event":"other"}'];
+    const extra = { ...connectionReceipt, outcome: { ...connectionReceipt.outcome, logs } };
+    expect(nearEvidence(withReceipts([extra]), conn)?.messages).toHaveLength(1);
+    const odd = {
+      ...connectionReceipt,
+      outcome: { ...connectionReceipt.outcome, logs: ['EVENT_JSON: {"src_chain_id":"x"}'] },
+    };
+    expect(() => nearEvidence(withReceipts([odd]), conn)).toThrow(UnreadableEvents);
   });
 });
 

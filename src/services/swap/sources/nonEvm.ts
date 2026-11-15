@@ -17,7 +17,7 @@ export const base58Hash = (size: 32 | 64) => {
   return (text: string) => (pattern.test(text) && base58Bytes(text).length === size ? text : undefined);
 };
 
-/** The chain answered, but the connection's events in the tx can't all be read: the tx proves no deposit here. */
+/** The chain answered, but the connection's events in the tx can't all be read: whether it holds a deposit is unknown. */
 export class UnreadableEvents extends Error {}
 
 /** Decodes one of the connection's events; anything it can't read is `UnreadableEvents`. */
@@ -63,9 +63,9 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
             return await family.fetch({ chainKey: chain.key, connection, txHash, sender });
           } catch (error) {
             if (!(error instanceof UnreadableEvents)) throw error;
-            // Answered once, as no deposit: asking again won't make the events readable.
+            // Answered once: asking again won't make the events readable, and a deposit may be among them.
             logger.warn({ "chain.key": chain.key, "tx.hash": txHash }, "Source tx events this server can't read");
-            return { failed: false, messages: [] };
+            return { failed: false, messages: [], unreadable: true as const };
           }
         },
       );
@@ -75,6 +75,8 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
     ...(family.probe && { probe: family.probe }),
     ...(family.checkSender && { checkSender: family.checkSender }),
     async prepareSwap(source, { request, built, approved, symbol }) {
+      // Made ready for a wallet inside the build: a raw tx it can't finish fails as the build does.
+      const finish = (raw: unknown) => (family.finish ? family.finish(raw) : raw);
       const { chain } = source;
       if (!approved) {
         throw (
@@ -97,18 +99,23 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
         amount: request.inputAmount,
         to: built.intent.creator,
         payload: built.relayData.payload,
-      }).catch(() => {
-        throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
-          nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
+      })
+        .then(finish)
+        .catch(() => {
+          throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
+            nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
+          });
         });
-      });
       return { steps: [stepOf(family, source, "swap", raw, isRecord(built.tx) ? built.tx.to : undefined)] };
     },
     async cancelStep(source, intent) {
       const { chain } = source;
-      const raw = await buildNonEvmCancel(chain.key, intent).catch(() => {
-        throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
-      });
+      const finish = (raw: unknown) => (family.finish ? family.finish(raw) : raw);
+      const raw = await buildNonEvmCancel(chain.key, intent)
+        .then(finish)
+        .catch(() => {
+          throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
+        });
       return stepOf(family, source, "cancel", raw);
     },
   };
@@ -119,11 +126,10 @@ function stepOf(
   family: NonEvmFamily,
   source: SwapSource,
   kind: NonEvmStep["kind"],
-  built: unknown,
+  raw: unknown,
   expected?: unknown,
 ): NonEvmStep {
   const chainKey = source.chain.key;
-  const raw = family.finish ? family.finish(built) : built;
   if (family.callsPinned && !family.callsPinned(kind, raw, expected)) {
     logger.error({ "chain.key": chainKey }, `The SDK built a ${kind} to another program than expected`);
     throw new ActionError("SWAP_MISMATCH", `The ${kind} built here calls another program than expected.`, {

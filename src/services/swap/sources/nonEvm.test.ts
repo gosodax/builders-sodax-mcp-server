@@ -117,6 +117,19 @@ describe("a non-EVM build", () => {
     }
   });
 
+  it("fails as the build does when the SDK's Sui tx can't be made ready, not as a bug", async () => {
+    vi.mocked(buildNonEvmDeposit).mockResolvedValue({
+      from: "0x5",
+      to: "0xe5f0::asset_manager::transfer",
+      data: "not JSON",
+    });
+    await expect(
+      SUI.prepareSwap(sourceOf("sui"), swapOf("sui", "0xe5f0::asset_manager::transfer")),
+    ).rejects.toMatchObject({
+      code: "CHAIN_UNAVAILABLE",
+    });
+  });
+
   it("refuses an amount its allowance doesn't cover, as the family words it, before building anything", async () => {
     const unapproved = { ...swapOf("stellar"), approved: false };
     await expect(STELLAR.prepareSwap(sourceOf("stellar"), unapproved)).rejects.toMatchObject({
@@ -142,6 +155,20 @@ describe("a non-EVM build", () => {
       expect.objectContaining({ code: "INVALID_ADDRESS" }),
     );
     expect(() => NEAR.checkSender?.("alice.near")).not.toThrow();
+  });
+});
+
+describe("NEAR's probe", () => {
+  it("reads the final block, so a quote finds a dead NEAR RPC before the user sends anything", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const { id } = JSON.parse(String(init?.body));
+      return Response.json({ jsonrpc: "2.0", id, result: { header: { height: 12345 } } });
+    });
+    expect(await NEAR.probe?.("near")).toBe(12345n);
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+      method: "block",
+      params: { finality: "final" },
+    });
   });
 });
 
@@ -179,13 +206,18 @@ describe("Injective's read", () => {
     expect(await INJECTIVE.read(source(), HASH)).toEqual({ kind: "spoke", failed: false, messages: [] });
   });
 
-  it("answers once, as no deposit, for a tx whose connection events it can't read: asking again won't help", async () => {
+  it("answers once, as unreadable, for a tx whose connection events it can't read: asking again won't help", async () => {
     const { tx_response } = fixtures.injective.tx;
     const message = tx_response.events.find(event => event.type === "wasm-Message") as (typeof tx_response.events)[0];
     const odd = { ...message, attributes: message.attributes.filter(entry => entry.key !== "payload") };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(reply(200, { tx_response: { code: 0, events: [odd] } }));
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    expect(await INJECTIVE.read(source(), HASH)).toEqual({ kind: "spoke", failed: false, messages: [] });
+    expect(await INJECTIVE.read(source(), HASH)).toEqual({
+      kind: "spoke",
+      failed: false,
+      messages: [],
+      unreadable: true,
+    });
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ "tx.hash": HASH }),
       expect.stringContaining("can't read"),

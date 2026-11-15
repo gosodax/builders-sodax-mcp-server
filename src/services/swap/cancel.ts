@@ -25,6 +25,7 @@ import {
   readSourceTx,
   resolveSource,
   sourceTxHash,
+  swapsIn,
   whyNotCancellable,
 } from "./source.js";
 import { holdsCancel } from "./sourceTx.js";
@@ -133,7 +134,8 @@ export async function cancelSwap(input: {
     creator: intent.creator,
     payload: committedPayload(source, payload),
   };
-  if (!holdsCancel(receipt.messages, cancel)) return { ...base, status: "not_a_cancel_tx" };
+  // Events this server can't read aren't proof either way: the relay checks the message itself.
+  if (!receipt.unreadable && !holdsCancel(receipt.messages, cancel)) return { ...base, status: "not_a_cancel_tx" };
   const data = source.adapter.commitsHash ? { address: intent.creator, payload } : undefined;
   if (!(await relaySpokeTx(intent.srcChain, cancelTxHash, data))) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
@@ -151,13 +153,21 @@ async function unsubmittedDeposit(
   source: SwapSource,
   quote: CachedQuote,
 ): Promise<CancelResult | undefined> {
-  const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
-  if (!receipt || receipt.failed) return { ...base, status: "not_cancellable", reason: "not_sent" };
-  if (checkQuoteDeposit(source, receipt, quote) !== "match") return undefined;
+  // A checked deposit isn't read again: a node that has dropped it can't hold up its refund.
+  const claimed = quote.depositTxHash === base.txHash;
+  if (!claimed) {
+    const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
+    const notSent = { ...base, status: "not_cancellable" as const, reason: "not_sent" as const };
+    // Only an absence its node can vouch for, or a failed tx with no deposit kept, is a swap never sent.
+    if (!receipt) return source.adapter.prunes ? undefined : notSent;
+    if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notSent;
+    if (receipt.kind === "spoke" && receipt.unreadable) return undefined;
+    if (checkQuoteDeposit(source, receipt, quote) !== "match") return undefined;
+  }
   if (Date.now() < deadlineMs(quote)) {
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
-  if (claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
+  if (!claimed && claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
   const refund = await refundExpired(base, quote, source);
   return refund.status === "expired_unsubmitted" ? refund : { ...base, status: "not_cancellable", reason: "refunding" };
 }
@@ -174,11 +184,15 @@ async function hubCancel(
   cancelTxHash?: string,
 ): Promise<CancelResult | undefined> {
   if (quote.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
-  const swapTx = await readSourceTx(source, base.txHash, quote.srcAddress);
-  if (!swapTx || swapTx.failed) return { ...base, status: "not_cancellable", reason: "not_sent" };
-  if (checkQuoteDeposit(source, swapTx, quote) !== "match") return undefined;
-  if (claimDeposit(quote.quoteId, base.txHash) === "taken")
-    throw quoteMismatch("That quote was used by another transaction.");
+  // As for a spoke's deposit: one already checked isn't read again.
+  if (quote.depositTxHash !== base.txHash) {
+    const swapTx = await readSourceTx(source, base.txHash, quote.srcAddress);
+    if (!swapTx || swapTx.failed) return { ...base, status: "not_cancellable", reason: "not_sent" };
+    if (checkQuoteDeposit(source, swapTx, quote) !== "match") return undefined;
+    if (claimDeposit(quote.quoteId, base.txHash) === "taken") {
+      throw quoteMismatch("That quote was used by another transaction.");
+    }
+  }
   if (!cancelTxHash) {
     return { ...base, status: "ready", steps: [await source.adapter.cancelStep(source, quote.intent)] };
   }

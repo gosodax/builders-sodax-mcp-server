@@ -519,3 +519,75 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     expect(relays(calls)).toEqual([]);
   });
 });
+
+describe("a non-EVM swap whose evidence is incomplete", () => {
+  const unreadable: SpokeEvidence = { failed: false, messages: [], unreadable: true };
+
+  it("isn't claimed or called anything else when its events can't be read, and alerts with its quote", async () => {
+    const swap = REAL.solana;
+    readSpoke.mockResolvedValue(unreadable);
+    const calls = stubBackend();
+    const quote = quoteOf(swap);
+    const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: true });
+    expect(out.nextStep).toContain("can't tell whether it holds this swap");
+    expect(getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "unverified_tx" }), expect.any(String));
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("says the same without a quote, alerting no one", async () => {
+    readSpoke.mockResolvedValue(unreadable);
+    stubBackend();
+    const { out } = await track({ txHash: REAL.sui.txHash, chain: "sui" });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: false });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("doesn't alert on a held deposit named by a quoteId this server doesn't hold", async () => {
+    // A tx that failed after its deposit ran, as only NEAR's can.
+    readSpoke.mockResolvedValue({ failed: true, messages: REAL.sui.evidence().messages });
+    stubBackend();
+    const quoteId = "8f5e3c1a-2b4d-4e6f-8a9b-0c1d2e3f4a5b";
+    const { out } = await track({ txHash: REAL.sui.txHash, chain: "sui", quoteId });
+    expect(out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: false });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("submits a checked deposit its node has since dropped, without reading it again", async () => {
+    const swap = REAL.sui;
+    const calls = stubBackend({
+      submit: () => new Response("", { status: 503 }),
+      status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
+    });
+    const quote = quoteOf(swap);
+    readSpoke.mockResolvedValue(swap.evidence());
+    await track({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(getCachedQuote(quote.quoteId, quote.keyHash)).toMatchObject({ depositTxHash: swap.txHash });
+    readSpoke.mockReset().mockResolvedValue(null);
+    vi.setSystemTime(Number(swap.intent.deadline) * 1000 + 1000);
+    const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(out.status).toBe("expired_refunding");
+    expect(readSpoke).not.toHaveBeenCalled();
+    expect(relays(calls)).toHaveLength(1);
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it("is cancelled toward its refund once checked, though its node has dropped it", async () => {
+    const swap = REAL.injective;
+    const quote = quoteOf(swap);
+    claimDeposit(quote.quoteId, swap.txHash);
+    readSpoke.mockResolvedValue(null);
+    stubBackend({ row: null });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(out.status).toBe("deposit_unsubmitted");
+    expect(readSpoke).not.toHaveBeenCalled();
+  });
+
+  it("isn't called never sent when a node that drops old txs doesn't have it", async () => {
+    readSpoke.mockResolvedValue(null);
+    stubBackend({ row: null });
+    const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: quoteOf(REAL.sui).quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "not_submitted" });
+  });
+});

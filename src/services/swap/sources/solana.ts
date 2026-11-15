@@ -22,7 +22,7 @@ type SolanaTx = { meta: { err: unknown; logMessages?: string[] | null } | null }
 
 /**
  * The connection's messages in a tx from `getTransaction`, or `null` until it's confirmed. A failed tx is rolled back
- * whole, so the events it logged first never happened. Truncated logs can't all be read, so such a tx proves nothing.
+ * whole, so the events it logged first never happened. Truncated logs can't all be read: such a tx is unreadable.
  */
 export function solanaEvidence(tx: SolanaTx, connection: string): SpokeEvidence | null {
   if (!tx?.meta) return null;
@@ -34,6 +34,7 @@ export function solanaEvidence(tx: SolanaTx, connection: string): SpokeEvidence 
   const messages: ConnectionMessage[] = [];
   for (const log of logs) {
     if (log.startsWith("Log truncated")) throw new UnreadableEvents("Solana logs truncated");
+    // Don't tighten this alone: it must attribute events as the relay does, or a deposit could be claimed unrelayed.
     const invoked = /^Program (\S+) invoke \[\d+\]$/.exec(log);
     if (invoked) frames.push(invoked[1]);
     else if (/^Program \S+ (success|failed)/.test(log)) frames.pop();
@@ -65,7 +66,7 @@ export const SOLANA = nonEvmAdapter({
   async fetch({ connection, txHash }) {
     const tx = await spokeClients().solana.connection.getTransaction(txHash, {
       maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
+      commitment: "finalized",
     });
     return solanaEvidence(tx, connection);
   },

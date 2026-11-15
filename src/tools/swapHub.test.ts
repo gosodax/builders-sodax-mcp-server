@@ -103,8 +103,10 @@ describe("a swap from Sonic, the hub", () => {
     const { quoteId } = hubQuote();
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
     const { out } = await track({ txHash: SONIC_TX, quoteId });
-    expect(out.status).toBe("expired_refunding");
+    // Left to the canceller, not relayed: it waits for its refund, which the user can take sooner with a cancel.
+    expect(out.status).toBe("expired_awaiting_refund");
     expect(out.nextStep).toContain("unless a solver filled it first");
+    expect(out.nextStep).toContain("cancel it now with sodax_swap_cancel");
     expect(relays(calls)).toEqual([]);
     expect(submits(calls)).toEqual([]);
   });
@@ -121,7 +123,7 @@ describe("a swap from Sonic, the hub", () => {
     expect(out.nextStep).not.toContain("SODAX support");
     expect(relays(calls)).toEqual([]);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
-    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_refunding");
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_awaiting_refund");
     expect(logger.error).not.toHaveBeenCalled();
   });
 
@@ -188,13 +190,45 @@ describe("a swap from Sonic, the hub", () => {
       expect(out.error.code).toBe("SWAP_MISMATCH");
     });
 
-    it("says an unsubmitted swap is left to its expiry, not to an operator", async () => {
-      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    // The swap tx logged the intent, and a cancel logged its cancellation.
+    const onChain = (cancelled: string[]) =>
+      vi
+        .mocked(getEvmReceipt)
+        .mockImplementation(async (_chain, txHash) =>
+          txHash === CANCEL_TX
+            ? hubReceipt(INTENT_CANCELLED_TOPIC, cancelled)
+            : hubReceipt(INTENT_CREATED_TOPIC, [HASH]),
+        );
+
+    it("is cancelled straight from its quote before the swap service has it, and then reported cancelled", async () => {
+      onChain([HASH]);
       stubBackend({ row: null });
-      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
-      expect(out.status).toBe("deposit_unsubmitted");
-      expect(out.nextStep).toContain("can't be cancelled here");
-      expect(out.nextStep).toContain("don't call sodax_swap_track");
+      const { quoteId } = hubQuote();
+      const ready = await cancel({ txHash: SONIC_TX, quoteId });
+      expect(ready.out).toMatchObject({ status: "ready", steps: [{ kind: "cancel", chainId: 146 }] });
+      const confirmed = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
+      expect(confirmed.out.status).toBe("cancel_confirmed");
+      // Its quote remembers: track doesn't submit a cancelled intent, and a second cancel has nothing left to do.
+      expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
+        status: "failed",
+        outcome: "cancelled",
+      });
+      expect((await cancel({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ reason: "cancelled" });
+    });
+
+    it("is cancelled from its quote past its deadline too: the user needn't wait for the canceller", async () => {
+      onChain([HASH]);
+      stubBackend({ row: null });
+      const { quoteId } = hubQuote();
+      vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+      expect((await cancel({ txHash: SONIC_TX, quoteId })).out.status).toBe("ready");
+    });
+
+    it("isn't confirmed early by a tx that cancelled another intent", async () => {
+      onChain([OTHER_HASH]);
+      stubBackend({ row: null });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId, cancelTxHash: CANCEL_TX });
+      expect(out.status).toBe("not_a_cancel_tx");
     });
 
     it("says, without its quote or a backend row, that an intent on Sonic is refunded once expired", async () => {

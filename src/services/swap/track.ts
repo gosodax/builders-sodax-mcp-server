@@ -16,6 +16,7 @@ import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
+  markLeftToRefund,
   markRelayedForRefund,
   markSubmitFailed,
   markSubmitRefused,
@@ -76,7 +77,10 @@ export type TrackState =
       alerted: boolean;
     }
   | { status: "not_submitted_unknown_quote"; isDeposit: boolean; alerted: boolean }
+  /** A spoke's deposit relayed past its deadline: its hub intent is refunded. */
   | { status: "expired_refunding" }
+  /** A hub swap past its deadline, never submitted: the backend's canceller refunds it, unless a solver fills it first. */
+  | { status: "expired_awaiting_refund" }
   | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
   /** Refused before its deadline: the first call after it starts the refund. */
   | { status: "submit_refused"; alerted: boolean; retryAfterSec: number }
@@ -145,11 +149,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (row && (!quote || claimed)) return { ...base, ...fromStatus(row, claimed ? quote : undefined) };
   // Already handed over by this server: the backend's row may lag its answer, and a resubmit costs
   // one of the 10 submits a minute this server's IP gets.
-  if (claimed && quote.handedOver) {
-    return quote.handedOver === "relayed_for_refund"
-      ? { ...base, status: "expired_refunding" }
-      : { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
-  }
+  if (claimed && quote.handedOver) return { ...base, ...handedOverState(quote.handedOver) };
   // A resubmit before the deadline is refused again, and costs one of those 10 submits.
   if (claimed && quote.submitRefused && Date.now() < deadlineMs(quote)) {
     // Deduped: the first refusal's alert, or another try if that one reached only the log.
@@ -200,7 +200,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (row) return { ...base, ...fromStatus(row, quote) };
   // From the deadline on it's relayed, not submitted: the hub intent that creates is refunded by the
   // backend's canceller, as its own expired rows are.
-  if (Date.now() >= deadlineMs(quote)) return relayForRefund(base, quote, source);
+  if (Date.now() >= deadlineMs(quote)) return refundExpired(base, quote, source);
   // Each submit counts against submit-tx's limit (per IP, or the key's org): a retry sooner than told waits.
   const waitMs = (quote.submitRetryAt ?? 0) - Date.now();
   if (waitMs > 0) {
@@ -230,7 +230,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     // A deposit is still relayed to be refunded: now near the deadline, else on the first call after it. A hub
     // intent is only refunded once expired, so it waits for that call.
     const nearDeadline = Date.now() >= deadlineMs(quote) - REFUND_AT_ONCE_SEC * 1000;
-    if (source.connection && nearDeadline) return relayForRefund(base, quote, source);
+    if (source.connection && nearDeadline) return refundExpired(base, quote, source);
     markSubmitRefused(quote.quoteId);
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
@@ -333,20 +333,36 @@ function withoutQuote(base: SwapRef, source: SwapSource, receipt: EvmReceipt): T
   return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
 }
 
+/** What a swap this server handed over has become, from its quote: the backend may not have a row for it. */
+function handedOverState(how: NonNullable<CachedQuote["handedOver"]>): TrackState {
+  switch (how) {
+    case "submitted":
+      return { status: "queued", retryAfterSec: RETRY_AFTER_SEC };
+    case "relayed_for_refund":
+      return { status: "expired_refunding" };
+    case "left_to_refund":
+      return { status: "expired_awaiting_refund" };
+    case "cancelled":
+      return { status: "failed", outcome: "cancelled", canCancel: false };
+  }
+}
+
 /**
- * Relays a claimed deposit past its deadline, so the hub intent it creates is refunded. A swap from the hub
- * needs no relay: its intent is already there, and the backend's canceller refunds it once expired.
+ * A claimed swap past its deadline. A spoke's deposit is relayed, so the hub intent it creates is refunded; a
+ * swap from the hub needs no relay: its intent is already there, and the backend's canceller refunds it.
  */
-export async function relayForRefund(
+export async function refundExpired(
   base: SwapRef,
   quote: CachedQuote,
   source: SwapSource,
-): Promise<SwapRef & Extract<TrackState, { status: "expired_refunding" | "expired_unsubmitted" }>> {
+): Promise<
+  SwapRef & Extract<TrackState, { status: "expired_refunding" | "expired_awaiting_refund" | "expired_unsubmitted" }>
+> {
   const { txHash, chain } = base;
   if (!source.connection) {
-    markRelayedForRefund(quote);
+    markLeftToRefund(quote);
     logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Left an expired hub swap to its refund");
-    return { ...base, status: "expired_refunding" };
+    return { ...base, status: "expired_awaiting_refund" };
   }
   let relayed: boolean;
   try {

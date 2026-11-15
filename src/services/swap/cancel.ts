@@ -9,7 +9,7 @@ import { logger } from "../logger.js";
 import { cancelPayload, createIntentPayload, hubCancelTx, intentChainId, intentHash, userHubWallet } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type StepTx, toStepTx } from "./quote.js";
-import { type CachedQuote, claimDeposit } from "./quoteCache.js";
+import { type CachedQuote, claimDeposit, markCancelled } from "./quoteCache.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,
@@ -21,7 +21,7 @@ import {
 } from "./source.js";
 import { HUB_RELAY_ID, INTENT_CANCELLED_TOPIC, decodeSendMessage, holdsCancel, hubLogged } from "./sourceTx.js";
 import { type EvmTx, type Intent, buildCancel, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
-import { checkQuoteDeposit, deadlineMs, relayForRefund, untilRefundSec } from "./track.js";
+import { checkQuoteDeposit, deadlineMs, refundExpired, untilRefundSec } from "./track.js";
 
 export type CancelState =
   | { status: "not_cancellable"; reason: NotCancellable | "not_sent" }
@@ -65,7 +65,11 @@ export async function cancelSwap(input: {
   if (!row && quote?.handedOver === "relayed_for_refund" && quote.depositTxHash === txHash) {
     return { ...base, status: "not_cancellable", reason: "refunding" };
   }
-  if (!row && quote && !quote.handedOver) {
+  // A swap from the hub is an intent there once mined: its cancel needs no backend record.
+  if (!row && quote && !source.connection) {
+    const early = await hubCancel(base, source, quote, input.cancelTxHash?.toLowerCase());
+    if (early) return early;
+  } else if (!row && quote && !quote.handedOver) {
     const unsubmitted = await unsubmittedDeposit(base, source, quote);
     if (unsubmitted) return unsubmitted;
   }
@@ -147,8 +151,43 @@ async function unsubmittedDeposit(
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
   if (claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
-  const refund = await relayForRefund(base, quote, source);
-  return refund.status === "expired_refunding" ? { ...base, status: "not_cancellable", reason: "refunding" } : refund;
+  const refund = await refundExpired(base, quote, source);
+  return refund.status === "expired_unsubmitted" ? refund : { ...base, status: "not_cancellable", reason: "refunding" };
+}
+
+/**
+ * A quoted swap from the hub with no backend row: cancelled straight from the quote's intent once its tx logged
+ * that intent, before or after its deadline, and confirmed by the intents contract's log of the cancel. Claimed
+ * first, so this tx stays the quote's. `undefined` for a tx that isn't this quote's swap, which track reports on.
+ */
+async function hubCancel(
+  base: SwapRef,
+  source: SwapSource,
+  quote: CachedQuote,
+  cancelTxHash?: string,
+): Promise<CancelResult | undefined> {
+  if (quote.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
+  const swapTx = await readReceipt(source.chain, base.txHash);
+  if (!swapTx || swapTx.reverted) return { ...base, status: "not_cancellable", reason: "not_sent" };
+  if (checkQuoteDeposit(swapTx, source, quote) !== "match") return undefined;
+  if (claimDeposit(quote.quoteId, base.txHash) === "taken")
+    throw quoteMismatch("That quote was used by another transaction.");
+  if (!cancelTxHash) {
+    const tx = await buildCheckedCancel(source, quote.intent);
+    return {
+      ...base,
+      status: "ready",
+      steps: [{ kind: "cancel", chainId: source.chainId, tx: toStepTx(tx, source.chainId) }],
+    };
+  }
+  const receipt = await readReceipt(source.chain, cancelTxHash);
+  if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
+  if (receipt.reverted) return { ...base, status: "cancel_failed" };
+  if (!hubLogged(receipt, source.swapContract, INTENT_CANCELLED_TOPIC, intentHash(quote.intent))) {
+    return { ...base, status: "not_a_cancel_tx" };
+  }
+  markCancelled(quote);
+  return { ...base, status: "cancel_confirmed" };
 }
 
 const quoteMismatch = (message: string) =>

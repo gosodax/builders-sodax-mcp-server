@@ -25,8 +25,11 @@ export type CachedQuote = IntentRequest & {
   expiresAt: number;
   /** The deposit checked as this quote's. One intent can only come from one deposit, so the claim stays. */
   depositTxHash?: string;
-  /** How that deposit left this server: submitted to the backend, or relayed after its deadline for a refund. */
-  handedOver?: "submitted" | "relayed_for_refund";
+  /**
+   * How that deposit left this server: submitted to the backend, relayed after its deadline for a refund (from a
+   * spoke), left expired to the backend's canceller (from the hub), or cancelled on the hub by its user.
+   */
+  handedOver?: "submitted" | "relayed_for_refund" | "left_to_refund" | "cancelled";
   /** The backend refused its submit before the deadline; it's relayed for refund after it. */
   submitRefused?: true;
   /** Epoch ms before which a failed submit isn't tried again: no later than the agent was told to wait. */
@@ -189,13 +192,27 @@ export function markSubmitRefused(quoteId: string): void {
   if (quote) quote.submitRefused = true;
 }
 
-// A relayed deposit has no backend row, so its quote is the only record that it's being refunded.
-const RELAYED_RETENTION_MS = 24 * 60 * 60 * 1000;
+// With no backend row, the quote is the only record of what became of the swap.
+const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function markRelayedForRefund(quote: CachedQuote): void {
-  quote.handedOver = "relayed_for_refund";
-  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + RELAYED_RETENTION_MS);
-  // Put back if it was dropped while the relay ran.
+  markHandedOver(quote, "relayed_for_refund");
+}
+
+/** A hub swap past its deadline, never submitted: nothing is relayed, the backend's canceller refunds it. */
+export function markLeftToRefund(quote: CachedQuote): void {
+  markHandedOver(quote, "left_to_refund");
+}
+
+/** A hub swap its user cancelled on the hub, before the backend had it. */
+export function markCancelled(quote: CachedQuote): void {
+  markHandedOver(quote, "cancelled");
+}
+
+function markHandedOver(quote: CachedQuote, how: NonNullable<CachedQuote["handedOver"]>): void {
+  quote.handedOver = how;
+  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + HANDED_OVER_RETENTION_MS);
+  // Put back if it was dropped while a read or the relay ran.
   if (!quotes.has(quote.quoteId)) quotes.set(quote.quoteId, quote);
 }
 

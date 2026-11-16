@@ -68,7 +68,8 @@ export async function getSupportedChains(): Promise<string[]> {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    cache.set(cacheKey, chains);
+    // An empty list is a bad answer, not a fact: caching it would refuse every chain for the TTL.
+    if (chains.length > 0) cache.set(cacheKey, chains);
     return chains;
   } catch (error) {
     throw new Error("Failed to fetch supported chains from SODAX API", { cause: error });
@@ -213,6 +214,20 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
 }
 
 /**
+ * The live chain key a key, name or ticker names ("Base" is `0x2105.base`); refused with the keys when none matches.
+ * Without the live list, the value goes on as given and the API answers for it.
+ */
+export async function toChainKey(query: string): Promise<string> {
+  const value = query.trim();
+  const live = await getSupportedChains().catch((): string[] => []);
+  if (live.length === 0 || live.includes(value)) return value;
+  const { key } = resolveChainKey(value, live);
+  if (key) return key;
+  const offered = live.filter(chain => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(chain));
+  throw new InputError(`chainId names no SODAX chain. Pass one of these chain keys: ${offered.join(", ")}`);
+}
+
+/**
  * Answer "does SODAX support chain X?" in one hop. Resolves a name/ticker/key
  * against the LIVE `/config/spoke/chains` registry (minus wound-down chains, to
  * match the app-wide network count), so the answer is always current.
@@ -306,8 +321,8 @@ export async function getVolume(options: {
   includeData?: boolean;
   cursor?: string;
 }): Promise<VolumeData> {
-  // Build cache key from significant params
-  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
+  // Every option shapes the page, so each is in the key.
+  const cacheKey = `volume-${JSON.stringify(options)}`;
   const cached = cache.get<VolumeData>(cacheKey);
   if (cached) return cached;
 

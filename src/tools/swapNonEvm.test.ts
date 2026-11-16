@@ -115,7 +115,7 @@ const quoteOf = (swap: RealSwap, intent: IntentJson = swap.intent) => {
 };
 const anotherIntent = (intent: IntentJson) => ({ ...intent, intentId: String(BigInt(intent.intentId) + 1n) });
 
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const cancel = (args: Record<string, unknown>) => callTool("sodax_swap_cancel", args);
 const submits = (calls: { path: string; body?: Record<string, unknown> }[]) =>
   calls.filter(call => call.path === "/submit-tx");
@@ -584,10 +584,23 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     expect(readSpoke).not.toHaveBeenCalled();
   });
 
-  it("isn't called never sent when a node that drops old txs doesn't have it", async () => {
+  it("isn't called never sent when a node that drops old txs doesn't have it after the quote's deadline", async () => {
+    const quote = quoteOf(REAL.sui);
+    vi.setSystemTime(Number(REAL.sui.intent.deadline) * 1000 + 1000);
     readSpoke.mockResolvedValue(null);
     stubBackend({ row: null });
-    const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: quoteOf(REAL.sui).quoteId });
+    const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "not_submitted" });
+  });
+
+  // Track would submit it once it lands, so cancel mustn't send the agent there.
+  it("waits for a tx its node doesn't have yet before the quote's deadline, rather than send it to track", async () => {
+    const swap = REAL.sui;
+    const quote = quoteOf(swap);
+    readSpoke.mockResolvedValue(null);
+    stubBackend({ row: null });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "not_sent" });
+    expect(out.nextStep).not.toContain("sodax_swap_submit_and_track");
   });
 });

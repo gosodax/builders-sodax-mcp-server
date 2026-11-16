@@ -11,7 +11,7 @@ import { evmChainIdFor } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getCachedQuote } from "./quoteCache.js";
-import { chainIdQuery, isSwapSource, resolveSwapChain, toChain } from "./resolver.js";
+import { chainIdQuery, isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
 import { depositMessages } from "./sourceTx.js";
 import { hexBytes } from "./sources/bytes.js";
 import { pinnedSourceOf, sourceChainKeys } from "./sources/index.js";
@@ -44,26 +44,37 @@ export function sourceTxHash(source: SwapSource, value: string, field = "txHash"
  * config, so a deposit already sent is checked whatever the live config says; the quote refuses a live chain id
  * that disagrees.
  */
-export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo): SourceChain {
+export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo, sent = false): SourceChain {
   const source = pinnedSourceOf(chain.key);
-  if (!source || !isSwapSource(catalog, chain.key)) throw unsupportedSource(chain, catalog);
+  if (!source || !isSwapSource(catalog, chain.key)) throw unsupportedSource(chain, swapChains(catalog, true), sent);
   return source;
+}
+
+/**
+ * Names the chains a swap can start from, so the agent needn't try each: a quote asks the user to pick
+ * one, a swap already sent was sent from one of them. Without the live catalog, the SDK config's.
+ */
+function unsupportedSource(
+  chain: ChainInfo,
+  sources: ChainInfo[] = sourceChainKeys().map(toChain),
+  sent = false,
+): ActionError {
+  const names = sources.map(({ name }) => name).join(", ");
+  const nextStep = sent
+    ? `No swap can start from ${chain.name}: ask the user which chain they sent the swap from${names && ` (one of ${names})`} and pass its key.`
+    : names && `A swap can start only from ${names}: ask the user to swap from one of them.`;
+  return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here.`, {
+    nextStep: nextStep || undefined,
+    details: sources.length > 0 ? { sourceChains: sources } : undefined,
+  });
 }
 
 /** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
 function pinnedSource(chain: ChainInfo): SourceChain {
   const source = pinnedSourceOf(chain.key);
-  if (!source) throw unsupportedSource(chain);
+  if (!source) throw unsupportedSource(chain, undefined, true);
   return source;
 }
-
-// The chains named in the error, as UNSUPPORTED_CHAIN names them: the swap profile has no chain support tool to ask.
-const unsupportedSource = (chain: ChainInfo, catalog?: SwapCatalog) => {
-  const keys = catalog ? Object.keys(catalog.tokens).filter(key => isSwapSource(catalog, key)) : sourceChainKeys();
-  return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here.`, {
-    details: { sourceChains: keys.map(toChain) },
-  });
-};
 
 /** The live config disagrees with the SDK's packaged one: a broken or compromised upstream. */
 export function configDisagrees(chainKey: string, field: string, token?: string): ActionError {
@@ -99,7 +110,7 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
   }
   const catalog = await getSwapCatalog();
   const chain = resolveSwapChain(catalog, input.chain, true);
-  return { chain, ...sourceChainFor(catalog, chain) };
+  return { chain, ...sourceChainFor(catalog, chain, true) };
 }
 
 /** Whether `query` names the chain `chainKey`, as a name, ticker, key or EVM chain id, without the catalog. */

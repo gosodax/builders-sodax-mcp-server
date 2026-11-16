@@ -44,6 +44,17 @@ describe("sourceChainFor", () => {
     });
   });
 
+  // With no live chain config, there's no list to name; a sent swap still isn't told to swap again.
+  it.each([
+    [false, "A swap can't start from that chain: ask the user to swap from another one."],
+    [true, "No swap can start from ICON: ask the user which chain they sent the swap from and pass its key."],
+  ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
+    const catalog = { ...fixtureCatalog(), chains: {} };
+    expect(() => sourceChainFor(catalog, toChain("0x1.icon"), sent)).toThrow(
+      expect.objectContaining({ code: "UNSUPPORTED_SOURCE", nextStep, details: undefined }),
+    );
+  });
+
   it("refuses ICON, which isn't a source here", () => {
     expect(() => sourceChainFor(fixtureCatalog(), toChain("0x1.icon"))).toThrow(
       expect.objectContaining({

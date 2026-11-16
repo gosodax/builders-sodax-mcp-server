@@ -158,8 +158,9 @@ async function unsubmittedDeposit(
   if (!claimed) {
     const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
     const notSent = { ...base, status: "not_cancellable" as const, reason: "not_sent" as const };
-    // Only an absence its node can vouch for, or a failed tx with no deposit kept, is a swap never sent.
-    if (!receipt) return source.adapter.prunes ? undefined : notSent;
+    // Only an absence its node can vouch for, or a failed tx with no deposit kept, is a swap never sent. No node
+    // drops a tx before its quote's deadline, and until then track would submit it once it lands.
+    if (!receipt) return source.adapter.prunes && Date.now() >= deadlineMs(quote) ? undefined : notSent;
     if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notSent;
     if (receipt.kind === "spoke" && receipt.unreadable) return undefined;
     if (checkQuoteDeposit(source, receipt, quote) !== "match") return undefined;

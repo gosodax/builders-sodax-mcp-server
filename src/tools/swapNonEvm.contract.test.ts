@@ -106,6 +106,15 @@ describe("swaps from non-EVM chains, live", () => {
     await expect(source.adapter.read(source, txHash)).resolves.toBeNull();
   });
 
+  // Only these nodes can say they have a tx still in flight; asked for one they don't have, they say so.
+  it.each([
+    ["solana", "1".repeat(64)],
+    ["near", "1".repeat(32)],
+  ] as const)("says a %s node doesn't have an unknown tx", async (chainKey, txHash) => {
+    const source = sourceOf(chainKey);
+    await expect(source.adapter.seen?.(source, txHash)).resolves.toBe(false);
+  });
+
   // What the relay carried, the reader must find: a message from that chain to the hub in each tx, and among them
   // the asset manager's deposits, named as `assetManagerSender` says, with their 5-item RLP payload.
   it.each(["solana", "stellar", "sui", "near", "injective-1"])(

@@ -7,7 +7,7 @@ import { committedPayload } from "../source.js";
 import { checkDeposit, depositMessages, holdsCancel } from "../sourceTx.js";
 import { assetManagerSender, pinnedSourceOf } from "./index.js";
 import { injectiveEvidence } from "./injective.js";
-import { nearEvidence } from "./near.js";
+import { nearEvidence, nearKnows } from "./near.js";
 import { UnreadableEvents } from "./nonEvm.js";
 import { solanaEvidence } from "./solana.js";
 import { stellarContractId, stellarEvidence } from "./stellar.js";
@@ -286,6 +286,26 @@ describe("NEAR's evidence", () => {
       outcome: { ...connectionReceipt.outcome, logs: ['EVENT_JSON: {"src_chain_id":"x"}'] },
     };
     expect(() => nearEvidence(withReceipts([odd]), conn)).toThrow(UnreadableEvents);
+  });
+
+  it("calls a tx seen at any stage it knows, FINAL included, not one whose status names no stage", () => {
+    expect(nearKnows({ ...outcome, final_execution_status: "EXECUTED" })).toBe(true);
+    // Final by the time `seen` asks, after the read found it in flight: it's there, not unknown.
+    expect(nearKnows(outcome)).toBe(true);
+    expect(nearKnows({ ...outcome, final_execution_status: "REVERTED" })).toBe(false);
+    const { final_execution_status: _, ...noStage } = outcome;
+    expect(nearKnows(noStage)).toBe(false);
+    expect(nearKnows(null)).toBe(false);
+  });
+
+  it("keeps a failure it read when an event can't be read", () => {
+    const odd = {
+      ...connectionReceipt,
+      outcome: { ...connectionReceipt.outcome, logs: ['EVENT_JSON: {"src_chain_id":"x"}'] },
+    };
+    const failed = { ...receipts[0], outcome: { ...receipts[0].outcome, status: failure } };
+    expect(() => nearEvidence(withReceipts([odd, failed]), conn)).toThrow(expect.objectContaining({ failed: true }));
+    expect(() => nearEvidence(withReceipts([odd]), conn)).toThrow(expect.objectContaining({ failed: false }));
   });
 });
 

@@ -208,9 +208,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     return { status: "price_only", ...summary, missing };
   }
 
-  // The live chain config must agree with the pinned swap contract.
-  const live = from.config.swapContract;
-  if (live && !same(live, swapContract)) throw configDisagrees(from.chain.key, "swapContract");
+  // The live chain config must agree with the pinned swap contract and, on a spoke, connection: the SDK builds with
+  // the pinned ones, and a deposit to a contract SODAX has moved from wouldn't be relayed.
+  const live = from.config;
+  if (!agrees(live.swapContract, swapContract)) throw configDisagrees(from.chain.key, "swapContract");
+  if (source.kind === "spoke" && !agrees(live.connection, source.connection)) {
+    throw configDisagrees(from.chain.key, "connection");
+  }
 
   const recipient = await checkRecipient({
     chainKey: to.chain.key,
@@ -271,6 +275,20 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     checks: { balance: "not_checked", recipient },
     ...prepared,
   };
+}
+
+/** A live config address agrees with the pinned one: the same, or none given; one that isn't an address (`null`) never. */
+const agrees = (live: string | null | undefined, pinned: string) =>
+  live === undefined || (live !== null && sameConfigAddress(live, pinned));
+
+/** One config address however it's spelled: each `0x` hex part (an EVM address, a Sui id) in any case, any padding. */
+function sameConfigAddress(a: string, b: string): boolean {
+  const spelling = (address: string) =>
+    address
+      .split("::")
+      .map(part => (/^0x[0-9a-f]+$/i.test(part) ? `0x${BigInt(part).toString(16)}` : part))
+      .join("::");
+  return spelling(a) === spelling(b);
 }
 
 function resolveSide(

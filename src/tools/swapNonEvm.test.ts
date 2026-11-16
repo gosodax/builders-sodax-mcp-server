@@ -15,6 +15,7 @@ import {
   userHubWallet,
 } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
+import builds from "../services/swap/__fixtures__/non-evm-builds.json" with { type: "json" };
 import fixtures from "../services/swap/__fixtures__/non-evm-txs.json" with { type: "json" };
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
@@ -45,6 +46,8 @@ await initSodax();
 
 /** What a non-EVM chain's read finds, scripted per test: a tx's evidence, or `null` while the chain doesn't know it. */
 const readSpoke = vi.fn<(chainKey: string, txHash: string, sender?: string) => Promise<SpokeEvidence | null>>();
+/** Whether a Solana or NEAR node knows a tx it has no evidence for yet: by default, it doesn't. */
+const seenSpoke = vi.fn<(chainKey: string, txHash: string, sender?: string) => Promise<boolean>>();
 
 const connection = (chainKey: string) =>
   (spokeChainConfig as Record<string, { addresses: { connection: string } }>)[chainKey].addresses.connection;
@@ -132,6 +135,12 @@ beforeEach(() => {
       return evidence && { kind: "spoke", ...evidence };
     });
   }
+  seenSpoke.mockResolvedValue(false);
+  for (const adapter of [SOLANA, NEAR]) {
+    vi.spyOn(adapter, "seen").mockImplementation(async (source, txHash, sender) =>
+      seenSpoke(source.chain.key, txHash, sender),
+    );
+  }
   Object.assign(trackWait, { stepMs: 1, maxMs: 0 });
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   clearSwapCatalogCache();
@@ -150,6 +159,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   readSpoke.mockReset();
+  seenSpoke.mockReset();
   vi.mocked(buildNonEvmCancel).mockReset();
   vi.mocked(hubIntentClosed).mockReset();
 });
@@ -392,13 +402,9 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
 
   it("is built by the SDK from the hub's intent, as the family's wallet takes it", async () => {
     const swap = REAL.sui;
-    const user = SENDERS.sui;
-    vi.mocked(buildNonEvmCancel).mockResolvedValue({
-      from: user,
-      to: "0xf3b1::connectionv3::send",
-      value: 0n,
-      data: "{}",
-    });
+    // The SDK's live build of a Sui cancel: its sender left unset.
+    const built = builds.sui.cancel;
+    vi.mocked(buildNonEvmCancel).mockResolvedValue({ ...built, value: 0n });
     stubBackend({ row, hubIntent: swap.intent });
     const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap) });
     expect(out.status).toBe("ready");
@@ -407,7 +413,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
         kind: "cancel",
         chainKey: "sui",
         chainType: "SUI",
-        tx: { from: user, to: "0xf3b1::connectionv3::send", value: "0", data: JSON.stringify({ sender: user }) },
+        tx: { ...built, value: "0", data: JSON.stringify({ ...JSON.parse(built.data), sender: built.from }) },
       },
     ]);
     expect(buildNonEvmCancel).toHaveBeenCalledWith("sui", swap.intent);
@@ -418,7 +424,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue(swap.evidence());
     vi.mocked(userHubWallet).mockResolvedValue(swap.intent.creator);
-    vi.mocked(buildNonEvmCancel).mockResolvedValue({ from: SENDERS.sui, to: "0xf3b1::connectionv3::send", data: "{}" });
+    vi.mocked(buildNonEvmCancel).mockResolvedValue(builds.sui.cancel);
     stubBackend({ row, hubIntent: swap.intent });
     const { out } = await cancel({ txHash: swap.txHash, chain: "sui" });
     expect(out.status).toBe("ready");
@@ -534,10 +540,40 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     expect(out.status).toBe("cancel_failed");
     expect(relays(calls)).toEqual([]);
   });
+
+  it("is reported failed when the cancel tx failed though its events can't be read, and isn't relayed", async () => {
+    const swap = REAL.near;
+    readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: true } });
+    const calls = stubBackend({ row, hubIntent: swap.intent });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: CANCEL_TX });
+    expect(out.status).toBe("cancel_failed");
+    expect(relays(calls)).toEqual([]);
+  });
+
+  it("is relayed when the cancel tx's events can't be read, but says nothing here checked it", async () => {
+    const swap = REAL.sui;
+    readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: false } });
+    const calls = stubBackend({ row, hubIntent: swap.intent });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: CANCEL_TX });
+    expect(out).toMatchObject({ status: "cancel_relayed", unverified: true });
+    expect(out.nextStep).toContain("couldn't confirm it's this swap's cancel");
+    expect(relays(calls)).toHaveLength(1);
+  });
+
+  it("isn't built without its quote when the deposit's events can't be read: no mismatch, nothing to retry", async () => {
+    const swap = REAL.sui;
+    readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: false } });
+    stubBackend({ row, hubIntent: swap.intent });
+    const { out } = await cancel({ txHash: swap.txHash, chain: "sui" });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "unverified" });
+    expect(out.nextStep).toContain("give SODAX support its transaction hash");
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(buildNonEvmCancel).not.toHaveBeenCalled();
+  });
 });
 
 describe("a non-EVM swap whose evidence is incomplete", () => {
-  const unreadable: SpokeEvidence = { failed: false, messages: [], unreadable: true };
+  const unreadable: SpokeEvidence = { failed: false, messages: [], unreadable: { failed: false } };
 
   it("isn't claimed or called anything else when its events can't be read, and alerts with its quote", async () => {
     const swap = REAL.solana;
@@ -552,12 +588,71 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("stays unverified, not failed, when a NEAR tx failed with events it can't read: a deposit may be held", async () => {
+    const swap = REAL.near;
+    readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: true } });
+    stubBackend();
+    const quote = quoteOf(swap);
+    const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: true });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ alert: "unverified_tx", reason: "the tx failed" }),
+      expect.any(String),
+    );
+  });
+
+  it("says a Solana tx its node has but hasn't finalized is on chain, with no time to stop waiting for it", async () => {
+    readSpoke.mockResolvedValue(null);
+    seenSpoke.mockResolvedValue(true);
+    stubBackend();
+    const { out } = await track({ txHash: REAL.solana.txHash, quoteId: quoteOf(REAL.solana).quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out).not.toHaveProperty("stopAfter");
+    // Asked with the quote's sender, which routes a NEAR lookup.
+    expect(seenSpoke).toHaveBeenCalledWith("solana", REAL.solana.txHash, SENDERS.solana);
+  });
+
+  it("reads a quoted tx a node can't say it has at most every 10 s, and has a just-sent one retried", async () => {
+    const swap = REAL.sui;
+    readSpoke.mockResolvedValue(null);
+    stubBackend();
+    const quote = quoteOf(swap);
+    for (let call = 0; call < 2; call++) {
+      const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
+      expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    }
+    expect(readSpoke).toHaveBeenCalledTimes(1);
+    expect(seenSpoke).not.toHaveBeenCalled();
+    const { out } = await track({ txHash: swap.txHash, chain: "sui" });
+    expect(out.status).toBe("source_not_found");
+    expect(out.nextStep).toContain("sent less than a minute ago");
+  });
+
   it("says the same without a quote, alerting no one", async () => {
     readSpoke.mockResolvedValue(unreadable);
     stubBackend();
     const { out } = await track({ txHash: REAL.sui.txHash, chain: "sui" });
     expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: false });
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("alerts on a failed NEAR tx's held deposit, saying when it isn't the named quote's", async () => {
+    const swap = REAL.near;
+    // A NEAR tx that failed after its deposit ran: the deposit's messages stay.
+    readSpoke.mockResolvedValue({ failed: true, messages: swap.evidence().messages });
+    stubBackend();
+    const alertOf = () => vi.mocked(logger.error).mock.calls.at(-1)?.[0];
+    const other = await track({ txHash: swap.txHash, quoteId: quoteOf(swap, anotherIntent(swap.intent)).quoteId });
+    expect(other.out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: true, notThisQuote: true });
+    // The agent asks for this swap's own hash rather than call it safe.
+    expect(other.out.nextStep).toContain("Ask the user for this swap's transaction hash");
+    expect(alertOf()).toMatchObject({ alert: "failed_tx_deposit", reason: "not this quote's" });
+    clearAlerts();
+    const own = await track({ txHash: swap.txHash, quoteId: quoteOf(swap).quoteId });
+    expect(own.out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: true });
+    expect(own.out).not.toHaveProperty("notThisQuote");
+    expect(alertOf()).toMatchObject({ alert: "failed_tx_deposit" });
+    expect(alertOf()).not.toHaveProperty("reason");
   });
 
   it("doesn't alert on a held deposit named by a quoteId this server doesn't hold", async () => {

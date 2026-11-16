@@ -81,7 +81,7 @@ export type TrackState =
     }
   | { status: "source_failed" }
   /** Failed after its deposit ran (NEAR keeps receipts that ran): not submitted, so the funds wait for an operator. */
-  | { status: "source_failed"; depositHeld: true; alerted: boolean }
+  | { status: "source_failed"; depositHeld: true; alerted: boolean; notThisQuote?: true }
   | { status: "source_not_found" }
   | { status: "not_submitted"; reason: "not_a_deposit" }
   | {
@@ -195,13 +195,14 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   const known = sendable ? seenTx.get<boolean>(memoKey) : null;
   const receipt = known === false ? null : await readSourceTx(source, txHash, quote?.srcAddress);
   if (!receipt) {
-    const seen = known ?? (await seenOnChain(source, txHash));
-    if (known === null) seenTx.set(memoKey, seen);
+    const seen = known ?? (await seenOnChain(source, txHash, quote?.srcAddress));
+    // Remembered where its nodes can't say too: a quoted tx no node has is read at most every 10 s per API key.
+    if (known === null) seenTx.set(memoKey, seen === true);
     if (!seen && !sendable) return { ...base, status: "source_not_found" };
-    return awaitingSource(base, seen, seen ? undefined : unseen);
+    return awaitingSource(base, seen === true, seen ? undefined : unseen);
   }
   if (receipt.failed) return failedSource(base, source, receipt);
-  if (receipt.kind === "spoke" && receipt.unreadable) return unverified(base, quote);
+  if (receipt.kind === "spoke" && receipt.unreadable) return unverified(base, receipt.unreadable.failed, quote);
   if (!quote) return withoutQuote(base, source, receipt);
   const deposit = checkQuoteDeposit(source, receipt, quote);
   if (deposit === "multiple_deposits") {
@@ -361,18 +362,27 @@ export function checkQuoteDeposit(
 function failedSource(base: SwapRef, source: SwapSource, sourceTx: SourceTx): TrackResult {
   if (swapsIn(source, sourceTx) === 0) return { ...base, status: "source_failed" };
   const { txHash, chain } = base;
+  const { quote } = source;
   // Only a quote this server holds alerts: a made-up quoteId could otherwise spend the alert budget.
-  const quoteId = source.quote?.quoteId;
-  const alerted = quoteId !== undefined && alertOperator("failed_tx_deposit", { chainKey: chain.key, txHash, quoteId });
-  return { ...base, status: "source_failed", depositHeld: true, alerted };
+  if (!quote) return { ...base, status: "source_failed", depositHeld: true, alerted: false };
+  // A held deposit is recovered by hand whoever's it is; the alert says when it isn't this quote's.
+  const own = ["match", "multiple_deposits"].includes(checkQuoteDeposit(source, sourceTx, quote));
+  const fields = { chainKey: chain.key, txHash, quoteId: quote.quoteId, ...(!own && { reason: "not this quote's" }) };
+  const alerted = alertOperator("failed_tx_deposit", fields);
+  return { ...base, status: "source_failed", depositHeld: true, alerted, ...(!own && { notThisQuote: true as const }) };
 }
 
 /**
  * A tx whose events this server can't all read: it may hold a deposit, so it's neither claimed nor called anything
  * else. With a quote here, operators check it by hand.
  */
-function unverified(base: SwapRef, quote?: CachedQuote): TrackResult {
-  const fields = { chainKey: base.chain.key, txHash: base.txHash, quoteId: quote?.quoteId };
+function unverified(base: SwapRef, failed: boolean, quote?: CachedQuote): TrackResult {
+  const fields = {
+    chainKey: base.chain.key,
+    txHash: base.txHash,
+    quoteId: quote?.quoteId,
+    ...(failed && { reason: "the tx failed" }),
+  };
   const alerted = quote !== undefined && alertOperator("unverified_tx", fields);
   return { ...base, status: "not_submitted", reason: "unverified", alerted };
 }

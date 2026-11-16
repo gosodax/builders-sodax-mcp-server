@@ -107,8 +107,10 @@ every transaction; the server never signs.
    `reset_approve` still goes first. From a non-EVM chain there is one step, with `chainType` instead of `chainId`:
    its `tx` is the SODAX SDK's unsigned transaction for that family, as the SDK returns it raw (bigints as decimal
    strings, bytes as base64), built here from the checked intent; the quote's `nextStep` says how the family's
-   wallet sends it. Where the SDK reads what the tx calls from the chain, that is checked first: Solana's program
-   against the packaged one, Sui's package against the Swaps API's own build. A Sui tx carries its sender.
+   wallet sends it. Where the SDK reads what the tx calls from the chain, the unsigned tx is checked first: Solana's
+   calls against the packaged programs, Sui's call against the Swaps API's own build's package and the packaged state
+   objects, a cancel against the packaged connection. A Sui tx carries its sender. Before building anything, a quote
+   refuses (`SWAP_MISMATCH`) a live chain config whose asset manager or connection isn't the SDK's packaged one.
 3. Right after the swap is sent, `sodax_swap_submit_and_track` with the swap transaction's `txHash` (from a batch, the
    hash `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
@@ -120,7 +122,8 @@ every transaction; the server never signs.
    `source_not_found`. It's polled until `pollUntil`, at most 15 minutes after the first call; after that the agent
    asks the user whether their wallet sent it instead of polling, and calls again once it did, or once after
    `stopAfter`. With its `quoteId`, such a tx is read from the chain at most once every 10 seconds per API key,
-   however often it's tracked. From any spoke, track reads what the relay signs: the messages the chain's
+   however often it's tracked. EVM, Solana and NEAR nodes say when they have a tx not final yet (`seenOnChain`); Sui,
+   Stellar and Injective nodes know one only once it ran. From any spoke, track reads what the relay signs: the messages the chain's
    `connection` emitted when the tx ran. It submits a tx holding exactly one deposit, sent by the asset manager from
    the quote's sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that
    failed after its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose
@@ -131,7 +134,9 @@ every transaction; the server never signs.
    relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as
    soon as its tx is mined, before or after its deadline, without waiting for the swap service to have it. From a
    non-EVM chain the SDK builds the cancel here. From any spoke it's relayed once the tx ran and its `connection`
-   emitted the user's message to their hub wallet with the intent's cancel payload (from Solana, its keccak). No
+   emitted the user's message to their hub wallet with the intent's cancel payload (from Solana, its keccak); a cancel
+   tx whose events can't all be read is relayed for the relay to check, as `cancel_relayed` with `unverified`. Without
+   its quote, a swap whose tx events can't all be read isn't cancelled here (`not_cancellable`, `unverified`). No
    cancel is built for an intent the hub no longer holds, filled, cancelled or refunded (`closed`); one that closes
    after it's built fails when sent (`cancel_failed`), and the next call says it's closed.
 

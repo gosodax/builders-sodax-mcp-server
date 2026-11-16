@@ -9,8 +9,8 @@ import { z } from "zod";
 import { isRecord } from "../../../constants.js";
 import { RPC_CALL_TIMEOUT_MS, bounded, spokeClients } from "../../sodax.js";
 import { ActionError } from "../errors.js";
-import { utf8Hex } from "./bytes.js";
-import { base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
+import { hexText, utf8Hex } from "./bytes.js";
+import { UnreadableEvents, base58Hash, nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
 /** An account as messages name it: its name's UTF-8 bytes. */
@@ -41,7 +41,6 @@ function succeeded(status: unknown): boolean {
   if ((isRecord(status) && "Failure" in status) || status === "Unknown") return false;
   throw new Error("unknown NEAR outcome status");
 }
-const HEX = /^(?:0x)?((?:[0-9a-fA-F]{2})*)$/;
 
 /** The connection's messages in a tx's RPC outcome, or `null` until every receipt ran. */
 export function nearEvidence(raw: unknown, connection: string): SpokeEvidence | null {
@@ -51,12 +50,17 @@ export function nearEvidence(raw: unknown, connection: string): SpokeEvidence | 
   if (stage !== "FINAL") throw new Error("unknown NEAR tx stage");
   const { transaction_outcome, receipts_outcome } = outcomeSchema.parse(raw);
   const failed = ![transaction_outcome, ...receipts_outcome].every(({ outcome }) => succeeded(outcome.status));
-  const messages = receipts_outcome
-    .filter(({ outcome }) => outcome.executor_id === connection && succeeded(outcome.status))
-    .flatMap(({ outcome }) =>
-      outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).flatMap(log => readable(() => eventMessage(log))),
-    );
-  return { failed, messages };
+  try {
+    const messages = receipts_outcome
+      .filter(({ outcome }) => outcome.executor_id === connection && succeeded(outcome.status))
+      .flatMap(({ outcome }) =>
+        outcome.logs.filter(log => log.startsWith("EVENT_JSON:")).flatMap(log => readable(() => eventMessage(log))),
+      );
+    return { failed, messages };
+  } catch (error) {
+    // Whether it failed is read already: an event it can't read doesn't take that away.
+    throw error instanceof UnreadableEvents ? new UnreadableEvents(error.message, failed) : error;
+  }
 }
 
 /** `EVENT_JSON: {src_chain_id, src_address, dst_chain_id, dst_address, conn_sn, payload}`, the bytes in hex. */
@@ -65,11 +69,6 @@ function eventMessage(log: string): ConnectionMessage[] {
   // Another event the connection may log (a NEP-297 one, say) isn't a message.
   if (!isRecord(json) || !("src_chain_id" in json)) return [];
   const event = messageSchema.parse(json);
-  const bytes = (text: string) => {
-    const match = HEX.exec(text);
-    if (!match) throw new Error("a Message event of unknown shape");
-    return `0x${match[1].toLowerCase()}`;
-  };
   // Beyond 2^53 a JSON number has lost digits: the event can't be trusted.
   if (!Number.isSafeInteger(event.src_chain_id) || !Number.isSafeInteger(event.dst_chain_id)) {
     throw new Error("a Message event of unknown shape");
@@ -77,32 +76,44 @@ function eventMessage(log: string): ConnectionMessage[] {
   return [
     {
       srcChainId: BigInt(event.src_chain_id),
-      srcAddress: bytes(event.src_address),
+      srcAddress: hexText(event.src_address),
       dstChainId: BigInt(event.dst_chain_id),
-      dstAddress: bytes(event.dst_address),
-      payload: bytes(event.payload),
+      dstAddress: hexText(event.dst_address),
+      payload: hexText(event.payload),
     },
   ];
 }
+
+/** The node's status of a tx at whatever stage it's at, or `null` if it doesn't know it. */
+async function nearStatus(txHash: string, sender?: string): Promise<unknown> {
+  // The lookup is routed by the sender's account; public nodes track every shard, so any account does.
+  const accountId = sender ?? spokeChainConfig.near.addresses.assetManager;
+  try {
+    return await spokeClients().near.rpcProvider.viewTransactionStatus({ txHash, accountId, waitUntil: "NONE" });
+  } catch (error) {
+    if (error instanceof Error && error.name === "UnknownTransactionError") return null;
+    throw error;
+  }
+}
+
+/**
+ * Whether a status names a stage this server knows: in flight, or FINAL by the time `seen` asks, after a read that
+ * found it earlier. One without a stage says nothing of where the tx is.
+ */
+export const nearKnows = (status: unknown) => {
+  const stage = stageSchema.safeParse(status).data?.final_execution_status;
+  return stage !== undefined && (stage === "FINAL" || IN_FLIGHT.includes(stage));
+};
 
 export const NEAR = nonEvmAdapter({
   family: "NEAR",
   txHash: { format: "a base58 hash", spell: base58Hash(32) },
   async fetch({ connection, txHash, sender }) {
-    // The lookup is routed by the sender's account; public nodes track every shard, so any account does.
-    const accountId = sender ?? spokeChainConfig.near.addresses.assetManager;
-    try {
-      const outcome = await spokeClients().near.rpcProvider.viewTransactionStatus({
-        txHash,
-        accountId,
-        waitUntil: "NONE",
-      });
-      return nearEvidence(outcome, connection);
-    } catch (error) {
-      if (error instanceof Error && error.name === "UnknownTransactionError") return null;
-      throw error;
-    }
+    const outcome = await nearStatus(txHash, sender);
+    return outcome === null ? null : nearEvidence(outcome, connection);
   },
+  // A tx is read once FINAL: one at an earlier stage is on its way.
+  seen: async ({ txHash, sender }) => nearKnows(await nearStatus(txHash, sender)),
   // Its swap tx is built without a read, so a dead RPC would only show at track: the final block's height first.
   probe: chainKey =>
     bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {

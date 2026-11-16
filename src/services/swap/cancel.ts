@@ -37,8 +37,11 @@ import { checkQuoteDeposit, deadlineMs, refundExpired, untilRefundSec } from "./
 export type CancelState =
   | {
       status: "not_cancellable";
-      /** `closed`: the hub no longer holds the intent. `not_this_swap`: the tx didn't create the quote's intent. */
-      reason: NotCancellable | "not_sent" | "closed" | "not_this_swap";
+      /**
+       * `closed`: the hub no longer holds the intent. `not_this_swap`: the tx didn't create the quote's intent.
+       * `unverified`: without its quote, the tx's events can't all be read to tie the hub's intent to it.
+       */
+      reason: NotCancellable | "not_sent" | "closed" | "not_this_swap" | "unverified";
     }
   /** The quote's deposit is on chain, never submitted: from its deadline on, a cancel call refunds it. */
   | { status: "deposit_unsubmitted"; retryAfterSec: number }
@@ -48,7 +51,8 @@ export type CancelState =
   | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
   | { status: "cancel_failed" }
   | { status: "not_a_cancel_tx" }
-  | { status: "cancel_relayed" }
+  /** `unverified`: its events couldn't be read, so only the relay checked that it's this swap's cancel. */
+  | { status: "cancel_relayed"; unverified?: true }
   /** A swap from the hub: the cancel ran there, so nothing is relayed. */
   | { status: "cancel_confirmed" };
 
@@ -115,7 +119,9 @@ export async function cancelSwap(input: {
       details: { chainKey: source.chain.key },
     });
   }
-  if (!quote && !(await isDepositsIntent(source, txHash, intent))) {
+  const deposits = quote ? "match" : await depositsIntent(source, txHash, intent);
+  if (deposits === "unverified") return { ...base, status: "not_cancellable", reason: "unverified" };
+  if (deposits === "mismatch") {
     logger.error({ "chain.key": source.chain.key }, "The hub intent isn't the tracked deposit's");
     throw new ActionError("SWAP_MISMATCH", "The swap service returned an intent that isn't this deposit's.", {
       details: { chainKey: source.chain.key },
@@ -139,7 +145,7 @@ export async function cancelSwap(input: {
   if (!(await relaySpokeTx(intent.srcChain, cancelTxHash, data))) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
   }
-  return { ...base, status: "cancel_relayed" };
+  return { ...base, status: "cancel_relayed", ...(receipt.unreadable && { unverified: true as const }) };
 }
 
 /**
@@ -243,7 +249,10 @@ async function sentCancel(
 ): Promise<SourceTx | CancelResult> {
   const receipt = await readSourceTx(source, cancelTxHash, sender);
   if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
-  if (receipt.failed) return { ...base, status: "cancel_failed" };
+  // A failed cancel is a new one to send, whether or not its events could be read.
+  if (receipt.failed || (receipt.kind === "spoke" && receipt.unreadable?.failed)) {
+    return { ...base, status: "cancel_failed" };
+  }
   return receipt;
 }
 
@@ -266,14 +275,19 @@ const quoteMismatch = (message: string) =>
  * Without a quote, the hub intent must be the tracked swap's: from this chain, and alone in that tx, either a
  * deposit by the intent's source address to its creator with the calls that create this very intent, or on the
  * hub the intents contract's log of it. The creator must be that address's hub wallet, so its cancel reaches it.
+ * `unverified` for a tx whose events can't all be read.
  */
-async function isDepositsIntent(source: SwapSource, txHash: string, intent: Intent): Promise<boolean> {
-  if (intent.srcChain !== intentChainId(source.chain.key)) return false;
+async function depositsIntent(
+  source: SwapSource,
+  txHash: string,
+  intent: Intent,
+): Promise<"match" | "mismatch" | "unverified"> {
+  if (intent.srcChain !== intentChainId(source.chain.key)) return "mismatch";
   // A deposit must carry the calls that create this intent; a hub swap is matched by the intent's hash alone.
   const payload = isHubSource(source) ? "" : createIntentPayload(intent);
   // The SDK takes the sender as its chain spells it; the intent holds it encoded.
   const sender = decodeAddress(source.chain.key, intent.srcAddress);
-  if (payload === undefined || sender === undefined) return false;
+  if (payload === undefined || sender === undefined) return "mismatch";
   const receipt = await readSourceTx(source, txHash, sender);
   if (!receipt) {
     const { name } = source.chain;
@@ -284,13 +298,15 @@ async function isDepositsIntent(source: SwapSource, txHash: string, intent: Inte
       nextStep: `${name}'s node no longer has the swap's transaction. Call sodax_swap_cancel again with its quoteId if the user has it; if not, tell the user this server can't cancel it, that it is safe on the SODAX hub, and to give SODAX support its transaction hash.`,
     });
   }
+  // Events it can't read prove nothing either way: not an upstream mismatch.
+  if (receipt.kind === "spoke" && receipt.unreadable) return "unverified";
   // As track checks a quote's: alone in its tx.
   const swap = { intent, relayData: { address: intent.creator, payload } };
-  if (checkQuoteDeposit(source, receipt, swap) !== "match") return false;
+  if (checkQuoteDeposit(source, receipt, swap) !== "match") return "mismatch";
   const hubWallet = await userHubWallet(source.chain.key, sender).catch(() => {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "Couldn't look up the user's SODAX hub wallet.");
   });
-  return same(hubWallet, intent.creator);
+  return same(hubWallet, intent.creator) ? "match" : "mismatch";
 }
 
 /** The intent fields that differ; hex in any case is the same value. */

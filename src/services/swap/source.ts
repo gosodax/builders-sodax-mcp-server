@@ -125,9 +125,10 @@ export function readSourceTx(source: SwapSource, txHash: string, sender?: string
   return chainRead(source.chain, () => source.adapter.read(source, txHash, sender));
 }
 
-/** Whether the chain's node knows the tx at all, mined or pending; a node that can't say answers false. */
-export function seenOnChain(source: SwapSource, txHash: string): Promise<boolean> {
-  return chainRead(source.chain, () => source.adapter.seen(source, txHash));
+/** Whether the chain's node knows the tx at all, mined or pending; `undefined` where its nodes can't say. */
+export async function seenOnChain(source: SwapSource, txHash: string, sender?: string): Promise<boolean | undefined> {
+  const { seen } = source.adapter;
+  return seen && chainRead(source.chain, () => seen(source, txHash, sender));
 }
 
 /** How many swaps the tx sends: intents created on the hub, or deposits from a spoke, whichever quote they're for. */

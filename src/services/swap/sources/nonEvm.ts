@@ -1,8 +1,8 @@
 /**
  * What the non-EVM families share. Their steps are built here by the SDK from the checked intent: blockhash,
  * sequence and fees make the Swaps API's own build differ from any rebuild, so it can't be checked byte for byte.
- * A tx is read in one bounded call, as what its `connection`'s events prove; no node of theirs can say whether it
- * knows a tx still in flight.
+ * A tx is read in one bounded call, as what its `connection`'s events prove. Only Solana's and NEAR's nodes can say
+ * whether they know a tx still in flight; the others know one only once it ran.
  */
 
 import { BASE58, base58Bytes, isRecord } from "../../../constants.js";
@@ -17,8 +17,18 @@ export const base58Hash = (size: 32 | 64) => {
   return (text: string) => (pattern.test(text) && base58Bytes(text).length === size ? text : undefined);
 };
 
-/** The chain answered, but the connection's events in the tx can't all be read: whether it holds a deposit is unknown. */
-export class UnreadableEvents extends Error {}
+/**
+ * The chain answered, but the connection's events in the tx can't all be read: whether it holds a deposit is unknown.
+ * `failed`: the tx failed too, which a family that keeps what ran before a failure (NEAR) still knows.
+ */
+export class UnreadableEvents extends Error {
+  constructor(
+    message: string,
+    readonly failed = false,
+  ) {
+    super(message);
+  }
+}
 
 /** Decodes one of the connection's events; anything it can't read is `UnreadableEvents`. */
 export function readable<T>(decode: () => T): T {
@@ -36,6 +46,8 @@ export interface NonEvmFamily {
   commitsHash?: boolean;
   /** The evidence for a tx, or `null` while the chain doesn't know it or hasn't run it. A shape it doesn't know throws. */
   fetch(tx: { chainKey: string; connection: string; txHash: string; sender?: string }): Promise<SpokeEvidence | null>;
+  /** Whether its node knows a tx it has no evidence for yet, where it can say: one still in flight. */
+  seen?(tx: { chainKey: string; txHash: string; sender?: string }): Promise<boolean>;
   /** Where the SDK reads a build's target from the chain, so an RPC could move it: whether it's the one it must be. */
   callsPinned?(kind: NonEvmStep["kind"], raw: unknown, expected?: unknown): boolean;
   /** The SDK's raw tx made ready for a wallet. */
@@ -48,6 +60,9 @@ export interface NonEvmFamily {
 
 /** A non-EVM family's adapter, from what is its own. */
 export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
+  const { seen } = family;
+  // The SDK's raw tx made ready for a wallet; one it can't finish is this server's error, as a retry builds the same.
+  const finish = family.finish ?? ((raw: unknown) => raw);
   return {
     family: family.family,
     txHash: family.txHash,
@@ -65,18 +80,22 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
             if (!(error instanceof UnreadableEvents)) throw error;
             // Answered once: asking again won't make the events readable, and a deposit may be among them.
             logger.warn({ "chain.key": chain.key, "tx.hash": txHash }, "Source tx events this server can't read");
-            return { failed: false, messages: [], unreadable: true as const };
+            return { failed: false, messages: [], unreadable: { failed: error.failed } };
           }
         },
       );
       return evidence && { kind: "spoke", ...evidence };
     },
-    seen: async () => false,
+    ...(seen && {
+      // The read just answered, so a status call that fails isn't an outage to report: it only can't say.
+      seen: (source: SwapSource, txHash: string, sender?: string) =>
+        bounded({ label: "non-EVM tx status", chainKey: source.chain.key, timeoutMs: RPC_CALL_TIMEOUT_MS }, () =>
+          seen({ chainKey: source.chain.key, txHash, sender }),
+        ).catch(() => undefined),
+    }),
     ...(family.probe && { probe: family.probe }),
     ...(family.checkSender && { checkSender: family.checkSender }),
     async prepareSwap(source, { request, built, approved, symbol }) {
-      // Made ready for a wallet inside the build: a raw tx it can't finish fails as the build does.
-      const finish = (raw: unknown) => (family.finish ? family.finish(raw) : raw);
       const { chain } = source;
       if (!approved) {
         throw (
@@ -99,24 +118,20 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
         amount: request.inputAmount,
         to: built.intent.creator,
         payload: built.relayData.payload,
-      })
-        .then(finish)
-        .catch(() => {
-          throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
-            nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
-          });
+      }).catch(() => {
+        throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
+          nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
         });
-      return { steps: [stepOf(family, source, "swap", raw, isRecord(built.tx) ? built.tx.to : undefined)] };
+      });
+      const to = isRecord(built.tx) ? built.tx.to : undefined;
+      return { steps: [stepOf(family, source, "swap", finish(raw), to)] };
     },
     async cancelStep(source, intent) {
       const { chain } = source;
-      const finish = (raw: unknown) => (family.finish ? family.finish(raw) : raw);
-      const raw = await buildNonEvmCancel(chain.key, intent)
-        .then(finish)
-        .catch(() => {
-          throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
-        });
-      return stepOf(family, source, "cancel", raw);
+      const raw = await buildNonEvmCancel(chain.key, intent).catch(() => {
+        throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the cancel on ${chain.name} right now.`);
+      });
+      return stepOf(family, source, "cancel", finish(raw));
     },
   };
 }

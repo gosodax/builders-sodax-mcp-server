@@ -66,12 +66,23 @@ const approveData = (spender: string, amount: bigint | string) => `0x095ea7b3${w
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
 const SUI_USER = `0x${"5".repeat(64)}`;
 const SUI_TO_SONIC = { fromChain: "sui", fromToken: "native", toChain: "sonic", toToken: SONIC_USDC, toAddress: USER };
-// What the SDK's raw Sui build returns, as the mocked `buildNonEvmDeposit` does.
+// What the SDK's raw Sui build returns, as the mocked `buildNonEvmDeposit` does: its unbuilt tx calls `to`.
+const SUI_TRANSFER = "0xa17a::asset_manager::transfer";
+// Given the packaged asset manager's and connection's state objects, as the SDK's build is.
+const stateInput = (config: string) => ({ kind: "Input", type: "object", value: config.split("::")[2] });
+const SUI_PTB = {
+  version: 1,
+  inputs: [
+    stateInput(spokeChainConfig.sui.addresses.assetManager),
+    stateInput(spokeChainConfig.sui.addresses.connection),
+  ],
+  transactions: [{ kind: "SplitCoins" }, { kind: "MoveCall", target: SUI_TRANSFER }],
+};
 const SUI_RAW_TX = {
   from: SUI_USER,
-  to: "0xa17a::asset_manager::transfer",
+  to: SUI_TRANSFER,
   value: 5_000_000_000n,
-  data: '{"version":1}',
+  data: JSON.stringify(SUI_PTB),
 };
 
 interface SwapsStub {
@@ -1014,7 +1025,7 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
           from: SUI_USER,
           to: SUI_RAW_TX.to,
           value: "5000000000",
-          data: JSON.stringify({ version: 1, sender: SUI_USER }),
+          data: JSON.stringify({ ...SUI_PTB, sender: SUI_USER }),
         },
       },
     ]);
@@ -1056,6 +1067,33 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     expect(out.error.code).toBe("SWAP_MISMATCH");
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ mismatch, "chain.key": "sui" }), expect.any(String));
     expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["asset manager", { assetManager: `0x${"e".repeat(64)}::asset_manager::0x${"f".repeat(64)}` }],
+    ["connection", { connection: `0x${"e".repeat(64)}::connectionv3::0x${"f".repeat(64)}` }],
+    // Not one at all: the check isn't skipped.
+    ["asset manager that isn't an address", { assetManager: "not an address" }],
+    ["connection that isn't an address", { connection: 42 }],
+  ])("refuses a live Sui %s other than the SDK's, building nothing", async (_case, addresses) => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    configs.sui.addresses = { ...spokeChainConfig.sui.addresses, ...addresses };
+    const calls = stubSwaps({ configs: JSON.stringify(configs) });
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: "sui" });
+    expect(calls.map(call => call.path)).not.toContain("/intents");
+    expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+  });
+
+  it("takes a live Sui config that spells the SDK's ids in another case or with leading zeros", async () => {
+    const configs = JSON.parse(fixtureText("chain-configs.json"));
+    const { assetManager, connection } = spokeChainConfig.sui.addresses;
+    const respell = (address: string) =>
+      address.replace(/0x([0-9a-f]+)/g, (_hex, digits: string) => `0x00${digits.toUpperCase()}`);
+    configs.sui.addresses = { assetManager: respell(assetManager), connection: respell(connection) };
+    stubSwaps({ configs: JSON.stringify(configs) });
+    const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(out.status).toBe("ready");
   });
 
   it("refuses a build whose Sui package isn't the one the Swaps API's own build calls", async () => {

@@ -15,6 +15,7 @@ import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
 import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
+import { RETRY_AFTER_SEC } from "../services/swap/source.js";
 import { isAnyTxHash, pinnedSourceOf } from "../services/swap/sources/index.js";
 import type { NonEvmSourceType } from "../services/swap/sources/types.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
@@ -373,11 +374,19 @@ const isNonEvmChain = (chainKey: string) => {
   const family = pinnedSourceOf(chainKey)?.adapter.family;
   return family !== undefined && family !== "EVM";
 };
-/** A tx its node can't confirm: a non-EVM node can't tell one in flight from one never sent; a batch id is EVM's. */
-const unseen = ({ key, name }: { key: string; name: string }) =>
-  isNonEvmChain(key)
-    ? `${name} hasn't confirmed this transaction yet. Check that the user's wallet really sent it and that this is its transaction hash`
-    : `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
+/**
+ * A tx its node can't confirm. Only EVM, Solana and NEAR nodes can say they don't have one; the others can't tell one
+ * in flight from one never sent. A batch id is EVM's.
+ */
+const unseen = ({ key, name }: { key: string; name: string }) => {
+  if (!isNonEvmChain(key)) {
+    return `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
+  }
+  const check = "Check that the user's wallet really sent it and that this is its transaction hash";
+  return pinnedSourceOf(key)?.adapter.seen
+    ? `${name} hasn't seen this transaction. ${check}`
+    : `${name} hasn't confirmed this transaction yet. ${check}`;
+};
 // The hub deletes an intent once filled or cancelled, so its state alone can't tell which.
 const INTENT_CLOSED =
   "The swap's intent is no longer open on the hub: a solver filled it, or it was cancelled or refunded to the user. sodax_get_balance on the recipient and on the user's source address shows which; either way, the user must not send it again.";
@@ -435,11 +444,17 @@ export function trackNextStep(result: TrackResult): string {
       const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
       // Public non-EVM nodes keep recent txs only, so an older swap reads as unknown too.
       if (isNonEvmChain(result.chain.key)) {
-        return `${chain}'s node doesn't have this transaction: it may be older than the node keeps, or not a transaction on ${chain}. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+        return `${chain}'s node doesn't have this transaction: it may be too new, older than the node keeps, or not a transaction on ${chain}. If it was sent less than a minute ago, call sodax_swap_submit_and_track again in about ${RETRY_AFTER_SEC} seconds first. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
       }
       return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_submit_and_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
     }
     case "source_failed":
+      if ("depositHeld" in result && result.notThisQuote) {
+        const recover = result.alerted
+          ? "SODAX operators were alerted to recover it"
+          : "whoever sent it can give SODAX support its hash to recover it";
+        return `That transaction failed on ${chain} after a SODAX deposit went through, but not this quote's swap: ${recover}. Ask the user for this swap's transaction hash and track that; if this one is theirs too, they must not send it again.`;
+      }
       if ("depositHeld" in result) {
         return `The swap transaction failed on ${chain} after its deposit went through, so it can't be swapped: ${safe(result)}.`;
       }
@@ -506,6 +521,8 @@ const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" 
   closed: `There's nothing to cancel. ${INTENT_CLOSED}`,
   not_this_swap:
     "That transaction didn't create this quote's swap: ask for the swap transaction's hash (not an approval's) and call sodax_swap_cancel again with it.",
+  unverified:
+    "This server can't read all of the swap transaction's events, so without its quote it can't tie the swap to it: it won't build a cancel, or relay one already sent. Tell the user the swap is safe on the SODAX hub, and to give SODAX support its transaction hash, and the cancel's if they sent one.",
 };
 
 /** Built from enums and catalog names only. */
@@ -534,6 +551,9 @@ export function cancelNextStep(result: CancelResult): string {
     case "not_a_cancel_tx":
       return "That transaction isn't the cancel for this swap; ask for the cancel transaction's hash.";
     case "cancel_relayed":
+      if (result.unverified) {
+        return `This server can't read all of that ${chain} transaction's events, so it couldn't confirm it's this swap's cancel; it was passed to the SODAX relay, which checks it. Call sodax_swap_submit_and_track (it won't submit the swap again) in a few minutes: if the swap isn't reported cancelled, check with the user that this hash is the cancel their wallet sent, and if it isn't, call sodax_swap_cancel again with the right one.`;
+      }
       return "The cancel is on its way to the hub; call sodax_swap_submit_and_track (it won't submit the swap again) to see it reported as cancelled.";
     case "cancel_confirmed":
       // Confirmed by the hub's own log: a backend row may still say it can be cancelled, so track isn't asked.

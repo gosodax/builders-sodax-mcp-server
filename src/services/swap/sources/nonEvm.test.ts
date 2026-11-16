@@ -2,7 +2,9 @@ import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { base58Bytes } from "../../../constants.js";
 import { logger } from "../../logger.js";
-import { buildNonEvmCancel, buildNonEvmDeposit, initSodax } from "../../sodax.js";
+import { buildNonEvmCancel, buildNonEvmDeposit, initSodax, spokeClients } from "../../sodax.js";
+// The SDK's own builds, recorded live: unsigned, as a wallet gets them.
+import builds from "../__fixtures__/non-evm-builds.json" with { type: "json" };
 import fixtures from "../__fixtures__/non-evm-txs.json" with { type: "json" };
 import { toChain } from "../resolver.js";
 import { EVM_SPOKE } from "./evm.js";
@@ -74,60 +76,123 @@ describe("each source's tx hash", () => {
 
 describe("a non-EVM build", () => {
   const { assetManager, connection } = spokeChainConfig.solana.addresses;
-  // A tx's account keys are 32-byte program ids, as the deposit's message lists them.
-  const passing = (...programs: string[]) =>
-    Buffer.concat([Buffer.alloc(4), ...programs.map(program => Buffer.from(base58Bytes(program)))]).toString("base64");
+  const solana = builds.solana;
+  /** A Solana build with one program id swapped for another, wherever its bytes hold it. */
+  const replacing = (build: { data: string }, id: string, by: Uint8Array) => {
+    const bytes = Buffer.from(build.data, "base64");
+    const at = bytes.indexOf(Buffer.from(base58Bytes(id)));
+    if (at < 0) throw new Error("not in the build");
+    bytes.set(by, at);
+    return { ...build, data: bytes.toString("base64") };
+  };
+  const OTHER = new Uint8Array(32).fill(7);
+  /** A Sui build's JSON with the state object of `config` (`<package>::<module>::<object>`) swapped for another. */
+  const otherState = (data: string, config: string) => data.replaceAll(config.split("::")[2], `0x${"7".repeat(64)}`);
+  const deposit = (built: unknown) => {
+    vi.mocked(buildNonEvmDeposit).mockResolvedValue(built);
+    return SOLANA.prepareSwap(sourceOf("solana"), swapOf("solana"));
+  };
 
-  it("from Solana, whose programs the SDK reads from the chain, must call the packaged ones", async () => {
-    vi.mocked(buildNonEvmDeposit).mockResolvedValue({ to: assetManager, data: passing(assetManager, connection) });
-    await expect(SOLANA.prepareSwap(sourceOf("solana"), swapOf("solana"))).resolves.toMatchObject({
-      steps: [{ kind: "swap", chainType: "SOLANA" }],
-    });
+  it("from Solana, whose programs the SDK reads from the chain, must sign calls to the packaged ones only", async () => {
+    // The SDK's live build: compute budget, then the asset manager, passed the connection.
+    await expect(deposit(solana.deposit)).resolves.toMatchObject({ steps: [{ kind: "swap", chainType: "SOLANA" }] });
+    const legacy = Buffer.from(solana.deposit.data, "base64");
+    legacy[65] = 1;
     for (const built of [
-      { to: assetManager, data: passing(assetManager) },
-      { to: assetManager },
-      { to: connection, data: passing(connection) },
+      // The SDK's `to` names the asset manager, but the signed bytes call another program or pass another connection.
+      replacing(solana.deposit, assetManager, OTHER),
+      replacing(solana.deposit, connection, OTHER),
+      // A cancel's bytes as a deposit, no bytes, a legacy message, a byte past the end.
+      { ...solana.deposit, data: solana.cancel.data },
+      { ...solana.deposit, data: undefined },
+      { ...solana.deposit, data: legacy.toString("base64") },
+      {
+        ...solana.deposit,
+        data: Buffer.concat([Buffer.from(solana.deposit.data, "base64"), Buffer.alloc(1)]).toString("base64"),
+      },
     ]) {
-      vi.mocked(buildNonEvmDeposit).mockResolvedValue(built);
-      await expect(SOLANA.prepareSwap(sourceOf("solana"), swapOf("solana"))).rejects.toMatchObject({
-        code: "SWAP_MISMATCH",
-      });
+      await expect(deposit(built)).rejects.toMatchObject({ code: "SWAP_MISMATCH" });
     }
-    vi.mocked(buildNonEvmCancel).mockResolvedValue({ to: connection });
+    vi.mocked(buildNonEvmCancel).mockResolvedValue(solana.cancel);
     await expect(SOLANA.cancelStep(sourceOf("solana"), fixtures.solana.intent)).resolves.toMatchObject({
       kind: "cancel",
     });
-    vi.mocked(buildNonEvmCancel).mockResolvedValue({ to: assetManager });
-    await expect(SOLANA.cancelStep(sourceOf("solana"), fixtures.solana.intent)).rejects.toMatchObject({
-      code: "SWAP_MISMATCH",
-    });
+    for (const built of [
+      replacing(solana.cancel, connection, OTHER),
+      { ...solana.cancel, data: solana.deposit.data },
+    ]) {
+      vi.mocked(buildNonEvmCancel).mockResolvedValue(built);
+      await expect(SOLANA.cancelStep(sourceOf("solana"), fixtures.solana.intent)).rejects.toMatchObject({
+        code: "SWAP_MISMATCH",
+      });
+    }
   });
 
-  it("from Sui, whose upgraded package the SDK reads from the chain, must call the Swaps API's own build's", async () => {
-    const to = "0xe5f0::asset_manager::transfer";
-    const user = `0x${"5".repeat(64)}`;
-    vi.mocked(buildNonEvmDeposit).mockResolvedValue({ from: user, to, data: JSON.stringify({ version: 2 }) });
-    const { steps } = await SUI.prepareSwap(sourceOf("sui"), swapOf("sui", to));
-    // With its sender set, so no other account's wallet signs it.
-    expect(JSON.parse((steps[0] as { tx: { data: string } }).tx.data)).toEqual({ version: 2, sender: user });
-    for (const expected of ["0xbad::asset_manager::transfer", undefined]) {
+  it("from Sui, whose upgraded package the SDK reads from the chain, must sign a call to the Swaps API's own build's", async () => {
+    const sui = builds.sui.deposit;
+    vi.mocked(buildNonEvmDeposit).mockResolvedValue(sui);
+    // The Swaps API spells the package without `0x`, as the SDK's `to` does; the signed call spells it in full.
+    for (const to of [sui.to, `0x${sui.to}`]) {
+      const { steps } = await SUI.prepareSwap(sourceOf("sui"), swapOf("sui", to));
+      // With its sender set, so no other account's wallet signs it.
+      const signed = JSON.parse((steps[0] as { tx: { data: string } }).tx.data);
+      expect(signed).toEqual({ ...JSON.parse(sui.data), sender: sui.from });
+    }
+    for (const expected of ["0xbad::asset_manager::transfer", `${sui.to.split("::")[0]}::other::transfer`, undefined]) {
       await expect(SUI.prepareSwap(sourceOf("sui"), swapOf("sui", expected))).rejects.toMatchObject({
         code: "SWAP_MISMATCH",
       });
     }
+    // The package in `to` agrees, but the signed tx calls more, or moves an object off.
+    const ptb = JSON.parse(sui.data);
+    const [, call] = ptb.transactions;
+    for (const transactions of [
+      [...ptb.transactions, call],
+      [...ptb.transactions, { kind: "TransferObjects", objects: [], address: { kind: "Input", index: 0 } }],
+      [ptb.transactions[0], { ...call, target: call.target.replace(/^0x[0-9a-f]{4}/, "0x0000") }],
+    ]) {
+      vi.mocked(buildNonEvmDeposit).mockResolvedValue({ ...sui, data: JSON.stringify({ ...ptb, transactions }) });
+      await expect(SUI.prepareSwap(sourceOf("sui"), swapOf("sui", sui.to))).rejects.toMatchObject({
+        code: "SWAP_MISMATCH",
+      });
+    }
+    // The right call, given another connection's or asset manager's state object.
+    for (const config of [spokeChainConfig.sui.addresses.connection, spokeChainConfig.sui.addresses.assetManager]) {
+      vi.mocked(buildNonEvmDeposit).mockResolvedValue({ ...sui, data: otherState(sui.data, config) });
+      await expect(SUI.prepareSwap(sourceOf("sui"), swapOf("sui", sui.to))).rejects.toMatchObject({
+        code: "SWAP_MISMATCH",
+      });
+    }
   });
 
-  it("fails as the build does when the SDK's Sui tx can't be made ready, not as a bug", async () => {
-    vi.mocked(buildNonEvmDeposit).mockResolvedValue({
-      from: "0x5",
-      to: "0xe5f0::asset_manager::transfer",
-      data: "not JSON",
-    });
-    await expect(
-      SUI.prepareSwap(sourceOf("sui"), swapOf("sui", "0xe5f0::asset_manager::transfer")),
-    ).rejects.toMatchObject({
-      code: "CHAIN_UNAVAILABLE",
-    });
+  it("from Sui, cancels through the packaged connection only", async () => {
+    vi.mocked(buildNonEvmCancel).mockResolvedValue(builds.sui.cancel);
+    await expect(SUI.cancelStep(sourceOf("sui"), fixtures.sui.intent)).resolves.toMatchObject({ kind: "cancel" });
+    const { cancel } = builds.sui;
+    const { connection } = spokeChainConfig.sui.addresses;
+    for (const data of [builds.sui.deposit.data, otherState(cancel.data, connection)]) {
+      vi.mocked(buildNonEvmCancel).mockResolvedValue({ ...cancel, data });
+      await expect(SUI.cancelStep(sourceOf("sui"), fixtures.sui.intent)).rejects.toMatchObject({
+        code: "SWAP_MISMATCH",
+      });
+    }
+  });
+
+  it("refuses a Sui build it can't set the sender of, or can't read, as its own fault, not one a retry fixes", async () => {
+    const error = vi.spyOn(logger, "error");
+    const sui = builds.sui.deposit;
+    for (const built of [
+      { ...sui, data: "not JSON" },
+      { ...sui, from: undefined },
+      { ...sui, data: "[]" },
+      // A newer serializer's format: not a build calling another program.
+      { ...sui, data: JSON.stringify({ version: 2, commands: [] }) },
+    ]) {
+      vi.mocked(buildNonEvmDeposit).mockResolvedValue(built);
+      await expect(SUI.prepareSwap(sourceOf("sui"), swapOf("sui", sui.to))).rejects.toMatchObject({ code: "INTERNAL" });
+    }
+    expect(error).toHaveBeenCalledWith("The SDK built a Sui transaction in a shape this server doesn't read");
+    expect(error).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("another program"));
   });
 
   it("refuses an amount its allowance doesn't cover, as the family words it, before building anything", async () => {
@@ -155,6 +220,19 @@ describe("a non-EVM build", () => {
       expect.objectContaining({ code: "INVALID_ADDRESS" }),
     );
     expect(() => NEAR.checkSender?.("alice.near")).not.toThrow();
+  });
+});
+
+describe("a non-EVM node's status of a tx", () => {
+  it("says it can't tell, rather than fail the track, when the status call fails after the read answered", async () => {
+    vi.spyOn(spokeClients().solana.connection, "getSignatureStatuses").mockRejectedValue(new Error("rpc down"));
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    await expect(SOLANA.seen?.(sourceOf("solana"), fixtures.solana.txHash)).resolves.toBeUndefined();
+  });
+
+  it("is only asked where its nodes can say", () => {
+    expect([SOLANA.seen, NEAR.seen].every(Boolean)).toBe(true);
+    expect([SUI.seen, STELLAR.seen, INJECTIVE.seen].some(Boolean)).toBe(false);
   });
 });
 
@@ -216,7 +294,7 @@ describe("Injective's read", () => {
       kind: "spoke",
       failed: false,
       messages: [],
-      unreadable: true,
+      unreadable: { failed: false },
     });
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ "tx.hash": HASH }),

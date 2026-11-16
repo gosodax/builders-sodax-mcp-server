@@ -56,7 +56,40 @@ function sendMessageEvent(data: Buffer): ConnectionMessage | undefined {
   const dstChainId = reader.uintLE(16);
   const dstAddress = hex(reader.take(reader.uintLE32()));
   const payload = hex(reader.take(reader.uintLE32()));
+  // Bytes past these (a field a later connection appends) don't change them; a layout that moves them can't match a
+  // quote's deposit. So they're not refused, which would only stop every Solana swap the relay still carries.
   return { srcChainId, srcAddress, dstChainId, dstAddress, payload };
+}
+
+const COMPUTE_BUDGET = solanaSender("ComputeBudget111111111111111111111111111111");
+
+/**
+ * The calls in an unsigned v0 tx, as the wallet signs it: each instruction's program and accounts, as `0x` hex ids.
+ * A legacy tx, one that loads accounts from a lookup table, or any other shape throws.
+ */
+export function solanaCalls(tx: Uint8Array): { program: string; accounts: string[] }[] {
+  // Read in loops, so a bad length runs out of bytes, not memory.
+  const reader = new ByteReader(tx);
+  reader.take(64 * reader.uleb128());
+  if (reader.take(1)[0] !== 0x80) throw new Error("not a v0 Solana message");
+  reader.take(3);
+  const keys: string[] = [];
+  for (let count = reader.uleb128(); count > 0; count--) keys.push(hex(reader.take(32)));
+  const key = (index: number) => {
+    const id = keys[index];
+    if (id === undefined) throw new Error("an account outside the Solana message");
+    return id;
+  };
+  reader.take(32);
+  const calls: { program: string; accounts: string[] }[] = [];
+  for (let count = reader.uleb128(); count > 0; count--) {
+    const program = key(reader.take(1)[0]);
+    const accounts = [...reader.take(reader.uleb128())].map(key);
+    reader.take(reader.uleb128());
+    calls.push({ program, accounts });
+  }
+  if (reader.uleb128() !== 0 || !reader.done) throw new Error("a Solana message with lookups or trailing bytes");
+  return calls;
 }
 
 export const SOLANA = nonEvmAdapter({
@@ -70,14 +103,26 @@ export const SOLANA = nonEvmAdapter({
     });
     return solanaEvidence(tx, connection);
   },
-  // The SDK reads the programs from their IDL on chain: a build must call the packaged ones.
+  // A tx is read once finalized, some 13 s after it's processed: any status means its node has it.
+  async seen({ txHash }) {
+    const { value } = await spokeClients().solana.connection.getSignatureStatuses([txHash]);
+    return value[0] != null;
+  },
+  // The SDK takes the programs from their IDL on chain, so the bytes the wallet signs are checked, not the SDK's `to`:
+  // besides the compute budget, one call, to the packaged program. A deposit names the connection it calls too.
   callsPinned(kind, raw) {
-    const { to, data } = isRecord(raw) ? raw : {};
+    const { data } = isRecord(raw) ? raw : {};
+    if (typeof data !== "string") return false;
     const { assetManager, connection } = spokeChainConfig.solana.addresses;
-    if (kind === "cancel") return to === connection;
-    // A deposit passes the connection program too, read from the chain as well: the packaged one must be in the tx.
-    const passes =
-      typeof data === "string" && Buffer.from(data, "base64").includes(Buffer.from(base58Bytes(connection)));
-    return to === assetManager && passes;
+    let calls: ReturnType<typeof solanaCalls>;
+    try {
+      calls = solanaCalls(Buffer.from(data, "base64")).filter(call => call.program !== COMPUTE_BUDGET);
+    } catch {
+      return false;
+    }
+    if (calls.length !== 1) return false;
+    const [{ program, accounts }] = calls;
+    if (kind === "cancel") return program === solanaSender(connection);
+    return program === solanaSender(assetManager) && accounts.includes(solanaSender(connection));
   },
 });

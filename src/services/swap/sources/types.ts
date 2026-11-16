@@ -31,8 +31,11 @@ export interface ConnectionMessage {
 export interface SpokeEvidence {
   failed: boolean;
   messages: ConnectionMessage[];
-  /** Its events couldn't all be read: no message list can be trusted complete, so nothing is concluded from it. */
-  unreadable?: true;
+  /**
+   * Its events couldn't all be read: no message list can be trusted complete, so nothing is concluded from it. Its
+   * `failed` is what the chain said, for the operator: a NEAR tx that failed may still hold a deposit.
+   */
+  unreadable?: { failed: boolean };
 }
 
 /**
@@ -128,8 +131,11 @@ export interface SourceAdapter {
   prunes: boolean;
   /** What a tx proves once it ran, or `null` before. `sender` routes a NEAR lookup. */
   read(source: SwapSource, txHash: string, sender?: string): Promise<SourceTx | null>;
-  /** Whether its node knows the tx at all, mined or pending. Only an EVM node can say; others answer false. */
-  seen(source: SwapSource, txHash: string): Promise<boolean>;
+  /**
+   * Whether its node knows a tx `read` has nothing for yet: pending, or run but not final; `undefined` if it couldn't
+   * say this time. Absent where its nodes can't say at all (they know a tx only once it ran).
+   */
+  seen?(source: SwapSource, txHash: string, sender?: string): Promise<boolean | undefined>;
   /** A read a ready quote makes first where building the swap doesn't read the chain, so a dead RPC fails then. */
   probe?(chainKey: string): Promise<unknown>;
   /** Refuses a sender whose swaps its chain can't prove. */

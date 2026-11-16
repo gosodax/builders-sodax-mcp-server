@@ -6,6 +6,8 @@ import { hexToBytes } from "@noble/hashes/utils";
 export const hexBytes = (hex: string) => hexToBytes(hex.replace(/^0x/, ""));
 
 export const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString("hex")}`;
+/** Bytes an event writes as hex, `0x` or not, in either case, as messages carry them; anything else throws. */
+export const hexText = (text: string) => hex(hexBytes(text));
 /** An account or object name as messages carry it: its UTF-8 bytes. */
 export const utf8Hex = (text: string) => hex(Buffer.from(text, "utf8"));
 
@@ -54,7 +56,7 @@ export class ByteReader {
     return count;
   }
 
-  /** BCS's ULEB128 length. */
+  /** BCS's ULEB128 length, which Solana's compact-u16 is too. */
   uleb128(): number {
     let value = 0;
     for (let shift = 0; shift < 32; shift += 7) {

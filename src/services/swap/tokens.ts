@@ -41,9 +41,32 @@ const chainSchema = z
   .refine(chain => chain.type !== "EVM" || typeof chain.chainId === "number");
 
 export type SwapChain = z.infer<typeof chainSchema> & {
-  /** The spoke's asset manager per the live config; quotes pin it from the SDK and only check it agrees. */
-  swapContract?: string;
+  /**
+   * The spoke's asset manager per the live config, `null` if it gives one that isn't an address: quotes pin it from
+   * the SDK and only check it agrees, so one that can't is refused rather than skipped.
+   */
+  swapContract?: string | null;
+  /** Its `connection`, likewise. */
+  connection?: string | null;
 };
+
+// Any family's address as its config spells it: Sui's `<package>::<module>::<object>` is the longest.
+const CONFIG_ADDRESS_PATTERN = /^[\x21-\x7e]{1,256}$/;
+
+/**
+ * A live config address as given, `null` if it isn't one (an EVM chain's must be an EVM address). None, or the zero
+ * address, is no address given.
+ */
+function configAddress(type: string, value: unknown): string | null | undefined {
+  if (value === undefined || value === null || (typeof value === "string" && ZERO_ADDRESS_PATTERN.test(value))) {
+    return undefined;
+  }
+  const valid =
+    typeof value === "string" &&
+    CONFIG_ADDRESS_PATTERN.test(value) &&
+    (type !== "EVM" || EVM_ADDRESS_PATTERN.test(value));
+  return valid ? value : null;
+}
 
 /** Tokens by chain key, and each chain's family and id when its config gives them. */
 export interface SwapCatalog {
@@ -146,7 +169,7 @@ async function loadCatalog(): Promise<SwapCatalog> {
       const unconfigured = Object.keys(catalog.tokens).filter(key => !catalog.chains[key]);
       if (unconfigured.length > 0) logger.warn({ chains: unconfigured }, "No valid chain config for these swap chains");
       // The quote pins asset managers from the SDK; none in the live config means it changed shape.
-      if (!Object.values(catalog.chains).some(chain => chain.swapContract)) {
+      if (!Object.values(catalog.chains).some(chain => chain.type === "EVM" && chain.swapContract)) {
         logger.error("No EVM chain config names an asset manager");
       }
       return catalog;
@@ -171,13 +194,14 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
     }
     const config = asRecord(configs[chainKey]);
     const chain = chainSchema.safeParse(config.chain);
-    const assetManager = asRecord(config.addresses).assetManager;
     if (chain.success) {
+      const addresses = asRecord(config.addresses);
+      const swapContract = configAddress(chain.data.type, addresses.assetManager);
+      const connection = configAddress(chain.data.type, addresses.connection);
       catalog.chains[chainKey] = {
         ...chain.data,
-        ...(typeof assetManager === "string" &&
-          EVM_ADDRESS_PATTERN.test(assetManager) &&
-          !ZERO_ADDRESS_PATTERN.test(assetManager) && { swapContract: assetManager }),
+        ...(swapContract !== undefined && { swapContract }),
+        ...(connection !== undefined && { connection }),
       };
     }
     const nativeAddress = typeof config.nativeToken === "string" ? canonicalAddress(config.nativeToken) : undefined;

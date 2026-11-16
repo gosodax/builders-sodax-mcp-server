@@ -48,7 +48,7 @@ const POSTS_PER_HOUR = { public: 5, checked: 20, tools: 5 };
 const MAX_HELD = 12;
 // Discord's limit on that post's description; the deposits this server checked are listed first.
 const HELD_TEXT_MAX = 4096;
-// A failed tx's deposit is never checked against the quote named with it.
+// A failed tx's held deposit, or a tx whose events can't be read, may not be the quote named with it.
 const PUBLIC_KINDS: readonly AlertKind[] = [
   "unknown_quote",
   "other_quote_deposit",

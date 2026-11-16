@@ -7,7 +7,7 @@ import { z } from "zod";
 import { HEX_64 } from "../../../constants.js";
 import { HttpError, fetchJson } from "../../http.js";
 import { spokeClients } from "../../sodax.js";
-import { utf8Hex } from "./bytes.js";
+import { hexText, utf8Hex } from "./bytes.js";
 import { nonEvmAdapter, readable } from "./nonEvm.js";
 import type { ConnectionMessage, SpokeEvidence } from "./types.js";
 
@@ -24,6 +24,7 @@ const txSchema = z.object({
 });
 
 const DECIMAL = /^\d{1,39}$/;
+// Hex bytes as the connection writes them, no `0x`: anything else is read as the relay may not.
 const HEX = /^(?:[0-9a-fA-F]{2})*$/;
 
 /** The connection's messages in a tx from the REST `GET /cosmos/tx/v1beta1/txs/{hash}`. A failed tx is rolled back. */
@@ -49,8 +50,8 @@ function eventMessage(attribute: (key: string) => string | undefined): Connectio
     srcChainId: BigInt(read("src_chain_id", DECIMAL)),
     srcAddress: utf8Hex(sender),
     dstChainId: BigInt(read("dst_chain_id", DECIMAL)),
-    dstAddress: `0x${read("dst_address", HEX).toLowerCase()}`,
-    payload: `0x${read("payload", HEX).toLowerCase()}`,
+    dstAddress: hexText(read("dst_address", HEX)),
+    payload: hexText(read("payload", HEX)),
   };
 }
 

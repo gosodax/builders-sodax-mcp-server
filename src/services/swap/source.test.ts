@@ -49,6 +49,7 @@ describe("sourceChainFor", () => {
   // The swap tx itself creates the intent there: track checks the intents contract's log, no connection.
   it("takes sonic, the hub, with the intents contract and no connection", () => {
     expect(sourceChainFor(fixtureCatalog(), toChain("sonic"))).toEqual({
+      kind: "hub",
       chainId: 146,
       swapContract: solverConfig.intentsContract,
     });

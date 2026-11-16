@@ -6,7 +6,15 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, blockNumber, evmChainIdFor, getEvmReceipt, isTxKnown, pinnedSourceOf } from "../sodax.js";
+import {
+  type EvmReceipt,
+  blockNumber,
+  evmChainIdFor,
+  getEvmReceipt,
+  hubIntentClosed,
+  isTxKnown,
+  pinnedSourceOf,
+} from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
@@ -20,14 +28,16 @@ export const RETRY_AFTER_SEC = 15;
 export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
 /** What checking a source tx needs. */
-export interface SourceChain {
+export type SourceChain = {
   /** The EVM chain id, for the steps a wallet sends. */
   chainId: number;
   /** What the swap tx calls: a spoke's asset manager, or the hub's intents contract. */
   swapContract: string;
-  /** A spoke's `connection`, whose log proves a deposit. None on the hub: the swap tx itself creates the intent. */
-  connection?: string;
-}
+} & (
+  | { kind: "spoke" /** Its log proves a deposit. */; connection: string }
+  /** The swap tx itself creates the intent: nothing is relayed. */
+  | { kind: "hub" }
+);
 
 export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote };
 
@@ -132,6 +142,14 @@ export async function chainRead<T>(chain: ChainInfo, read: () => Promise<T>): Pr
 }
 
 export type NotCancellable = "not_submitted" | "solved" | "cancelled" | "refunding" | "not_on_hub_yet";
+
+/**
+ * Whether the hub is known to no longer hold the intent `createdIn` (a hub tx) created: filled or cancelled. Only a
+ * guard against a pointless cancel or submit, so a failed read (logged as a chain read) answers `false`, as before it.
+ */
+export function intentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return hubIntentClosed(hash, createdIn).catch(() => false);
+}
 
 /**
  * Why a submitted swap can't be cancelled, or `undefined` if it can: only an intent on the hub that

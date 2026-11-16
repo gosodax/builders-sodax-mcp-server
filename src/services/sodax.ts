@@ -233,9 +233,10 @@ export function connectionFor(chainKey: string): string | undefined {
 export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
   const chainId = evmChainIdFor(chainKey);
   const swapContract = swapContractFor(chainKey);
+  if (chainId === undefined || !swapContract) return undefined;
+  if (isHubChain(chainKey)) return { kind: "hub", chainId, swapContract };
   const connection = connectionFor(chainKey);
-  if (chainId === undefined || !swapContract || (!connection && !isHubChain(chainKey))) return undefined;
-  return { chainId, swapContract, ...(connection && { connection }) };
+  return connection ? { kind: "spoke", chainId, swapContract, connection } : undefined;
 }
 
 const asEvmAddress = (value: unknown) =>
@@ -302,6 +303,34 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
       if (isNotFound(error)) return null;
       throw error;
     }
+  });
+}
+
+/**
+ * Whether the hub's intents contract no longer holds the intent `createdIn` created: it deletes one once it's filled
+ * in full or cancelled, the canceller's refund included. Read at a block no older than that tx's, so a node behind it
+ * never passes for one that closed; one that hasn't the tx yet answers `false`. Fails as a bare error.
+ */
+export function hubIntentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return bounded({ label: "intent state", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const { sdk: module, sodax } = sdk();
+    const client = sodax.hubProvider.publicClient;
+    const [created, latest] = await Promise.all([
+      client.getTransactionReceipt({ hash: createdIn as `0x${string}` }).catch(error => {
+        if (isNotFound(error)) return null;
+        throw error;
+      }),
+      client.getBlockNumber(),
+    ]);
+    if (!created || latest < created.blockNumber) return false;
+    const [exists] = await client.readContract({
+      address: solverConfig.intentsContract as `0x${string}`,
+      abi: module.IntentsAbi,
+      functionName: "intentStates",
+      args: [hash as `0x${string}`],
+      blockNumber: latest,
+    });
+    return !exists;
   });
 }
 

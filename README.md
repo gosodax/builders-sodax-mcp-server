@@ -114,21 +114,26 @@ every transaction; the server never signs.
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
    deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
    Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
-   there once expired, unless a solver filled it first (`expired_awaiting_refund`). While the result has
-   `retryAfterSec`, call it again after that many seconds. A tx no node has seen comes with `stopAfter`: track is
-   called until then, and once more after. Such a tx is read from the chain at most once every 10 seconds, however
-   often it's tracked. From any spoke, track reads what the relay signs: the messages the chain's `connection`
-   emitted when the tx ran. It submits a tx holding exactly one deposit, sent by the asset manager from the quote's
-   sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that failed after
-   its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose events can't
-   all be read: it's reported as unverified, which alerts with its quote. A non-EVM tx's hash goes as the wallet
-   shows it.
+   there once expired, unless a solver filled it first (`expired_awaiting_refund`); one the hub no longer holds,
+   filled or cancelled, is `intent_closed`. While the result has `retryAfterSec`, call it again after that many
+   seconds. A tx no node has seen comes with `stopAfter`, 5 minutes after the deadline, when it becomes
+   `source_not_found`. It's polled until `pollUntil`, at most 15 minutes after the first call; after that the agent
+   asks the user whether their wallet sent it instead of polling, and calls again once it did, or once after
+   `stopAfter`. With its `quoteId`, such a tx is read from the chain at most once every 10 seconds per API key,
+   however often it's tracked. From any spoke, track reads what the relay signs: the messages the chain's
+   `connection` emitted when the tx ran. It submits a tx holding exactly one deposit, sent by the asset manager from
+   the quote's sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that
+   failed after its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose
+   events can't all be read: it's reported as unverified, which alerts with its quote. A non-EVM tx's hash goes as the
+   wallet shows it.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as
    soon as its tx is mined, before or after its deadline, without waiting for the swap service to have it. From a
    non-EVM chain the SDK builds the cancel here. From any spoke it's relayed once the tx ran and its `connection`
-   emitted the user's message to their hub wallet with the intent's cancel payload (from Solana, its keccak).
+   emitted the user's message to their hub wallet with the intent's cancel payload (from Solana, its keccak). No
+   cancel is built for an intent the hub no longer holds, filled, cancelled or refunded (`closed`); one that closes
+   after it's built fails when sent (`cancel_failed`), and the next call says it's closed.
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
 `sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub),

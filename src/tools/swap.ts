@@ -378,6 +378,9 @@ const unseen = ({ key, name }: { key: string; name: string }) =>
   isNonEvmChain(key)
     ? `${name} hasn't confirmed this transaction yet. Check that the user's wallet really sent it and that this is its transaction hash`
     : `${name} hasn't seen this transaction. Check that the user's wallet really broadcast it and that this is its transaction hash, not a batch id`;
+// The hub deletes an intent once filled or cancelled, so its state alone can't tell which.
+const INTENT_CLOSED =
+  "The swap's intent is no longer open on the hub: a solver filled it, or it was cancelled or refunded to the user. sodax_get_balance on the recipient and on the user's source address shows which; either way, the user must not send it again.";
 const again = (seconds: number) => `call sodax_swap_submit_and_track again in about ${seconds} seconds`;
 const retryRefund = (tool: string, seconds: number) =>
   `To retry the refund, call ${tool} again in about ${seconds} seconds, at most ${MAX_CALLS} times, then stop.`;
@@ -421,9 +424,11 @@ export function trackNextStep(result: TrackResult): string {
       return result.seenOnChain
         ? `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`
         : `${unseen(result.chain)}; if it was never sent, stop tracking it. Otherwise don't resend it, and ${
-            result.stopAfter
-              ? `call sodax_swap_submit_and_track again in about ${result.retryAfterSec} seconds until ${result.stopAfter}, then once more and follow that answer.`
-              : POLL
+            result.pollUntil
+              ? `call sodax_swap_submit_and_track again in about ${result.retryAfterSec} seconds until ${result.pollUntil}, then follow that answer.`
+              : result.stopAfter
+                ? `stop calling on a timer: ask the user to check their wallet, and call sodax_swap_submit_and_track again once it shows the swap sent, or once after ${result.stopAfter} and follow that answer.`
+                : POLL
           }`;
     case "source_not_found": {
       // A sped-up or replaced tx has a new hash; its deposit still matches the quote.
@@ -451,6 +456,8 @@ export function trackNextStep(result: TrackResult): string {
       return "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";
     case "expired_awaiting_refund":
       return `The swap expired before it was submitted: unless a solver filled it first, SODAX refunds its intent on ${chain} to the user, and they must not send it again. To get it back sooner, the user can cancel it now with sodax_swap_cancel.`;
+    case "intent_closed":
+      return INTENT_CLOSED;
     case "expired_unsubmitted":
       return `The swap won't be filled and its refund couldn't start: ${safe(result)}. ${retryRefund("sodax_swap_submit_and_track", result.retryAfterSec)}`;
     case "submit_refused":
@@ -496,6 +503,9 @@ const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" 
     "The swap service hasn't processed this swap yet; call sodax_swap_submit_and_track (it won't submit it again) until it has, then cancel.",
   not_sent:
     "The swap transaction isn't confirmed, or it failed, so nothing was sent and there's nothing to cancel yet. If it's still pending, call sodax_swap_cancel again once it's confirmed; on an EVM chain the user can also cancel or replace it in their wallet.",
+  closed: `There's nothing to cancel. ${INTENT_CLOSED}`,
+  not_this_swap:
+    "That transaction didn't create this quote's swap: ask for the swap transaction's hash (not an approval's) and call sodax_swap_cancel again with it.",
 };
 
 /** Built from enums and catalog names only. */
@@ -526,6 +536,7 @@ export function cancelNextStep(result: CancelResult): string {
     case "cancel_relayed":
       return "The cancel is on its way to the hub; call sodax_swap_submit_and_track (it won't submit the swap again) to see it reported as cancelled.";
     case "cancel_confirmed":
-      return "The swap is cancelled on the hub and the funds are on their way back to the user; call sodax_swap_submit_and_track (it won't submit it) to see it reported as cancelled.";
+      // Confirmed by the hub's own log: a backend row may still say it can be cancelled, so track isn't asked.
+      return "The swap is cancelled on the hub and the funds are on their way back to the user; there's nothing more to do, and they must not send it again.";
   }
 }

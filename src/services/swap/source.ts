@@ -7,7 +7,7 @@
 import { keccak_256 } from "@noble/hashes/sha3";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { evmChainIdFor } from "../sodax.js";
+import { evmChainIdFor, hubIntentClosed } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getCachedQuote } from "./quoteCache.js";
@@ -169,6 +169,14 @@ export async function chainRead<T>(chain: ChainInfo, read: () => Promise<T>): Pr
 }
 
 export type NotCancellable = "not_submitted" | "solved" | "cancelled" | "refunding" | "not_on_hub_yet";
+
+/**
+ * Whether the hub is known to no longer hold the intent `createdIn` (a hub tx) created: filled or cancelled. Only a
+ * guard against a pointless cancel or submit, so a failed read (logged as a chain read) answers `false`, as before it.
+ */
+export function intentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return hubIntentClosed(hash, createdIn).catch(() => false);
+}
 
 /**
  * Why a submitted swap can't be cancelled, or `undefined` if it can: only an intent on the hub that

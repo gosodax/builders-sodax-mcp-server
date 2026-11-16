@@ -305,6 +305,34 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   });
 }
 
+/**
+ * Whether the hub's intents contract no longer holds the intent `createdIn` created: it deletes one once it's filled
+ * in full or cancelled, the canceller's refund included. Read at a block no older than that tx's, so a node behind it
+ * never passes for one that closed; one that hasn't the tx yet answers `false`. Fails as a bare error.
+ */
+export function hubIntentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return bounded({ label: "intent state", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const { sdk: module, sodax } = sdk();
+    const client = sodax.hubProvider.publicClient;
+    const [created, latest] = await Promise.all([
+      client.getTransactionReceipt({ hash: createdIn as `0x${string}` }).catch(error => {
+        if (isNotFound(error)) return null;
+        throw error;
+      }),
+      client.getBlockNumber(),
+    ]);
+    if (!created || latest < created.blockNumber) return false;
+    const [exists] = await client.readContract({
+      address: solverConfig.intentsContract as `0x${string}`,
+      abi: module.IntentsAbi,
+      functionName: "intentStates",
+      args: [hash as `0x${string}`],
+      blockNumber: latest,
+    });
+    return !exists;
+  });
+}
+
 /** An EVM chain's latest block number: proof its RPC answers. Fails as a bare error. */
 export function blockNumber(chainKey: string): Promise<bigint> {
   return bounded({ label: "block number", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {

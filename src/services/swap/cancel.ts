@@ -15,12 +15,13 @@ import {
   userHubWallet,
 } from "../sodax.js";
 import { ActionError } from "./errors.js";
-import { type CachedQuote, claimDeposit, markCancelled } from "./quoteCache.js";
+import { type CachedQuote, claimDeposit, markHubOutcome } from "./quoteCache.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,
   type SwapRef,
   committedPayload,
+  intentClosed,
   isHubSource,
   readSourceTx,
   resolveSource,
@@ -29,12 +30,16 @@ import {
   whyNotCancellable,
 } from "./source.js";
 import { holdsCancel } from "./sourceTx.js";
-import type { CancelStep, SwapSource } from "./sources/types.js";
+import type { CancelStep, SourceTx, SwapSource } from "./sources/types.js";
 import { type Intent, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
 import { checkQuoteDeposit, deadlineMs, refundExpired, untilRefundSec } from "./track.js";
 
 export type CancelState =
-  | { status: "not_cancellable"; reason: NotCancellable | "not_sent" }
+  | {
+      status: "not_cancellable";
+      /** `closed`: the hub no longer holds the intent. `not_this_swap`: the tx didn't create the quote's intent. */
+      reason: NotCancellable | "not_sent" | "closed" | "not_this_swap";
+    }
   /** The quote's deposit is on chain, never submitted: from its deadline on, a cancel call refunds it. */
   | { status: "deposit_unsubmitted"; retryAfterSec: number }
   /** That refund's relay failed; the next call tries again. */
@@ -68,6 +73,8 @@ export async function cancelSwap(input: {
   if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) {
     throw quoteMismatch("That quote was used by another transaction.");
   }
+  // Its cancel was confirmed here already. One found closed is read again: it may be the user's own cancel.
+  if (quote?.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
 
   const cancelTxHash = input.cancelTxHash && sourceTxHash(source, input.cancelTxHash, "cancelTxHash");
 
@@ -77,25 +84,25 @@ export async function cancelSwap(input: {
   if (!row && quote?.handedOver === "relayed_for_refund" && quote.depositTxHash === txHash) {
     return { ...base, status: "not_cancellable", reason: "refunding" };
   }
-  // A swap from the hub is an intent there once mined: its cancel needs no backend record.
-  if (!row && quote && isHubSource(source)) {
-    const early = await hubCancel(base, source, quote, cancelTxHash);
-    if (early) return early;
+  const reason = whyNotCancellable(row);
+  const ended = reason === "solved" || reason === "cancelled" || reason === "refunding";
+  // A swap from the hub is an intent there once mined: its quote's intent is cancelled, whatever the backend has.
+  if (quote && isHubSource(source) && !ended) {
+    const fromQuote = await hubCancel(base, source, quote, cancelTxHash);
+    if (fromQuote) return fromQuote;
   } else if (!row && quote && !quote.handedOver) {
     const unsubmitted = await unsubmittedDeposit(base, source, quote);
     if (unsubmitted) return unsubmitted;
   }
   const hubTxHash = row?.result?.dstIntentTxHash;
-  const reason = whyNotCancellable(row);
   if (reason || !hubTxHash) return { ...base, status: "not_cancellable", reason: reason ?? "not_on_hub_yet" };
   // Only a deposit track checked is the quote's: any other tx's intent says nothing about it.
   if (quote && quote.depositTxHash !== txHash) {
     throw quoteMismatch("That quote has no checked deposit in this transaction.");
   }
 
-  const receipt = cancelTxHash ? await readSourceTx(source, cancelTxHash, quote?.srcAddress) : undefined;
-  if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
-  if (receipt?.failed) return { ...base, status: "cancel_failed" };
+  const receipt = cancelTxHash ? await sentCancel(base, source, cancelTxHash, quote?.srcAddress) : undefined;
+  if (receipt && "status" in receipt) return receipt;
 
   const intent = await getHubIntent(hubTxHash);
   const differs = quote ? differingFields(quote.intent, intent) : [];
@@ -114,16 +121,8 @@ export async function cancelSwap(input: {
       details: { chainKey: source.chain.key },
     });
   }
-  // From the hub (the wallet router runs the call) and from a non-EVM spoke the SDK builds it, as its own clients do;
-  // from an EVM spoke the backend does, and the build is checked before anyone signs it.
-  if (!receipt || !cancelTxHash) {
-    return { ...base, status: "ready", steps: [await source.adapter.cancelStep(source, intent)] };
-  }
-  if (receipt.kind === "hub") {
-    const hash = intentHash(intent);
-    const cancelled = receipt.cancelled.some(logged => same(logged, hash));
-    return { ...base, status: cancelled ? "cancel_confirmed" : "not_a_cancel_tx" };
-  }
+  if (!receipt || !cancelTxHash) return readyCancel(base, source, intent, hubTxHash, quote);
+  if (receipt.kind === "hub") return hubCancelled(base, intent, receipt, quote);
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
@@ -156,14 +155,8 @@ async function unsubmittedDeposit(
   // A checked deposit isn't read again: a node that has dropped it can't hold up its refund.
   const claimed = quote.depositTxHash === base.txHash;
   if (!claimed) {
-    const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
-    const notSent = { ...base, status: "not_cancellable" as const, reason: "not_sent" as const };
-    // Only an absence its node can vouch for, or a failed tx with no deposit kept, is a swap never sent. No node
-    // drops a tx before its quote's deadline, and until then track would submit it once it lands.
-    if (!receipt) return source.adapter.prunes && Date.now() >= deadlineMs(quote) ? undefined : notSent;
-    if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notSent;
-    if (receipt.kind === "spoke" && receipt.unreadable) return undefined;
-    if (checkQuoteDeposit(source, receipt, quote) !== "match") return undefined;
+    const swap = await checkSwapTx(base, source, quote);
+    if (swap !== "match") return swap;
   }
   if (Date.now() < deadlineMs(quote)) {
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
@@ -174,9 +167,10 @@ async function unsubmittedDeposit(
 }
 
 /**
- * A quoted swap from the hub with no backend row: cancelled straight from the quote's intent once its tx logged
- * that intent, before or after its deadline, and confirmed by the intents contract's log of the cancel. Claimed
- * first, so this tx stays the quote's. `undefined` for a tx that isn't this quote's swap, which track reports on.
+ * A quoted swap from the hub: cancelled straight from the quote's intent once its tx logged that intent, before or
+ * after its deadline, with or without a backend row, and confirmed by the intents contract's log of the cancel.
+ * Claimed first, so this tx stays the quote's. `undefined` for a tx that created more than this intent, which track
+ * reports on.
  */
 async function hubCancel(
   base: SwapRef,
@@ -184,27 +178,82 @@ async function hubCancel(
   quote: CachedQuote,
   cancelTxHash?: string,
 ): Promise<CancelResult | undefined> {
-  if (quote.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
   // As for a spoke's deposit: one already checked isn't read again.
   if (quote.depositTxHash !== base.txHash) {
-    const swapTx = await readSourceTx(source, base.txHash, quote.srcAddress);
-    if (!swapTx || swapTx.failed) return { ...base, status: "not_cancellable", reason: "not_sent" };
-    if (checkQuoteDeposit(source, swapTx, quote) !== "match") return undefined;
+    const swap = await checkSwapTx(base, source, quote);
+    if (swap !== "match") return swap;
     if (claimDeposit(quote.quoteId, base.txHash) === "taken") {
       throw quoteMismatch("That quote was used by another transaction.");
     }
   }
-  if (!cancelTxHash) {
-    return { ...base, status: "ready", steps: [await source.adapter.cancelStep(source, quote.intent)] };
+  // A swap from the hub created its intent itself.
+  if (!cancelTxHash) return readyCancel(base, source, quote.intent, base.txHash, quote);
+  const receipt = await sentCancel(base, source, cancelTxHash, quote.srcAddress);
+  return "status" in receipt ? receipt : hubCancelled(base, quote.intent, receipt, quote);
+}
+
+/**
+ * Whether the tx is the quote's swap, on chain: `match`; the answer for one never sent or holding no swap (an
+ * approval, say); or `undefined` for one track reports on. Only an absence its node can vouch for, or a failed tx
+ * with no deposit kept, is a swap never sent: no node drops a tx before its quote's deadline, and until then track
+ * would submit it once it lands.
+ */
+async function checkSwapTx(
+  base: SwapRef,
+  source: SwapSource,
+  quote: CachedQuote,
+): Promise<"match" | CancelResult | undefined> {
+  const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
+  const notSent: CancelResult = { ...base, status: "not_cancellable", reason: "not_sent" };
+  if (!receipt) return source.adapter.prunes && Date.now() >= deadlineMs(quote) ? undefined : notSent;
+  if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notSent;
+  if (receipt.kind === "spoke" && receipt.unreadable) return undefined;
+  const check = checkQuoteDeposit(source, receipt, quote);
+  if (check === "not_a_deposit") return { ...base, status: "not_cancellable", reason: "not_this_swap" };
+  return check === "match" ? "match" : undefined;
+}
+
+/**
+ * The cancel for the user's wallet, while the hub holds the intent: once it's filled or cancelled, one fails. From
+ * the hub (the wallet router runs the call) and from a non-EVM spoke the SDK builds it, as its own clients do; from
+ * an EVM spoke the backend does, and the build is checked before anyone signs it.
+ */
+async function readyCancel(
+  base: SwapRef,
+  source: SwapSource,
+  intent: Intent,
+  createdIn: string,
+  quote?: CachedQuote,
+): Promise<CancelResult> {
+  const hash = intentHash(intent);
+  if (await intentClosed(hash, createdIn)) {
+    // Track then reports a quoted hub swap closed, not waiting for a refund.
+    if (quote && isHubSource(source)) markHubOutcome(quote, "closed");
+    return { ...base, intentHash: hash, status: "not_cancellable", reason: "closed" };
   }
-  const receipt = await readSourceTx(source, cancelTxHash, quote.srcAddress);
+  return { ...base, status: "ready", steps: [await source.adapter.cancelStep(source, intent)] };
+}
+
+/** A sent cancel as its chain proves it, or the answer while it hasn't run or if it failed. */
+async function sentCancel(
+  base: SwapRef,
+  source: SwapSource,
+  cancelTxHash: string,
+  sender?: string,
+): Promise<SourceTx | CancelResult> {
+  const receipt = await readSourceTx(source, cancelTxHash, sender);
   if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
   if (receipt.failed) return { ...base, status: "cancel_failed" };
-  const hash = intentHash(quote.intent);
+  return receipt;
+}
+
+/** A cancel on the hub is confirmed by the intents contract's log of it; the quote remembers, as no row may. */
+function hubCancelled(base: SwapRef, intent: Intent, receipt: SourceTx, quote?: CachedQuote): CancelResult {
+  const hash = intentHash(intent);
   if (receipt.kind !== "hub" || !receipt.cancelled.some(logged => same(logged, hash))) {
     return { ...base, status: "not_a_cancel_tx" };
   }
-  markCancelled(quote);
+  if (quote) markHubOutcome(quote, "cancelled");
   return { ...base, status: "cancel_confirmed" };
 }
 

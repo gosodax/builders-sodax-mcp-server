@@ -16,16 +16,18 @@ import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
-  markLeftToRefund,
+  markHubOutcome,
   markRelayedForRefund,
   markSubmitFailed,
   markSubmitRefused,
   markSubmitted,
+  trackedSince,
 } from "./quoteCache.js";
 import {
   RETRY_AFTER_SEC,
   type SwapRef,
   depositTerms,
+  intentClosed,
   isHubSource,
   readSourceTx,
   resolveSource,
@@ -57,8 +59,11 @@ const REFUND_RETRY_SEC = 60;
 const REFUND_AT_ONCE_SEC = 60 + MAX_CLOCK_SKEW_SEC;
 // A tx sent just before the deadline may reach this chain's node a little later.
 const UNSEEN_AFTER_DEADLINE_SEC = 5 * 60;
-// Whether a node has seen a tx with no receipt yet, for a few seconds, however many calls track it: an unseen tx
-// isn't read again in that time, a seen one only for its receipt.
+// How long a tx no node has seen is polled for, from the first call: about as long as 30 polls take. After that the
+// agent waits for the user to say it was sent, as a wallet may broadcast late.
+const UNSEEN_POLL_SEC = 15 * 60;
+// Whether a node has seen a tx with no receipt yet, per caller, for a few seconds however often they track it: an
+// unseen tx isn't read again in that time, a seen one only for its receipt.
 const seenTx = new TtlCache(10_000, 1_000);
 
 export type TrackOutcome = "cancelled" | "refunding" | "abandoned" | "cancel_to_recover" | "unknown";
@@ -71,6 +76,8 @@ export type TrackState =
       retryAfterSec: number;
       /** A tx no node has seen, with its quote: from this time on it's `source_not_found`. */
       stopAfter?: string;
+      /** Until when that tx is polled for; once past, the agent asks the user instead. */
+      pollUntil?: string;
     }
   | { status: "source_failed" }
   /** Failed after its deposit ran (NEAR keeps receipts that ran): not submitted, so the funds wait for an operator. */
@@ -87,6 +94,8 @@ export type TrackState =
   | { status: "expired_refunding" }
   /** A hub swap past its deadline, never submitted: the backend's canceller refunds it, unless a solver fills it first. */
   | { status: "expired_awaiting_refund" }
+  /** A hub swap never submitted whose intent is gone from the hub: filled by a solver, or cancelled or refunded. */
+  | { status: "intent_closed" }
   | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
   /** Refused before its deadline: the first call after it starts the refund. */
   | { status: "submit_refused"; alerted: boolean; retryAfterSec: number }
@@ -110,7 +119,11 @@ export type TrackResult = SwapRef & TrackState;
 const inFlight = new Map<string, Promise<TrackResult>>();
 
 // Agents can't wait between calls, so a call waits briefly for the swap to move on. Mutable for tests.
-export const trackWait = { stepMs: 5_000, maxMs: 20_000 };
+export const trackWait = {
+  stepMs: 5_000,
+  maxMs: 20_000,
+  sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+};
 const WAITABLE: readonly string[] = ["awaiting_source_confirmation", "queued", "in_progress"];
 
 /** `trackSwap`, repeated every few seconds while the swap waits, until its state changes or `maxMs` passes. */
@@ -124,7 +137,7 @@ export async function trackSwapWaiting(input: {
   let result = await trackSwap(input);
   const first = stateOf(result);
   while (WAITABLE.includes(result.status) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
-    await new Promise(resolve => setTimeout(resolve, trackWait.stepMs));
+    await trackWait.sleep(trackWait.stepMs);
     result = await trackSwap(input);
     if (stateOf(result) !== first) break;
   }
@@ -149,13 +162,27 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   const base = { txHash, chain, ...(quoteId && { quoteId }), ...(quote && { intentHash: intentHash(quote.intent) }) };
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
+  // An unseen tx is worth waiting for only while its quote can still be sent; polled for only a while of that.
+  const unseen = quote && !claimed ? unseenWait(quote, txHash) : undefined;
+  const sendable = unseen !== undefined && Date.now() < unseen.stopAfterMs;
+  const memoKey = JSON.stringify([callerKeyHash(), chain.key, txHash]);
+  // No node had it seconds ago: nothing new to read, and a quote's unchecked tx has no row of its own anyway.
+  if (sendable && seenTx.get<boolean>(memoKey) === false) return awaitingSource(base, false, unseen);
+  // The hub logged its cancel, which a backend row may not show yet.
+  if (claimed && quote.handedOver === "cancelled") return { ...base, ...handedOverState("cancelled") };
+
   const row = await getSubmitTxStatus(txHash, chain.key).catch(error => {
     throw claimed ? retryable(error) : error;
   });
+  // Found closed on the hub: a lagging row would offer a cancel that cancel refuses. Only its fill says more.
+  if (claimed && quote.handedOver === "closed" && row?.status !== "solved") return { ...base, status: "intent_closed" };
   if (row && (!quote || claimed)) return { ...base, ...fromStatus(row, claimed ? quote : undefined) };
   // Already handed over by this server: the backend's row may lag its answer, and a resubmit costs
   // one of the 10 submits a minute this server's IP gets.
-  if (claimed && quote.handedOver) return { ...base, ...handedOverState(quote.handedOver) };
+  if (claimed && quote.handedOver) {
+    if (quote.handedOver === "left_to_refund") return hubExpired(base, quote);
+    return { ...base, ...handedOverState(quote.handedOver) };
+  }
   // A resubmit before the deadline is refused again, and costs one of those 10 submits.
   if (claimed && quote.submitRefused && Date.now() < deadlineMs(quote)) {
     // Deduped: the first refusal's alert, or another try if that one reached only the log.
@@ -164,10 +191,6 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   }
   if (claimed) return submitDeposit(base, source, quote);
 
-  // An unseen tx is worth waiting for only while its quote can still be sent.
-  const stopAfterMs = quote && deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
-  const sendable = stopAfterMs !== undefined && Date.now() < stopAfterMs;
-  const memoKey = `${chain.key}:${txHash}`;
   // A remembered answer saves reads only while the result is to wait anyway: a final one reads the chain again.
   const known = sendable ? seenTx.get<boolean>(memoKey) : null;
   const receipt = known === false ? null : await readSourceTx(source, txHash, quote?.srcAddress);
@@ -175,23 +198,14 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     const seen = known ?? (await seenOnChain(source, txHash));
     if (known === null) seenTx.set(memoKey, seen);
     if (!seen && !sendable) return { ...base, status: "source_not_found" };
-    return {
-      ...base,
-      status: "awaiting_source_confirmation",
-      seenOnChain: seen,
-      retryAfterSec: RETRY_AFTER_SEC,
-      ...(!seen && stopAfterMs && { stopAfter: new Date(stopAfterMs).toISOString() }),
-    };
+    return awaitingSource(base, seen, seen ? undefined : unseen);
   }
   if (receipt.failed) return failedSource(base, source, receipt);
   if (receipt.kind === "spoke" && receipt.unreadable) return unverified(base, quote);
   if (!quote) return withoutQuote(base, source, receipt);
   const deposit = checkQuoteDeposit(source, receipt, quote);
   if (deposit === "multiple_deposits") {
-    // A hub swap needs no operator: unsubmitted, its intent is refunded once expired.
-    const alerted =
-      !isHubSource(source) &&
-      alertOperator("multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
+    const alerted = alertStranded(source, "multiple_deposits", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "multiple_deposits", alerted };
   }
   if (deposit !== "match") return notThisDeposit(base, deposit, quote);
@@ -200,7 +214,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   if (claim === "gone") return withoutQuote(base, source, receipt);
   // Both deposits carry the same intent id, so only the first can become an intent.
   if (claim === "taken") {
-    const alerted = alertOperator("quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
+    const alerted = alertStranded(source, "quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "quote_used", alerted };
   }
   if (row) return { ...base, ...fromStatus(row, quote) };
@@ -223,6 +237,8 @@ async function submitDeposit(base: SwapRef, source: SwapSource, quote: CachedQuo
       details: { retryAfterSec: Math.ceil(waitMs / 1000) },
     });
   }
+  // A hub intent cancelled (from another app, or before the cancel was confirmed here) or filled: nothing to submit.
+  if (isHubSource(source) && (await intentClosed(intentHash(quote.intent), txHash))) return hubClosed(base, quote);
 
   try {
     await submitTx({
@@ -257,11 +273,18 @@ async function submitDeposit(base: SwapRef, source: SwapSource, quote: CachedQuo
   return { ...base, status: "queued", retryAfterSec: RETRY_AFTER_SEC };
 }
 
-/** A refused submit's alert: a deposit needs an operator to recover it; a hub intent is refunded once expired. */
+/** A refused submit's alert: a deposit needs an operator to recover it. */
 function refused(base: SwapRef, source: SwapSource, quote: CachedQuote): boolean {
-  if (isHubSource(source)) return false;
   const fields = { chainKey: base.chain.key, txHash: base.txHash, quoteId: quote.quoteId };
-  return alertOperator("submit_rejected", { ...fields, deadline: quote.intent.deadline });
+  return alertStranded(source, "submit_rejected", { ...fields, deadline: quote.intent.deadline });
+}
+
+/**
+ * An operator alert for a deposit that may be stranded. A swap from the hub never is: its intent is there, filled or,
+ * once expired, refunded by the backend's canceller, so it pages no one.
+ */
+function alertStranded(source: SwapSource, ...[kind, fields]: Parameters<typeof alertOperator>): boolean {
+  return !isHubSource(source) && alertOperator(kind, fields);
 }
 
 /**
@@ -282,6 +305,27 @@ const retryable = (error: unknown) =>
 export const deadlineMs = (quote: CachedQuote) => Number(quote.intent.deadline) * 1000;
 export const untilRefundSec = (quote: CachedQuote) =>
   Math.ceil((deadlineMs(quote) - Date.now()) / 1000) + RETRY_AFTER_SEC;
+
+type UnseenWait = { stopAfterMs: number; pollUntilMs: number };
+
+/** For a quote's tx no node has seen yet: when it's no longer sendable, and until when it's polled for. */
+function unseenWait(quote: CachedQuote, txHash: string): UnseenWait {
+  const stopAfterMs = deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
+  return { stopAfterMs, pollUntilMs: Math.min(stopAfterMs, trackedSince(quote, txHash) + UNSEEN_POLL_SEC * 1000) };
+}
+
+/** A tx with no receipt yet; one no node has seen, with its quote, is tracked until its `stopAfter`. */
+function awaitingSource(base: SwapRef, seenOnChain: boolean, unseen?: UnseenWait): TrackResult {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  return {
+    ...base,
+    status: "awaiting_source_confirmation",
+    seenOnChain,
+    retryAfterSec: RETRY_AFTER_SEC,
+    ...(unseen && { stopAfter: iso(unseen.stopAfterMs) }),
+    ...(unseen && Date.now() < unseen.pollUntilMs && { pollUntil: iso(unseen.pollUntilMs) }),
+  };
+}
 
 /** Test only. */
 export function clearUnseenMemo(): void {
@@ -348,46 +392,44 @@ function notThisDeposit(base: SwapRef, deposit: Exclude<DepositCheck, "match">, 
 function withoutQuote(base: SwapRef, source: SwapSource, sourceTx: SourceTx): TrackResult {
   const { txHash, chain, quoteId } = base;
   const isDeposit = swapsIn(source, sourceTx) > 0;
-  // Only a named quoteId alerts, or any public deposit could page an operator; a hub intent needs none.
+  // Only a named quoteId alerts, or any public deposit could page an operator.
   const alerted =
     isDeposit &&
     quoteId !== undefined &&
-    !isHubSource(source) &&
-    alertOperator("unknown_quote", { chainKey: chain.key, txHash, quoteId });
+    alertStranded(source, "unknown_quote", { chainKey: chain.key, txHash, quoteId });
   return { ...base, status: "not_submitted_unknown_quote", isDeposit, alerted };
 }
 
-/** What a swap this server handed over has become, from its quote: the backend may not have a row for it. */
-function handedOverState(how: NonNullable<CachedQuote["handedOver"]>): TrackState {
+/**
+ * What a swap this server handed over has become, from its quote: the backend may not have a row for it. One left to
+ * its refund is read from the hub instead (`hubExpired`).
+ */
+function handedOverState(how: Exclude<NonNullable<CachedQuote["handedOver"]>, "left_to_refund">): TrackState {
   switch (how) {
     case "submitted":
       return { status: "queued", retryAfterSec: RETRY_AFTER_SEC };
     case "relayed_for_refund":
       return { status: "expired_refunding" };
-    case "left_to_refund":
-      return { status: "expired_awaiting_refund" };
     case "cancelled":
       return { status: "failed", outcome: "cancelled", canCancel: false };
+    case "closed":
+      return { status: "intent_closed" };
   }
 }
+
+type ExpiredState = SwapRef &
+  Extract<
+    TrackState,
+    { status: "expired_refunding" | "expired_awaiting_refund" | "expired_unsubmitted" | "intent_closed" }
+  >;
 
 /**
  * A claimed swap past its deadline. A spoke's deposit is relayed, so the hub intent it creates is refunded; a
  * swap from the hub needs no relay: its intent is already there, and the backend's canceller refunds it.
  */
-export async function refundExpired(
-  base: SwapRef,
-  quote: CachedQuote,
-  source: SwapSource,
-): Promise<
-  SwapRef & Extract<TrackState, { status: "expired_refunding" | "expired_awaiting_refund" | "expired_unsubmitted" }>
-> {
+export async function refundExpired(base: SwapRef, quote: CachedQuote, source: SwapSource): Promise<ExpiredState> {
   const { txHash, chain } = base;
-  if (isHubSource(source)) {
-    markLeftToRefund(quote);
-    logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Left an expired hub swap to its refund");
-    return { ...base, status: "expired_awaiting_refund" };
-  }
+  if (isHubSource(source)) return hubExpired(base, quote);
   let relayed: boolean;
   try {
     const data = source.adapter.commitsHash ? quote.relayData : undefined;
@@ -410,6 +452,25 @@ export async function refundExpired(
     deadline: quote.intent.deadline,
   });
   return { ...base, status: "expired_unsubmitted", alerted, retryAfterSec: REFUND_RETRY_SEC };
+}
+
+/**
+ * A hub swap past its deadline, never submitted: the backend's canceller refunds its intent, unless a solver fills
+ * it first. Read from the hub on every call, so one closed since isn't offered a cancel that would revert.
+ */
+async function hubExpired(base: SwapRef, quote: CachedQuote): Promise<ExpiredState> {
+  if (await intentClosed(intentHash(quote.intent), base.txHash)) return hubClosed(base, quote);
+  if (quote.handedOver !== "left_to_refund") {
+    markHubOutcome(quote, "left_to_refund");
+    logger.info({ "chain.key": base.chain.key, "quote.id": quote.quoteId }, "Left an expired hub swap to its refund");
+  }
+  return { ...base, status: "expired_awaiting_refund" };
+}
+
+/** A hub swap never submitted whose intent is gone from the hub: filled, or cancelled or refunded. */
+function hubClosed(base: SwapRef, quote: CachedQuote): SwapRef & { status: "intent_closed" } {
+  markHubOutcome(quote, "closed");
+  return { ...base, status: "intent_closed" };
 }
 
 /** The backend's record in our words: enums and hashes checked at the API boundary, never its text. */

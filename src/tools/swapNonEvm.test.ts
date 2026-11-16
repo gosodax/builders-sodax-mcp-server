@@ -9,7 +9,9 @@ import {
   createIntentPayload,
   decodeAddress,
   getEvmReceipt,
+  hubIntentClosed,
   initSodax,
+  intentHash,
   userHubWallet,
 } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
@@ -34,6 +36,7 @@ vi.mock("../services/sodax.js", async importOriginal => {
     ...actual,
     getEvmReceipt: vi.fn(),
     buildNonEvmCancel: vi.fn(),
+    hubIntentClosed: vi.fn(),
     userHubWallet: vi.fn(),
   };
 });
@@ -136,6 +139,8 @@ beforeEach(() => {
   clearQuoteCache();
   clearAlerts();
   clearUnseenMemo();
+  // The hub still holds every intent here: a cancel is built.
+  vi.mocked(hubIntentClosed).mockResolvedValue(false);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
   vi.spyOn(logger, "info").mockImplementation(() => undefined);
 });
@@ -146,6 +151,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   readSpoke.mockReset();
   vi.mocked(buildNonEvmCancel).mockReset();
+  vi.mocked(hubIntentClosed).mockReset();
 });
 
 describe("a swap from a non-EVM spoke", () => {
@@ -372,6 +378,16 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     dstChainId: 146n,
     dstAddress: swap.intent.creator,
     payload,
+  });
+
+  it("isn't built once the hub no longer holds the intent, read past the hub tx that created it", async () => {
+    const swap = REAL.sui;
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    stubBackend({ row, hubIntent: swap.intent });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap) });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "closed" });
+    expect(hubIntentClosed).toHaveBeenCalledWith(intentHash(swap.intent), HUB_TX);
+    expect(buildNonEvmCancel).not.toHaveBeenCalled();
   });
 
   it("is built by the SDK from the hub's intent, as the family's wallet takes it", async () => {

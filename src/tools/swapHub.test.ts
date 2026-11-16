@@ -1,7 +1,7 @@
 import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
-import { getEvmReceipt, initSodax, intentHash, isTxKnown, userHubWallet } from "../services/sodax.js";
+import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isTxKnown, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { hubReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
@@ -24,10 +24,11 @@ import {
 // Unit tests don't reach a chain: receipts are scripted per test.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), hubIntentClosed: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
 });
 
 const SONIC_TX = `0x${"5".repeat(64)}`;
+const OTHER_TX = `0x${"6".repeat(64)}`;
 const CANCEL_TX = `0x${"c".repeat(64)}`;
 // A swap from the hub: its source is the hub's relay id, and the sender's router is the creator.
 const HUB_INTENT = { ...INTENT, srcChain: "146", dstChain: "23" };
@@ -56,7 +57,10 @@ beforeEach(() => {
   clearQuoteCache();
   clearAlerts();
   clearUnseenMemo();
+  // Mocks from the vi.mock factory keep their implementation across tests unless reset here.
+  for (const mock of [getEvmReceipt, hubIntentClosed, isTxKnown, userHubWallet]) vi.mocked(mock).mockReset();
   vi.mocked(isTxKnown).mockResolvedValue(true);
+  vi.mocked(hubIntentClosed).mockResolvedValue(false);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
   vi.spyOn(logger, "info").mockImplementation(() => undefined);
 });
@@ -125,6 +129,83 @@ describe("a swap from Sonic, the hub", () => {
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
     expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_awaiting_refund");
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("isn't submitted once its intent is gone from the hub, cancelled elsewhere or filled", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    const calls = stubBackend({ row: null });
+    const { quoteId } = hubQuote();
+    const { out } = await track({ txHash: SONIC_TX, quoteId });
+    expect(out).toMatchObject({ status: "intent_closed", intentHash: HASH });
+    // A tool every connection with the swap tools has.
+    expect(out.nextStep).toContain("sodax_get_balance");
+    // Read at or past the block of the tx that created the intent, so a node behind it can't pass for this.
+    expect(hubIntentClosed).toHaveBeenCalledWith(HASH, SONIC_TX);
+    expect(submits(calls)).toEqual([]);
+    // Remembered by track, which never asks the hub again.
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("intent_closed");
+    expect(hubIntentClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it("is submitted when the hub can't be read: the check only spares a pointless submit", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    vi.mocked(hubIntentClosed).mockRejectedValue(new Error("SDK call failed"));
+    const calls = stubBackend();
+    const { out } = await track({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
+    expect(out.status).toBe("queued");
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it("confirms the user's own cancel though track found the intent closed before the confirming call", async () => {
+    vi.mocked(getEvmReceipt).mockImplementation(async (_chain, txHash) =>
+      txHash === CANCEL_TX ? hubReceipt(INTENT_CANCELLED_TOPIC, [HASH]) : hubReceipt(INTENT_CREATED_TOPIC, [HASH]),
+    );
+    stubBackend({ row: null });
+    const { quoteId } = hubQuote();
+    expect((await cancel({ txHash: SONIC_TX, quoteId })).out.status).toBe("ready");
+    // The cancel is mined; the agent tracks before confirming it.
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("intent_closed");
+    const { out } = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
+    expect(out.status).toBe("cancel_confirmed");
+    expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ status: "failed", outcome: "cancelled" });
+  });
+
+  it("past its deadline, reports a refund only while the hub holds the intent", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    stubBackend({ row: null });
+    const { quoteId } = hubQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_awaiting_refund");
+    // The canceller refunded it since: no cancel is offered, and none is built.
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("intent_closed");
+    const { out } = await cancel({ txHash: SONIC_TX, quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "closed", intentHash: HASH });
+  });
+
+  it("found closed, never offers a cancel from a lagging row, but reports its fill once solved", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    const { quoteId } = hubQuote();
+    claimDeposit(quoteId, SONIC_TX);
+    stubBackend({ row: { status: "failed", result: { dstIntentTxHash: SONIC_TX } } });
+    expect((await cancel({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ reason: "closed" });
+    const { out } = await track({ txHash: SONIC_TX, quoteId });
+    expect(out.status).toBe("intent_closed");
+    expect(out).not.toHaveProperty("canCancel");
+    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: SONIC_TX } } });
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("solved");
+  });
+
+  it("pages no one for a second tx of the same quote", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    stubBackend({ row: null });
+    const { quoteId } = hubQuote();
+    claimDeposit(quoteId, OTHER_TX);
+    const { out } = await track({ txHash: SONIC_TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "quote_used", alerted: false });
   });
 
   it("is reported, not submitted, without its quote, and pages no one", async () => {
@@ -226,6 +307,44 @@ describe("a swap from Sonic, the hub", () => {
       const { quoteId } = hubQuote();
       vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
       expect((await cancel({ txHash: SONIC_TX, quoteId })).out.status).toBe("ready");
+    });
+
+    it("is built from its quote while the swap service has a row but no intent for it yet", async () => {
+      onChain([HASH]);
+      stubBackend({ row: { status: "pending" } });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
+      expect(out.status).toBe("ready");
+    });
+
+    it("asks for the swap tx when given another tx with its quote, an approval say", async () => {
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, []));
+      stubBackend({ row: null });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
+      expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+      expect(out.nextStep).toContain("ask for the swap transaction's hash");
+    });
+
+    it("isn't built once the hub no longer holds the intent: that cancel would revert", async () => {
+      onChain([HASH]);
+      vi.mocked(hubIntentClosed).mockResolvedValue(true);
+      stubBackend({ row: null });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
+      expect(out).toMatchObject({ status: "not_cancellable", reason: "closed" });
+    });
+
+    it("is reported cancelled once confirmed, though the backend row still says it can be cancelled", async () => {
+      onChain([HASH]);
+      stubBackend({ row, hubIntent: HUB_INTENT });
+      const quoteId = cancellable();
+      expect((await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX })).out.status).toBe(
+        "cancel_confirmed",
+      );
+      expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
+        status: "failed",
+        outcome: "cancelled",
+        canCancel: false,
+      });
+      expect((await cancel({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ reason: "cancelled" });
     });
 
     it("isn't confirmed early by a tx that cancelled another intent", async () => {

@@ -35,7 +35,7 @@ await initSodax();
 const HASH = intentHash(HUB_INTENT).toLowerCase();
 const OTHER_HASH = `0x${"9".repeat(64)}`;
 
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const cancel = (args: Record<string, unknown>) => callTool("sodax_swap_cancel", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
 const relays = (calls: { path: string }[]) => calls.filter(call => call.path === "/intents/submit");
@@ -236,7 +236,7 @@ describe("a swap from Sonic, the hub", () => {
       const { out } = await cancel({ txHash: SONIC_TX, chain: "sonic" });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_submitted" });
       expect(out.nextStep).toContain("its intent is there already");
-      expect(out.nextStep).not.toContain("call sodax_swap_track");
+      expect(out.nextStep).not.toContain("call sodax_swap_submit_and_track");
     });
 
     it("isn't confirmed by a tx that cancelled another intent", async () => {

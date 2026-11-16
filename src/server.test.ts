@@ -85,10 +85,10 @@ describe("a call the SDK refuses before any handler runs", () => {
     seedToolRegistry({ builder: true, swap: true });
     const info = vi.spyOn(logger, "info");
     const client = await connect({ builder: true, swap: false });
-    expect((await client.callTool({ name: "sodax_swap_track", arguments: {} })).isError).toBe(true);
+    expect((await client.callTool({ name: "sodax_swap_submit_and_track", arguments: {} })).isError).toBe(true);
     await client.close();
     expect(toolCalls(info)).toContainEqual(
-      expect.objectContaining({ "gen_ai.tool.name": "sodax_swap_track", "error.type": "TOOL_NOT_FOUND" }),
+      expect.objectContaining({ "gen_ai.tool.name": "sodax_swap_submit_and_track", "error.type": "TOOL_NOT_FOUND" }),
     );
   });
 });
@@ -129,7 +129,7 @@ describe("instructions", () => {
     expect(builder).toContain("sodax_check_chain_support");
     expect(builder).not.toContain("sodax_resolve_token");
     expect(swap).toContain("sodax_resolve_token");
-    expect(swap).toContain("sodax_swap_track");
+    expect(swap).toContain("sodax_swap_submit_and_track");
     expect(swap).toContain("sodax_swap_cancel");
     expect(swap).toContain(
       "again after retryAfterSec seconds while the result has one; after an error, follow its nextStep",

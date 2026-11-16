@@ -48,9 +48,10 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ### API Key
 
 Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header. The builder
-tools work without one; the swap tools need it. The server forwards it on its calls to the SODAX data API, solver and
-Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY` instead. A value that isn't a SODAX key
-(`sodax_…`) is ignored.
+tools work without one; the swap tools need it. An organisation's Owner or Admin creates one in the
+[partner portal](https://portal.sodax.com), under **API keys** → **Create key**. The server forwards it on its calls to
+the SODAX data API, solver and Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY`
+instead. A value that isn't a SODAX key (`sodax_…`) is ignored, except by the `swap` profile, which refuses it.
 
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
 carries, and a session opened with a key refuses a message without that key (HTTP 403). The MCP SDKs' SSE clients
@@ -104,8 +105,8 @@ every transaction; the server never signs.
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
    `reset_approve` still goes first.
-3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
-   `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
+3. Right after the swap is sent, `sodax_swap_submit_and_track` with the swap transaction's `txHash` (from a batch, the
+   hash `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
    deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
    Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
@@ -120,7 +121,8 @@ every transaction; the server never signs.
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
 `sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub)
-or an EVM spoke chain, not on non-EVM chains yet; the destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
+or an EVM spoke chain, not on non-EVM chains yet, and a quote from another chain returns `UNSUPPORTED_SOURCE` naming
+the ones that can; the destination can be any SODAX swap chain. Bitcoin, Stacks and ICON
 aren't planned as sources for now. ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a 2-of-2 that Bound co-signs and
 broadcasts, behind a login token that expires in minutes), which an agent's wallet can't drive. A Stacks swap needs the
 sender's public key and post-conditions the wallet must add itself, and the SDK can't build a Stacks cancel yet (it
@@ -221,7 +223,7 @@ The swap tools never sign or move funds. They also:
 | Tool | Description |
 |------|-------------|
 | `sodax_swap_quote` | Quote a cross-chain swap; with `fromAddress`, the transactions for the user's wallet to sign |
-| `sodax_swap_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
+| `sodax_swap_submit_and_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
 | `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay (none from Sonic) |
 | `sodax_get_balance` | A wallet's native balance on a chain and, optionally, one token's |
 | `sodax_resolve_token` | Look up a token on a chain: address, decimals and hub asset |

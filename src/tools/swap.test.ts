@@ -26,7 +26,7 @@ describe("sodax_resolve_token", () => {
       "sodax_resolve_token",
       "sodax_swap_cancel",
       "sodax_swap_quote",
-      "sodax_swap_track",
+      "sodax_swap_submit_and_track",
     ]);
   });
 

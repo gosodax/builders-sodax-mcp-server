@@ -40,7 +40,7 @@ describe("swap tool safety", () => {
     ["sodax_swap_quote", { ...QUOTE, toAddress: PHRASE }, "toAddress"],
     ["sodax_swap_quote", { ...QUOTE, amount: PHRASE }, "amount"],
     ["sodax_swap_quote", { ...QUOTE, amount: TX }, "amount"],
-    ["sodax_swap_track", { txHash: TX, chain: API_KEY }, "chain"],
+    ["sodax_swap_submit_and_track", { txHash: TX, chain: API_KEY }, "chain"],
     ["sodax_swap_cancel", { txHash: TX, chain: API_KEY }, "chain"],
   ])("%s refuses a pasted secret before any call, and never repeats it", async (tool, args, field) => {
     const { out } = await callTool(tool, args);
@@ -52,18 +52,18 @@ describe("swap tool safety", () => {
   it("tells the agent to rotate a pasted SODAX API key", async () => {
     const { out } = await callTool("sodax_get_balance", { chain: "arb", address: API_KEY });
     expect(out.nextStep).toBe(
-      "Tell the user to rotate that SODAX API key and send keys only as the x-api-key header, never as a tool input.",
+      "Tell the user to rotate that SODAX API key in the partner portal (https://portal.sodax.com) and send keys only as the x-api-key header, never as a tool input.",
     );
   });
 
   // zod checks these fields before the handler, so the refusal comes back as the validation error's text.
   it.each([
     ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
-    ["sodax_swap_track", { txHash: PHRASE }, "txHash", "seed phrase"],
-    ["sodax_swap_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
+    ["sodax_swap_submit_and_track", { txHash: PHRASE }, "txHash", "seed phrase"],
+    ["sodax_swap_submit_and_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
     ["sodax_swap_cancel", { txHash: TX, cancelTxHash: PHRASE }, "cancelTxHash", "seed phrase"],
-    ["sodax_swap_track", { txHash: TX, quoteId: PHRASE }, "quoteId", "seed phrase"],
-    ["sodax_swap_track", { txHash: TX, quoteId: TX }, "quoteId", "64-hex value, not a quoteId"],
+    ["sodax_swap_submit_and_track", { txHash: TX, quoteId: PHRASE }, "quoteId", "seed phrase"],
+    ["sodax_swap_submit_and_track", { txHash: TX, quoteId: TX }, "quoteId", "64-hex value, not a quoteId"],
   ])("%s refuses a secret in a field zod checks first (%#)", async (tool, args, field, says) => {
     const client = await swapClient();
     const result = await client.callTool({ name: tool, arguments: args });
@@ -79,7 +79,10 @@ describe("swap tool safety", () => {
 
   it("gives a plain validation error for a malformed value that isn't a secret", async () => {
     const client = await swapClient();
-    const result = await client.callTool({ name: "sodax_swap_track", arguments: { txHash: "0x1234", quoteId: "q-1" } });
+    const result = await client.callTool({
+      name: "sodax_swap_submit_and_track",
+      arguments: { txHash: "0x1234", quoteId: "q-1" },
+    });
     await client.close();
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).not.toContain("SECRET_REJECTED");
@@ -93,7 +96,7 @@ describe("swap tool safety", () => {
   ])("%s refuses a 64-hex value that isn't valid on an EVM chain", async (tool, args) => {
     const { out } = await callTool(tool, args);
     expect(out.error).toMatchObject({ code: "SECRET_REJECTED", message: expect.stringContaining("64-hex") });
-    expect(out.nextStep).toContain("sodax_swap_track");
+    expect(out.nextStep).toContain("sodax_swap_submit_and_track");
   });
 
   it("takes a 64-hex address where the chain says it's one (Sui)", async () => {

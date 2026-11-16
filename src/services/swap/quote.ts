@@ -132,7 +132,7 @@ function suggestAmount(
   const step = 10n ** BigInt(Math.max(base.toString().length - 3, 0));
   const suggestedAmount = formatUnits(((base + step - 1n) / step) * step, token.decimals);
   return new ActionError("AMOUNT_TOO_LOW", error.message, {
-    nextStep: `The swap service usually quotes swaps worth about $${USUAL_MIN_USD} or more: ask the user to send at least ${suggestedAmount} ${token.symbol}.`,
+    nextStep: `The swap service usually quotes swaps worth about $${USUAL_MIN_USD} or more: ask the user whether to quote at least ${suggestedAmount} ${token.symbol} instead.`,
     details: { suggestedAmount },
   });
 }

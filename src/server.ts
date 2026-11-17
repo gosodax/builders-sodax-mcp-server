@@ -34,7 +34,7 @@ const BUILDER_INSTRUCTIONS = [
   ].join(" "),
   [
     "To check whether a chain is supported, call `sodax_check_chain_support` (accepts a",
-    'name, ticker or chain key, e.g. "Hedera", "HBAR", "hedera"). For the full',
+    'name, ticker, chain key or EVM chain id, e.g. "Hedera", "HBAR", "hedera", "8453"). For the full',
     "network list use `sodax_get_supported_chains`; for tokens on a chain,",
     "`sodax_get_swap_tokens`. For conceptual/SDK questions, use the `docs_*` tools",
     "(SODAX documentation search). Prefer information returned by these tools over",

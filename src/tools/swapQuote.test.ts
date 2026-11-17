@@ -651,7 +651,7 @@ describe("sodax_swap_quote", () => {
       fromAddress: USER,
     });
     expect(out).toMatchObject({ status: "price_only", missing: ["toAddress"] });
-    expect(out.nextStep).toContain("toAddress (their address on Sui)");
+    expect(out.nextStep).toContain("toAddress (their address on SUI)");
   });
 
   it.each([

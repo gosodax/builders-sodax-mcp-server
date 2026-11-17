@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCache } from "../services/sodaxApi.js";
+import { clearSolverCache } from "../services/solver.js";
 import { mcpClient } from "./__fixtures__/swapClient.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -42,6 +43,7 @@ async function call(name: string, args: Record<string, unknown>) {
 
 beforeEach(() => {
   clearCache();
+  clearSolverCache();
   fetchSpy = vi.spyOn(globalThis, "fetch");
 });
 
@@ -56,6 +58,34 @@ describe("a chain key argument", () => {
     expect(isError).toBe(false);
     expect(text).toMatch(/^## Swap Tokens on 0x2105\.base\n/);
     expect(apiPaths().some(path => path.endsWith("/config/swap/0x2105.base/tokens"))).toBe(true);
+  });
+
+  it("takes an EVM chain id, from the SDK's chain config", async () => {
+    stubApi({ "/config/swap/0x2105.base/tokens": [{ symbol: "USDC" }] });
+    expect((await call("sodax_get_swap_tokens", { chainId: "8453" })).text).toMatch(
+      /^## Swap Tokens on 0x2105\.base\n/,
+    );
+  });
+
+  it("refuses 1, Ethereum's EVM id and Solana's relay id, naming both keys and asking for nothing", async () => {
+    stubApi();
+    const { isError, text } = await call("sodax_get_swap_tokens", { chainId: "1" });
+    expect(isError).toBe(true);
+    expect(text).toContain("Pass the chain key: ethereum or solana.");
+    expect(apiPaths().some(path => path.includes("/config/swap/"))).toBe(false);
+  });
+
+  it("resolves a name through the SDK's chains when the chain list can't be read", async () => {
+    stubApi({ "/config/swap/0x2105.base/tokens": [] }, null);
+    const { isError } = await call("sodax_get_swap_tokens", { chainId: "Base" });
+    expect(isError).toBe(false);
+    expect(apiPaths().some(path => path.endsWith("/config/swap/0x2105.base/tokens"))).toBe(true);
+  });
+
+  it("doesn't wait on the chain list for an SDK chain key", async () => {
+    stubApi({ "/config/swap/sonic/tokens": [] });
+    await call("sodax_get_swap_tokens", { chainId: "sonic" });
+    expect(apiPaths().some(path => path.endsWith("/config/spoke/chains"))).toBe(false);
   });
 
   it("refuses a chain no key matches, naming the keys but not ICON's, before asking for anything else", async () => {
@@ -73,11 +103,11 @@ describe("a chain key argument", () => {
     expect(apiPaths().some(path => path.endsWith("/config/swap/sonic/tokens"))).toBe(true);
   });
 
-  it("passes the value on as given when the chain list can't be read", async () => {
-    stubApi({ "/config/swap/sonic/tokens": [] }, null);
-    const { isError } = await call("sodax_get_swap_tokens", { chainId: "sonic" });
+  it("passes a value the SDK doesn't know on as given when the chain list can't be read", async () => {
+    stubApi({ "/config/swap/newchain/tokens": [] }, null);
+    const { isError } = await call("sodax_get_swap_tokens", { chainId: "newchain" });
     expect(isError).toBe(false);
-    expect(apiPaths().some(path => path.endsWith("/config/swap/sonic/tokens"))).toBe(true);
+    expect(apiPaths().some(path => path.endsWith("/config/swap/newchain/tokens"))).toBe(true);
   });
 
   // The API parses the candles route's chain as an integer.
@@ -89,6 +119,13 @@ describe("a chain key argument", () => {
     expect(named.isError).toBe(true);
     expect(named.text).toContain("'146' for Sonic");
     expect(apiPaths().filter(path => path.includes("/amm/"))).toHaveLength(1);
+  });
+
+  it("sends a zero candle bound rather than dropping it", async () => {
+    stubApi({ "/amm/pools/146/0xpool/candles": [] });
+    await call("sodax_get_amm_pool_candles", { chainId: "146", poolId: "0xpool", interval: "1h", from: 0, to: 2 });
+    const url = fetchSpy.mock.calls.map(([input]) => new URL(String(input))).find(u => u.pathname.endsWith("/candles"));
+    expect(url?.searchParams.get("from")).toBe("0");
   });
 });
 
@@ -133,6 +170,13 @@ describe("format json", () => {
     await call("sodax_get_volume", { ...pair, sort: "asc" });
     expect(apiPaths().filter(path => path.endsWith("/solver/volume"))).toHaveLength(2);
   });
+
+  it("sends a zero block bound or chain id rather than dropping it", async () => {
+    stubApi({ "/solver/volume": { items: [], hasMore: false } });
+    await call("sodax_get_volume", { inputToken: "0x1", outputToken: "0x2", fromBlock: 0, toBlock: 0, chainId: 0 });
+    const url = fetchSpy.mock.calls.map(([input]) => new URL(String(input))).find(u => u.pathname.endsWith("/volume"));
+    expect(url && Object.fromEntries(url.searchParams)).toMatchObject({ fromBlock: "0", toBlock: "0", chainId: "0" });
+  });
 });
 
 describe("the relay tools' arguments", () => {
@@ -162,6 +206,26 @@ describe("the relay tools' arguments", () => {
     const { isError } = await call("sodax_relay_get_packet", { chainId: "146", txHash: "0xabc", connSn });
     expect(isError).toBe(true);
     expect(relayParams()).toEqual([]);
+  });
+
+  it("takes a relay chain id as a packet's number, and drops leading zeros", async () => {
+    stubApi();
+    await call("sodax_relay_get_packet", { chainId: 146, txHash: "0xabc", connSn: "7" });
+    await call("sodax_relay_get_packet", { chainId: "0146", txHash: "0xabc", connSn: "7" });
+    expect(relayParams().map(params => params.chain_id)).toEqual(["146", "146"]);
+  });
+
+  it("reads an empty oracle chainId as no filter", async () => {
+    stubApi({ "/oracle": [{ chainId: "146", symbol: "S", address: "0x1", price: "1" }] });
+    const { isError, text } = await call("sodax_get_solver_oracle", { chainId: "", symbol: "S" });
+    expect(isError).toBe(false);
+    expect(text).toContain("1 of 1 prices for S");
+  });
+
+  it("filters the oracle by a relay chain id written with leading zeros", async () => {
+    stubApi({ "/oracle": [{ chainId: "146", symbol: "S", address: "0x1", price: "1" }] });
+    const { text } = await call("sodax_get_solver_oracle", { chainId: "0146" });
+    expect(text).toContain("1 of 1 prices on chain 146");
   });
 
   it("refuses a chain name where a relay chain id goes, pointing to the id map", async () => {

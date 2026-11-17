@@ -18,13 +18,23 @@ import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
 import { formatResponse } from "./formatters.js";
 
-// "Sonic" or a chain key here would only fail upstream, as a lookup that found nothing.
-const relayChainId = z
+// "Sonic" or a chain key here would only fail upstream, as a lookup that found nothing. A packet's numeric
+// src_chain_id passes as is, "0146" becomes "146", the form the API and the oracle filter compare, and "" is no
+// value, as clients send for an optional one.
+const toRelayChainId = (value: unknown) =>
+  typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : typeof value === "string"
+      ? value.trim().replace(/^0+(?=\d)/, "") || undefined
+      : value;
+const relayChainIdString = z
   .string()
   .regex(
     /^\d+$/,
     "An intent-relay chain ID is a decimal string such as '146': sodax_get_relay_chain_id_map translates a chain key",
   );
+const relayChainId = z.preprocess(toRelayChainId, relayChainIdString);
+const optionalRelayChainId = z.preprocess(toRelayChainId, relayChainIdString.optional());
 
 const READ_ONLY: ToolAnnotations = {
   readOnlyHint: true,
@@ -81,11 +91,9 @@ export function registerSolverRelayTools(server: McpServer): void {
     "sodax_get_solver_oracle",
     "Get the solver's oracle USD prices per (chain, token). For quoting with sodax_get_solver_quote, filter chainId='146': chainId-146 addresses pass the quote service's compatibility check, while spoke-chain (non-146) addresses are rejected with 'not compatible with the quote service'. Caveat: passing that check (being listed/priced) does NOT guarantee a swap route — canonical bridged *_ASSET hub tokens and major stablecoins route most reliably, while many wrapped/derivative/money-market entries (e.g. WBTC, waLocBTC, SONIC_SODA_ASSET) are priced but frequently return 'No path was found', and routability is pair/amount/liquidity-dependent. Also useful for sanity-checking quote amounts against the USD prices the solver uses.",
     {
-      chainId: relayChainId
-        .optional()
-        .describe(
-          "Filter results to a single intent-relay chain ID (decimal string, e.g. '146' for Sonic). Call sodax_get_relay_chain_id_map to translate.",
-        ),
+      chainId: optionalRelayChainId.describe(
+        "Filter results to a single intent-relay chain ID (decimal string, e.g. '146' for Sonic). Call sodax_get_relay_chain_id_map to translate.",
+      ),
       symbol: z
         .string()
         .optional()
@@ -294,7 +302,7 @@ export function registerSolverRelayTools(server: McpServer): void {
           z.string().regex(/^\d{1,20}$/, "connSn is a non-negative integer"),
         )
         .describe(
-          "REQUIRED: Connection serial number identifying the packet within the tx, a non-negative integer as a string or number (a previously-fetched packet's `conn_sn` field works as is).",
+          "REQUIRED: Connection serial number identifying the packet within the tx, a non-negative integer as a decimal string (e.g. '7'; pass a fetched packet's `conn_sn` as a string).",
         ),
       format: z
         .nativeEnum(ResponseFormat)

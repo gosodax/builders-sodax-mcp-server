@@ -6,11 +6,11 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, blockNumber, evmChainIdFor, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
+import { type EvmReceipt, blockNumber, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
-import { chainIdQuery, isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
+import { isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
 import type { SubmitTxStatus } from "./swapsApi.js";
 import { type SwapCatalog, getSwapCatalog } from "./tokens.js";
 
@@ -101,9 +101,7 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
 
 /** Whether `query` names the chain `chainKey`, as a name, ticker, key or EVM chain id, without the catalog. */
 function namesChain(query: string, chainKey: string): boolean {
-  if (resolveChainKey(query, [chainKey]).key === chainKey) return true;
-  const id = chainIdQuery(query);
-  return id !== undefined && id === evmChainIdFor(chainKey);
+  return resolveChainKey(query, [chainKey]).key === chainKey;
 }
 
 /** The receipt, or `null` while the tx isn't mined. */

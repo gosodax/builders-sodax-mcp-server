@@ -66,6 +66,9 @@ export async function initSodax(chains: Record<string, RpcOverride> = {}): Promi
 type ChainConfig = { chain?: { type?: string; chainId?: unknown }; addresses?: Record<string, unknown> };
 const chainConfigs = spokeChainConfig as Record<string, ChainConfig | undefined>;
 
+/** The chain keys the SDK's packaged config lists. */
+export const sdkChainKeys: readonly string[] = Object.keys(chainConfigs);
+
 /**
  * What an `RPC_CONFIG` entry may set, by chain key: the RPC fields that chain's packaged config has, so they follow
  * the SDK. Injective's `rpcUrl` is among them though its provider uses fixed mainnet endpoints (the README says so):

@@ -99,12 +99,14 @@ export function registerSodaxApiTools(server: McpServer): void {
     server,
     "config",
     "sodax_check_chain_support",
-    "Check whether SODAX supports a specific blockchain, given its name, ticker, or chain key (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
+    "Check whether SODAX supports a specific blockchain, given its name, ticker, chain key or EVM chain id (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum', '8453'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
     {
       chain: z
         .string()
         .min(1)
-        .describe("Chain name, ticker, or key — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base'"),
+        .describe(
+          "Chain name, ticker, key or EVM chain id — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base', '8453'",
+        ),
     },
     READ_ONLY,
     async ({ chain }) => {
@@ -155,7 +157,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter tokens by spoke chain key or name (e.g. 'sonic', '0x2105.base', 'Base'). Call sodax_get_supported_chains for the full, live list.",
+          "Filter tokens by spoke chain key, name or EVM chain id (e.g. 'sonic', '0x2105.base', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -440,7 +442,6 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_assets",
     "List all assets available for lending and borrowing in the SODAX money market",
     {
-      chainId: z.string().optional().describe("Filter by chain ID"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -448,15 +449,14 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
     },
     READ_ONLY,
-    async ({ chainId, format }) => {
+    async ({ format }) => {
       try {
-        const assets = await getMoneyMarketAssets(chainId);
-        const header = chainId ? `## Money Market Assets on ${chainId}\n\n` : "## Money Market Assets\n\n";
+        const assets = await getMoneyMarketAssets();
         return {
           content: [
             {
               type: "text",
-              text: formatResponse(assets, format, `${header}${assets.length} assets available\n\n`),
+              text: formatResponse(assets, format, `## Money Market Assets\n\n${assets.length} assets available\n\n`),
             },
           ],
         };
@@ -676,7 +676,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter by source spoke chain key or name (e.g. 'sonic', 'ethereum', 'Base'). Call sodax_get_supported_chains for the full, live list.",
+          "Filter by source spoke chain key, name or EVM chain id (e.g. 'sonic', 'ethereum', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -711,7 +711,10 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_tokens",
     "Get tokens supported for money market lending/borrowing, optionally filtered by chain",
     {
-      chainId: z.string().optional().describe("Filter by chain key or name (e.g. 'sonic', 'Base')"),
+      chainId: z
+        .string()
+        .optional()
+        .describe("Filter by chain key, name or EVM chain id (e.g. 'sonic', 'Base', '8453')"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()

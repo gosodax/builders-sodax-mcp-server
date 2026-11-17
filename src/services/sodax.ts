@@ -282,6 +282,9 @@ export function userHubWallet(chainKey: string, address: string): Promise<string
 
 export interface EvmReceipt {
   reverted: boolean;
+  /** Where it was mined: what orders two txs on one chain. */
+  blockNumber: bigint;
+  txIndex: number;
   logs: { address: string; topics: string[]; data: string }[];
 }
 
@@ -294,9 +297,13 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   return bounded({ label: "receipt", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     try {
-      const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
+      const { status, blockNumber, transactionIndex, logs } = await client.getTransactionReceipt({
+        hash: txHash as `0x${string}`,
+      });
       return {
         reverted: status !== "success",
+        blockNumber,
+        txIndex: transactionIndex,
         logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
       };
     } catch (error) {

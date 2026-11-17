@@ -119,7 +119,7 @@ export async function cancelSwap(input: {
     });
   }
   if (!sent || !cancelTxHash) return readyCancel(base, source, intent, hubTxHash, quote);
-  if (source.kind === "hub") return hubCancelled(base, source, intent, sent, quote);
+  if (source.kind === "hub") return hubCancelled(base, source, intent, hubTxHash, sent, quote);
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
@@ -181,7 +181,7 @@ async function hubCancel(
   // A swap from the hub created its intent itself.
   if (!cancelTxHash) return readyCancel(base, source, quote.intent, base.txHash, quote);
   const sent = await sentCancel(base, source, cancelTxHash);
-  return "status" in sent ? sent : hubCancelled(base, source, quote.intent, sent, quote);
+  return "status" in sent ? sent : hubCancelled(base, source, quote.intent, base.txHash, sent, quote);
 }
 
 /**
@@ -230,20 +230,32 @@ async function sentCancel(base: SwapRef, source: SwapSource, cancelTxHash: strin
   return receipt;
 }
 
-/** A cancel on the hub is confirmed by the intents contract's log of it; the quote remembers, as no row may. */
-function hubCancelled(
+/**
+ * A cancel on the hub is confirmed by the intents contract's log of it, mined after `createdIn` (the hub tx that
+ * created the intent); the quote remembers, as no row may.
+ */
+async function hubCancelled(
   base: SwapRef,
   source: SwapSource,
   intent: Intent,
+  createdIn: string,
   receipt: EvmReceipt,
   quote?: CachedQuote,
-): CancelResult {
+): Promise<CancelResult> {
   if (!hubLogged(receipt, source.swapContract, INTENT_CANCELLED_TOPIC, intentHash(intent))) {
     return { ...base, status: "not_a_cancel_tx" };
   }
+  // The hub deletes a cancelled intent, so the same one may be created again: an earlier cancel isn't this one's.
+  const created = await readReceipt(source.chain, createdIn);
+  if (!created) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
+  if (!minedAfter(receipt, created)) return { ...base, status: "not_a_cancel_tx" };
   if (quote) markHubOutcome(quote, "cancelled");
   return { ...base, status: "cancel_confirmed" };
 }
+
+const minedAfter = (later: EvmReceipt, earlier: EvmReceipt) =>
+  later.blockNumber > earlier.blockNumber ||
+  (later.blockNumber === earlier.blockNumber && later.txIndex > earlier.txIndex);
 
 const quoteMismatch = (message: string) =>
   new ActionError("QUOTE_MISMATCH", message, {

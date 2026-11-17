@@ -47,7 +47,8 @@ const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SOD
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
-  UNSUPPORTED_SOURCE: "A swap can't start from that chain yet: ask the user to swap from another one.",
+  UNSUPPORTED_SOURCE:
+    "Swaps can start from Sonic or an EVM chain such as Arbitrum or Base, not from non-EVM chains yet; ask the user to send from one of those.",
   UNKNOWN_TOKEN:
     "Call sodax_resolve_token for that token (error.side says which, when there are two) and follow its nextStep.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",

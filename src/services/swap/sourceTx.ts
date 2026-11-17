@@ -15,6 +15,10 @@ import type { EvmReceipt } from "../sodax.js";
 export const MESSAGE_TOPIC = "0x0fcc8c448c97c08d0304a9eb321a5ffb209618d28a85dbc8d7a7a592124538ef";
 /** The selector of `connection.sendMessage(uint256 dstChainId, bytes dstAddress, bytes payload)`. */
 export const SEND_MESSAGE_SELECTOR = "0x6ea9cec9";
+/** keccak256 of the intents contract's `IntentCreated(bytes32,(…intent))`; the hash is the first data word. */
+export const INTENT_CREATED_TOPIC = "0x29fecd55cf4a8b6d0aaf6870fbab480f04c3caab050a1af7654278af363cd96f";
+/** keccak256("IntentCancelled(bytes32)"); the hash is the data, not indexed. */
+export const INTENT_CANCELLED_TOPIC = "0xc08eb64db16a39d2848960af04e3f16fb404d9d436a9f0e9d7d0d4854715c9dc";
 /** The hub's relay id: every message to the hub goes there. */
 export const HUB_RELAY_ID = BigInt(getIntentRelayChainId(HUB_CHAIN_KEY));
 
@@ -38,6 +42,23 @@ export function connectionMessages(receipt: EvmReceipt, connection: string): Con
 /** The messages the asset manager sent: deposits, whichever quote they're for. */
 export function depositMessages(receipt: EvmReceipt, connection: string, assetManager: string): ConnectionMessage[] {
   return connectionMessages(receipt, connection).filter(message => same(message.srcAddress, assetManager));
+}
+
+/**
+ * The intent hashes the intents contract logged under `topic` (created or cancelled) in a hub receipt: what a
+ * swap or a cancel sent on the hub proves, as a spoke's `connection` log does for a deposit.
+ */
+export function hubIntentHashes(receipt: EvmReceipt, intentsContract: string, topic: string): string[] {
+  return receipt.logs.flatMap(log =>
+    same(log.address, intentsContract) && same(log.topics[0] ?? "", topic) && /^0x[0-9a-fA-F]{64}/.test(log.data)
+      ? [log.data.slice(0, 66).toLowerCase()]
+      : [],
+  );
+}
+
+/** Whether the intents contract logged `hash` under `topic` in this hub receipt. */
+export function hubLogged(receipt: EvmReceipt, intentsContract: string, topic: string, hash: string): boolean {
+  return hubIntentHashes(receipt, intentsContract, topic).some(logged => same(logged, hash));
 }
 
 export type DepositCheck = "match" | "not_a_deposit" | "mismatch" | "other_sender";

@@ -26,8 +26,10 @@ import {
   isRecord,
   isRpcUrl,
   parseRpcConfigJson,
+  sameHex,
 } from "../constants.js";
 import { errorName, logger, redact } from "./logger.js";
+import type { SourceChain } from "./swap/source.js";
 import type { BuiltIntent } from "./swap/swapsApi.js";
 
 type Sdk = typeof import("@sodax/sdk");
@@ -223,14 +225,18 @@ export function connectionFor(chainKey: string): string | undefined {
   return isHubChain(chainKey) ? undefined : asEvmAddress(chainConfigs[chainKey]?.addresses?.connection);
 }
 
-/** An EVM spoke's chain id, `connection` and asset manager from the packaged config, if it has all three. */
-export function evmSpokeFor(
-  chainKey: string,
-): { chainId: number; connection: string; assetManager: string } | undefined {
+/**
+ * A chain's source from the packaged config, if a swap can start there: the hub, whose intents contract logs the
+ * intent the swap tx creates, or an EVM spoke, whose `connection` proves a deposit. The quote, the source-chain
+ * suggestions and the chain support tool all ask this.
+ */
+export function pinnedSourceOf(chainKey: string): SourceChain | undefined {
   const chainId = evmChainIdFor(chainKey);
+  const swapContract = swapContractFor(chainKey);
+  if (chainId === undefined || !swapContract) return undefined;
+  if (isHubChain(chainKey)) return { kind: "hub", chainId, swapContract };
   const connection = connectionFor(chainKey);
-  const assetManager = swapContractFor(chainKey);
-  return chainId !== undefined && connection && assetManager ? { chainId, connection, assetManager } : undefined;
+  return connection ? { kind: "spoke", chainId, swapContract, connection } : undefined;
 }
 
 const asEvmAddress = (value: unknown) =>
@@ -276,6 +282,9 @@ export function userHubWallet(chainKey: string, address: string): Promise<string
 
 export interface EvmReceipt {
   reverted: boolean;
+  /** Where it was mined: what orders two txs on one chain. */
+  blockNumber: bigint;
+  txIndex: number;
   logs: { address: string; topics: string[]; data: string }[];
 }
 
@@ -288,15 +297,47 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
   return bounded({ label: "receipt", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const client = sdk().sodax.spoke.evm.getPublicClient(chainKey as EvmSpokeOnlyChainKey);
     try {
-      const { status, logs } = await client.getTransactionReceipt({ hash: txHash as `0x${string}` });
+      const { status, blockNumber, transactionIndex, logs } = await client.getTransactionReceipt({
+        hash: txHash as `0x${string}`,
+      });
       return {
         reverted: status !== "success",
+        blockNumber,
+        txIndex: transactionIndex,
         logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
       };
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
     }
+  });
+}
+
+/**
+ * Whether the hub's intents contract no longer holds the intent `createdIn` created: it deletes one once it's filled
+ * in full or cancelled, the canceller's refund included. Read at a block no older than that tx's, so a node behind it
+ * never passes for one that closed; one that hasn't the tx yet answers `false`. Fails as a bare error.
+ */
+export function hubIntentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return bounded({ label: "intent state", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const { sdk: module, sodax } = sdk();
+    const client = sodax.hubProvider.publicClient;
+    const [created, latest] = await Promise.all([
+      client.getTransactionReceipt({ hash: createdIn as `0x${string}` }).catch(error => {
+        if (isNotFound(error)) return null;
+        throw error;
+      }),
+      client.getBlockNumber(),
+    ]);
+    if (!created || latest < created.blockNumber) return false;
+    const [exists] = await client.readContract({
+      address: solverConfig.intentsContract as `0x${string}`,
+      abi: module.IntentsAbi,
+      functionName: "intentStates",
+      args: [hash as `0x${string}`],
+      blockNumber: latest,
+    });
+    return !exists;
   });
 }
 
@@ -477,6 +518,37 @@ export function cancelPayload(intent: IntentJson): string | undefined {
   try {
     const result = sdk().sodax.swaps.getCancelIntentRelayData(toSdkIntent(intent));
     return result.ok ? result.value.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// `route((address,uint256,bytes)[])` on the Sonic wallet router: it runs the calls as the sender's hub wallet.
+const ROUTE_SELECTOR = "0x65a3b0a5";
+
+/**
+ * The cancel of a swap from the hub, as the SDK builds its own: the user's wallet router running exactly
+ * `cancelIntent(intent)` on the intents contract, from the intent's source address, no value. `undefined` if the
+ * SDK can't, or if what it built is anything else.
+ */
+export async function hubCancelTx(
+  intent: IntentJson,
+): Promise<{ from: string; to: string; value: string; data: string } | undefined> {
+  try {
+    const result = await sdk().sodax.swaps.createCancelIntent({
+      params: { srcChainKey: HUB_CHAIN_KEY, intent: toSdkIntent(intent) },
+      raw: true,
+    });
+    if (!result.ok) return undefined;
+    const { from, to, value, data } = result.value as { from: string; to: string; value: bigint; data: string };
+    const calls = cancelPayload(intent);
+    const ok =
+      calls !== undefined &&
+      sameHex(from, intent.srcAddress) &&
+      sameHex(to, spokeChainConfig.sonic.addresses.walletRouter) &&
+      value === 0n &&
+      sameHex(data, `${ROUTE_SELECTOR}${calls.slice(2)}`);
+    return ok ? { from, to, value: "0", data } : undefined;
   } catch {
     return undefined;
   }

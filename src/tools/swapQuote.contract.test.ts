@@ -3,7 +3,7 @@
  * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
-import { spokeChainConfig } from "@sodax/types";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { callerKeyHash, parseApiKey, setFallbackRequestContext } from "../services/requestContext.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
@@ -48,7 +48,8 @@ describe("sodax_swap_quote against the live Swaps API", () => {
     expect(minutes).toBeLessThan(16);
   });
 
-  it("refuses a swap from Sonic, whose deposit track can't check yet", async () => {
+  // The live build passes the same rebuild check as a spoke's: createIntent on the intents contract, approved to it.
+  it("builds a swap from Sonic that calls the intents contract", async () => {
     const { out } = await callQuote({
       fromChain: "sonic",
       fromToken: "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
@@ -56,7 +57,9 @@ describe("sodax_swap_quote against the live Swaps API", () => {
       amount: "5",
       fromAddress: USER,
     });
-    expect(out.error?.code).toBe("UNSUPPORTED_SOURCE");
+    expect(out.status).toBe("ready");
+    const swap = out.steps?.find(step => step.kind === "swap");
+    expect(swap?.tx.to.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
   });
 
   // The intent names a hub token as is, so native S is the zero address there, not wS.

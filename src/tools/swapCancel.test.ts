@@ -6,6 +6,7 @@ import {
   cancelPayload,
   createIntentPayload,
   getEvmReceipt,
+  hubIntentClosed,
   initSodax,
   intentHash,
   userHubWallet,
@@ -41,7 +42,7 @@ import {
 
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), hubIntentClosed: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
 });
 
 const HUB_TX = `0x${"b".repeat(64)}`;
@@ -82,6 +83,7 @@ beforeEach(() => {
   clearQuoteCache();
   receipts();
   vi.mocked(userHubWallet).mockResolvedValue(CREATOR);
+  vi.mocked(hubIntentClosed).mockResolvedValue(false);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
 
@@ -90,6 +92,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(getEvmReceipt).mockReset();
   vi.mocked(userHubWallet).mockReset();
+  vi.mocked(hubIntentClosed).mockReset();
 });
 
 const NEVER = " The user must not send the swap again.";
@@ -121,6 +124,23 @@ describe("sodax_swap_cancel", () => {
       srcChainKey: ARBITRUM,
       intent: INTENT,
     });
+  });
+
+  it("asks for the swap tx when given another tx with its quote, an approval say", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue({ reverted: false, logs: [] });
+    stubBackend({ row: null });
+    const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+  });
+
+  it("builds no cancel once the hub no longer holds the intent, though the backend row still says it can", async () => {
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
+    const { out } = await cancel({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "closed", intentHash: intentHash(INTENT) });
+    expect(out.nextStep).toContain("There's nothing to cancel");
+    expect(hubIntentClosed).toHaveBeenCalledWith(intentHash(INTENT), HUB_TX);
+    expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 
   it("builds the cancel for the SDK config's chain id though the live one differs", async () => {

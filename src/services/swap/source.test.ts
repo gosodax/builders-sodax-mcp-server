@@ -1,5 +1,7 @@
+import { solverConfig } from "@sodax/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
+import { pinnedSourceOf } from "../sodax.js";
 import { fixtureCatalog } from "./__fixtures__/catalog.js";
 import { toChain } from "./resolver.js";
 import { sourceChainFor } from "./source.js";
@@ -26,18 +28,44 @@ describe("sourceChainFor", () => {
 
   // With no live chain config, there's no list to name; a sent swap still isn't told to swap again.
   it.each([
-    [false, "A swap can't start from that chain yet: ask the user to swap from another one."],
-    [true, "No swap can start from Sonic: ask the user which chain they sent the swap from and pass its key."],
+    [
+      false,
+      "Swaps can start from Sonic or an EVM chain such as Arbitrum or Base, not from non-EVM chains yet; ask the user to send from one of those.",
+    ],
+    [true, "No swap can start from SUI: ask the user which chain they sent the swap from and pass its key."],
   ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
     const catalog = { ...fixtureCatalog(), chains: {} };
-    expect(() => sourceChainFor(catalog, toChain("sonic"), sent)).toThrow(
+    expect(() => sourceChainFor(catalog, toChain("sui"), sent)).toThrow(
       expect.objectContaining({ code: "UNSUPPORTED_SOURCE", nextStep, details: undefined }),
     );
   });
 
-  it.each(["sonic", "sui"])("refuses %s, which track can't check a deposit on", key => {
-    expect(() => sourceChainFor(fixtureCatalog(), toChain(key))).toThrow(
+  it("refuses sui, which track can't check a deposit on", () => {
+    expect(() => sourceChainFor(fixtureCatalog(), toChain("sui"))).toThrow(
       expect.objectContaining({ code: "UNSUPPORTED_SOURCE" }),
     );
+  });
+
+  // The swap tx itself creates the intent there: track checks the intents contract's log, no connection.
+  it("takes sonic, the hub, with the intents contract and no connection", () => {
+    expect(sourceChainFor(fixtureCatalog(), toChain("sonic"))).toEqual({
+      kind: "hub",
+      chainId: 146,
+      swapContract: solverConfig.intentsContract,
+    });
+  });
+});
+
+// The chain support tool says from this whether a swap can start on a chain.
+describe("pinnedSourceOf", () => {
+  it.each([
+    ["sonic", true],
+    ["0xa4b1.arbitrum", true],
+    ["0x2105.base", true],
+    ["sui", false],
+    ["solana", false],
+    ["atlantis", false],
+  ])("%s → %s", (key, startsSwap) => {
+    expect(pinnedSourceOf(key) !== undefined).toBe(startsSwap);
   });
 });

@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { chainDisplayName } from "../constants.js";
+import { parseSwapToolsEnabled } from "../services/profiles.js";
 import {
   clearCache,
   getAllChainsConfigs,
@@ -44,7 +45,8 @@ import {
   toChainKey,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
-import { expireSwapCatalog } from "../services/swap/tokens.js";
+import { isSwapSource } from "../services/swap/resolver.js";
+import { expireSwapCatalog, getSwapCatalog } from "../services/swap/tokens.js";
 import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
@@ -59,6 +61,17 @@ const READ_ONLY: ToolAnnotations = {
   destructiveHint: false,
   openWorldHint: true,
 };
+
+/** Whether this server's swap tools can start a swap from the chain: the quote's own check, live catalog included. */
+export async function swapSourceSupport(chainKey: string): Promise<string> {
+  // The kill switch was read at boot, so a value it refused never reaches here.
+  if (!parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED)) return "This server's swap tools are turned off.";
+  const catalog = await getSwapCatalog().catch(() => undefined);
+  if (!catalog) return "This server couldn't check right now whether its swap tools can start a swap from it.";
+  return isSwapSource(catalog, chainKey)
+    ? "This server's swap tools (with a SODAX API key) can start a swap from it."
+    : "This server's swap tools can't start a swap from it yet.";
+}
 
 export function registerSodaxApiTools(server: McpServer): void {
   // Tool 1: Get Supported Chains
@@ -117,7 +130,7 @@ export function registerSodaxApiTools(server: McpServer): void {
             content: [
               {
                 type: "text",
-                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains.`,
+                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains. ${await swapSourceSupport(result.chainKey)}`,
               },
             ],
           };

@@ -8,7 +8,7 @@ import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -34,6 +34,7 @@ const HUB_TX = `0x${"b".repeat(64)}`;
 const OTHER_TX = `0x${"e".repeat(64)}`;
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
+const realSleep = trackWait.sleep;
 
 beforeEach(() => {
   // A call returns at once here; the waiting has its own tests.
@@ -43,6 +44,7 @@ beforeEach(() => {
   clearCache();
   clearQuoteCache();
   clearAlerts();
+  clearUnseenMemo();
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -50,7 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000 });
+  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000, sleep: realSleep });
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.mocked(getEvmReceipt).mockReset();
@@ -634,7 +636,6 @@ describe("sodax_swap_submit_and_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sonic" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {
@@ -646,9 +647,9 @@ describe("sodax_swap_submit_and_track", () => {
 
   it("asks which chain a sent swap came from, not for a new swap, when that chain can't start one", async () => {
     stubBackend();
-    const { out } = await track({ txHash: TX, chain: "sonic" });
+    const { out } = await track({ txHash: TX, chain: "sui" });
     expect(out.nextStep).toMatch(
-      /^No swap can start from Sonic: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
+      /^No swap can start from SUI: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
     );
     expect(out.error.sourceChains).toContainEqual({ key: ARBITRUM, name: "Arbitrum" });
   });
@@ -657,7 +658,9 @@ describe("sodax_swap_submit_and_track", () => {
     stubBackend();
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
-    expect((out.error.supportedChains as { key: string }[]).map(chain => chain.key)).not.toContain("sonic");
+    const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
+    expect(listed).toContain("sonic");
+    expect(listed).not.toContain("sui");
   });
 
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
@@ -798,7 +801,8 @@ describe("sodax_swap_submit_and_track", () => {
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out.nextStep).not.toContain("hasn't seen this transaction");
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
@@ -822,5 +826,124 @@ describe("sodax_swap_submit_and_track", () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("a tx no node has seen", () => {
+  beforeEach(() => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+  });
+
+  it("is read from the chain once per 10 seconds, however often it's tracked", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(NOW + 11_000);
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("once seen, is read only for its receipt until it's mined", async () => {
+    vi.mocked(isTxKnown).mockResolvedValue(true);
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+  });
+
+  it("is waited for within a call, as a tx just sent may not have reached this node, read once per 10 seconds", async () => {
+    // Each wait moves the clock on at once, so the call takes no real time.
+    Object.assign(trackWait, {
+      stepMs: 4_000,
+      maxMs: 20_000,
+      sleep: async (ms: number) => vi.setSystemTime(Date.now() + ms),
+    });
+    const calls = stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("awaiting_source_confirmation");
+    // Tracked at 0, 4, 8, 12, 16 and 20 seconds: read at 0 and 12, once what it remembered was 10 seconds old.
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status?"))).toHaveLength(2);
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+    expect(isTxKnown).toHaveBeenCalledTimes(2);
+  });
+
+  it("isn't remembered unseen for another API key", async () => {
+    stubBackend();
+    // Someone else tracks the hash just before the user's wallet broadcasts it.
+    setFallbackRequestContext({ apiKey: "sodax_someone_else" });
+    await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    setFallbackRequestContext({});
+    vi.mocked(isTxKnown).mockResolvedValue(true);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+  });
+
+  it("gives a checked deposit with a lagging RPC no stop time: it was sent", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, TX);
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+    expect(out.stopAfter).toBeUndefined();
+    expect(out.nextStep).not.toContain("nothing was swapped");
+  });
+
+  it("reads the chain again before a final answer, whatever it remembered", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    const stopAfter = Number(DEADLINE) * 1000 + 5 * 60 * 1000;
+    vi.setSystemTime(stopAfter - 5_000);
+    await track({ txHash: TX, quoteId });
+    // Within the 10 seconds it remembers "unseen", but past the stop time: the tx was mined meanwhile.
+    vi.setSystemTime(stopAfter + 1_000);
+    vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).not.toBe("source_not_found");
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("is polled for 15 minutes from the first call, then left to the user until it can no longer be sent", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    // About as long as 30 polls; never "not found" while the quote can still be sent, by a wallet that sends late.
+    const pollUntil = new Date(NOW + 15 * 60 * 1000).toISOString();
+    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
+    expect(out).toMatchObject({
+      status: "awaiting_source_confirmation",
+      seenOnChain: false,
+      pollUntil,
+      stopAfter,
+      retryAfterSec: 15,
+    });
+    expect(out.nextStep).toContain(`until ${pollUntil}`);
+    // Counted from the first call, not from each.
+    vi.setSystemTime(NOW + 60_000);
+    expect((await track({ txHash: TX, quoteId })).out.pollUntil).toBe(pollUntil);
+    vi.setSystemTime(Date.parse(pollUntil) + 1000);
+    const asked = (await track({ txHash: TX, quoteId })).out;
+    expect(asked).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, stopAfter });
+    expect(asked.pollUntil).toBeUndefined();
+    // An agent going by retryAfterSec calls next once it's past stopAfter, not every 15 seconds until then.
+    expect(Date.now() + asked.retryAfterSec * 1000).toBeGreaterThan(Date.parse(stopAfter));
+    expect(asked.nextStep).toContain("stop calling on a timer: ask the user to check their wallet");
+    expect(asked.nextStep).not.toContain("nothing was swapped");
+    vi.setSystemTime(Date.parse(stopAfter) + 1000);
+    expect((await track({ txHash: TX, quoteId })).out.status).toBe("source_not_found");
+  });
+
+  it("is polled no longer than until the quote's deadline plus the 5 minutes a late tx gets", async () => {
+    stubBackend();
+    vi.setSystemTime(NOW + 10 * 60 * 1000);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
+    expect(out).toMatchObject({ pollUntil: stopAfter, stopAfter });
   });
 });

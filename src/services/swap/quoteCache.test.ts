@@ -6,6 +6,7 @@ import {
   claimDeposit,
   clearQuoteCache,
   getCachedQuote,
+  markHubOutcome,
   markRelayedForRefund,
   markSubmitted,
   openQuotes,
@@ -149,13 +150,26 @@ describe("quoteCache", () => {
     clearQuoteCache();
     markRelayedForRefund(dropped);
     expect(getCachedQuote(dropped.quoteId, KEY)).toMatchObject({ handedOver: "relayed_for_refund" });
+    // Put back into an empty cache, it's still swept once its day is over.
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 60_000);
+    expect(getCachedQuote(dropped.quoteId, KEY)).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a cancel the hub confirmed while the submit ran: submitted doesn't overwrite it", () => {
+    const quote = quoteDue(15);
+    claimDeposit(quote.quoteId, "0x01");
+    markHubOutcome(quote, "cancelled");
+    markSubmitted(quote.quoteId);
+    expect(getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "cancelled" });
   });
 
   it("returns nothing for an unknown id", () => {
     expect(getCachedQuote("not-a-quote", KEY)).toBeUndefined();
   });
 
-  it("when full, drops an expired quote, then an unclaimed one past its deadline, never a live or claimed one", () => {
+  it("when full, drops an expired quote, an unclaimed one past its deadline, then a hub swap the hub holds, never a live or other claimed one", () => {
     const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
     const live = quoteDue(15);
     const expired = quoteDue(-31);
@@ -165,7 +179,13 @@ describe("quoteCache", () => {
     const relayed = quoteDue(-3);
     claimDeposit(relayed.quoteId, "0x02");
     markRelayedForRefund(relayed);
-    for (let i = 0; i < 9_995; i++) quoteDue(15, `key-${i % 20}`);
+    const leftToRefund = quoteDue(-4);
+    claimDeposit(leftToRefund.quoteId, "0x03");
+    markHubOutcome(leftToRefund, "left_to_refund");
+    const cancelled = quoteDue(-5);
+    claimDeposit(cancelled.quoteId, "0x04");
+    markHubOutcome(cancelled, "cancelled");
+    for (let i = 0; i < 9_993; i++) quoteDue(15, `key-${i % 20}`);
 
     // Full, within a minute of the last sweep: the expired quote goes first.
     const next = quoteDue(15);
@@ -174,6 +194,15 @@ describe("quoteCache", () => {
 
     quoteDue(15);
     expect(getCachedQuote(pastDeadline.quoteId, KEY)).toBeUndefined();
+    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
+
+    // Then a swap that ended, though newer; then one waiting for its refund, which only loses its early cancel here.
+    // A relayed deposit's quote is its only record, so it stays.
+    quoteDue(15);
+    expect(getCachedQuote(cancelled.quoteId, KEY)).toBeUndefined();
+    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
+    quoteDue(15);
+    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeUndefined();
 
     // Nothing left that can go: new quotes wait, before any is built.
     expect(refusal(() => quoteDue(15))).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 60 } });

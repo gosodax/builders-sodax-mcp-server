@@ -6,7 +6,7 @@
 
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { type EvmReceipt, blockNumber, evmSpokeFor, getEvmReceipt, isTxKnown } from "../sodax.js";
+import { type EvmReceipt, blockNumber, getEvmReceipt, hubIntentClosed, isTxKnown, pinnedSourceOf } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, getCachedQuote } from "./quoteCache.js";
@@ -20,20 +20,23 @@ export const RETRY_AFTER_SEC = 15;
 export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; intentHash?: string };
 
 /** What checking a source tx needs. */
-export interface SourceChain {
+export type SourceChain = {
   /** The EVM chain id, for the steps a wallet sends. */
   chainId: number;
-  connection: string;
-  assetManager: string;
-}
+  /** What the swap tx calls: a spoke's asset manager, or the hub's intents contract. */
+  swapContract: string;
+} & (
+  | { kind: "spoke" /** Its log proves a deposit. */; connection: string }
+  /** The swap tx itself creates the intent: nothing is relayed. */
+  | { kind: "hub" }
+);
 
 export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote };
 
 /**
- * A chain a swap can start from: an EVM spoke whose `connection` log proves the deposit. The hub
- * has none, so nothing could prove or submit a swap from it yet. All three are pinned from the SDK
- * config, so a deposit already sent is checked whatever the live config says; the quote refuses a
- * live chain id that disagrees.
+ * A chain a swap can start from: an EVM spoke, whose `connection` log proves the deposit, or the hub,
+ * whose intents contract logs the intent the swap tx created. Pinned from the SDK config, so a deposit
+ * already sent is checked whatever the live config says; the quote refuses a live chain id that disagrees.
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo, sent = false): SourceChain {
   if (!isSwapSource(catalog, chain.key)) throw unsupportedSource(chain, swapChains(catalog, true), sent);
@@ -57,7 +60,7 @@ function unsupportedSource(chain: ChainInfo, sources: ChainInfo[] = [], sent = f
 
 /** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
 function pinnedSource(chain: ChainInfo): SourceChain {
-  const source = evmSpokeFor(chain.key);
+  const source = pinnedSourceOf(chain.key);
   if (!source) throw unsupportedSource(chain);
   return source;
 }
@@ -129,6 +132,14 @@ export async function chainRead<T>(chain: ChainInfo, read: () => Promise<T>): Pr
 }
 
 export type NotCancellable = "not_submitted" | "solved" | "cancelled" | "refunding" | "not_on_hub_yet";
+
+/**
+ * Whether the hub is known to no longer hold the intent `createdIn` (a hub tx) created: filled or cancelled. Only a
+ * guard against a pointless cancel or submit, so a failed read (logged as a chain read) answers `false`, as before it.
+ */
+export function intentClosed(hash: string, createdIn: string): Promise<boolean> {
+  return hubIntentClosed(hash, createdIn).catch(() => false);
+}
 
 /**
  * Why a submitted swap can't be cancelled, or `undefined` if it can: only an intent on the hub that

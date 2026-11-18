@@ -128,7 +128,7 @@ export async function cancelSwap(input: {
     });
   }
   if (!receipt || !cancelTxHash) return readyCancel(base, source, intent, hubTxHash, quote);
-  if (receipt.kind === "hub") return hubCancelled(base, intent, receipt, quote);
+  if (receipt.kind === "hub") return hubCancelled(base, source, intent, hubTxHash, receipt, quote);
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
@@ -195,7 +195,7 @@ async function hubCancel(
   // A swap from the hub created its intent itself.
   if (!cancelTxHash) return readyCancel(base, source, quote.intent, base.txHash, quote);
   const receipt = await sentCancel(base, source, cancelTxHash, quote.srcAddress);
-  return "status" in receipt ? receipt : hubCancelled(base, quote.intent, receipt, quote);
+  return "status" in receipt ? receipt : hubCancelled(base, source, quote.intent, base.txHash, receipt, quote);
 }
 
 /**
@@ -256,15 +256,34 @@ async function sentCancel(
   return receipt;
 }
 
-/** A cancel on the hub is confirmed by the intents contract's log of it; the quote remembers, as no row may. */
-function hubCancelled(base: SwapRef, intent: Intent, receipt: SourceTx, quote?: CachedQuote): CancelResult {
+/**
+ * A cancel on the hub is confirmed by the intents contract's log of it, mined after `createdIn` (the hub tx that
+ * created the intent); the quote remembers, as no row may.
+ */
+async function hubCancelled(
+  base: SwapRef,
+  source: SwapSource,
+  intent: Intent,
+  createdIn: string,
+  receipt: SourceTx,
+  quote?: CachedQuote,
+): Promise<CancelResult> {
   const hash = intentHash(intent);
   if (receipt.kind !== "hub" || !receipt.cancelled.some(logged => same(logged, hash))) {
     return { ...base, status: "not_a_cancel_tx" };
   }
+  // The hub deletes a cancelled intent, so the same one may be created again: an earlier cancel isn't this one's.
+  const created = await readSourceTx(source, createdIn);
+  if (!created) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
+  if (created.kind !== "hub" || !minedAfter(receipt, created)) return { ...base, status: "not_a_cancel_tx" };
   if (quote) markHubOutcome(quote, "cancelled");
   return { ...base, status: "cancel_confirmed" };
 }
+
+type Mined = { blockNumber: bigint; txIndex: number };
+const minedAfter = (later: Mined, earlier: Mined) =>
+  later.blockNumber > earlier.blockNumber ||
+  (later.blockNumber === earlier.blockNumber && later.txIndex > earlier.txIndex);
 
 const quoteMismatch = (message: string) =>
   new ActionError("QUOTE_MISMATCH", message, {

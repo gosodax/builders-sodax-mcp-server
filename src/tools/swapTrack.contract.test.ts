@@ -125,7 +125,7 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
     const receipt = await getEvmReceipt("sonic", hubTxHash);
     const intent = await getHubIntent(hubTxHash);
     const logged = hubIntentHashes(
-      receipt ?? { reverted: true, logs: [] },
+      receipt ?? { reverted: true, blockNumber: 0n, txIndex: 0, logs: [] },
       solverConfig.intentsContract,
       INTENT_CREATED_TOPIC,
     );
@@ -166,7 +166,7 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
     expect(sent.srcChain).toBe("146");
     const receipt = await getEvmReceipt("sonic", hash);
     const logged = hubIntentHashes(
-      receipt ?? { reverted: true, logs: [] },
+      receipt ?? { reverted: true, blockNumber: 0n, txIndex: 0, logs: [] },
       solverConfig.intentsContract,
       INTENT_CREATED_TOPIC,
     );

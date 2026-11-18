@@ -73,7 +73,14 @@ export const HUB: SourceAdapter = {
     if (!receipt) return null;
     const logged = (topic: string) => (receipt.reverted ? [] : hubIntentHashes(receipt, source.swapContract, topic));
     const created = logged(INTENT_CREATED_TOPIC);
-    return { kind: "hub", failed: receipt.reverted, created, cancelled: logged(INTENT_CANCELLED_TOPIC) };
+    return {
+      kind: "hub",
+      failed: receipt.reverted,
+      created,
+      cancelled: logged(INTENT_CANCELLED_TOPIC),
+      blockNumber: receipt.blockNumber,
+      txIndex: receipt.txIndex,
+    };
   },
   async cancelStep(source, intent) {
     const hubTx = await hubCancelTx(intent);

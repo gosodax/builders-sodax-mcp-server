@@ -242,13 +242,44 @@ describe("a swap from Sonic, the hub", () => {
       ]);
     });
 
+    // The swap tx logged the intent, and a cancel, mined after it unless `cancelBlock` says otherwise, logged its
+    // cancellation.
+    const onChain = (cancelled: string[], cancelBlock?: bigint) =>
+      vi
+        .mocked(getEvmReceipt)
+        .mockImplementation(async (_chain, txHash) =>
+          txHash === CANCEL_TX
+            ? hubReceipt(INTENT_CANCELLED_TOPIC, cancelled, undefined, cancelBlock)
+            : hubReceipt(INTENT_CREATED_TOPIC, [HASH]),
+        );
+
     it("is confirmed by the intents contract's IntentCancelled for the intent, with no relay", async () => {
-      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CANCELLED_TOPIC, [HASH]));
+      onChain([HASH]);
       const calls = stubBackend({ row, hubIntent: HUB_INTENT });
       const { out } = await cancel({ txHash: SONIC_TX, quoteId: cancellable(), cancelTxHash: CANCEL_TX });
       expect(out.status).toBe("cancel_confirmed");
       expect(getEvmReceipt).toHaveBeenCalledWith("sonic", CANCEL_TX);
       expect(relays(calls)).toEqual([]);
+    });
+
+    // A cancelled intent is deleted from the hub, so the same one may be created again: its old cancel isn't this one's.
+    it("isn't confirmed by a cancel mined before the swap that created the intent, which isn't then reported cancelled", async () => {
+      onChain([HASH], 99n);
+      const calls = stubBackend({ row: null });
+      const { quoteId } = hubQuote();
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
+      expect(out.status).toBe("not_a_cancel_tx");
+      expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("queued");
+      expect(submits(calls)).toHaveLength(1);
+    });
+
+    it("waits for a node that has the swap's tx to order the cancel after it", async () => {
+      vi.mocked(getEvmReceipt).mockImplementation(async (_chain, txHash) =>
+        txHash === CANCEL_TX ? hubReceipt(INTENT_CANCELLED_TOPIC, [HASH]) : null,
+      );
+      stubBackend({ row, hubIntent: HUB_INTENT });
+      const { out } = await cancel({ txHash: SONIC_TX, quoteId: cancellable(), cancelTxHash: CANCEL_TX });
+      expect(out).toMatchObject({ status: "cancel_awaiting_confirmation", retryAfterSec: 15 });
     });
 
     it("is built without its quote for an intent the tracked tx created, by the sender's router", async () => {
@@ -271,16 +302,6 @@ describe("a swap from Sonic, the hub", () => {
       expect(out.error.code).toBe("SWAP_MISMATCH");
     });
 
-    // The swap tx logged the intent, and a cancel logged its cancellation.
-    const onChain = (cancelled: string[]) =>
-      vi
-        .mocked(getEvmReceipt)
-        .mockImplementation(async (_chain, txHash) =>
-          txHash === CANCEL_TX
-            ? hubReceipt(INTENT_CANCELLED_TOPIC, cancelled)
-            : hubReceipt(INTENT_CREATED_TOPIC, [HASH]),
-        );
-
     it("is cancelled straight from its quote before the swap service has it, and then reported cancelled", async () => {
       onChain([HASH]);
       stubBackend({ row: null });
@@ -291,8 +312,8 @@ describe("a swap from Sonic, the hub", () => {
       const readsBefore = swapReads();
       const confirmed = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
       expect(confirmed.out.status).toBe("cancel_confirmed");
-      // The swap, checked by the first call, isn't read again.
-      expect(swapReads()).toBe(readsBefore);
+      // The swap, checked by the first call, isn't checked again: it's read once more only to order the cancel after it.
+      expect(swapReads()).toBe(readsBefore + 1);
       // Its quote remembers: track doesn't submit a cancelled intent, and a second cancel has nothing left to do.
       expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
         status: "failed",

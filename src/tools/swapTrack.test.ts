@@ -927,7 +927,13 @@ describe("a tx no node has seen", () => {
     // About as long as 30 polls; never "not found" while the quote can still be sent, by a wallet that sends late.
     const pollUntil = new Date(NOW + 15 * 60 * 1000).toISOString();
     const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, pollUntil, stopAfter });
+    expect(out).toMatchObject({
+      status: "awaiting_source_confirmation",
+      seenOnChain: false,
+      pollUntil,
+      stopAfter,
+      retryAfterSec: 15,
+    });
     expect(out.nextStep).toContain(`until ${pollUntil}`);
     // Counted from the first call, not from each.
     vi.setSystemTime(NOW + 60_000);
@@ -936,6 +942,8 @@ describe("a tx no node has seen", () => {
     const asked = (await track({ txHash: TX, quoteId })).out;
     expect(asked).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, stopAfter });
     expect(asked.pollUntil).toBeUndefined();
+    // An agent going by retryAfterSec calls next once it's past stopAfter, not every 15 seconds until then.
+    expect(Date.now() + asked.retryAfterSec * 1000).toBeGreaterThan(Date.parse(stopAfter));
     expect(asked.nextStep).toContain("stop calling on a timer: ask the user to check their wallet");
     expect(asked.nextStep).not.toContain("nothing was swapped");
     vi.setSystemTime(Date.parse(stopAfter) + 1000);

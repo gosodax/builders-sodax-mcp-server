@@ -39,11 +39,11 @@ export interface SpokeEvidence {
 }
 
 /**
- * What a source tx that ran proves, never its raw form: on the hub, the intents its contract created and cancelled;
- * on a spoke, its `connection`'s messages.
+ * What a source tx that ran proves, never its raw form: on the hub, the intents its contract created and cancelled,
+ * and where it was mined; on a spoke, its `connection`'s messages.
  */
 export type SourceTx =
-  | { kind: "hub"; failed: boolean; created: string[]; cancelled: string[] }
+  | { kind: "hub"; failed: boolean; created: string[]; cancelled: string[]; blockNumber: bigint; txIndex: number }
   | ({ kind: "spoke" } & SpokeEvidence);
 
 interface SourceBase {

@@ -76,7 +76,7 @@ export type TrackState =
       retryAfterSec: number;
       /** A tx no node has seen, with its quote: from this time on it's `source_not_found`. */
       stopAfter?: string;
-      /** Until when that tx is polled for; once past, the agent asks the user instead. */
+      /** Until when that tx is polled for; once past, the agent asks the user instead, and `retryAfterSec` runs past `stopAfter`. */
       pollUntil?: string;
     }
   | { status: "source_failed" }
@@ -318,13 +318,16 @@ function unseenWait(quote: CachedQuote, txHash: string): UnseenWait {
 /** A tx with no receipt yet; one no node has seen, with its quote, is tracked until its `stopAfter`. */
 function awaitingSource(base: SwapRef, seenOnChain: boolean, unseen?: UnseenWait): TrackResult {
   const iso = (ms: number) => new Date(ms).toISOString();
+  const now = Date.now();
+  const polled = unseen !== undefined && now < unseen.pollUntilMs;
   return {
     ...base,
     status: "awaiting_source_confirmation",
     seenOnChain,
-    retryAfterSec: RETRY_AFTER_SEC,
+    // Past pollUntil the user is asked instead: the next call on a timer is the one after stopAfter.
+    retryAfterSec: unseen && !polled ? Math.ceil((unseen.stopAfterMs - now) / 1000) + RETRY_AFTER_SEC : RETRY_AFTER_SEC,
     ...(unseen && { stopAfter: iso(unseen.stopAfterMs) }),
-    ...(unseen && Date.now() < unseen.pollUntilMs && { pollUntil: iso(unseen.pollUntilMs) }),
+    ...(polled && { pollUntil: iso(unseen.pollUntilMs) }),
   };
 }
 

@@ -12,7 +12,7 @@ import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
-import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
+import { type QuoteInput, type SwapQuote, addressAsk, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { RETRY_AFTER_SEC } from "../services/swap/source.js";
@@ -52,6 +52,15 @@ const txHashArg = () =>
     txHash: true,
   });
 const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a quoteId" });
+const QUOTE_MODES = ["price_only", "prepare"] as const;
+// Screened before the enum, whose error repeats the value it got: a pasted secret reaches it as nothing.
+const modeArg = () =>
+  z.preprocess((value, ctx) => {
+    const refusal = typeof value === "string" ? secretRefusalText(value, {}) : undefined;
+    if (!refusal) return value;
+    ctx.addIssue({ code: "custom", message: refusal });
+    return undefined;
+  }, z.enum(QUOTE_MODES));
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
@@ -106,7 +115,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_quote",
-    "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. Only some chains can start a swap: a quote from another returns UNSUPPORTED_SOURCE naming the ones that can. This server never signs or moves funds.",
+    'Quote a cross-chain swap. With fromAddress it returns the transactions for the user\'s wallet to sign (approve if needed, then the swap); without it, or with mode "price_only", a price only. To watch a price, use mode "price_only"; prepare only when the user is ready to sign. Only some chains can start a swap: a quote from another returns UNSUPPORTED_SOURCE naming the ones that can. This server never signs or moves funds.',
     {
       fromChain: chainArg().describe(
         'Source chain: name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161"). If a swap can\'t start there, the error lists the chains it can.',
@@ -118,11 +127,16 @@ export function registerSwapTools(server: McpServer): void {
         .union([textArg(96, 1), z.number()])
         .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
       fromAddress: addressArg().describe(
-        "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
+        'The user\'s wallet on the source chain. Pass it whenever you know it; for a price alone, set mode "price_only" rather than leaving it out.',
       ),
       toAddress: addressArg().describe(
         "Recipient on the destination chain. Defaults to fromAddress when both chains are EVM.",
       ),
+      mode: modeArg()
+        .optional()
+        .describe(
+          '"price_only": a price alone, even with the addresses; nothing is built or held. "prepare": the transactions to sign, which need fromAddress, and toAddress unless both chains are EVM. Omitted: prepared once those addresses are given, else a price.',
+        ),
       slippageBps: z
         .number()
         .int()
@@ -146,7 +160,7 @@ export function registerSwapTools(server: McpServer): void {
         quote.status === "ready"
           ? { tool: "sodax_swap_submit_and_track", args: { quoteId: quote.quoteId }, needs: "txHash" }
           : undefined;
-      return { ...quote, ...(afterSend && { afterSend }), nextStep: quoteNextStep(quote) };
+      return { ...quote, ...(afterSend && { afterSend }), nextStep: quoteNextStep(quote, args.mode) };
     },
   );
 
@@ -317,18 +331,19 @@ function usdWarning(usdValue: string | null, usdOut: string | null): string {
   return ` This swap is worth about ${usd(value)}, above this server's warning level of ${usd(SWAP_USD_WARN)}: confirm the amount with the user before anything is signed.${unpriced}`;
 }
 
-function quoteNextStep(quote: SwapQuote): string {
+function quoteNextStep(quote: SwapQuote, mode: QuoteInput["mode"]): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name} (at least ${to.minimumAmount})`;
   const warning = usdWarning(quote.usdValue, quote.usdOut);
   if (quote.status === "price_only") {
-    const needed = quote.missing.map(field =>
-      field === "fromAddress"
-        ? `fromAddress (their wallet on ${from.chain.name})`
-        : `toAddress (their address on ${to.chain.name})`,
-    );
-    return `${show}.${warning} To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
+    const needed = quote.missing.map(field => addressAsk(field, from.chain.name, to.chain.name));
+    // Without mode, adding the addresses prepares; with price_only it never does.
+    if (mode !== "price_only") {
+      return `${show}.${warning} To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
+    }
+    const prepare = ['mode "prepare"', ...needed].join(" and ");
+    return `${show}.${warning} Once the user is ready to sign, call sodax_swap_quote again with the same arguments and ${prepare}.`;
   }
   // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
   const sameAddress =

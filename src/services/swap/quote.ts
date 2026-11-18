@@ -51,7 +51,11 @@ export interface QuoteInput {
   toAddress?: string;
   slippageBps: number;
   deadlineMinutes: number;
+  /** `price_only` builds and holds nothing, whatever addresses are given; `prepare` requires them. */
+  mode?: "price_only" | "prepare";
 }
+
+type AddressField = "fromAddress" | "toAddress";
 
 interface Side {
   chain: ChainInfo;
@@ -68,10 +72,16 @@ interface QuoteSummary {
   usdValue: string | null;
   /** The expected amount received in USD, likewise. */
   usdOut: string | null;
+  /** ISO time the solver's price was read. */
+  quotedAt: string;
 }
 
 export type SwapQuote =
-  | (QuoteSummary & { status: "price_only"; missing: ("fromAddress" | "toAddress")[] })
+  | (QuoteSummary & {
+      status: "price_only";
+      /** What a prepare call still needs: empty for a `price_only` call given the addresses. */
+      missing: AddressField[];
+    })
   | (QuoteSummary & {
       status: "ready";
       quoteId: string;
@@ -114,6 +124,19 @@ function suggestAmount(
   });
 }
 
+/** How the agent asks the user for a missing address. */
+export const addressAsk = (field: AddressField, fromChain: string, toChain: string) =>
+  field === "fromAddress" ? `fromAddress (their wallet on ${fromChain})` : `toAddress (their address on ${toChain})`;
+
+/** A `prepare` call without an address it needs, named in `field` (the first) like any other bad address. */
+function addressesNeeded(missing: AddressField[], from: ChainInfo, to: ChainInfo): ActionError {
+  const asks = missing.map(field => addressAsk(field, from.name, to.name));
+  return new ActionError("INVALID_ADDRESS", `Preparing a swap needs ${missing.join(" and ")}.`, {
+    nextStep: `Ask the user for ${asks.join(" and ")}, then call sodax_swap_quote again with them.`,
+    details: { field: missing[0], missing },
+  });
+}
+
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
@@ -137,13 +160,18 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     : defaultsToSender
       ? fromAddress
       : undefined;
-  const ready = fromAddress !== undefined && toAddress !== undefined;
+  const missing: AddressField[] = [];
+  if (!fromAddress) missing.push("fromAddress");
+  if (!toAddress && !defaultsToSender) missing.push("toAddress");
+  if (input.mode === "prepare" && missing.length > 0) throw addressesNeeded(missing, from.chain, to.chain);
+  // A price-only call never reserves room, so watching a price can't use up the key's open quotes.
+  const ready = input.mode !== "price_only" && fromAddress !== undefined && toAddress !== undefined;
   const { probe } = source.adapter;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
   const usdSent = usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals));
-  const [quoted, deadline, usd] = await Promise.all([
+  const [{ amount: quoted, quotedAt }, deadline, usd] = await Promise.all([
     getQuote({
       tokenSrc: from.token.address,
       tokenSrcChainKey: from.chain.key,
@@ -196,17 +224,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     slippageBps: input.slippageBps,
     usdValue: usd?.toFixed(2) ?? null,
     usdOut: usdOut?.toFixed(2) ?? null,
+    quotedAt,
     ...(partnerFee && {
       partnerFee: { bps: partnerFee.bps, amount: formatUnits(fee, from.token.decimals), symbol: from.token.symbol },
     }),
   };
 
-  if (!ready || deadline === undefined) {
-    const missing: ("fromAddress" | "toAddress")[] = [];
-    if (!fromAddress) missing.push("fromAddress");
-    if (!toAddress && !defaultsToSender) missing.push("toAddress");
-    return { status: "price_only", ...summary, missing };
-  }
+  if (!ready || deadline === undefined) return { status: "price_only", ...summary, missing };
 
   // The live chain config must agree with the pinned swap contract and, on a spoke, connection: the SDK builds with
   // the pinned ones, and a deposit to a contract SODAX has moved from wouldn't be relayed.

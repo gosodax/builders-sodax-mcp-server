@@ -100,7 +100,10 @@ every transaction; the server never signs.
    chains are EVM (then it defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
    needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
    `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined (track it even
-   after). Without the addresses it returns a price only.
+   after). Without the addresses it returns a price only, and so does `mode: "price_only"` even with them: it builds
+   and holds nothing, so watch a price with it and prepare only when the user is ready to sign. `mode: "prepare"`
+   without an address it needs is an `INVALID_ADDRESS` listing each one in `missing` (`field` is the first). Every
+   quote carries `quotedAt`, when this server got the solver's price.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A

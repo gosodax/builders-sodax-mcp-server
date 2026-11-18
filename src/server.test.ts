@@ -132,6 +132,9 @@ describe("instructions", () => {
     expect(swap).toContain("sodax_swap_submit_and_track");
     expect(swap).toContain("sodax_swap_cancel");
     expect(swap).toContain(
+      'To watch a price, quote with mode "price_only"; prepare only when the user is ready to sign.',
+    );
+    expect(swap).toContain(
       "again after retryAfterSec seconds while the result has one; after an error, follow its nextStep",
     );
     expect(swap).not.toContain("sodax_check_chain_support");

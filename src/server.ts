@@ -45,6 +45,7 @@ const BUILDER_INSTRUCTIONS = [
 const SWAP_INSTRUCTIONS = [
   "To prepare a swap, call `sodax_swap_quote` with each side as the user names it (a chain plus a symbol, an",
   'address or "native") and, when you know it, the user\'s wallet as fromAddress; without it you get a price only.',
+  'To watch a price, quote with mode "price_only"; prepare only when the user is ready to sign.',
   "If the quote returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
   "token or an address. The quote doesn't check balances; `sodax_get_balance` reads a wallet's balance when the user",
   "isn't sure they hold enough. Only some chains can start a swap: a quote from another returns UNSUPPORTED_SOURCE naming",

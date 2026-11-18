@@ -60,6 +60,7 @@ describe("swap tool safety", () => {
   it.each([
     ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: PHRASE }, "txHash", "seed phrase"],
+    ["sodax_swap_quote", { ...QUOTE, mode: PHRASE }, "mode", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
     ["sodax_swap_cancel", { txHash: TX, cancelTxHash: PHRASE }, "cancelTxHash", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: TX, quoteId: PHRASE }, "quoteId", "seed phrase"],

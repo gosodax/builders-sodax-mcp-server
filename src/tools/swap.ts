@@ -6,7 +6,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChainKeys } from "@sodax/types";
 import { z } from "zod";
-import { SWAP_USD_WARN } from "../constants.js";
+import { SODAX_HELP_DESK, SWAP_USD_WARN } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
@@ -17,7 +17,7 @@ import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { RETRY_AFTER_SEC } from "../services/swap/source.js";
 import { isAnyTxHash, pinnedSourceOf } from "../services/swap/sources/index.js";
-import type { NonEvmSourceType } from "../services/swap/sources/types.js";
+import type { EvmStep, NonEvmSourceType } from "../services/swap/sources/types.js";
 import { type SwapsApiToken, getSwapCatalog } from "../services/swap/tokens.js";
 import {
   DEPOSIT_SAFE,
@@ -186,8 +186,7 @@ export function registerSwapTools(server: McpServer): void {
 
 // Retries of a failure that may pass, so a stuck one ends with an answer for the user.
 const MAX_CALLS = 10;
-const GIVE_UP =
-  "tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.";
+const GIVE_UP = `tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
 
 /** What a ready quote tells the agent to call once the wallet has sent the swap. */
 export interface AfterSend {
@@ -339,10 +338,14 @@ function quoteNextStep(quote: SwapQuote): string {
     ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)"
     : "";
   const [first] = quote.steps;
+  const allowance = quote.steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
+  const approve = allowance
+    ? ` Tell them the approve lets ${allowance.spender}, the SODAX swap contract, spend ${allowance.amount} ${allowance.symbol} of theirs.`
+    : "";
   const send =
     "chainType" in first
       ? `Once they confirm, have their ${from.chain.name} wallet send the swap step before it expires: ${SIGN_NON_EVM_TX[first.chainType]}.`
-      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't. Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}.`;
+      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't.${approve} Once they confirm, have their wallet send the steps in order before it expires, each mined before the next (a swap sent before its approve is mined fails)${batch}.`;
   return [
     `${show} at ${quote.toAddress}${sameAddress}; the quote expires at ${quote.expiresAt}.${warning}`,
     "Balances aren't checked here; sodax_get_balance reads them.",
@@ -452,7 +455,7 @@ export function trackNextStep(result: TrackResult): string {
       if ("depositHeld" in result && result.notThisQuote) {
         const recover = result.alerted
           ? "SODAX operators were alerted to recover it"
-          : "whoever sent it can give SODAX support its hash to recover it";
+          : `whoever sent it can give its hash to ${SODAX_HELP_DESK} to recover it`;
         return `That transaction failed on ${chain} after a SODAX deposit went through, but not this quote's swap: ${recover}. Ask the user for this swap's transaction hash and track that; if this one is theirs too, they must not send it again.`;
       }
       if ("depositHeld" in result) {
@@ -521,8 +524,7 @@ const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" 
   closed: `There's nothing to cancel. ${INTENT_CLOSED}`,
   not_this_swap:
     "That transaction didn't create this quote's swap: ask for the swap transaction's hash (not an approval's) and call sodax_swap_cancel again with it.",
-  unverified:
-    "This server can't read all of the swap transaction's events, so without its quote it can't tie the swap to it: it won't build a cancel, or relay one already sent. Tell the user the swap is safe on the SODAX hub, and to give SODAX support its transaction hash, and the cancel's if they sent one.",
+  unverified: `This server can't read all of the swap transaction's events, so without its quote it can't tie the swap to it: it won't build a cancel, or relay one already sent. Tell the user the swap is safe on the SODAX hub, and to give its transaction hash, and the cancel's if they sent one, to ${SODAX_HELP_DESK}.`,
 };
 
 /** Built from enums and catalog names only. */

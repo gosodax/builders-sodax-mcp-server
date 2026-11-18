@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SWAP_HELP } from "./constants.js";
 import { withAnalytics } from "./services/analytics.js";
 import type { ToolSelection, Toolsets } from "./services/profiles.js";
 import { registerDocsProxyTools } from "./tools/docsProxy.js";
@@ -55,6 +56,7 @@ const SWAP_INSTRUCTIONS = [
   "the swap, so call it at least once, and again after retryAfterSec seconds while the result has one; after an error,",
   "follow its nextStep. Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted",
   "swap, use `sodax_swap_cancel`.",
+  SWAP_HELP,
 ].join(" ");
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };

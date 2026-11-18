@@ -181,6 +181,20 @@ describe("HTTP routes", () => {
     );
   });
 
+  it("gives a swap tool's result the request id the response header carries", async () => {
+    const call = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "sodax_resolve_token", arguments: { chain: "Arbitrum", query: "USDC" } },
+    });
+    const res = await post("/mcp?profile=swap", call, "198.51.100.53", { "x-api-key": "sodax_route_key_c" });
+    expect(res.status).toBe(200);
+    const { result } = await res.json();
+    expect(result.structuredContent.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.structuredContent.requestId).toBe(res.headers.get("x-request-id"));
+  });
+
   it("reports on /health that unified logging is off here", async () => {
     const res = await fetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.43" } });
     expect(((await res.json()) as { unifiedLogging: unknown }).unifiedLogging).toEqual({ on: false });

@@ -1,6 +1,6 @@
 /** Failures the swap tools return as `{ status: "error", error: { code, message }, nextStep }` with `isError`. */
 
-import { GET_A_KEY } from "../../constants.js";
+import { GET_A_KEY, SWAP_HELP } from "../../constants.js";
 
 export type ActionErrorCode =
   | "UNSUPPORTED_CHAIN"
@@ -75,7 +75,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
   CHAIN_UNAVAILABLE: RETRY_LATER,
   UPSTREAM_UNAVAILABLE: RETRY_LATER,
-  INTERNAL: RETRY_LATER,
+  // A bug: retrying may not help, and someone at SODAX should look.
+  INTERNAL: `${RETRY_LATER} ${SWAP_HELP}`,
 };
 
 export class ActionError extends Error {

@@ -12,7 +12,7 @@ import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
-import { type QuoteInput, type SwapQuote, addressAsk, quoteSwap } from "../services/swap/quote.js";
+import { QUOTE_MODES, type QuoteInput, type SwapQuote, addressAsk, quoteSwap } from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { RETRY_AFTER_SEC } from "../services/swap/source.js";
@@ -52,14 +52,14 @@ const txHashArg = () =>
     txHash: true,
   });
 const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a quoteId" });
-const QUOTE_MODES = ["price_only", "prepare"] as const;
-// Screened before the enum, whose error repeats the value it got: a pasted secret reaches it as nothing.
+// Screened before the enum, whose error repeats the value it got; then trimmed and lowercased like the other inputs.
 const modeArg = () =>
   z.preprocess((value, ctx) => {
-    const refusal = typeof value === "string" ? secretRefusalText(value, {}) : undefined;
-    if (!refusal) return value;
-    ctx.addIssue({ code: "custom", message: refusal });
-    return undefined;
+    if (typeof value !== "string") return value;
+    const refusal = secretRefusalText(value, { notHex64: "a mode" });
+    if (!refusal) return value.trim().toLowerCase();
+    ctx.addIssue({ code: "custom", message: refusal, fatal: true });
+    return z.NEVER;
   }, z.enum(QUOTE_MODES));
 
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.

@@ -293,6 +293,7 @@ describe("sodax_swap_quote", () => {
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 45 * 60 });
+    expect(out.nextStep).toContain('To watch a price meanwhile, quote with mode "price_only"');
     expect(calls).toEqual([]);
     expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
   });
@@ -329,6 +330,12 @@ describe("sodax_swap_quote", () => {
     // The addresses given are still checked.
     const bad = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: "0x1234", mode: "price_only" });
     expect(bad.out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "fromAddress" });
+  });
+
+  it("takes a mode as an agent may write it, trimmed and in any case", async () => {
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, mode: " PRICE_ONLY " });
+    expect(out).toMatchObject({ status: "price_only", missing: [] });
   });
 
   it("never reserves a quote for a price_only call, so watching a price can't reach the open-quote cap", async () => {

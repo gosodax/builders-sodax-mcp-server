@@ -61,6 +61,7 @@ describe("swap tool safety", () => {
     ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: PHRASE }, "txHash", "seed phrase"],
     ["sodax_swap_quote", { ...QUOTE, mode: PHRASE }, "mode", "seed phrase"],
+    ["sodax_swap_quote", { ...QUOTE, mode: TX }, "mode", "64-hex value, not a mode"],
     ["sodax_swap_submit_and_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
     ["sodax_swap_cancel", { txHash: TX, cancelTxHash: PHRASE }, "cancelTxHash", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: TX, quoteId: PHRASE }, "quoteId", "seed phrase"],
@@ -104,6 +105,26 @@ describe("swap tool safety", () => {
     vi.mocked(walletBalance).mockResolvedValue(0n);
     const { out } = await callTool("sodax_get_balance", { chain: "sui", address: TX });
     expect(out.status).toBe("ok");
+  });
+
+  // zod's enum error would repeat what it got, and the field is optional: the refusal comes alone.
+  it.each([PHRASE, TX])("refuses a secret in mode with the refusal alone (%#)", async mode => {
+    const client = await swapClient();
+    const result = await client.callTool({ name: "sodax_swap_quote", arguments: { ...QUOTE, mode } });
+    await client.close();
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("SECRET_REJECTED");
+    expect(text).not.toContain("Required");
+    expect(text).not.toContain("invalid_enum_value");
+  });
+
+  // The mode is screened in a preprocess: the listed schema must still name the values it takes.
+  it("lists mode's values in the quote's input schema", async () => {
+    const client = await swapClient();
+    const { tools } = await client.listTools();
+    await client.close();
+    const quote = tools.find(tool => tool.name === "sodax_swap_quote");
+    expect(quote?.inputSchema.properties?.mode).toMatchObject({ type: "string", enum: ["price_only", "prepare"] });
   });
 
   // Some MCP clients don't resolve `$ref`.

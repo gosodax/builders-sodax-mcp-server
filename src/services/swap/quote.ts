@@ -1,6 +1,6 @@
 /**
  * Quote a swap and, given the sender's address, build the transactions to sign.
- * Returns structure only; the tool words the next step.
+ * Returns structure only; the tool words a quote's next step (an input error carries its own).
  *
  * Nothing here signs, holds funds or submits anything: the user's wallet sends
  * the steps, and the cached quote is what tracking later submits.
@@ -52,8 +52,11 @@ export interface QuoteInput {
   slippageBps: number;
   deadlineMinutes: number;
   /** `price_only` builds and holds nothing, whatever addresses are given; `prepare` requires them. */
-  mode?: "price_only" | "prepare";
+  mode?: QuoteMode;
 }
+
+export const QUOTE_MODES = ["price_only", "prepare"] as const;
+type QuoteMode = (typeof QUOTE_MODES)[number];
 
 type AddressField = "fromAddress" | "toAddress";
 

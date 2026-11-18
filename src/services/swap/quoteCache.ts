@@ -66,6 +66,8 @@ export function checkQuoteRoom(keyHash: string): void {
     for (const [quoteId, expiresAt] of open) if (expiresAt <= now) open.delete(quoteId);
     if (open.size >= MAX_QUOTES_PER_KEY) {
       throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
+        nextStep:
+          'Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, quote with mode "price_only", which holds none.',
         details: { retryAfterSec: Math.ceil((Math.min(...open.values()) - now) / 1000) },
       });
     }

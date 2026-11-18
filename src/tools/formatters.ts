@@ -47,7 +47,7 @@ export function formatAsMarkdown(data: unknown): string {
         md += `| ${values.join(" | ")} |\n`;
       }
       if (data.length > TABLE_MAX_ROWS) {
-        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items_`;
+        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items: call again with format "json" for all of them._`;
       }
       return md;
     }

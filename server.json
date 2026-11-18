@@ -191,8 +191,12 @@
       "description": "Read a wallet's native balance on a chain and, optionally, one token's (swap tools)"
     },
     {
-      "name": "sodax_swap_quote",
-      "description": "Quote a cross-chain swap; with the user's address, the transactions their wallet signs (swap tools)"
+      "name": "sodax_swap_price",
+      "description": "Price a cross-chain swap; builds and holds nothing (swap tools)"
+    },
+    {
+      "name": "sodax_swap_prepare",
+      "description": "Prepare a cross-chain swap: the transactions the user's wallet signs (swap tools)"
     },
     {
       "name": "sodax_swap_submit_and_track",

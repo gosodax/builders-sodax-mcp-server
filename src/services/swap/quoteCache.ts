@@ -67,7 +67,7 @@ export function checkQuoteRoom(keyHash: string): void {
     if (open.size >= MAX_QUOTES_PER_KEY) {
       throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
         nextStep:
-          'Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, quote with mode "price_only", which holds none.',
+          "Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, use sodax_swap_price, which holds none.",
         details: { retryAfterSec: Math.ceil((Math.min(...open.values()) - now) / 1000) },
       });
     }
@@ -78,6 +78,7 @@ export function checkQuoteRoom(keyHash: string): void {
       logger.warn("The quote cache is full of live and claimed quotes; refusing new ones");
     }
     throw new ActionError("RATE_LIMITED", "This server holds too many open swap quotes right now.", {
+      nextStep: "Wait retryAfterSec seconds, then try again. sodax_swap_price still works meanwhile: it holds none.",
       details: { retryAfterSec: SWEEP_INTERVAL_MS / 1000 },
     });
   }

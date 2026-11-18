@@ -168,7 +168,7 @@ async function readWallet(sides: Wallet[]) {
 }
 
 async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote> {
-  const { isError, out } = await callTool<SwapQuote & { afterSend?: AfterSend }>(env, "sodax_swap_quote", {
+  const { isError, out } = await callTool<SwapQuote & { afterSend?: AfterSend }>(env, "sodax_swap_prepare", {
     fromChain: src.key,
     fromToken: src.usdc.address,
     toChain: dst.key,

@@ -43,13 +43,14 @@ const BUILDER_INSTRUCTIONS = [
 ].join("\n\n");
 
 const SWAP_INSTRUCTIONS = [
-  "To prepare a swap, call `sodax_swap_quote` with each side as the user names it (a chain plus a symbol, an",
-  'address or "native") and, when you know it, the user\'s wallet as fromAddress; without it you get a price only.',
-  'To watch a price, quote with mode "price_only"; prepare only when the user is ready to sign.',
-  "If the quote returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
-  "token or an address. The quote doesn't check balances; `sodax_get_balance` reads a wallet's balance when the user",
-  "isn't sure they hold enough. Only some chains can start a swap: a quote from another returns UNSUPPORTED_SOURCE naming",
-  "the ones that can.",
+  "To show or watch a price, call `sodax_swap_price` with each side as the user names it (a chain plus a symbol, an",
+  'address or "native"); it builds and holds nothing. Once the user is ready to sign, call `sodax_swap_prepare` with',
+  "the same sides plus their wallet as fromAddress (and the recipient as toAddress unless both chains are EVM): it",
+  "returns the transactions to sign and holds the quote.",
+  "If either returns UNKNOWN_TOKEN, resolve that side with `sodax_resolve_token` and ask the user; never guess a",
+  "token or an address. Neither checks balances; `sodax_get_balance` reads a wallet's balance when the user",
+  "isn't sure they hold enough. Only some chains can start a swap: a price from another returns UNSUPPORTED_SOURCE",
+  "naming the ones that can.",
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
   "Never pass private keys, seed phrases or API keys as tool inputs.",
   "After the user's wallet sends the swap, call `sodax_swap_submit_and_track` with the quoteId and the swap's tx hash: it submits",

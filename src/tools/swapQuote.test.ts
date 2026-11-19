@@ -112,6 +112,8 @@ interface SwapsStub {
   tokens?: string;
   configs?: string;
   quote?: () => Response;
+  /** Answer `/intents` with this instead of building. */
+  intents?: () => Response;
   deadline?: string;
   /** Seconds the `/intents` build takes. */
   buildSec?: number;
@@ -174,6 +176,7 @@ function stubSwaps(stub: SwapsStub = {}) {
       });
     }
     if (path === "/intents") {
+      if (stub.intents) return stub.intents();
       // Like the live API, the SDK builds both: the intent for the body, and the tx for the intent (the
       // live builds match it byte for byte, see sodax.test.ts).
       if (stub.buildSec) vi.setSystemTime(Date.now() + stub.buildSec * 1000);
@@ -794,6 +797,8 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       expect(isError).toBe(true);
       expect(out.error).toMatchObject({ code: "PRICE_OFF_MARKET", usdValue: "5.00", usdOut: "4.40" });
       expect(out.nextStep).toContain("quoted far below market prices");
+      // Live, $5 to Bitcoin quoted $4.44 and $50 quoted $49.38: on a small swap the fixed fee is the cause.
+      expect(out.nextStep).toContain("ask whether to try a larger amount");
       expect(calls.map(call => call.path)).not.toContain("/intents");
       expect(error).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -881,6 +886,11 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       () =>
         Response.json({ message: "getQuote failed: No path was found between 0x1 and 0x2", code: -4 }, { status: 422 }),
       { code: "SWAP_REJECTED", message: "No route was found for this pair at this amount." },
+    ],
+    // An SDK string code with no advice of its own stays the plain refusal.
+    [
+      () => Response.json({ message: "getQuote failed: bad params", code: "VALIDATION_FAILED" }, { status: 400 }),
+      { code: "SWAP_REJECTED", message: "The swap service refused this swap." },
     ],
     [() => new Response("", { status: 502 }), { code: "UPSTREAM_UNAVAILABLE" }],
     [() => new Response("", { status: 404 }), { code: "UPSTREAM_UNAVAILABLE" }],
@@ -1186,6 +1196,31 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  // What the live API answered for a Sui wallet holding none of the token (backend swaps error-mapper, SDK getCoin).
+  it("says to check the balance when the swap service can't build the swap from the wallet", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const message = `createIntent failed: [SuiIntentService.getCoin] Coin=0x2::sui::SUI not found for address=${SUI_USER} and amount=5000000000`;
+    stubSwaps({
+      intents: () =>
+        Response.json(
+          { message, feature: "swap", code: "INTENT_CREATION_FAILED", context: { phase: "intentCreation" } },
+          { status: 422 },
+        ),
+    });
+    const { isError, out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(isError).toBe(true);
+    expect(out.error).toEqual({
+      code: "SWAP_REJECTED",
+      message: "The swap service couldn't build this swap from that wallet.",
+    });
+    expect(out.nextStep).toBe(
+      "Check with sodax_get_balance that the wallet holds the amount plus fees on the source chain. If it doesn't, tell the user what's missing; if it does, tell the user the swap couldn't be built right now and to try again later.",
+    );
+    expect(JSON.stringify(out)).not.toContain("SuiIntentService");
+    expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+    expect(openQuotes().open).toBe(0);
   });
 
   it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, its sender set, no batch", async () => {

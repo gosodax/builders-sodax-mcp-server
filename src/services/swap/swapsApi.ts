@@ -290,8 +290,9 @@ const NO_LIQUIDITY = tryOther(
   "there isn't enough liquidity",
 );
 
-// Upstream codes with a reason the agent can act on: the solver's (the SDK's SolverIntentErrorCode), and -23.
-const REFUSALS = new Map<number, Refusal>([
+// Upstream codes with a reason the agent can act on: the solver's (the SDK's SolverIntentErrorCode), -23, and the
+// SDK's string codes the backend passes on (its swaps error-mapper).
+const REFUSALS = new Map<number | string, Refusal>([
   // What the live solver answers for "no path", which the SDK names -4.
   [-1, NO_ROUTE],
   [-4, NO_ROUTE],
@@ -300,6 +301,17 @@ const REFUSALS = new Map<number, Refusal>([
   [-8, NO_LIQUIDITY],
   [-14, tryOther("The amount is too large for the swap service to quote.", "the amount is too large")],
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
+  // `/intents` couldn't build the source tx for this wallet: on Sui too little of the coin, on Stellar or Injective no
+  // account yet (live answers, 2026-11-19). sodax_get_balance says which.
+  [
+    "INTENT_CREATION_FAILED",
+    {
+      code: "SWAP_REJECTED",
+      message: "The swap service couldn't build this swap from that wallet.",
+      nextStep:
+        "Check with sodax_get_balance that the wallet holds the amount plus fees on the source chain. If it doesn't, tell the user what's missing; if it does, tell the user the swap couldn't be built right now and to try again later.",
+    },
+  ],
 ]);
 
 /** Hex values, and long runs of letters and digits (base58, bech32, NEAR implicit), as in a masked `url.template`. */
@@ -338,7 +350,7 @@ function toActionError(error: unknown, route: string): ActionError {
   }
   // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
   if (status === 400 || status === 422) {
-    const refusal = typeof code === "number" ? REFUSALS.get(code) : undefined;
+    const refusal = code === undefined ? undefined : REFUSALS.get(code);
     if (refusal) return new ActionError(refusal.code, refusal.message, { nextStep: refusal.nextStep });
     return new ActionError("SWAP_REJECTED", "The swap service refused this swap.");
   }

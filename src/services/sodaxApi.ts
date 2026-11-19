@@ -6,6 +6,7 @@
  */
 
 import {
+  CACHE_DURATION_MS,
   CHAIN_ALIASES,
   NETWORK_COUNT_EXCLUDED_CHAIN_KEYS,
   SODAX_API_BASE_URL,
@@ -24,10 +25,12 @@ import type {
 } from "../types.js";
 import { TOOL_CONTRACT } from "./apiDriftCheck.js";
 import { addRouteTemplates, fetchJson, fetchJsonOrNull } from "./http.js";
+import { evmChainIdFor, intentChainId, sdkChainKeys } from "./sodax.js";
 import { InputError } from "./toolFailure.js";
 import { TtlCache } from "./ttlCache.js";
 
-const cache = new TtlCache();
+// Bounded: volume pages are cached per filter set, and callers choose the filters.
+const cache = new TtlCache(CACHE_DURATION_MS, 1_000);
 
 // The routes this client calls are the drift check's contract, so their log records keep their static segments (#110).
 addRouteTemplates(
@@ -68,7 +71,8 @@ export async function getSupportedChains(): Promise<string[]> {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    cache.set(cacheKey, chains);
+    // An empty list is a bad answer, not a fact: caching it would refuse every chain for the TTL.
+    if (chains.length > 0) cache.set(cacheKey, chains);
     return chains;
   } catch (error) {
     throw new Error("Failed to fetch supported chains from SODAX API", { cause: error });
@@ -209,7 +213,59 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
     }
   }
 
+  // 3. An EVM chain id, from the SDK's chain config (a new chain comes with the SDK bump), never a key prefix:
+  //    "0x1.icon" is ICON, not chain id 1. SDK keys are lower case, as the live ones are compared above.
+  const id = chainIdQuery(norm);
+  const viaId = id === undefined ? undefined : liveChains.find(k => evmChainIdFor(k.toLowerCase()) === id);
+  if (viaId) return { key: viaId, matchedAs: norm };
+
   return { key: null, matchedAs: null };
+}
+
+/** An EVM chain id typed as a query, in decimal or hex. */
+function chainIdQuery(query: string): number | undefined {
+  const q = query.trim();
+  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q) ? Number(q) : undefined;
+}
+
+// Numbers that are one SDK chain's EVM chain id and another's intent relay chain id (1: Ethereum, Solana).
+const CHAIN_ID_CLASHES = new Map<number, { evm: string; relay: string }>(
+  sdkChainKeys.flatMap(evm => {
+    const id = evmChainIdFor(evm);
+    const relay =
+      id === undefined ? undefined : sdkChainKeys.find(key => key !== evm && intentChainId(key) === `${id}`);
+    return id !== undefined && relay ? [[id, { evm, relay }] as const] : [];
+  }),
+);
+
+/**
+ * Why a decimal number names no single chain for the builder tools, whose intent and relay data carry relay ids:
+ * a "1" copied from them is Solana, not Ethereum. The swap tools take a number as the EVM chain id it is.
+ */
+export function chainIdClash(query: string): string | undefined {
+  const q = query.trim();
+  const clash = /^\d{1,15}$/.test(q) ? CHAIN_ID_CLASHES.get(Number(q)) : undefined;
+  if (!clash) return undefined;
+  const { evm, relay } = clash;
+  return `${q} is ${chainDisplayName(evm)}'s EVM chain id and ${chainDisplayName(relay)}'s intent relay chain id. Pass the chain key: ${evm} or ${relay}.`;
+}
+
+/**
+ * The live chain key a key, name, ticker or EVM chain id names ("Base" and "8453" are `0x2105.base`); refused with
+ * the keys when none matches. Without the live list, the SDK's chains resolve it, else it goes on as given.
+ */
+export async function toChainKey(query: string): Promise<string> {
+  const value = query.trim();
+  const clash = chainIdClash(value);
+  if (clash) throw new InputError(clash);
+  if (sdkChainKeys.includes(value)) return value;
+  const live = await getSupportedChains().catch((): string[] => []);
+  if (live.includes(value)) return value;
+  const { key } = resolveChainKey(value, live.length > 0 ? live : [...sdkChainKeys]);
+  if (key) return key;
+  if (live.length === 0) return value;
+  const offered = live.filter(chain => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(chain));
+  throw new InputError(`chainId names no SODAX chain. Pass one of these chain keys: ${offered.join(", ")}`);
 }
 
 /**
@@ -218,6 +274,8 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
  * match the app-wide network count), so the answer is always current.
  */
 export async function resolveChainSupport(query: string): Promise<ChainSupport> {
+  const clash = chainIdClash(query);
+  if (clash) throw new InputError(clash);
   const all = await getSupportedChains();
   // Exclude wound-down chains (ICON) so this agrees with /health, /api, the
   // landing page and README, which all report the filtered count.
@@ -306,8 +364,8 @@ export async function getVolume(options: {
   includeData?: boolean;
   cursor?: string;
 }): Promise<VolumeData> {
-  // Build cache key from significant params
-  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
+  // Every option shapes the page, so each is in the key.
+  const cacheKey = `volume-${JSON.stringify(options)}`;
   const cached = cache.get<VolumeData>(cacheKey);
   if (cached) return cached;
 
@@ -316,10 +374,10 @@ export async function getVolume(options: {
     params.append("inputToken", options.inputToken);
     params.append("outputToken", options.outputToken);
     params.append("includeData", (options.includeData ?? false).toString());
-    if (options.chainId) params.append("chainId", options.chainId.toString());
+    if (options.chainId !== undefined) params.append("chainId", options.chainId.toString());
     if (options.solver) params.append("solver", options.solver);
-    if (options.fromBlock) params.append("fromBlock", options.fromBlock.toString());
-    if (options.toBlock) params.append("toBlock", options.toBlock.toString());
+    if (options.fromBlock !== undefined) params.append("fromBlock", options.fromBlock.toString());
+    if (options.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
     if (options.since) params.append("since", options.since);
     if (options.until) params.append("until", options.until);
     if (options.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
@@ -397,13 +455,12 @@ export async function getOrderbook(options: {
 /**
  * List lending/borrowing assets in money market
  */
-export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
-  const cacheKey = `mm-assets-${chainId || "all"}`;
+export async function getMoneyMarketAssets(): Promise<MoneyMarketAsset[]> {
+  const cacheKey = "mm-assets";
   const cached = cache.get<MoneyMarketAsset[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    // Always use the /all endpoint, API doesn't support chainId filter
     const data = await fetchJson<unknown>(apiUrl("/moneymarket/asset/all"));
     // API returns array directly
     const assets = Array.isArray(data)
@@ -615,8 +672,8 @@ export async function getAmmPoolCandles(
   try {
     const params = new URLSearchParams();
     if (options?.interval) params.append("interval", options.interval);
-    if (options?.from) params.append("from", options.from.toString());
-    if (options?.to) params.append("to", options.to.toString());
+    if (options?.from !== undefined) params.append("from", options.from.toString());
+    if (options?.to !== undefined) params.append("to", options.to.toString());
 
     const queryString = params.toString();
     const url = apiUrl(`/amm/pools/${chain}/${pool}/candles${queryString ? `?${queryString}` : ""}`);

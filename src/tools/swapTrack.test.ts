@@ -649,7 +649,7 @@ describe("sodax_swap_submit_and_track", () => {
     stubBackend();
     const { out } = await track({ txHash: TX, chain: "sui" });
     expect(out.nextStep).toMatch(
-      /^No swap can start from Sui: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
+      /^No swap can start from SUI: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
     );
     expect(out.error.sourceChains).toContainEqual({ key: ARBITRUM, name: "Arbitrum" });
   });

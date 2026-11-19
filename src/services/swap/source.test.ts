@@ -32,7 +32,7 @@ describe("sourceChainFor", () => {
       false,
       "Swaps can start from Sonic or an EVM chain such as Arbitrum or Base, not from non-EVM chains yet; ask the user to send from one of those.",
     ],
-    [true, "No swap can start from Sui: ask the user which chain they sent the swap from and pass its key."],
+    [true, "No swap can start from SUI: ask the user which chain they sent the swap from and pass its key."],
   ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
     const catalog = { ...fixtureCatalog(), chains: {} };
     expect(() => sourceChainFor(catalog, toChain("sui"), sent)).toThrow(

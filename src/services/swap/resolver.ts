@@ -171,23 +171,9 @@ export function resolveToken(
   return { ...notFound(suggest(tokens, needle)), ...(otherChains.length > 0 && { otherChains }) };
 }
 
-/**
- * By name, ticker or key, then by EVM chain id ("42161" or "0xa4b1"). The id is matched against
- * the chain config, never a key prefix: "0x1.icon" is ICON, not chain id 1.
- */
+/** By name, ticker, key or EVM chain id ("42161" or "0xa4b1"). */
 function findChainKey(catalog: SwapCatalog, query: string): string | undefined {
-  const keys = Object.keys(catalog.tokens);
-  const { key } = resolveChainKey(query, keys);
-  if (key) return key;
-  const id = chainIdQuery(query);
-  if (id === undefined) return undefined;
-  return keys.find(other => catalog.chains[other]?.type === "EVM" && catalog.chains[other].chainId === id);
-}
-
-/** An EVM chain id typed as a query, in decimal or hex. */
-export function chainIdQuery(query: string): number | undefined {
-  const q = query.trim();
-  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q) ? Number(q) : undefined;
+  return resolveChainKey(query, Object.keys(catalog.tokens)).key ?? undefined;
 }
 
 /** The native token first for a wrapped-native guess (WETH on a chain whose gas token is ETH), then near misses. */

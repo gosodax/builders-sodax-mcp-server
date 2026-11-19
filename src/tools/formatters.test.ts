@@ -17,4 +17,12 @@ describe("formatAsMarkdown tables", () => {
   it("leaves a short nested object as it is", () => {
     expect(formatAsMarkdown([{ meta: { a: 1 } }])).toContain('| {"a":1} |');
   });
+
+  // An agent read 20 of 85 swap tokens with no way to the rest.
+  it("shows 20 rows and says how to get the rest", () => {
+    const md = formatAsMarkdown(Array.from({ length: 85 }, (_, i) => ({ symbol: `T${i}` })));
+    expect(md).toContain("| T19 |");
+    expect(md).not.toContain("| T20 |");
+    expect(md).toContain('... and 65 more items: call again with format "json" for all of them.');
+  });
 });

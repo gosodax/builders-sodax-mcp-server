@@ -13,11 +13,17 @@ const TABLE_MAX_COLUMNS = 6;
 const TABLE_MAX_ROWS = 20;
 const TABLE_CELL_OBJECT_MAX = 30;
 
-export function formatResponse(data: unknown, format: ResponseFormat): string {
+/** JSON is the data alone, so it parses; `header` and `footer` frame the Markdown only. */
+export function formatResponse(data: unknown, format: ResponseFormat, header = "", footer = ""): string {
   if (format === ResponseFormat.MARKDOWN) {
-    return formatAsMarkdown(data);
+    return header + formatAsMarkdown(data) + footer;
   }
   return JSON.stringify(data, null, 2);
+}
+
+/** A lookup that found nothing: `null` as JSON, so it still parses, else `message`. */
+export function formatNotFound(format: ResponseFormat, message: string): string {
+  return format === ResponseFormat.JSON ? "null" : message;
 }
 
 export function formatAsMarkdown(data: unknown): string {
@@ -41,7 +47,7 @@ export function formatAsMarkdown(data: unknown): string {
         md += `| ${values.join(" | ")} |\n`;
       }
       if (data.length > TABLE_MAX_ROWS) {
-        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items_`;
+        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items: call again with format "json" for all of them._`;
       }
       return md;
     }

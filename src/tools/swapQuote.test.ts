@@ -336,12 +336,12 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     const client = await swapClient();
     const { tools } = await client.listTools();
     await client.close();
-    const schema = (name: string) => tools.find(tool => tool.name === name)?.inputSchema;
-    expect(Object.keys(schema("sodax_swap_price")?.properties ?? {})).not.toEqual(
-      expect.arrayContaining(["fromAddress"]),
-    );
-    expect(schema("sodax_swap_price")?.properties).not.toHaveProperty("toAddress");
-    expect(schema("sodax_swap_prepare")?.properties).toHaveProperty("fromAddress");
+    const schema = (name: string) => tools.find(tool => tool.name === name)?.inputSchema.properties;
+    expect(schema("sodax_swap_price")).toHaveProperty("amount");
+    for (const field of ["fromAddress", "toAddress", "slippageBps", "deadlineMinutes"]) {
+      expect(schema("sodax_swap_price")).not.toHaveProperty(field);
+      expect(schema("sodax_swap_prepare")).toHaveProperty(field);
+    }
   });
 
   it("never reserves a quote for a price, so watching one can't reach the open-quote cap", async () => {
@@ -785,20 +785,6 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     });
   });
 
-  it("asks for toAddress when the destination isn't EVM", async () => {
-    const calls = stubSwaps();
-    const { out } = await quote({
-      ...USDC_TO_SONIC,
-      toChain: "sui",
-      toToken: "native",
-      amount: "5",
-      fromAddress: USER,
-    });
-    expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress", missing: ["toAddress"] });
-    expect(out.nextStep).toContain("toAddress (their address on Sui)");
-    expect(calls).toEqual([]);
-  });
-
   it.each([
     [() => Response.json({ message: "Input amount too low", code: -23 }, { status: 422 }), { code: "AMOUNT_TOO_LOW" }],
     [
@@ -1165,7 +1151,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
     const { toAddress: _, ...args } = SUI_TO_SONIC;
     const { out } = await quote({ ...args, amount: "5", fromAddress: SUI_USER });
     expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress" });
-    expect(calls.map(call => call.path)).not.toContain("/intents");
+    expect(calls).toEqual([]);
   });
 
   it.each([

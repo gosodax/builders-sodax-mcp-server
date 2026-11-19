@@ -165,7 +165,7 @@ async function loadCatalog(): Promise<SwapCatalog> {
     else {
       const unmarked = Object.keys(catalog.tokens).filter(key => !catalog.tokens[key].some(token => token.isNative));
       if (unmarked.length > 0) logger.warn({ chains: unmarked }, "No native token is marked on these swap chains");
-      // Without one, a chain can't be named by chain id and takes no 0xEeee placeholder.
+      // Without one, a chain can't be quoted and takes no 0xEeee placeholder.
       const unconfigured = Object.keys(catalog.tokens).filter(key => !catalog.chains[key]);
       if (unconfigured.length > 0) logger.warn({ chains: unconfigured }, "No valid chain config for these swap chains");
       // The quote pins asset managers from the SDK; none in the live config means it changed shape.

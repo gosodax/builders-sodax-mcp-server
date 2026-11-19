@@ -42,7 +42,7 @@ export function amountText(amount: string | number): string {
       'Give this amount as a string, e.g. "0.5": as a number it may not be exact.',
       {
         details: amountField,
-        nextStep: "Call sodax_swap_quote again with amount as a string holding the user's exact amount.",
+        nextStep: "Call the same tool again with amount as a string holding the user's exact amount.",
       },
     );
   }

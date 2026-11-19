@@ -57,7 +57,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INVALID_TX_HASH:
     "Ask for the hash of the transaction the user's wallet sent on the swap's source chain, as the wallet shows it (error.format).",
   AMOUNT_TOO_LOW: "Ask the user whether to quote a larger amount.",
-  DEADLINE_TOO_SHORT: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
+  DEADLINE_TOO_SHORT: "Call sodax_swap_prepare again with a longer deadlineMinutes, e.g. 15.",
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
@@ -67,7 +67,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   SECRET_REJECTED:
     "Tell the user to treat it as exposed and move their funds, and never to paste it into a chat; ask for the wallet's public address instead.",
   QUOTE_NOT_FOUND:
-    "Call again with chain set to the swap's source chain key, or with the quoteId from sodax_swap_quote.",
+    "Call again with chain set to the swap's source chain key, or with the quoteId from sodax_swap_prepare.",
   QUOTE_MISMATCH: "That quoteId is for another source chain: pass the quoteId this transaction was made from.",
   QUOTE_KEY_MISMATCH:
     "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",

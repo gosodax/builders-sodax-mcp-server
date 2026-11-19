@@ -111,12 +111,15 @@ export interface IntentRequest {
   partnerFee?: PartnerFee;
 }
 
-/** Output amount for an exact input, in base units of the destination token. The partner fee is already taken. */
-export async function getQuote(request: QuoteRequest): Promise<bigint> {
+/**
+ * Output amount for an exact input, in base units of the destination token, and when it was read (ISO). The partner
+ * fee is already taken.
+ */
+export async function getQuote(request: QuoteRequest): Promise<{ amount: bigint; quotedAt: string }> {
   const { amount, partnerFee, ...rest } = request;
   const body = { ...rest, amount: amount.toString(), quoteType: "exact_input", ...wirePartnerFee(partnerFee) };
   const { quotedAmount } = await call(z.object({ quotedAmount: z.string().regex(UINT) }), "/quote", body);
-  return BigInt(quotedAmount);
+  return { amount: BigInt(quotedAmount), quotedAt: new Date().toISOString() };
 }
 
 // The hub clock may run a little off ours; anything further off is not a deadline we asked for.

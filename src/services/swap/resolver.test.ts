@@ -141,6 +141,16 @@ describe("resolveToken", () => {
     expect(resolve(chain, "USDC").chain.key).toBe(key);
   });
 
+  it("takes 1 as Ethereum's EVM chain id: only the builder tools refuse it as Solana's relay id too", () => {
+    const usdc = catalog.tokens["0xa4b1.arbitrum"].find(token => token.symbol === "USDC");
+    const tokens = { ethereum: [{ ...usdc, chainKey: "ethereum" }], solana: [{ ...usdc, chainKey: "solana" }] };
+    const configs = {
+      ethereum: { chain: { type: "EVM", chainId: 1 } },
+      solana: { chain: { type: "SOLANA", chainId: "solana" } },
+    };
+    expect(resolveToken(parseCatalog(tokens, configs), "1", "USDC").chain.key).toBe("ethereum");
+  });
+
   it("matches a chain id only against EVM chains", () => {
     const usdc = catalog.tokens["0xa4b1.arbitrum"].find(token => token.symbol === "USDC");
     const tokens = { stellar: [{ ...usdc, chainKey: "stellar" }], "0xa4b1.arbitrum": [usdc] };

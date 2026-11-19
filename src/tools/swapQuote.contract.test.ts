@@ -1,5 +1,5 @@
 /**
- * `sodax_swap_quote` against the live Swaps API: `pnpm test:contract` (canary by default,
+ * `sodax_swap_price` and `sodax_swap_prepare` against the live Swaps API: `pnpm test:contract` (canary by default,
  * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
@@ -24,7 +24,7 @@ const TO_BASE_USDC = { toChain: "0x2105.base", toToken: "0x833589fCD6eDb6E08f4c7
 // Set SODAX_API_KEY once the Swaps API enforces keys.
 const apiKey = parseApiKey(process.env.SODAX_API_KEY);
 
-describe("sodax_swap_quote against the live Swaps API", () => {
+describe("sodax_swap_price and sodax_swap_prepare against the live Swaps API", () => {
   beforeEach(() => {
     setFallbackRequestContext({ apiKey });
   });

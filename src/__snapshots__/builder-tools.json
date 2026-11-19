@@ -29,14 +29,14 @@
   },
   {
     "name": "sodax_check_chain_support",
-    "description": "Check whether SODAX supports a specific blockchain, given its name, ticker, or chain key (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
+    "description": "Check whether SODAX supports a specific blockchain, given its name, ticker, chain key or EVM chain id (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum', '8453'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "chain": {
           "type": "string",
           "minLength": 1,
-          "description": "Chain name, ticker, or key — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base'"
+          "description": "Chain name, ticker, key or EVM chain id — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base', '8453'"
         }
       },
       "required": [
@@ -62,7 +62,7 @@
       "properties": {
         "chainId": {
           "type": "string",
-          "description": "Filter tokens by spoke chain key (e.g. 'sonic', 'ethereum', '0x2105.base', 'hedera'). Call sodax_get_supported_chains for the full, live list."
+          "description": "Filter tokens by spoke chain key, name or EVM chain id (e.g. 'sonic', '0x2105.base', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list."
         },
         "format": {
           "type": "string",
@@ -379,10 +379,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chainId": {
-          "type": "string",
-          "description": "Filter by chain ID"
-        },
         "format": {
           "type": "string",
           "enum": [
@@ -592,7 +588,7 @@
       "properties": {
         "chainId": {
           "type": "string",
-          "description": "Filter by source spoke chain key (e.g. 'sonic', 'ethereum', 'hedera'). Call sodax_get_supported_chains for the full, live list."
+          "description": "Filter by source spoke chain key, name or EVM chain id (e.g. 'sonic', 'ethereum', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list."
         },
         "format": {
           "type": "string",
@@ -624,7 +620,7 @@
       "properties": {
         "chainId": {
           "type": "string",
-          "description": "Filter by chain ID"
+          "description": "Filter by chain key, name or EVM chain id (e.g. 'sonic', 'Base', '8453')"
         },
         "format": {
           "type": "string",
@@ -727,7 +723,8 @@
       "properties": {
         "chainId": {
           "type": "string",
-          "description": "Chain ID where the pool is deployed (e.g., 'sonic')"
+          "pattern": "^\\d+$",
+          "description": "Numeric chain id where the pool is deployed (e.g. '146' for Sonic)"
         },
         "poolId": {
           "type": "string",
@@ -1149,6 +1146,7 @@
       "properties": {
         "chainId": {
           "type": "string",
+          "pattern": "^\\d+$",
           "description": "Filter results to a single intent-relay chain ID (decimal string, e.g. '146' for Sonic). Call sodax_get_relay_chain_id_map to translate."
         },
         "symbol": {
@@ -1239,6 +1237,7 @@
       "properties": {
         "chainId": {
           "type": "string",
+          "pattern": "^\\d+$",
           "description": "REQUIRED: Intent-relay chain ID of the source chain (decimal string, e.g. '146' for Sonic, '2' for Ethereum). Call sodax_get_relay_chain_id_map to translate from a chain key."
         },
         "txHash": {
@@ -1299,6 +1298,7 @@
       "properties": {
         "chainId": {
           "type": "string",
+          "pattern": "^\\d+$",
           "description": "REQUIRED: Intent-relay chain ID of the source chain (decimal string, e.g. '146'). Call sodax_get_relay_chain_id_map to translate from a chain key."
         },
         "txHash": {
@@ -1339,6 +1339,7 @@
       "properties": {
         "chainId": {
           "type": "string",
+          "pattern": "^\\d+$",
           "description": "REQUIRED: Intent-relay chain ID of the source chain (decimal string)"
         },
         "txHash": {
@@ -1347,7 +1348,8 @@
         },
         "connSn": {
           "type": "string",
-          "description": "REQUIRED: Connection serial number identifying the packet within the tx. Accepts string or number (numeric values are coerced — convenient for piping back a previously-fetched packet's `conn_sn` field)."
+          "pattern": "^\\d{1,20}$",
+          "description": "REQUIRED: Connection serial number identifying the packet within the tx, a non-negative integer as a decimal string (e.g. '7'; pass a fetched packet's `conn_sn` as a string)."
         },
         "format": {
           "type": "string",
@@ -1361,7 +1363,8 @@
       },
       "required": [
         "chainId",
-        "txHash"
+        "txHash",
+        "connSn"
       ],
       "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"

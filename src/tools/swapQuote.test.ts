@@ -18,13 +18,14 @@ import { getSolverOracle } from "../services/solver.js";
 import { catalogFetch, fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { checkRecipient } from "../services/swap/destination.js";
-import { clearQuoteCache, getCachedQuote } from "../services/swap/quoteCache.js";
+import { clearQuoteCache, getCachedQuote, openQuotes } from "../services/swap/quoteCache.js";
+import { NEAR } from "../services/swap/sources/near.js";
 import type { EvmStep, SwapStep } from "../services/swap/sources/types.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { formatUnits } from "../services/swap/units.js";
 import { clearUsdBackoff } from "../services/swap/usd.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
-import { callQuote as quote } from "./__fixtures__/swapClient.js";
+import { type QuoteOut, callTool, callQuote as quote, swapClient } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach an RPC: the user's hub wallet is the stub's, the source chain answers, and
 // recipient checks are scripted.
@@ -51,7 +52,7 @@ const sdk = await vi.importActual<typeof import("../services/sodax.js")>("../ser
 await sdk.initSodax();
 
 const USER = "0x1234567890123456789012345678901234567890";
-// A recipient given explicitly: the quote refuses USER, the burn address, as one.
+// A recipient given explicitly, apart from the sender.
 const RECIPIENT = `0x${"4".repeat(40)}`;
 const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const SONIC_USDC = "0x29219dd400f2Bf60E5a23d13Be72B486D4038894";
@@ -124,6 +125,8 @@ interface SwapsStub {
   /** the relay data, */
   relayAddress?: string;
   relayPayload?: string;
+  /** only the intent inside the relay payload, */
+  payloadIntent?: Partial<IntentJson>;
   /** and the tx itself. */
   swapTo?: string;
   swapValue?: string;
@@ -177,7 +180,7 @@ function stubSwaps(stub: SwapsStub = {}) {
       const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
       if (body.srcChainKey === "sui") {
         // A non-EVM tx the server builds its own of: only the Sui package it calls is compared.
-        const payload = stub.relayPayload ?? sdk.createIntentPayload(intent);
+        const payload = stub.relayPayload ?? sdk.createIntentPayload({ ...intent, ...stub.payloadIntent });
         const to = stub.swapTo ?? SUI_RAW_TX.to;
         const tx = { from: body.srcAddress, to, value: body.inputAmount, data: "{}" };
         return Response.json({ tx, intent, relayData: { address: stub.relayAddress ?? HUB_WALLET, payload } });
@@ -196,9 +199,9 @@ function stubSwaps(stub: SwapsStub = {}) {
         value: stub.swapValue ?? String(signed.value),
         data: stub.swapData ?? signed.data,
       };
-      // The relay payload the SDK builds for the signed intent, from the hub its own calldata.
-      const signedIntent = { ...intent, ...stub.signedIntent };
-      const payload = stub.relayPayload ?? sdk.createIntentPayload(signedIntent, body.srcChainKey === "sonic");
+      // The relay payload the SDK builds for the intent JSON, so a signed intent that differs fails at tx.data.
+      const payloadIntent = { ...intent, ...stub.payloadIntent };
+      const payload = stub.relayPayload ?? sdk.createIntentPayload(payloadIntent, body.srcChainKey === "sonic");
       const relayData = { address: stub.relayAddress ?? HUB_WALLET, payload };
       return Response.json({ tx, intent, relayData });
     }
@@ -221,7 +224,7 @@ afterEach(() => {
   setFallbackRequestContext({});
 });
 
-describe("sodax_swap_quote", () => {
+describe("sodax_swap_price and sodax_swap_prepare", () => {
   it.each([
     ["keys and addresses", USDC_TO_SONIC],
     ["names and symbols", { fromChain: "arb", fromToken: "USDC", toChain: "Sonic", toToken: "usdc" }],
@@ -229,13 +232,17 @@ describe("sodax_swap_quote", () => {
     const calls = stubSwaps();
     const { out } = await quote({ ...sides, amount: "5" });
     expect(out).toMatchObject({
-      status: "price_only",
-      missing: ["fromAddress"],
+      status: "price",
+      prepareNeeds: ["fromAddress"],
       from: { symbol: "USDC", amount: "5", chain: { key: "0xa4b1.arbitrum" } },
-      to: { symbol: "USDC", expectedAmount: "4.991887", minimumAmount: "4.941968" },
-      slippageBps: 100,
+      to: { symbol: "USDC", expectedAmount: "4.991887" },
     });
-    expect(out.nextStep).toContain("call sodax_swap_quote again with fromAddress");
+    // The floor a slippage sets is the prepared swap's; a price holds nothing to one.
+    expect(out.to).not.toHaveProperty("minimumAmount");
+    expect(out).not.toHaveProperty("slippageBps");
+    expect(out.nextStep).toContain(
+      "Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus fromAddress (their wallet on Arbitrum).",
+    );
     expect(calls).toEqual([
       {
         path: "/quote",
@@ -317,8 +324,103 @@ describe("sodax_swap_quote", () => {
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 45 * 60 });
+    expect(out.nextStep).toContain("To watch a price meanwhile, use sodax_swap_price");
     expect(calls).toEqual([]);
-    expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price_only");
+    expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price");
+  });
+
+  it("prices without building or holding anything", async () => {
+    vi.mocked(blockNumber).mockClear();
+    vi.mocked(userHubWallet).mockClear();
+    const calls = stubSwaps();
+    const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({
+      status: "price",
+      prepareNeeds: ["fromAddress"],
+      to: { expectedAmount: "4.991887" },
+      quotedAt: new Date(NOW).toISOString(),
+    });
+    for (const field of ["quoteId", "intentHash", "steps", "batch", "afterSend", "fromAddress"]) {
+      expect(out).not.toHaveProperty(field);
+    }
+    expect(calls.map(call => call.path)).toEqual(["/quote"]);
+    expect(openQuotes().open).toBe(0);
+    expect(blockNumber).not.toHaveBeenCalled();
+    expect(userHubWallet).not.toHaveBeenCalled();
+
+    const toSui = { ...USDC_TO_SONIC, toChain: "sui", toToken: "native", amount: "5" };
+    const needsRecipient = await quote(toSui);
+    expect(needsRecipient.out).toMatchObject({ status: "price", prepareNeeds: ["fromAddress", "toAddress"] });
+    expect(needsRecipient.out.nextStep).toContain(
+      "call sodax_swap_prepare with the same arguments plus fromAddress (their wallet on Arbitrum) and toAddress (their address on Sui).",
+    );
+  });
+
+  // Each tool takes only what it needs: a price no address, a prepare the sender's.
+  it("lists no address on the price tool, and the sender on the prepare tool", async () => {
+    const client = await swapClient();
+    const { tools } = await client.listTools();
+    await client.close();
+    const schema = (name: string) => tools.find(tool => tool.name === name)?.inputSchema.properties;
+    expect(schema("sodax_swap_price")).toHaveProperty("amount");
+    for (const field of ["fromAddress", "toAddress", "slippageBps", "deadlineMinutes"]) {
+      expect(schema("sodax_swap_price")).not.toHaveProperty(field);
+      expect(schema("sodax_swap_prepare")).toHaveProperty(field);
+    }
+  });
+
+  it("never reserves a quote for a price, so watching one can't reach the open-quote cap", async () => {
+    for (let i = 0; i < 999; i++) cacheQuote({ deadline: DEADLINE });
+    const calls = stubSwaps();
+    const watch = () => quote({ ...USDC_TO_SONIC, amount: "5" });
+    for (let i = 0; i < 3; i++) expect((await watch()).out.status).toBe("price");
+    expect(openQuotes().open).toBe(999);
+    // The last place is still there for the swap the user signs, and a price is still read at the cap.
+    expect((await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER })).out.status).toBe("ready");
+    expect((await watch()).out.status).toBe("price");
+    expect(calls.filter(call => call.path === "/intents")).toHaveLength(1);
+  });
+
+  it("refuses to prepare without an address it needs, naming it, before calling the swap service", async () => {
+    const calls = stubSwaps();
+    const prepare = (args: Record<string, unknown>) =>
+      callTool<QuoteOut>("sodax_swap_prepare", { ...USDC_TO_SONIC, amount: "5", ...args });
+    // A structured error with its next step, not a bare schema refusal: it names both addresses at once.
+    const noSender = await prepare({ toChain: "sui", toToken: "native" });
+    expect(noSender.out.error).toMatchObject({
+      code: "INVALID_ADDRESS",
+      field: "fromAddress",
+      missing: ["fromAddress", "toAddress"],
+    });
+    expect(noSender.out.nextStep).toBe(
+      "Ask the user for fromAddress (their wallet on Arbitrum) and toAddress (their address on Sui), then call sodax_swap_prepare again with them.",
+    );
+    const toSui = { ...USDC_TO_SONIC, toChain: "sui", toToken: "native", amount: "5" };
+    const recipient = await quote({ ...toSui, fromAddress: USER });
+    expect(recipient.out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress", missing: ["toAddress"] });
+    expect(recipient.out.nextStep).toBe(
+      "Ask the user for toAddress (their address on Sui), then call sodax_swap_prepare again with them.",
+    );
+    expect(calls).toEqual([]);
+    expect(openQuotes().open).toBe(0);
+  });
+
+  it("says when the price was read, not when the call started or the swap was built", async () => {
+    const readSec = 2;
+    stubSwaps({
+      quote: () => {
+        vi.setSystemTime(Date.now() + readSec * 1000);
+        return Response.json({ quotedAmount: "4991887" });
+      },
+      buildSec: 30,
+    });
+    const readAt = new Date(NOW + readSec * 1000).toISOString();
+    const ready = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(ready.out).toMatchObject({ status: "ready", quotedAt: readAt });
+    vi.setSystemTime(NOW);
+    const price = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(price.out).toMatchObject({ status: "price", quotedAt: readAt });
   });
 
   it("never asks about an allowance for a native token", async () => {
@@ -399,18 +501,12 @@ describe("sodax_swap_quote", () => {
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
     ["a source approve that isn't one", { approveData: "0xa9059cbb" }, "approval"],
     // The JSON is right; only what the user signs differs from what the SDK builds for it.
-    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "relay payload"],
-    [
-      "another recipient in the signed intent",
-      { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } },
-      "relay payload",
-    ],
-    [
-      "another fee receiver in the signed intent",
-      { signedIntent: { data: `0x01${"0".repeat(128)}` } },
-      "relay payload",
-    ],
-    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "relay payload"],
+    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "tx.data"],
+    ["another recipient in the signed intent", { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } }, "tx.data"],
+    ["another fee receiver in the signed intent", { signedIntent: { data: `0x01${"0".repeat(128)}` } }, "tx.data"],
+    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "tx.data"],
+    // The tx is right; only what the relay delivers to the hub wallet differs.
+    ["a lower minimum in the relay payload", { payloadIntent: { minOutputAmount: "1" } }, "relay payload"],
     ["a relay payload that isn't what's signed", { relayPayload: "0x" }, "relay payload"],
   ])("refuses a built swap with %s, naming the check", async (_case, stub, mismatch) => {
     stubSwaps(stub);
@@ -473,7 +569,8 @@ describe("sodax_swap_quote", () => {
       tokens.stacks = [{ symbol: "STX", name: "Stacks", decimals: 6, address: stx, chainKey: "stacks", hubAsset }];
       configs.stacks = { chain: { id: "stacks", chainId: "stacks", name: "Stacks", type: "STACKS" }, nativeToken: stx };
       const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
-      const { out } = await quote({ ...USDC_TO_SONIC, toChain: "stacks", toToken: "STX", amount: "5", toAddress });
+      const stacks = { ...USDC_TO_SONIC, toChain: "stacks", toToken: "STX", amount: "5" };
+      const { out } = await quote({ ...stacks, fromAddress: USER, toAddress });
       expect(out.error.code).toBe("INVALID_ADDRESS");
       expect(calls).toEqual([]);
     },
@@ -609,7 +706,7 @@ describe("sodax_swap_quote", () => {
   ])("takes the number %d as the amount %s", async (amount, sent) => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount });
-    expect(out).toMatchObject({ status: "price_only", from: { amount: sent } });
+    expect(out).toMatchObject({ status: "price", from: { amount: sent } });
   });
 
   // With an exponent or past 15 significant digits, a number may not be the decimal the agent wrote.
@@ -619,7 +716,7 @@ describe("sodax_swap_quote", () => {
       const calls = stubSwaps();
       const { out } = await quote({ ...USDC_TO_SONIC, amount });
       expect(out.error).toMatchObject({ code: "INVALID_AMOUNT", field: "amount" });
-      expect(out.nextStep).toBe("Call sodax_swap_quote again with amount as a string holding the user's exact amount.");
+      expect(out.nextStep).toBe("Call the same tool again with amount as a string holding the user's exact amount.");
       expect(calls).toEqual([]);
     },
   );
@@ -628,7 +725,7 @@ describe("sodax_swap_quote", () => {
     "rejects %o instead of clamping it",
     async bounds => {
       const calls = stubSwaps();
-      const { isError } = await quote({ ...USDC_TO_SONIC, amount: "5", ...bounds });
+      const { isError } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, ...bounds });
       expect(isError).toBe(true);
       expect(calls).toEqual([]);
     },
@@ -647,7 +744,7 @@ describe("sodax_swap_quote", () => {
     ]);
     stubSwaps();
     const small = await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(small.out).toMatchObject({ status: "price_only", usdValue: "5.00" });
+    expect(small.out).toMatchObject({ status: "price", usdValue: "5.00" });
     expect(small.out.nextStep).not.toContain("warning level");
 
     stubSwaps();
@@ -661,7 +758,7 @@ describe("sodax_swap_quote", () => {
   it("quotes without a USD value when the oracle has none, and says so", async () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5" });
-    expect(out).toMatchObject({ status: "price_only", usdValue: null, usdOut: null });
+    expect(out).toMatchObject({ status: "price", usdValue: null, usdOut: null });
     expect(out.nextStep).toContain(
       "Its USD value couldn't be checked, so confirm a large amount with the user before anything is signed.",
     );
@@ -709,7 +806,7 @@ describe("sodax_swap_quote", () => {
     });
 
     it.each([
-      ["4460000", "price_only"],
+      ["4460000", "price"],
       ["4450000", "error"],
     ])("takes the partner fee off the input first: %s out of 5 less 1%", async (amount, status) => {
       setFallbackRequestContext({ partnerFee: { address: USER, bps: 100 } });
@@ -719,9 +816,9 @@ describe("sodax_swap_quote", () => {
     });
 
     it.each([
-      ["price_only", {}],
+      ["price", {}],
       ["ready", { fromAddress: USER }],
-    ])("only warns, in a %s quote, when the output has no price", async (status, args) => {
+    ])("only warns, in a %s result, when the output has no price", async (status, args) => {
       vi.mocked(getSolverOracle).mockResolvedValue([price(ARB_USDC_HUB)]);
       stubSwaps(quoted("1000000"));
       const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", ...args });
@@ -735,11 +832,11 @@ describe("sodax_swap_quote", () => {
       const tooLow = { quote: () => Response.json({ message: "Input amount too low", code: -23 }, { status: 422 }) };
 
       it.each([
-        ["refused by the swap service", tooLow],
-        ["with a minimum received of zero", quoted("1")],
-      ])("names an amount worth about $1.5 when %s", async (_, stub) => {
+        ["refused by the swap service", tooLow, {}],
+        ["prepared with a minimum received of zero", quoted("1"), { fromAddress: USER }],
+      ])("names an amount worth about $1.5 when %s", async (_, stub, args) => {
         stubSwaps(stub);
-        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5" });
+        const { out } = await quote({ ...USDC_TO_SONIC, amount: "0.5", ...args });
         expect(out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", suggestedAmount: "1.5" });
         expect(out.nextStep).toBe(
           "The swap service usually quotes swaps worth about $1.5 or more: ask the user whether to quote at least 1.5 USDC instead.",
@@ -765,19 +862,6 @@ describe("sodax_swap_quote", () => {
         expect(out.nextStep).toBe("Ask the user whether to quote a larger amount.");
       });
     });
-  });
-
-  it("asks for toAddress when the destination isn't EVM", async () => {
-    stubSwaps();
-    const { out } = await quote({
-      ...USDC_TO_SONIC,
-      toChain: "sui",
-      toToken: "native",
-      amount: "5",
-      fromAddress: USER,
-    });
-    expect(out).toMatchObject({ status: "price_only", missing: ["toAddress"] });
-    expect(out.nextStep).toContain("toAddress (their address on Sui)");
   });
 
   it.each([
@@ -815,6 +899,16 @@ describe("sodax_swap_quote", () => {
     expect(out.error).toMatchObject(error);
     // The backend's HTTP status is no business of the agent's.
     expect(out.error.status).toBeUndefined();
+  });
+
+  // A price refuses only nothing received; prepare refuses a minimum of nothing, which slippage makes of one unit.
+  it("prices an amount whose minimum would be zero, and refuses to prepare it", async () => {
+    stubSwaps({ quote: () => Response.json({ quotedAmount: "1" }) });
+    const price = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(price.out).toMatchObject({ status: "price", to: { expectedAmount: "0.000001" } });
+    const prepare = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(prepare.isError).toBe(true);
+    expect(prepare.out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", message: expect.stringContaining("minimum") });
   });
 
   it.each([
@@ -872,7 +966,7 @@ describe("sodax_swap_quote", () => {
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: minutes });
     expect(out.error?.code).toBe(code);
     if (code === "DEADLINE_TOO_SHORT") {
-      expect(out.nextStep).toBe("Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.");
+      expect(out.nextStep).toBe("Call sodax_swap_prepare again with a longer deadlineMinutes, e.g. 15.");
     }
   });
 
@@ -884,7 +978,7 @@ describe("sodax_swap_quote", () => {
     stubSwaps({ deadline: String(Number(DEADLINE) - 600), buildSec });
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, deadlineMinutes: 5 });
     expect(out.error?.code).toBe(code);
-    if (code) expect(out.nextStep).toBe("Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.");
+    if (code) expect(out.nextStep).toBe("Call sodax_swap_prepare again with a longer deadlineMinutes, e.g. 15.");
   });
 
   it("reports a failed hub wallet lookup as unavailable", async () => {
@@ -1078,7 +1172,7 @@ describe("sodax_swap_quote", () => {
   });
 });
 
-describe("sodax_swap_quote from a non-EVM chain", () => {
+describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
     clearUsdBackoff();
@@ -1135,13 +1229,14 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     const calls = stubSwaps();
     const { toAddress: _, ...args } = SUI_TO_SONIC;
     const { out } = await quote({ ...args, amount: "5", fromAddress: SUI_USER });
-    expect(out).toMatchObject({ status: "price_only", missing: ["toAddress"] });
-    expect(calls.map(call => call.path)).not.toContain("/intents");
+    expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress" });
+    expect(calls).toEqual([]);
   });
 
   it.each([
     ["another sender in the intent", { intent: { srcAddress: `0x${"6".repeat(64)}` } }, "srcAddress"],
     ["a relay payload that isn't the SDK's for the intent", { relayPayload: "0x01" }, "relay payload"],
+    ["a lower minimum in the relay payload", { payloadIntent: { minOutputAmount: "1" } }, "relay payload"],
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
   ])("refuses %s, building nothing", async (_case, stub, mismatch) => {
     stubSwaps(stub);
@@ -1191,7 +1286,8 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     );
   });
 
-  it("refuses an Ethereum-style NEAR sender before any upstream call: its deposit runs where track can't see it", async () => {
+  // NEAR as the SDK config lists it, in the swap catalog.
+  const stubNear = () => {
     const tokens = JSON.parse(fixtureText("swap-tokens.json"));
     const configs = JSON.parse(fixtureText("chain-configs.json"));
     const { symbol, name, decimals, address, hubAsset } = spokeChainConfig.near.supportedTokens.NEAR;
@@ -1201,19 +1297,27 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
       addresses: {},
       nativeToken: "NEAR",
     };
-    const calls = stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
-    const near = {
-      fromChain: "near",
-      fromToken: "native",
-      toChain: "sonic",
-      toToken: SONIC_USDC,
-      toAddress: RECIPIENT,
-      amount: "5",
-    };
-    const { out } = await quote({ ...near, fromAddress: `0x${"ab".repeat(20)}` });
+    return stubSwaps({ tokens: JSON.stringify(tokens), configs: JSON.stringify(configs) });
+  };
+  const NEAR_TO_SONIC = { fromChain: "near", fromToken: "native", toChain: "sonic", toToken: SONIC_USDC, amount: "5" };
+
+  it("refuses an Ethereum-style NEAR sender before any upstream call: its deposit runs where track can't see it", async () => {
+    const calls = stubNear();
+    const { out } = await quote({ ...NEAR_TO_SONIC, toAddress: USER, fromAddress: `0x${"ab".repeat(20)}` });
     expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "fromAddress" });
     expect(out.error.message).toContain("Ethereum-style");
     expect(calls.map(call => call.path)).toEqual([]);
+  });
+
+  // A non-EVM source reads its chain only to prepare: its probe stands in for the build's RPC read.
+  it("prices from NEAR without reading the chain or building anything", async () => {
+    const calls = stubNear();
+    const probe = vi.spyOn(NEAR, "probe");
+    const { out } = await quote(NEAR_TO_SONIC);
+    expect(out).toMatchObject({ status: "price", prepareNeeds: ["fromAddress", "toAddress"] });
+    expect(calls.map(call => call.path)).toEqual(["/quote"]);
+    expect(probe).not.toHaveBeenCalled();
+    expect(openQuotes().open).toBe(0);
   });
 
   it("refuses a token the SDK says needs an approval, which only Stellar's trustline would", async () => {

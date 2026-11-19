@@ -95,7 +95,7 @@ describe("resolveNextStep", () => {
 
   it("asks whether the user means a single candidate", () => {
     expect(nextStep("hyper", "USDT")).toBe(
-      "Ask the user whether they mean USDT0 on Hyper, then pass its address to the call that returned UNKNOWN_TOKEN (sodax_swap_quote if there was none).",
+      "Ask the user whether they mean USDT0 on HyperEVM, then pass its address to the call that returned UNKNOWN_TOKEN (sodax_swap_quote if there was none).",
     );
   });
 

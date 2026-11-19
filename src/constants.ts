@@ -115,13 +115,17 @@ export const CHAIN_ALIASES: Readonly<Record<string, readonly string[]>> = Object
   }),
 );
 
+// Where the SDK's name reads worse than the chain's own: "5 SUI on SUI" says one word twice, "Hyper" could be
+// HyperCore, and "Near" sits beside the "NEAR" messages spell.
+const DISPLAY_NAMES: Readonly<Record<string, string>> = { sui: "Sui", near: "NEAR", hyper: "HyperEVM" };
+
 /**
  * Human-readable name for a chain key, from the SDK. Falls back to deriving one from the key (the segment after a
  * dot for EVM keys, or the slug before a Cosmos `-<n>` suffix, capitalised) for a chain the live registry lists
  * before the SDK does.
  */
 export function chainDisplayName(key: string): string {
-  const known = sdkChainName(key);
+  const known = DISPLAY_NAMES[key] ?? sdkChainName(key);
   if (known) return known;
   const base = key.includes(".") ? (key.split(".").pop() ?? key) : key.replace(/-\d+$/, "");
   return base ? base.charAt(0).toUpperCase() + base.slice(1) : key;

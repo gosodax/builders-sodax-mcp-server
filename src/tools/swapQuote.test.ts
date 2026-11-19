@@ -690,7 +690,7 @@ describe("sodax_swap_quote", () => {
       fromAddress: USER,
     });
     expect(out).toMatchObject({ status: "price_only", missing: ["toAddress"] });
-    expect(out.nextStep).toContain("toAddress (their address on SUI)");
+    expect(out.nextStep).toContain("toAddress (their address on Sui)");
   });
 
   it.each([
@@ -854,7 +854,7 @@ describe("sodax_swap_quote", () => {
     expect(out.error.code).toBe("UNSUPPORTED_SOURCE");
     expect(out.nextStep).toMatch(/^A swap can start only from .*Arbitrum.*: ask the user to swap from one of them\.$/);
     expect(out.nextStep).toContain("Sonic");
-    expect(out.error.sourceChains).toContainEqual({ key: "sui", name: "SUI" });
+    expect(out.error.sourceChains).toContainEqual({ key: "sui", name: "Sui" });
     expect(out.error.sourceChains).toContainEqual({ key: "0xa4b1.arbitrum", name: "Arbitrum" });
     expect(calls).toEqual([]);
   });
@@ -1040,7 +1040,7 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     // The build reads Sui; no EVM block is read for it.
     expect(blockNumber).not.toHaveBeenCalled();
     expect(calls.map(call => call.path)).not.toContain("/approve");
-    expect(out.nextStep).toContain("have their SUI wallet send the swap step before it expires");
+    expect(out.nextStep).toContain("have their Sui wallet send the swap step before it expires");
     expect(out.nextStep).toContain("Transaction.from");
   });
 
@@ -1141,7 +1141,7 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
     vi.mocked(buildNonEvmDeposit).mockRejectedValueOnce(new Error("SDK call failed"));
     const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
     expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
-    expect(out.error.message).toBe("Couldn't prepare the swap on SUI right now.");
+    expect(out.error.message).toBe("Couldn't prepare the swap on Sui right now.");
     expect(out.nextStep).toContain("holds the amount plus fees");
   });
 });

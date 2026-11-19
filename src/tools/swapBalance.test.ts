@@ -173,7 +173,7 @@ describe("sodax_get_balance", () => {
       token: { baseUnits: "25000100000" },
     });
     expect(out.nextStep).toBe(
-      "The wallet has no account on Near yet (0 NEAR) but holds 25000.1 USDC; it needs NEAR sent to it to pay gas there.",
+      "The wallet has no account on NEAR yet (0 NEAR) but holds 25000.1 USDC; it needs NEAR sent to it to pay gas there.",
     );
   });
 

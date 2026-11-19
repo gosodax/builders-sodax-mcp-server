@@ -167,7 +167,7 @@ describe("resolveToken", () => {
       expect.objectContaining({
         code: "UNSUPPORTED_CHAIN",
         message: "No SODAX swap chain matches that name, key or chain id.",
-        details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "Hyper" }]) },
+        details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "HyperEVM" }]) },
       }),
     );
   });

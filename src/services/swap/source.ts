@@ -7,11 +7,11 @@
 import { keccak_256 } from "@noble/hashes/sha3";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
-import { evmChainIdFor, hubIntentClosed } from "../sodax.js";
+import { hubIntentClosed } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getCachedQuote } from "./quoteCache.js";
-import { chainIdQuery, isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
+import { isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
 import { depositMessages } from "./sourceTx.js";
 import { hexBytes } from "./sources/bytes.js";
 import { pinnedSourceOf, sourceChainKeys } from "./sources/index.js";
@@ -115,9 +115,7 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
 
 /** Whether `query` names the chain `chainKey`, as a name, ticker, key or EVM chain id, without the catalog. */
 function namesChain(query: string, chainKey: string): boolean {
-  if (resolveChainKey(query, [chainKey]).key === chainKey) return true;
-  const id = chainIdQuery(query);
-  return id !== undefined && id === evmChainIdFor(chainKey);
+  return resolveChainKey(query, [chainKey]).key === chainKey;
 }
 
 /** The source tx once it ran, as what it proves (`SourceTx`), or `null` before. `sender` routes a NEAR lookup. */

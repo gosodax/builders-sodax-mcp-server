@@ -1,8 +1,8 @@
 /**
  * Swaps from non-EVM chains against live chains: `pnpm test:contract`. Reads and unsigned builds only. The builds
  * stay checkable where they need no funded sender (NEAR, Solana, native Sui); the readers are checked on the newest
- * messages the relay carried from each chain, which every public node still has, and on Solana's fixture deposit,
- * whose public RPC keeps old txs.
+ * messages the relay carried from each chain, while its public node still keeps them, and on Solana's fixture
+ * deposit, whose public RPC keeps old txs.
  */
 
 import { getIntentRelayChainId, spokeChainConfig } from "@sodax/types";
@@ -39,18 +39,24 @@ function swapOf(chainKey: keyof typeof fixtures, token: string, to?: string): Sw
 // SODAX's explorer, which lists what the relay carried from each chain, newest first, by relay id.
 const EXPLORER = "https://sodaxscan.com/api/messages";
 
-/** The source txs of the newest messages the relay carried from the chain, over its explorer's first pages. */
-async function newestRelayed(chainKey: string, count: number): Promise<string[]> {
+/** The source txs of the newest messages the relay carried from the chain, with when (unix seconds), newest first. */
+async function newestRelayed(chainKey: string, count: number): Promise<{ txHash: string; createdAt: number }[]> {
   const network = String(getIntentRelayChainId(chainKey as never));
-  const hashes = new Set<string>();
+  const txs = new Map<string, number>();
   // Solver fills, listed without a source tx, can fill a whole page.
-  for (let skip = 0; skip < 1000 && hashes.size < count; skip += 100) {
+  for (let skip = 0; skip < 1000 && txs.size < count; skip += 100) {
     const response = await fetch(`${EXPLORER}?limit=100&skip=${skip}&src_network=${network}`);
-    const { data } = (await response.json()) as { data: { status: string; src_tx_hash: string | null }[] };
+    const { data } = (await response.json()) as {
+      data: { status: string; src_tx_hash: string | null; created_at: number }[];
+    };
     if (data.length === 0) break;
-    for (const row of data) if (row.status === "executed" && row.src_tx_hash) hashes.add(row.src_tx_hash);
+    for (const row of data) {
+      if (row.status === "executed" && row.src_tx_hash && !txs.has(row.src_tx_hash)) {
+        txs.set(row.src_tx_hash, row.created_at);
+      }
+    }
   }
-  return [...hashes].slice(0, count);
+  return [...txs].slice(0, count).map(([txHash, createdAt]) => ({ txHash, createdAt }));
 }
 
 describe("swaps from non-EVM chains, live", () => {
@@ -117,15 +123,17 @@ describe("swaps from non-EVM chains, live", () => {
 
   // What the relay carried, the reader must find: a message from that chain to the hub in each tx, and among them
   // the asset manager's deposits, named as `assetManagerSender` says, with their 5-item RLP payload.
-  it.each(["solana", "stellar", "sui", "near", "injective-1"])(
+  it.for(["solana", "stellar", "sui", "near", "injective-1"])(
     "finds the messages the relay carried in the newest %s txs",
-    async chainKey => {
+    { timeout: 60_000 },
+    async (chainKey, { skip }) => {
       const relayId = BigInt(getIntentRelayChainId(chainKey as never));
       const source = sourceOf(chainKey);
       const depositor = source.kind === "spoke" ? source.depositor : "";
       let read = 0;
       let deposits = 0;
-      for (const txHash of await newestRelayed(chainKey, 5)) {
+      const relayed = await newestRelayed(chainKey, 5);
+      for (const { txHash } of relayed) {
         const evidence = await source.adapter.read(source, txHash);
         // Past the public node's history (Injective's keeps under a day): unknown, as the README says.
         if (evidence === null) continue;
@@ -141,11 +149,15 @@ describe("swaps from non-EVM chains, live", () => {
           deposits++;
         }
       }
-      // Every relayed tx older than the public node keeps: nothing here to read today.
-      if (read === 0) return console.warn(`No ${chainKey} tx the relay carried is within its public node's history`);
+      // Public nodes keep only recent txs (NEAR's a few days, Injective's under one), so finding nothing fails only
+      // where the relay carried a tx in the last day; after a quiet day, or on Injective, it skips rather than passes.
+      const lastDay = relayed.some(({ createdAt }) => Date.now() / 1000 - createdAt < 24 * 60 * 60);
+      if (read === 0 && (!lastDay || chainKey === "injective-1")) {
+        skip(`No ${chainKey} tx the relay carried is within its node's history`);
+      }
+      expect(read, `no ${chainKey} tx the relay carried in the last day could be read`).toBeGreaterThan(0);
       expect(deposits).toBeGreaterThan(0);
     },
-    60_000,
   );
 
   // The fixture's deposit read live: the RPC's answer must still be what the fixture holds.

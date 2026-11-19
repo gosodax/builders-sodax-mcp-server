@@ -104,6 +104,8 @@ interface SwapsStub {
   /** the relay data, */
   relayAddress?: string;
   relayPayload?: string;
+  /** only the intent inside the relay payload, */
+  payloadIntent?: Partial<IntentJson>;
   /** and the tx itself. */
   swapTo?: string;
   swapValue?: string;
@@ -157,7 +159,7 @@ function stubSwaps(stub: SwapsStub = {}) {
       const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
       if (body.srcChainKey === "sui") {
         // A non-EVM tx the server builds its own of: only the Sui package it calls is compared.
-        const payload = stub.relayPayload ?? sdk.createIntentPayload(intent);
+        const payload = stub.relayPayload ?? sdk.createIntentPayload({ ...intent, ...stub.payloadIntent });
         const to = stub.swapTo ?? SUI_RAW_TX.to;
         const tx = { from: body.srcAddress, to, value: body.inputAmount, data: "{}" };
         return Response.json({ tx, intent, relayData: { address: stub.relayAddress ?? HUB_WALLET, payload } });
@@ -176,9 +178,9 @@ function stubSwaps(stub: SwapsStub = {}) {
         value: stub.swapValue ?? String(signed.value),
         data: stub.swapData ?? signed.data,
       };
-      // The relay payload the SDK builds for the signed intent, from the hub its own calldata.
-      const signedIntent = { ...intent, ...stub.signedIntent };
-      const payload = stub.relayPayload ?? sdk.createIntentPayload(signedIntent, body.srcChainKey === "sonic");
+      // The relay payload the SDK builds for the intent JSON, so a signed intent that differs fails at tx.data.
+      const payloadIntent = { ...intent, ...stub.payloadIntent };
+      const payload = stub.relayPayload ?? sdk.createIntentPayload(payloadIntent, body.srcChainKey === "sonic");
       const relayData = { address: stub.relayAddress ?? HUB_WALLET, payload };
       return Response.json({ tx, intent, relayData });
     }
@@ -453,18 +455,12 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
     ["a source approve that isn't one", { approveData: "0xa9059cbb" }, "approval"],
     // The JSON is right; only what the user signs differs from what the SDK builds for it.
-    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "relay payload"],
-    [
-      "another recipient in the signed intent",
-      { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } },
-      "relay payload",
-    ],
-    [
-      "another fee receiver in the signed intent",
-      { signedIntent: { data: `0x01${"0".repeat(128)}` } },
-      "relay payload",
-    ],
-    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "relay payload"],
+    ["a lower minimum in the signed intent", { signedIntent: { minOutputAmount: "1" } }, "tx.data"],
+    ["another recipient in the signed intent", { signedIntent: { dstAddress: `0x${"1".repeat(40)}` } }, "tx.data"],
+    ["another fee receiver in the signed intent", { signedIntent: { data: `0x01${"0".repeat(128)}` } }, "tx.data"],
+    ["another hub wallet in the signed deposit", { signedIntent: { creator: `0x${"9".repeat(40)}` } }, "tx.data"],
+    // The tx is right; only what the relay delivers to the hub wallet differs.
+    ["a lower minimum in the relay payload", { payloadIntent: { minOutputAmount: "1" } }, "relay payload"],
     ["a relay payload that isn't what's signed", { relayPayload: "0x" }, "relay payload"],
   ])("refuses a built swap with %s, naming the check", async (_case, stub, mismatch) => {
     stubSwaps(stub);
@@ -1157,6 +1153,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
   it.each([
     ["another sender in the intent", { intent: { srcAddress: `0x${"6".repeat(64)}` } }, "srcAddress"],
     ["a relay payload that isn't the SDK's for the intent", { relayPayload: "0x01" }, "relay payload"],
+    ["a lower minimum in the relay payload", { payloadIntent: { minOutputAmount: "1" } }, "relay payload"],
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
   ])("refuses %s, building nothing", async (_case, stub, mismatch) => {
     stubSwaps(stub);

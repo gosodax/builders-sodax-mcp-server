@@ -89,7 +89,8 @@ export const CHAIN_TICKERS: Readonly<Record<string, readonly string[]>> = {
   ethereum: ["eth", "ether"],
   "0xa4b1.arbitrum": ["arb", "arbitrum one"],
   "0x38.bsc": ["bnb", "binance", "binance smart chain"],
-  "0xa86a.avax": ["avax"],
+  // The one name its key doesn't give: listed so it doesn't hang on the SDK's wording.
+  "0xa86a.avax": ["avalanche", "avax"],
   "0xa.optimism": ["op"],
   "0x89.polygon": ["matic", "pol"],
   "injective-1": ["inj"],

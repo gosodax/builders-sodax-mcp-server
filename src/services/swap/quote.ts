@@ -1,6 +1,6 @@
 /**
  * Quote a swap and, given the sender's address, build the transactions to sign.
- * Returns structure only; the tool words the next step.
+ * Returns structure only; the tool words a quote's next step (an input error carries its own).
  *
  * Nothing here signs, holds funds or submits anything: the user's wallet sends
  * the steps, and the cached quote is what tracking later submits.
@@ -49,9 +49,17 @@ export interface QuoteInput {
   amount: string;
   fromAddress?: string;
   toAddress?: string;
-  slippageBps: number;
-  deadlineMinutes: number;
+  /** A prepared quote's, like its deadline; a price has neither. */
+  slippageBps?: number;
+  deadlineMinutes?: number;
+  /** Set by the tool: `price` builds and holds nothing; `prepare` needs the addresses. */
+  mode: "price" | "prepare";
 }
+
+export const DEFAULT_DEADLINE_MINUTES = 15;
+export const DEFAULT_SLIPPAGE_BPS = 100;
+
+type AddressField = "fromAddress" | "toAddress";
 
 interface Side {
   chain: ChainInfo;
@@ -61,19 +69,27 @@ interface Side {
 
 interface QuoteSummary {
   from: Side & { amount: string };
-  to: Side & { expectedAmount: string; minimumAmount: string };
-  slippageBps: number;
+  to: Side & { expectedAmount: string };
   partnerFee?: { bps: number; amount: string; symbol: string };
   /** The amount sent in USD (2 decimals), or null when no recent price is known. */
   usdValue: string | null;
   /** The expected amount received in USD, likewise. */
   usdOut: string | null;
+  /** ISO time the solver's price was read. */
+  quotedAt: string;
 }
 
 export type SwapQuote =
-  | (QuoteSummary & { status: "price_only"; missing: ("fromAddress" | "toAddress")[] })
+  | (QuoteSummary & {
+      status: "price";
+      /** What sodax_swap_prepare needs besides this call's arguments. */
+      prepareNeeds: AddressField[];
+    })
   | (QuoteSummary & {
       status: "ready";
+      /** The least the intent lets a solver deliver: the expected amount less the slippage. */
+      to: { minimumAmount: string };
+      slippageBps: number;
       quoteId: string;
       /** The hub's id of the intent, for `GET /intent/:intentHash` and the logs. */
       intentHash: string;
@@ -114,6 +130,19 @@ function suggestAmount(
   });
 }
 
+/** How the agent asks the user for a missing address. */
+export const addressAsk = (field: AddressField, fromChain: string, toChain: string) =>
+  field === "fromAddress" ? `fromAddress (their wallet on ${fromChain})` : `toAddress (their address on ${toChain})`;
+
+/** A `prepare` call without an address it needs, named in `field` (the first) like any other bad address. */
+function addressesNeeded(missing: AddressField[], from: ChainInfo, to: ChainInfo): ActionError {
+  const asks = missing.map(field => addressAsk(field, from.name, to.name));
+  return new ActionError("INVALID_ADDRESS", `Preparing a swap needs ${missing.join(" and ")}.`, {
+    nextStep: `Ask the user for ${asks.join(" and ")}, then call sodax_swap_prepare again with them.`,
+    details: { field: missing[0], missing },
+  });
+}
+
 export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Promise<SwapQuote> {
   const catalog = await getSwapCatalog();
   const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
@@ -137,13 +166,18 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     : defaultsToSender
       ? fromAddress
       : undefined;
-  const ready = fromAddress !== undefined && toAddress !== undefined;
+  const missing: AddressField[] = [];
+  if (!fromAddress) missing.push("fromAddress");
+  if (!toAddress && !defaultsToSender) missing.push("toAddress");
+  if (input.mode === "prepare" && missing.length > 0) throw addressesNeeded(missing, from.chain, to.chain);
+  // Only a prepare reserves room, so watching a price can't use up the key's open quotes.
+  const ready = input.mode === "prepare" && fromAddress !== undefined && toAddress !== undefined;
   const { probe } = source.adapter;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
   if (ready) checkQuoteRoom(callerKeyHash());
 
   const usdSent = usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals));
-  const [quoted, deadline, usd] = await Promise.all([
+  const [{ amount: quoted, quotedAt }, deadline, usd] = await Promise.all([
     getQuote({
       tokenSrc: from.token.address,
       tokenSrcChainKey: from.chain.key,
@@ -156,15 +190,18 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
         ? suggestAmount(error, from.token, amount, await usdSent)
         : error;
     }),
-    ready ? getDeadline(input.deadlineMinutes * 60) : undefined,
+    ready ? getDeadline((input.deadlineMinutes ?? DEFAULT_DEADLINE_MINUTES) * 60) : undefined,
     usdSent,
     // A dead source RPC fails the quote before any steps, not the track after the user has sent them: where building
     // the swap doesn't read the chain, the source reads it first.
     ready && probe ? chainRead(from.chain, () => probe(from.chain.key)) : undefined,
   ]);
-  const minOutput = (quoted * BigInt(10_000 - input.slippageBps)) / 10_000n;
-  if (minOutput === 0n) {
-    const error = new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the minimum received would be zero.");
+  // The intent's floor, a prepared quote's alone: a price holds nothing to one.
+  const slippageBps = input.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
+  const minOutput = (quoted * BigInt(10_000 - slippageBps)) / 10_000n;
+  if ((input.mode === "prepare" ? minOutput : quoted) === 0n) {
+    const what = input.mode === "prepare" ? "the minimum received" : "the amount received";
+    const error = new ActionError("AMOUNT_TOO_LOW", `The amount is too small: ${what} would be zero.`);
     throw suggestAmount(error, from.token, amount, usd);
   }
   const fee = partnerFee ? (amount * BigInt(partnerFee.bps)) / 10_000n : 0n;
@@ -188,25 +225,17 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
 
   const summary: QuoteSummary = {
     from: { ...describe(from), amount: formatUnits(amount, from.token.decimals) },
-    to: {
-      ...describe(to),
-      expectedAmount: formatUnits(quoted, to.token.decimals),
-      minimumAmount: formatUnits(minOutput, to.token.decimals),
-    },
-    slippageBps: input.slippageBps,
+    to: { ...describe(to), expectedAmount: formatUnits(quoted, to.token.decimals) },
     usdValue: usd?.toFixed(2) ?? null,
     usdOut: usdOut?.toFixed(2) ?? null,
+    quotedAt,
     ...(partnerFee && {
       partnerFee: { bps: partnerFee.bps, amount: formatUnits(fee, from.token.decimals), symbol: from.token.symbol },
     }),
   };
 
-  if (!ready || deadline === undefined) {
-    const missing: ("fromAddress" | "toAddress")[] = [];
-    if (!fromAddress) missing.push("fromAddress");
-    if (!toAddress && !defaultsToSender) missing.push("toAddress");
-    return { status: "price_only", ...summary, missing };
-  }
+  if (!ready || deadline === undefined) return { status: "price", ...summary, prepareNeeds: missing };
+  const minimumAmount = formatUnits(minOutput, to.token.decimals);
 
   // The live chain config must agree with the pinned swap contract and, on a spoke, connection: the SDK builds with
   // the pinned ones, and a deposit to a contract SODAX has moved from wouldn't be relayed.
@@ -261,11 +290,13 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     intent: built.intent,
     relayData: built.relayData,
     keyHash: callerKeyHash(),
-    minimumReceived: { amount: summary.to.minimumAmount, symbol: to.token.symbol, chainName: to.chain.name },
+    minimumReceived: { amount: minimumAmount, symbol: to.token.symbol, chainName: to.chain.name },
   });
   return {
     status: "ready",
     ...summary,
+    to: { ...summary.to, minimumAmount },
+    slippageBps,
     quoteId,
     intentHash: intentHash(built.intent),
     expiresAt: new Date(Number(deadline) * 1000).toISOString(),

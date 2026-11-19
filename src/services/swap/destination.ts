@@ -23,11 +23,11 @@ export interface Recipient {
 const NOT_READY = {
   NEAR: (symbol: string) => ({
     message: `The recipient's NEAR account has no storage registered for ${symbol}.`,
-    nextStep: `Tell the user the recipient must register storage for ${symbol} on NEAR before receiving it, then quote again.`,
+    nextStep: `Tell the user the recipient must register storage for ${symbol} on NEAR before receiving it, then call sodax_swap_prepare again.`,
   }),
   STELLAR: (symbol: string) => ({
     message: `The recipient's Stellar account doesn't exist yet, or has no trustline for this much ${symbol}.`,
-    nextStep: `Tell the user the recipient's Stellar account must exist and add (or raise) a trustline for ${symbol} before receiving it, then quote again.`,
+    nextStep: `Tell the user the recipient's Stellar account must exist and add (or raise) a trustline for ${symbol} before receiving it, then call sodax_swap_prepare again.`,
   }),
 };
 

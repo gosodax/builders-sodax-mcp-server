@@ -12,7 +12,13 @@ import { isHubChain } from "../services/sodax.js";
 import { type BalanceResult, readBalances } from "../services/swap/balance.js";
 import { type CancelResult, cancelSwap } from "../services/swap/cancel.js";
 import { type ActionError, RETRYABLE_CODES } from "../services/swap/errors.js";
-import { type SwapQuote, quoteSwap } from "../services/swap/quote.js";
+import {
+  DEFAULT_DEADLINE_MINUTES,
+  DEFAULT_SLIPPAGE_BPS,
+  type SwapQuote,
+  addressAsk,
+  quoteSwap,
+} from "../services/swap/quote.js";
 import { type Resolution, resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
 import { RETRY_AFTER_SEC } from "../services/swap/source.js";
@@ -53,12 +59,25 @@ const txHashArg = () =>
   });
 const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a quoteId" });
 
+// The swap both pricing and preparing take; a function, so each tool gets its own schema.
+const pairArgs = () => ({
+  fromChain: chainArg().describe(
+    'Source chain: name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161"). If a swap can\'t start there, the error lists the chains it can.',
+  ),
+  fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
+  toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
+  toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
+  amount: z
+    .union([textArg(96, 1), z.number()])
+    .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
+});
+
 // What track and cancel take to find the swap. The quote is bound to the API key that made it.
 const swapArgs = {
   txHash: txHashArg().describe(
     "Hash of the swap step's transaction on the source chain, as the wallet shows it (EVM: 0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
   ),
-  quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_quote."),
+  quoteId: quoteIdArg().optional().describe("The quoteId from sodax_swap_prepare."),
   chain: chainArg()
     .optional()
     .describe('Source chain name, key or EVM chain id ("42161"); needed only without quoteId.'),
@@ -86,7 +105,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_get_balance",
-    "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_submit_and_track rather than re-reading balances.",
+    "Read a wallet's native balance on a chain and, optionally, one token's. Neither sodax_swap_price nor sodax_swap_prepare checks balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_submit_and_track rather than re-reading balances.",
     {
       chain: chainArg().describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
@@ -105,42 +124,54 @@ export function registerSwapTools(server: McpServer): void {
 
   registerActionTool(
     server,
-    "sodax_swap_quote",
-    "Quote a cross-chain swap. With fromAddress it returns the transactions for the user's wallet to sign (approve if needed, then the swap); without it, a price only. Only some chains can start a swap: a quote from another returns UNSUPPORTED_SOURCE naming the ones that can. This server never signs or moves funds.",
+    "sodax_swap_price",
+    "Price a cross-chain swap: what the user would receive and both sides' USD value. It builds and holds nothing, so use it to show or watch a price; call sodax_swap_prepare only once the user is ready to sign. Only some chains can start a swap: a price from another returns UNSUPPORTED_SOURCE naming the ones that can.",
+    pairArgs(),
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async args => {
+      const quote = await quoteSwap(
+        { ...args, amount: amountText(args.amount), mode: "price" },
+        getRequestContext().partnerFee,
+      );
+      return { ...quote, nextStep: quoteNextStep(quote) };
+    },
+  );
+
+  registerActionTool(
+    server,
+    "sodax_swap_prepare",
+    "Prepare a cross-chain swap for the user's wallet to sign: the transactions in order (approve if needed, then the swap) and the quoteId sodax_swap_submit_and_track needs. It holds the quote until its deadline, so call it once the user has seen the price and is ready to sign; to show or watch a price, use sodax_swap_price. This server never signs or moves funds.",
     {
-      fromChain: chainArg().describe(
-        'Source chain: name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161"). If a swap can\'t start there, the error lists the chains it can.',
-      ),
-      fromToken: tokenArg().describe('Token the user sends: symbol ("USDC"), contract address, or "native".'),
-      toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
-      toToken: tokenArg().describe('Token the user receives: symbol, contract address, or "native".'),
-      amount: z
-        .union([textArg(96, 1), z.number()])
-        .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
+      ...pairArgs(),
       fromAddress: addressArg().describe(
-        "The user's wallet on the source chain. Pass it whenever you know it; omit it only for a price.",
+        "The user's wallet on the source chain, which sends the swap. Required: without it, the error names what to ask the user for.",
       ),
       toAddress: addressArg().describe(
-        "Recipient on the destination chain. Defaults to fromAddress when both chains are EVM.",
+        "Recipient on the destination chain. Needed unless both chains are EVM; then it defaults to fromAddress.",
       ),
       slippageBps: z
         .number()
         .int()
         .min(1)
         .max(500)
-        .default(100)
-        .describe("Most the received amount may fall below the quote, in basis points (100 = 1%)."),
+        .default(DEFAULT_SLIPPAGE_BPS)
+        .describe(
+          "Most the received amount may fall below the expected one, in basis points (100 = 1%). The tighter it is, the likelier no solver fills the swap; an unfilled one is refunded after its deadline.",
+        ),
       deadlineMinutes: z
         .number()
         .int()
         .min(5)
         .max(60)
-        .default(15)
+        .default(DEFAULT_DEADLINE_MINUTES)
         .describe("Minutes the user has to send the swap before the quote expires."),
     },
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async args => {
-      const quote = await quoteSwap({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
+      const quote = await quoteSwap(
+        { ...args, amount: amountText(args.amount), mode: "prepare" },
+        getRequestContext().partnerFee,
+      );
       // Nothing submits the deposit unless track is called; a field is harder to miss than a sentence.
       const afterSend: AfterSend | undefined =
         quote.status === "ready"
@@ -213,7 +244,7 @@ const RESTRICTED = {
 } as const;
 
 // The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
-const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_quote if there was none)";
+const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_price if there was none)";
 const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL}; a quote's amount stays in token units.`;
 
 /** Built from catalog symbols, chain names and formatted amounts only. */
@@ -320,16 +351,13 @@ function usdWarning(usdValue: string | null, usdOut: string | null): string {
 function quoteNextStep(quote: SwapQuote): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
-  const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name} (at least ${to.minimumAmount})`;
+  const sendAndReceive = `${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive about ${to.expectedAmount} ${to.symbol} on ${to.chain.name}`;
   const warning = usdWarning(quote.usdValue, quote.usdOut);
-  if (quote.status === "price_only") {
-    const needed = quote.missing.map(field =>
-      field === "fromAddress"
-        ? `fromAddress (their wallet on ${from.chain.name})`
-        : `toAddress (their address on ${to.chain.name})`,
-    );
-    return `${show}.${warning} To prepare the swap, call sodax_swap_quote again with ${needed.join(" and ")}.`;
+  if (quote.status === "price") {
+    const needed = quote.prepareNeeds.map(field => addressAsk(field, from.chain.name, to.chain.name));
+    return `Show the user they would send ${sendAndReceive}.${warning} Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus ${needed.join(" and ")}.`;
   }
+  const show = `Show the user they send ${sendAndReceive} (at least ${quote.to.minimumAmount})`;
   // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
   const sameAddress =
     from.chain.key !== to.chain.key && quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
@@ -444,9 +472,9 @@ export function trackNextStep(result: TrackResult): string {
       const quoteId = result.quoteId ? "the same quoteId" : "its quoteId";
       // Public non-EVM nodes keep recent txs only, so an older swap reads as unknown too.
       if (isNonEvmChain(result.chain.key)) {
-        return `${chain}'s node doesn't have this transaction: it may be too new, older than the node keeps, or not a transaction on ${chain}. If it was sent less than a minute ago, call sodax_swap_submit_and_track again in about ${RETRY_AFTER_SEC} seconds first. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+        return `${chain}'s node doesn't have this transaction: it may be too new, older than the node keeps, or not a transaction on ${chain}. If it was sent less than a minute ago, call sodax_swap_submit_and_track again in about ${RETRY_AFTER_SEC} seconds first. Check that this is the swap transaction's hash on ${chain}. If the wallet shows it was sent, this server can't follow it: the user must not send it again, and can check it in a ${chain} explorer. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and call sodax_swap_prepare again if the user still wants to swap.`;
       }
-      return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_submit_and_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and quote again if the user still wants to swap.`;
+      return `${chain} hasn't seen this transaction. Check that this is the swap transaction's hash on ${chain}, not a batch id. If the user's wallet sped it up or replaced it, call sodax_swap_submit_and_track with the new transaction's hash and ${quoteId}. Only if the wallet shows it was never sent: nothing was swapped, so stop tracking it and call sodax_swap_prepare again if the user still wants to swap.`;
     }
     case "source_failed":
       if ("depositHeld" in result && result.notThisQuote) {
@@ -458,14 +486,14 @@ export function trackNextStep(result: TrackResult): string {
       if ("depositHeld" in result) {
         return `The swap transaction failed on ${chain} after its deposit went through, so it can't be swapped: ${safe(result)}.`;
       }
-      return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Quote again if the user wants to retry.`;
+      return `The swap transaction failed on ${chain}: nothing was swapped, only gas was spent. Call sodax_swap_prepare again if the user wants to retry.`;
     case "not_submitted":
       return notSubmittedNextStep(result);
     case "not_submitted_unknown_quote":
       // Only a deposit named by its quoteId alerts.
       if (result.isDeposit && result.quoteId) return `This server has no quote for that deposit: ${safe(result)}.`;
       return result.isDeposit
-        ? "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again."
+        ? "This server has no record of that SODAX deposit. If it came from sodax_swap_prepare, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again."
         : `That transaction isn't a SODAX swap deposit on ${chain}; ask for the swap transaction's hash.`;
     case "expired_refunding":
       return "The swap won't be filled: its deposit is being refunded to the user, and they must not send it again.";

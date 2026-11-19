@@ -471,7 +471,7 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, chain: "Arbitrum" });
     expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
     expect(out.nextStep).toBe(
-      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
+      "This server has no record of that SODAX deposit. If it came from sodax_swap_prepare, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
     );
     expect(logger.error).not.toHaveBeenCalled();
     expect(submits(calls)).toEqual([]);

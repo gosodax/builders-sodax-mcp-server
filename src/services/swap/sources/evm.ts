@@ -36,7 +36,17 @@ import {
   buildCancel,
   parseEvmTx,
 } from "../swapsApi.js";
-import type { CancelStep, SourceAdapter, StepTx, SwapBatch, SwapSource, SwapStep, SwapToBuild } from "./types.js";
+import { formatUnits } from "../units.js";
+import type {
+  CancelStep,
+  EvmStep,
+  SourceAdapter,
+  StepTx,
+  SwapBatch,
+  SwapSource,
+  SwapStep,
+  SwapToBuild,
+} from "./types.js";
 
 const evm: Omit<SourceAdapter, "read" | "cancelStep"> = {
   family: "EVM",
@@ -95,10 +105,10 @@ export const HUB: SourceAdapter = {
  */
 async function prepareEvmSwap(
   source: SwapSource,
-  { request, built, approved }: SwapToBuild,
+  { request, built, approved, symbol, decimals }: SwapToBuild,
 ): Promise<{ steps: SwapStep[]; batch?: SwapBatch }> {
   const tx = parseEvmTx(built.tx);
-  const approval = approved ? undefined : await buildApprove(request);
+  const approvals = approved ? [] : approveTxs(await buildApprove(request), request.inputAmount);
   const expected = await rebuildSwapTx({
     srcChainKey: request.srcChainKey,
     srcAddress: request.srcAddress,
@@ -106,9 +116,32 @@ async function prepareEvmSwap(
     amount: request.inputAmount,
     intent: built.intent,
   });
-  const mismatch = findEvmTxMismatch(request, source.swapContract, expected, tx, approval);
+  const mismatch = findEvmTxMismatch(request, source.swapContract, expected, tx, approvals);
   if (mismatch) throw swapMismatch(request, mismatch, tx);
-  return toSteps(tx, approval, chainIdOf(source), request.srcAddress);
+  const chainId = chainIdOf(source);
+  // Each approve's calldata was just matched byte for byte to `approve(swapContract, amount)`: what the wallet signs.
+  const approveSteps = approvals.map(
+    ({ kind, tx: approveTx, amount }): EvmStep => ({
+      kind,
+      chainId,
+      tx: toStepTx(approveTx, chainId),
+      approves: { token: approveTx.to, symbol, spender: source.swapContract, amount: formatUnits(amount, decimals) },
+    }),
+  );
+  return toSteps(tx, approveSteps, chainId, request.srcAddress);
+}
+
+/** An approve tx and the amount it must set. */
+interface ApproveTx {
+  kind: Exclude<EvmStep["kind"], "swap">;
+  tx: EvmTx;
+  amount: bigint;
+}
+
+/** An approval's txs in the order they're sent: any reset, to zero, then the approve of the input amount. */
+function approveTxs(approval: Approval, inputAmount: bigint): ApproveTx[] {
+  const approve: ApproveTx = { kind: "approve", tx: approval.tx, amount: inputAmount };
+  return approval.resetTx ? [{ kind: "reset_approve", tx: approval.resetTx, amount: 0n }, approve] : [approve];
 }
 
 const chainIdOf = (source: SwapSource) => {
@@ -136,8 +169,8 @@ export function swapMismatch(request: IntentRequest, mismatch: string, builtTx: 
 }
 
 /**
- * The EVM swap tx must be, byte for byte, the one the SDK builds for the checked intent, and any approval
- * `approve(the pinned swap contract, exact amount)` on the source token. Names the first check that fails.
+ * The EVM swap tx must be, byte for byte, the one the SDK builds for the checked intent, and each approve
+ * `approve(the pinned swap contract, its amount)` on the source token. Names the first check that fails.
  */
 function findEvmTxMismatch(
   request: IntentRequest,
@@ -146,7 +179,7 @@ function findEvmTxMismatch(
   /** The SDK's rebuild of the swap tx, if it could. */
   expected: SwapTx | undefined,
   tx: EvmTx,
-  approval?: Approval,
+  approvals: ApproveTx[],
 ): string | undefined {
   const approves = (step: EvmTx, amount: bigint) =>
     same(step.from, request.srcAddress) &&
@@ -159,11 +192,7 @@ function findEvmTxMismatch(
     ["tx.to", same(tx.to, expected?.to ?? "")],
     ["tx.value", BigInt(tx.value) === expected?.value],
     ["tx.data", same(tx.data, expected?.data ?? "")],
-    [
-      "approval",
-      !approval ||
-        (approves(approval.tx, request.inputAmount) && (!approval.resetTx || approves(approval.resetTx, 0n))),
-    ],
+    ["approval", approvals.every(({ tx: step, amount }) => approves(step, amount))],
   ];
   return checks.find(([, ok]) => !ok)?.[0];
 }
@@ -179,18 +208,14 @@ function toStepTx(tx: EvmTx, chainId: number): StepTx {
 /** The steps in order and, with an approval, the approve and swap as one batch. A reset stays out: it must land first. */
 function toSteps(
   swapTx: EvmTx,
-  approval: Approval | undefined,
+  approveSteps: EvmStep[],
   chainId: number,
   from: string,
 ): { steps: SwapStep[]; batch?: SwapBatch } {
   const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx, chainId) };
-  if (!approval) return { steps: [swap] };
-  const approve: SwapStep = { kind: "approve", chainId, tx: toStepTx(approval.tx, chainId) };
-  const reset: SwapStep[] = approval.resetTx
-    ? [{ kind: "reset_approve", chainId, tx: toStepTx(approval.resetTx, chainId) }]
-    : [];
+  if (approveSteps.length === 0) return { steps: [swap] };
   return {
-    steps: [...reset, approve, swap],
+    steps: [...approveSteps, swap],
     batch: {
       replaces: ["approve", "swap"],
       method: "wallet_sendCalls",

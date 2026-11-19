@@ -20,7 +20,9 @@ import { clearAlerts } from "../services/swap/alerts.js";
 import { checkRecipient } from "../services/swap/destination.js";
 import { clearQuoteCache, getCachedQuote, openQuotes } from "../services/swap/quoteCache.js";
 import { NEAR } from "../services/swap/sources/near.js";
+import type { EvmStep, SwapStep } from "../services/swap/sources/types.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
+import { formatUnits } from "../services/swap/units.js";
 import { clearUsdBackoff } from "../services/swap/usd.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { type QuoteOut, callTool, callQuote as quote, swapClient } from "./__fixtures__/swapClient.js";
@@ -49,7 +51,9 @@ vi.mock("../services/solver.js", () => ({
 const sdk = await vi.importActual<typeof import("../services/sodax.js")>("../services/sodax.js");
 await sdk.initSodax();
 
-const USER = "0x000000000000000000000000000000000000dEaD";
+const USER = "0x1234567890123456789012345678901234567890";
+// A recipient given explicitly, apart from the sender.
+const RECIPIENT = `0x${"4".repeat(40)}`;
 const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const SONIC_USDC = "0x29219dd400f2Bf60E5a23d13Be72B486D4038894";
 const DEADLINE = "1793001289";
@@ -63,10 +67,27 @@ const HUB_WALLET = `0x${"c".repeat(40)}`;
 const word = (value: bigint | string) =>
   (typeof value === "bigint" ? value.toString(16) : value.replace(/^0x/, "")).toLowerCase().padStart(64, "0");
 const approveData = (spender: string, amount: bigint | string) => `0x095ea7b3${word(spender)}${word(BigInt(amount))}`;
+/** What an approve step's own tx says, read off its calldata: `approve(spender, amount)` on `tx.to`, USDC's 6 decimals. */
+function decodedApprove({ tx }: EvmStep) {
+  expect(tx.data.slice(0, 10)).toBe("0x095ea7b3");
+  return {
+    token: tx.to,
+    spender: `0x${tx.data.slice(34, 74)}`,
+    amount: formatUnits(BigInt(`0x${tx.data.slice(74)}`), 6),
+  };
+}
+/** A quote's steps from an EVM source. */
+const evmSteps = (steps: SwapStep[] = []) => steps.filter((step): step is EvmStep => "chainId" in step);
 
 const USDC_TO_SONIC = { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "sonic", toToken: SONIC_USDC };
 const SUI_USER = `0x${"5".repeat(64)}`;
-const SUI_TO_SONIC = { fromChain: "sui", fromToken: "native", toChain: "sonic", toToken: SONIC_USDC, toAddress: USER };
+const SUI_TO_SONIC = {
+  fromChain: "sui",
+  fromToken: "native",
+  toChain: "sonic",
+  toToken: SONIC_USDC,
+  toAddress: RECIPIENT,
+};
 // What the SDK's raw Sui build returns, as the mocked `buildNonEvmDeposit` does: its unbuilt tx calls `to`.
 const SUI_TRANSFER = "0xa17a::asset_manager::transfer";
 // Given the packaged asset manager's and connection's state objects, as the SDK's build is.
@@ -91,6 +112,8 @@ interface SwapsStub {
   tokens?: string;
   configs?: string;
   quote?: () => Response;
+  /** Answer `/intents` with this instead of building. */
+  intents?: () => Response;
   deadline?: string;
   /** Seconds the `/intents` build takes. */
   buildSec?: number;
@@ -153,6 +176,7 @@ function stubSwaps(stub: SwapsStub = {}) {
       });
     }
     if (path === "/intents") {
+      if (stub.intents) return stub.intents();
       // Like the live API, the SDK builds both: the intent for the body, and the tx for the intent (the
       // live builds match it byte for byte, see sodax.test.ts).
       if (stub.buildSec) vi.setSystemTime(Date.now() + stub.buildSec * 1000);
@@ -290,6 +314,9 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       "Their wallet must be on Arbitrum (chain id 42161) to send the steps; switch it there first if it isn't.",
     );
     expect(out.nextStep).toContain(
+      `Tell them the approve lets ${ASSET_MANAGER}, the SODAX swap contract, spend 5 USDC of theirs.`,
+    );
+    expect(out.nextStep).toContain(
       "Then call sodax_swap_submit_and_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: that call is what submits the swap, or starts its refund.",
     );
     expect(out.nextStep).not.toContain("don't send");
@@ -406,6 +433,7 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     expect(out.steps?.[0].tx.value).toBe("0x2386f26fc10000");
     expect(out.batch).toBeUndefined();
     expect(out.nextStep).not.toContain("batch");
+    expect(out.nextStep).not.toContain("the approve lets");
     expect(calls.map(call => call.path)).not.toContain("/allowance/check");
   });
 
@@ -431,6 +459,27 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     expect(out.nextStep).toContain(
       "(or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)",
     );
+  });
+
+  it("says what each approve allows, as its own calldata does, and nothing on the swap", async () => {
+    stubSwaps({ resetTx: true });
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    const [reset, approve, swap] = evmSteps(out.steps);
+    for (const [step, amount] of [
+      [reset, "0"],
+      [approve, "5"],
+    ] as const) {
+      const { approves } = step;
+      expect({ ...approves, spender: approves?.spender.toLowerCase() }).toEqual({
+        ...decodedApprove(step),
+        symbol: "USDC",
+      });
+      expect(approves).toEqual({ token: ARB_USDC, symbol: "USDC", spender: ASSET_MANAGER, amount });
+    }
+    expect(swap).not.toHaveProperty("approves");
+    // The reset to zero isn't the allowance the user grants.
+    expect(out.nextStep).toContain(`the approve lets ${ASSET_MANAGER}, the SODAX swap contract, spend 5 USDC`);
+    expect(out.nextStep).not.toContain("spend 0 USDC");
   });
 
   it.each<[string, SwapsStub, string]>([
@@ -617,6 +666,43 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
   });
 
   it.each([
+    [ZERO, "isn't a valid address"],
+    ["0x000000000000000000000000000000000000dEaD", "burns whatever it receives on Sonic"],
+    ["0x000000000000000000000000000000000000dead", "burns whatever it receives on Sonic"],
+    // Not its checksum: refused as any such address is.
+    ["0x000000000000000000000000000000000000DEAD", "isn't a valid address"],
+  ])(
+    "refuses the burn address %s as an EVM recipient, naming toAddress, before asking for a quote",
+    async (toAddress, message) => {
+      const calls = stubSwaps();
+      const { isError, out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: RECIPIENT, toAddress });
+      expect(isError).toBe(true);
+      expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "toAddress" });
+      expect(out.error.message).toContain(message);
+      expect(calls).toEqual([]);
+    },
+  );
+
+  // A placeholder sender: a wallet that ignores `from` would send the user's own funds to it.
+  it("refuses the burn address as the sender its recipient defaults to, naming fromAddress", async () => {
+    const calls = stubSwaps();
+    const { out } = await quote({
+      ...USDC_TO_SONIC,
+      amount: "5",
+      fromAddress: "0x000000000000000000000000000000000000dEaD",
+    });
+    expect(out.error).toMatchObject({ code: "INVALID_ADDRESS", field: "fromAddress" });
+    expect(calls).toEqual([]);
+  });
+
+  it("quotes for a recipient one digit off the burn address", async () => {
+    const toAddress = "0x000000000000000000000000000000000000deaf";
+    stubSwaps();
+    const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER, toAddress });
+    expect(out).toMatchObject({ status: "ready", toAddress });
+  });
+
+  it.each([
     [5, "5"],
     [0.5, "0.5"],
     [123456.789012, "123456.789012"],
@@ -711,6 +797,8 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       expect(isError).toBe(true);
       expect(out.error).toMatchObject({ code: "PRICE_OFF_MARKET", usdValue: "5.00", usdOut: "4.40" });
       expect(out.nextStep).toContain("quoted far below market prices");
+      // Live, $5 to Bitcoin quoted $4.44 and $50 quoted $49.38: on a small swap the fixed fee is the cause.
+      expect(out.nextStep).toContain("ask whether to try a larger amount");
       expect(calls.map(call => call.path)).not.toContain("/intents");
       expect(error).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -798,6 +886,11 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       () =>
         Response.json({ message: "getQuote failed: No path was found between 0x1 and 0x2", code: -4 }, { status: 422 }),
       { code: "SWAP_REJECTED", message: "No route was found for this pair at this amount." },
+    ],
+    // An SDK string code with no advice of its own stays the plain refusal.
+    [
+      () => Response.json({ message: "getQuote failed: bad params", code: "VALIDATION_FAILED" }, { status: 400 }),
+      { code: "SWAP_REJECTED", message: "The swap service refused this swap." },
     ],
     [() => new Response("", { status: 502 }), { code: "UPSTREAM_UNAVAILABLE" }],
     [() => new Response("", { status: 404 }), { code: "UPSTREAM_UNAVAILABLE" }],
@@ -1103,6 +1196,31 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  // What the live API answered for a Sui wallet holding none of the token (backend swaps error-mapper, SDK getCoin).
+  it("says to check the balance when the swap service can't build the swap from the wallet", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const message = `createIntent failed: [SuiIntentService.getCoin] Coin=0x2::sui::SUI not found for address=${SUI_USER} and amount=5000000000`;
+    stubSwaps({
+      intents: () =>
+        Response.json(
+          { message, feature: "swap", code: "INTENT_CREATION_FAILED", context: { phase: "intentCreation" } },
+          { status: 422 },
+        ),
+    });
+    const { isError, out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
+    expect(isError).toBe(true);
+    expect(out.error).toEqual({
+      code: "SWAP_REJECTED",
+      message: "The swap service couldn't build this swap from that wallet.",
+    });
+    expect(out.nextStep).toBe(
+      "Check with sodax_get_balance that the wallet holds the amount plus fees on the source chain. If it doesn't, tell the user what's missing; if it does, tell the user the swap couldn't be built right now and to try again later.",
+    );
+    expect(JSON.stringify(out)).not.toContain("SuiIntentService");
+    expect(buildNonEvmDeposit).not.toHaveBeenCalled();
+    expect(openQuotes().open).toBe(0);
   });
 
   it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, its sender set, no batch", async () => {

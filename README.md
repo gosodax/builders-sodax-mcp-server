@@ -106,7 +106,8 @@ every transaction; the server never signs.
    returns `steps` (an approve when one is needed, after a `reset_approve` when the token needs its allowance zeroed
    first, then the swap), a `quoteId`, the `intentHash` the hub will know the swap by, and `expiresAt`, by which the
    swap must be mined (track it even after). It holds the quote until then. Both carry `quotedAt`, when this server
-   got the solver's price.
+   got the solver's price. Each approve and reset step carries `approves`: the token, its symbol, the spender and the
+   amount its own calldata sets. An EVM recipient that is the zero or `0x…dEaD` burn address is refused.
 3. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
@@ -157,7 +158,8 @@ sender's public key and post-conditions the wallet must add itself, and the SDK 
 passes the address where the public key goes). On Sonic the swap calls the intents contract directly, so its approval
 goes to that contract. A Stellar source whose trustline the SDK says has too little room for the amount is refused: the
 server doesn't build a changeTrust step. Every result the tools return carries
-a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
+a `nextStep` for the agent, and a `requestId` for the user to quote when asking for help: the `request.id` of the
+call's log records. An input that fails a tool's schema gets the MCP SDK's validation error instead.
 
 The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
 
@@ -246,7 +248,7 @@ The swap tools never sign or move funds. They also:
 | `sodax_get_token_supply` | Get SODA token supply info (total, circulating, burned) |
 | `sodax_get_total_supply` | Get SODA total supply as a plain number |
 | `sodax_get_circulating_supply` | Get SODA circulating supply as a plain number |
-| `sodax_refresh_cache` | Clear cached data to get fresh results |
+| `sodax_refresh_cache` | Clear cached data to get fresh results (at most once a minute) |
 
 ### Swaps (need an API key)
 

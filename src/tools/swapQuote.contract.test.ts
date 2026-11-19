@@ -17,7 +17,7 @@ const SOLANA_SENDER = "7pDfGNrY3Be2yYW496rYzLQHVJzMDUyTWK2eguhZkPAx";
 /** A quote's steps from an EVM source. */
 const evmSteps = (out: QuoteOut) => (out.steps ?? []) as EvmStep[];
 
-const USER = "0x000000000000000000000000000000000000dEaD";
+const USER = "0x1234567890123456789012345678901234567890";
 const ARB_USDC = { fromChain: "0xa4b1.arbitrum", fromToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" };
 const TO_BASE_USDC = { toChain: "0x2105.base", toToken: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" };
 
@@ -194,7 +194,8 @@ describe("sodax_swap_price and sodax_swap_prepare against the live Swaps API", (
       ...TO_BASE_USDC,
       amount: "0.05",
       fromAddress: SOLANA_SENDER,
-      toAddress: USER,
+      // Not USER: the burn address isn't taken as a recipient.
+      toAddress: `0x${"4".repeat(40)}`,
     });
     expect(out.error ?? {}).toEqual({});
     expect(out.steps).toEqual([

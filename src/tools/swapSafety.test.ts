@@ -14,7 +14,7 @@ vi.mock("../services/sodax.js", async importOriginal => {
   return { ...actual, walletBalance: vi.fn() };
 });
 
-const USER = "0x000000000000000000000000000000000000dEaD";
+const USER = "0x1234567890123456789012345678901234567890";
 const TX = `0x${"ab".repeat(32)}`;
 const PHRASE = `${"abandon ".repeat(11)}about`;
 const API_KEY = `sodax_${"Ab3-".repeat(11)}`;

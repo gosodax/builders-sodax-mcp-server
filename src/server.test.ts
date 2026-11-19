@@ -142,6 +142,12 @@ describe("instructions", () => {
     );
   });
 
+  it("tell a swap connection where the user gets help, with the requestId to give", async () => {
+    const swap = await instructions({ builder: false, swap: true });
+    expect(swap).toContain("ask the SODAX team on Discord, https://www.sodax.com/discord, giving the requestId");
+    expect(await instructions({ builder: true, swap: false })).not.toContain("discord");
+  });
+
   it("tell a keyless default connection, last, that the swap tools need a key", async () => {
     const builder = await instructions({ builder: true, swap: false });
     const keyless = selectToolsets(undefined, { apiKey: "missing", swapToolsEnabled: true });

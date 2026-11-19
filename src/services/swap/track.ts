@@ -6,7 +6,7 @@
  * payload submitted are the ones quoted, and the receipt must hold that quote's deposit.
  */
 
-import { sameHex as same } from "../../constants.js";
+import { SODAX_HELP_DESK, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 import { intentHash, isHubChain } from "../sodax.js";
@@ -48,8 +48,7 @@ const STATUSES: readonly string[] = ["pending", ...STAGES, "solved", "failed"];
 export const DEPOSIT_SAFE =
   "tell the user the deposit is on chain and safe, SODAX has been alerted to recover it, and they must not send it again";
 /** The same when the alert reached only the logs: the hourly alert cap was full. */
-export const DEPOSIT_SAFE_UNALERTED =
-  "tell the user the deposit is on chain and safe, that they must not send it again, and to give SODAX support its transaction hash to recover it";
+export const DEPOSIT_SAFE_UNALERTED = `tell the user the deposit is on chain and safe, that they must not send it again, and to give its transaction hash to ${SODAX_HELP_DESK} to recover it`;
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;

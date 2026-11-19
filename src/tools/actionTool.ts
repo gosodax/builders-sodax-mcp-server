@@ -3,12 +3,15 @@
  * the handler runs), structured output with a `status` and one `nextStep`
  * sentence, and failures returned as `{ status: "error", error: { code, message },
  * nextStep }` with `isError`. Failures are returned, never thrown, so no caller
- * input reaches analytics (which records a thrown error's message).
+ * input reaches analytics (which records a thrown error's message). Every result
+ * carries the call's `requestId`, the `request.id` of its log records, for the
+ * user to quote when asking for help.
  */
 
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { getRequestContext } from "../services/requestContext.js";
 import { alertOperator } from "../services/swap/alerts.js";
 import { ALERTED_CODES, ActionError } from "../services/swap/errors.js";
 import { screenSecrets } from "../services/swap/secrets.js";
@@ -65,9 +68,12 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   registerAppTool(server, "swap", name, description, input, annotations, handler as unknown as ToolCallback<Args>);
 }
 
-function toResult(out: ActionOutput, isError = false): CallToolResult {
+/** The output as structured content and, for clients that pass only `content` on, as compact JSON text. */
+function toResult(output: ActionOutput, isError = false): CallToolResult {
+  const { requestId } = getRequestContext();
+  const out = requestId ? { ...output, requestId } : output;
   return {
-    content: [{ type: "text", text: JSON.stringify(out, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(out) }],
     structuredContent: out,
     ...(isError && { isError }),
   };

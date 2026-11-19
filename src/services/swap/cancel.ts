@@ -4,7 +4,7 @@
  * endpoint only builds the tx. The intent comes from the hub, never from the agent.
  */
 
-import { sameHex as same } from "../../constants.js";
+import { SODAX_HELP_DESK, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import {
   cancelPayload,
@@ -314,7 +314,7 @@ async function depositsIntent(
     // node drops older txs for good, and calling again won't help.
     if (!source.adapter.prunes) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${name} right now.`);
     throw new ActionError("QUOTE_NOT_FOUND", `Without its quote, this server can't check this swap on ${name}.`, {
-      nextStep: `${name}'s node no longer has the swap's transaction. Call sodax_swap_cancel again with its quoteId if the user has it; if not, tell the user this server can't cancel it, that it is safe on the SODAX hub, and to give SODAX support its transaction hash.`,
+      nextStep: `${name}'s node no longer has the swap's transaction. Call sodax_swap_cancel again with its quoteId if the user has it; if not, tell the user this server can't cancel it, that it is safe on the SODAX hub, and to give its transaction hash to ${SODAX_HELP_DESK}.`,
     });
   }
   // Events it can't read prove nothing either way: not an upstream mismatch.

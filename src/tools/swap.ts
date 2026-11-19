@@ -105,7 +105,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_get_balance",
-    "Read a wallet's native balance on a chain and, optionally, one token's. The quote doesn't check balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_submit_and_track rather than re-reading balances.",
+    "Read a wallet's native balance on a chain and, optionally, one token's. Neither sodax_swap_price nor sodax_swap_prepare checks balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_submit_and_track rather than re-reading balances.",
     {
       chain: chainArg().describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',

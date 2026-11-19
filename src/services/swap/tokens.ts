@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { CACHE_DURATION_MS, CHAIN_KEY_PATTERN, EVM_ADDRESS_PATTERN, ZERO_ADDRESS_PATTERN } from "../../constants.js";
 import { logger } from "../logger.js";
-import { runWithRequestContext } from "../requestContext.js";
+import { getRequestContext, runWithRequestContext, withoutCredentials } from "../requestContext.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getSwapTokens } from "./swapsApi.js";
@@ -41,9 +41,32 @@ const chainSchema = z
   .refine(chain => chain.type !== "EVM" || typeof chain.chainId === "number");
 
 export type SwapChain = z.infer<typeof chainSchema> & {
-  /** The spoke's asset manager per the live config; quotes pin it from the SDK and only check it agrees. */
-  swapContract?: string;
+  /**
+   * The spoke's asset manager per the live config, `null` if it gives one that isn't an address: quotes pin it from
+   * the SDK and only check it agrees, so one that can't is refused rather than skipped.
+   */
+  swapContract?: string | null;
+  /** Its `connection`, likewise. */
+  connection?: string | null;
 };
+
+// Any family's address as its config spells it: Sui's `<package>::<module>::<object>` is the longest.
+const CONFIG_ADDRESS_PATTERN = /^[\x21-\x7e]{1,256}$/;
+
+/**
+ * A live config address as given, `null` if it isn't one (an EVM chain's must be an EVM address). None, or the zero
+ * address, is no address given.
+ */
+function configAddress(type: string, value: unknown): string | null | undefined {
+  if (value === undefined || value === null || (typeof value === "string" && ZERO_ADDRESS_PATTERN.test(value))) {
+    return undefined;
+  }
+  const valid =
+    typeof value === "string" &&
+    CONFIG_ADDRESS_PATTERN.test(value) &&
+    (type !== "EVM" || EVM_ADDRESS_PATTERN.test(value));
+  return valid ? value : null;
+}
 
 /** Tokens by chain key, and each chain's family and id when its config gives them. */
 export interface SwapCatalog {
@@ -84,14 +107,19 @@ export function getSwapCatalog(): Promise<SwapCatalog> {
     }
     return Promise.resolve(current.catalog);
   }
-  inFlight ??= refreshCatalog();
+  // A caller that waits on another request's refresh has no records of it: the link is this one.
+  if (inFlight) logger.info({ "refresh.request.id": refreshRequestId }, "Waiting for the catalog refresh in flight");
+  else inFlight = refreshCatalog();
   return inFlight;
 }
 
+let refreshRequestId: string | undefined;
+
 function refreshCatalog(): Promise<SwapCatalog> {
   const startedIn = generation;
-  // Shared by every caller, so no caller's key: one bad key can't fail the load for the others.
-  return runWithRequestContext({}, loadCatalog)
+  refreshRequestId = getRequestContext().requestId;
+  // Shared by every caller, so no caller's key: one bad key can't fail the load for the others. The id stays.
+  return runWithRequestContext(withoutCredentials(), loadCatalog)
     .then(
       catalog => {
         if (startedIn === generation) cached = { catalog, fetchedAt: Date.now() };
@@ -105,6 +133,11 @@ function refreshCatalog(): Promise<SwapCatalog> {
     .finally(() => {
       if (startedIn === generation) inFlight = undefined;
     });
+}
+
+/** Seconds since the catalog was fetched, for the heartbeat; none before the first fetch. */
+export function swapCatalogAgeSec(): number | undefined {
+  return cached && Math.round((Date.now() - cached.fetchedAt) / 1000);
 }
 
 /** Make the next call refresh, while the current catalog still covers an outage. */
@@ -132,11 +165,11 @@ async function loadCatalog(): Promise<SwapCatalog> {
     else {
       const unmarked = Object.keys(catalog.tokens).filter(key => !catalog.tokens[key].some(token => token.isNative));
       if (unmarked.length > 0) logger.warn({ chains: unmarked }, "No native token is marked on these swap chains");
-      // Without one, a chain can't be named by chain id and takes no 0xEeee placeholder.
+      // Without one, a chain can't be quoted and takes no 0xEeee placeholder.
       const unconfigured = Object.keys(catalog.tokens).filter(key => !catalog.chains[key]);
       if (unconfigured.length > 0) logger.warn({ chains: unconfigured }, "No valid chain config for these swap chains");
       // The quote pins asset managers from the SDK; none in the live config means it changed shape.
-      if (!Object.values(catalog.chains).some(chain => chain.swapContract)) {
+      if (!Object.values(catalog.chains).some(chain => chain.type === "EVM" && chain.swapContract)) {
         logger.error("No EVM chain config names an asset manager");
       }
       return catalog;
@@ -161,13 +194,14 @@ export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatal
     }
     const config = asRecord(configs[chainKey]);
     const chain = chainSchema.safeParse(config.chain);
-    const assetManager = asRecord(config.addresses).assetManager;
     if (chain.success) {
+      const addresses = asRecord(config.addresses);
+      const swapContract = configAddress(chain.data.type, addresses.assetManager);
+      const connection = configAddress(chain.data.type, addresses.connection);
       catalog.chains[chainKey] = {
         ...chain.data,
-        ...(typeof assetManager === "string" &&
-          EVM_ADDRESS_PATTERN.test(assetManager) &&
-          !ZERO_ADDRESS_PATTERN.test(assetManager) && { swapContract: assetManager }),
+        ...(swapContract !== undefined && { swapContract }),
+        ...(connection !== undefined && { connection }),
       };
     }
     const nativeAddress = typeof config.nativeToken === "string" ? canonicalAddress(config.nativeToken) : undefined;

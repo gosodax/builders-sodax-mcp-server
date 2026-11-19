@@ -18,6 +18,7 @@ import {
   refreshDocsTools,
 } from "../services/docsProxy.js";
 import { logger } from "../services/logger.js";
+import { type ToolFailure, failureOf, markFailure } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 
 const DOCS_READ_ONLY: ToolAnnotations = {
@@ -78,6 +79,22 @@ function convertToZodSchema(inputSchema: DocsTool["inputSchema"]): z.ZodTypeAny 
   return z.object(shape);
 }
 
+/** A docs tool's failure as the agent sees it, with the way out; its code goes to the call's log record. */
+function docsFailure(text: string, failure: ToolFailure) {
+  return markFailure(
+    {
+      content: [
+        {
+          type: "text" as const,
+          text: `⚠️ ${text}\n\nTry docs_refresh to reconnect, or visit https://docs.sodax.com directly.`,
+        },
+      ],
+      isError: true,
+    },
+    failure,
+  );
+}
+
 /**
  * Register SODAX docs MCP tools as proxied tools in our server.
  * Safe to call on each new McpServer instance (per-request isolation).
@@ -96,7 +113,7 @@ export async function registerDocsProxyTools(server: McpServer): Promise<number>
       return 0;
     }
 
-    logger.debug({ toolCount: tools.length }, "Registering docs tools as docs_* proxies");
+    logger.debug({ "tool.count": tools.length }, "Registering docs tools as docs_* proxies");
 
     for (const tool of tools) {
       try {
@@ -116,28 +133,18 @@ export async function registerDocsProxyTools(server: McpServer): Promise<number>
             // so it degrades to a friendly message instead of throwing a raw
             // TypeError on result.isError / result.content.map below.
             if (!result || !Array.isArray(result.content)) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: `⚠️ docs_${tool.name} returned an unexpected response.\n\nTry docs_refresh to reconnect, or visit https://docs.sodax.com directly.`,
-                  },
-                ],
-                isError: true,
-              };
+              return docsFailure(`docs_${tool.name} returned an unexpected response.`, {
+                code: "UPSTREAM_BAD_RESPONSE",
+              });
             }
 
-            // Add helpful context if the call failed
+            // Add helpful context if the call failed. A call that never reached the docs server says why; one it
+            // answered with an error is its tool's.
             if (result.isError) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: `⚠️ docs_${tool.name} failed: ${result.content[0]?.text || "Unknown error"}\n\nTry docs_refresh to reconnect, or visit https://docs.sodax.com directly.`,
-                  },
-                ],
-                isError: true,
-              };
+              return docsFailure(
+                `docs_${tool.name} failed: ${result.content[0]?.text || "Unknown error"}`,
+                failureOf(result) ?? { code: "DOCS_TOOL_ERROR" },
+              );
             }
 
             return {
@@ -152,11 +159,11 @@ export async function registerDocsProxyTools(server: McpServer): Promise<number>
 
         registeredCount++;
       } catch (toolError) {
-        logger.error({ err: toolError, toolName: tool.name }, "Failed to register docs tool");
+        logger.error({ err: toolError, "gen_ai.tool.name": `docs_${tool.name}` }, "Failed to register docs tool");
       }
     }
 
-    logger.debug({ registeredCount }, "Registered tools from SODAX docs MCP");
+    logger.debug({ "tool.count": registeredCount }, "Registered tools from SODAX docs MCP");
   } catch (error) {
     logger.error({ err: error }, "Failed to register docs proxy tools");
   }

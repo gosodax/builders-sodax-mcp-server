@@ -13,8 +13,10 @@
  *   (`pnpm install --prod`, which strips `pino-pretty`) won't crash at boot.
  */
 
-import pino, { type Logger, type LoggerOptions } from "pino";
+import pino, { type DestinationStream, type Logger, type LoggerOptions } from "pino";
 import { isSodaxKey } from "../constants.js";
+import type { OtelLogs } from "./otel.js";
+import { getRequestContext } from "./requestContext.js";
 
 // Any scheme (https, wss, …), slashes JSON-escaped or not; stops at quotes and backslashes, so it can
 // run over serialized JSON. The scheme is bounded so a long run without "://" (from a hostile RPC's
@@ -92,6 +94,18 @@ const options: LoggerOptions = {
   level,
   serializers: { err: redactErr },
   timestamp: pino.stdTimeFunctions.isoTime,
+  // Every record of one MCP request (or stdio tool call) carries its id (#110).
+  mixin: () => {
+    const { requestId } = getRequestContext();
+    return requestId ? { "request.id": requestId } : {};
+  },
+  // The serialized line, before the destination writes it: the OTLP destination reads the same bytes stderr gets.
+  hooks: {
+    streamWrite: line => {
+      otelLogs?.write(line);
+      return line;
+    },
+  },
 };
 
 export const logger: Logger = isDev
@@ -104,9 +118,43 @@ export const logger: Logger = isDev
     })
   : pino(options, pino.destination(2));
 
+let otelLogs: OtelLogs | undefined;
+
+/** From here on every line the logger writes also goes to unified logging (#110); see `options.hooks`. */
+export function attachOtelLogs(otel: OtelLogs): void {
+  otelLogs = otel;
+}
+
+export function detachOtelLogs(): void {
+  otelLogs = undefined;
+}
+
+/** A logger with the same options over any destination: how tests read records without the singleton. */
+export const buildLogger = (stream: DestinationStream, overrides: Partial<LoggerOptions> = {}): Logger =>
+  pino({ ...options, ...overrides }, stream);
+
 if (requested !== undefined && !requestedIsValid) {
   logger.warn(
     { requested: process.env.LOG_LEVEL, fallback: "info", valid: VALID_LEVELS },
     "Invalid LOG_LEVEL — falling back to info",
   );
+}
+
+/**
+ * A thrown value's name for an `error.type` attribute: what failed, never its text. Node's errors carry a code
+ * themselves (ECONNRESET); fetch wraps the reason in `cause.code` (ECONNREFUSED, UND_ERR_CONNECT_TIMEOUT) under a
+ * bare TypeError. Only a code-shaped value is taken, since viem puts the raw RPC error object in `cause`.
+ */
+export function errorName(error: unknown): string {
+  return (
+    errorCode(error) ??
+    errorCode((error as { cause?: unknown } | undefined)?.cause) ??
+    (error instanceof Error ? error.name : typeof error)
+  );
+}
+
+/** A value's `code` when it is code-shaped (ECONNRESET, UND_ERR_SOCKET), else none. */
+export function errorCode(value: unknown): string | undefined {
+  const code = (value as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : undefined;
 }

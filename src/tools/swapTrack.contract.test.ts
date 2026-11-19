@@ -1,16 +1,27 @@
 /**
- * `sodax_swap_track` and its deposit checks against live chains and the live Swaps API:
+ * `sodax_swap_submit_and_track` and its deposit checks against live chains and the live Swaps API:
  * `pnpm test:contract` (canary by default, `SODAX_ENV=production` for production). Reads only:
  * every POST to the Swaps API is refused here, so nothing is submitted or relayed, and nothing is signed.
  */
 
-import { spokeChainConfig } from "@sodax/types";
+import { IntentsAbi } from "@sodax/sdk";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { http, createPublicClient, decodeFunctionData } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
-import { evmSpokeFor, getEvmReceipt, initSodax, isHubChain } from "../services/sodax.js";
+import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isHubChain } from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { DEPOSIT_TX } from "../services/swap/__fixtures__/deposit.js";
-import { HUB_RELAY_ID, decodeRlpList, depositMessages } from "../services/swap/sourceTx.js";
+import {
+  HUB_RELAY_ID,
+  INTENT_CREATED_TOPIC,
+  connectionMessages,
+  decodeRlpList,
+  depositMessages,
+  hubIntentHashes,
+} from "../services/swap/sourceTx.js";
+import { pinnedSourceOf } from "../services/swap/sources/index.js";
+import { getHubIntent } from "../services/swap/swapsApi.js";
 import { getSwapCatalog } from "../services/swap/tokens.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callTool } from "./__fixtures__/swapClient.js";
@@ -45,7 +56,7 @@ const PRODUCTION_SWAP = {
 const TRACKED = CANARY ? CANARY_SWAPS : [PRODUCTION_SWAP];
 const UNKNOWN = CANARY ? PRODUCTION_SWAP : CANARY_SWAPS[0];
 
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 
 let fetchSpy: MockInstance<typeof fetch>;
 /** Every POST this server tried on the Swaps API (all refused). */
@@ -70,7 +81,7 @@ afterAll(() => {
   vi.unstubAllEnvs();
 });
 
-describe("sodax_swap_track against live chains and the live Swaps API", () => {
+describe("sodax_swap_submit_and_track against live chains and the live Swaps API", () => {
   it.each(TRACKED)("reports the swap from $chain as solved, with its hub and fill txs, each call", async swap => {
     for (let i = 0; i < 3; i++) {
       const { out } = await track({ txHash: swap.txHash, chain: swap.chain });
@@ -93,7 +104,7 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     expect(receipt?.reverted).toBe(false);
     if (!receipt) return;
     // One `Message` log (MESSAGE_TOPIC) from the asset manager, to the hub.
-    const messages = depositMessages(receipt, connection, assetManager);
+    const messages = depositMessages(connectionMessages(receipt, connection), assetManager);
     expect(messages).toHaveLength(1);
     const [message] = messages;
     expect(message.dstChainId).toBe(HUB_RELAY_ID);
@@ -108,6 +119,60 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     expect(swapsPosts()).toEqual([]);
   });
 
+  // A swap from Sonic is proven by this log, so its layout is checked on real hub txs: the topic, the contract, and
+  // the hash as its first data word, equal to the SDK's hash of the intent the Swaps API reads from the same tx.
+  it.each(TRACKED)("finds the intent's hash in the IntentCreated log of hub tx $hubTxHash", async ({ hubTxHash }) => {
+    const receipt = await getEvmReceipt("sonic", hubTxHash);
+    const intent = await getHubIntent(hubTxHash);
+    const logged = hubIntentHashes(
+      receipt ?? { reverted: true, blockNumber: 0n, txIndex: 0, logs: [] },
+      solverConfig.intentsContract,
+      INTENT_CREATED_TOPIC,
+    );
+    expect(logged).toEqual([intentHash(intent).toLowerCase()]);
+  });
+
+  // Track and cancel ask the hub whether it still holds an intent; a solved one is gone from intentStates.
+  it.each(TRACKED)(
+    "reads the intent of hub tx $hubTxHash under its hash: held once created, gone once solved",
+    async ({ hubTxHash }) => {
+      const hash = intentHash(await getHubIntent(hubTxHash)) as `0x${string}`;
+      expect(await hubIntentClosed(hash, hubTxHash)).toBe(true);
+      // Any unknown key reads as gone too: at its own block the intent is there, so the key and the decoding are right.
+      const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
+      const { blockNumber } = await client.getTransactionReceipt({ hash: hubTxHash as `0x${string}` });
+      const [exists] = await client.readContract({
+        address: solverConfig.intentsContract as `0x${string}`,
+        abi: IntentsAbi,
+        functionName: "intentStates",
+        args: [hash],
+        blockNumber,
+      });
+      expect(exists).toBe(true);
+    },
+  );
+
+  // A wallet's own swap from Sonic: the hash logged is of the intent in its createIntent calldata, as sent.
+  it("finds the hash of the intent a wallet sent from Sonic in its IntentCreated log", async () => {
+    const hash = "0x01ff71f704e9d91a76b787c36d10a466e071224be547dd295b36b7db267ba002";
+    const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
+    const tx = await client.getTransaction({ hash });
+    expect(tx.to?.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
+    const { functionName, args } = decodeFunctionData({ abi: IntentsAbi, data: tx.input });
+    expect(functionName).toBe("createIntent");
+    const sent = Object.fromEntries(
+      Object.entries(args?.[0] ?? {}).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value]),
+    ) as unknown as Parameters<typeof intentHash>[0];
+    expect(sent.srcChain).toBe("146");
+    const receipt = await getEvmReceipt("sonic", hash);
+    const logged = hubIntentHashes(
+      receipt ?? { reverted: true, blockNumber: 0n, txIndex: 0, logs: [] },
+      solverConfig.intentsContract,
+      INTENT_CREATED_TOPIC,
+    );
+    expect(logged).toEqual([intentHash(sent).toLowerCase()]);
+  });
+
   it("finds a connection and an https RPC in the SDK config for every EVM source chain", async () => {
     const catalog = await getSwapCatalog();
     const configs = (await getAllChainsConfigs()) as Record<string, { addresses?: { connection?: string } }>;
@@ -115,9 +180,10 @@ describe("sodax_swap_track against live chains and the live Swaps API", () => {
     const sources = Object.keys(catalog.chains).filter(key => catalog.chains[key]?.type === "EVM" && !isHubChain(key));
     expect(sources.length).toBeGreaterThan(5);
     for (const key of sources) {
-      const packaged = evmSpokeFor(key);
-      expect(packaged, key).toBeDefined();
-      expect(packaged?.connection.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
+      const packaged = pinnedSourceOf(key);
+      expect(packaged?.kind, key).toBe("spoke");
+      const connection = packaged?.kind === "spoke" ? packaged.connection : undefined;
+      expect(connection?.toLowerCase(), key).toBe(configs[key]?.addresses?.connection?.toLowerCase());
       expect(new URL(String(rpcs[key]?.rpcUrl)).protocol, key).toBe("https:");
     }
   });

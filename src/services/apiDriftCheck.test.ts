@@ -7,6 +7,7 @@ vi.mock("./http.js", () => ({
 import { checkApiDrift } from "./apiDriftCheck.js";
 import { diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
 import { fetchJson } from "./http.js";
+import { logger } from "./logger.js";
 
 const mockFetchJson = vi.mocked(fetchJson);
 
@@ -93,6 +94,17 @@ describe("checkApiDrift", () => {
 
     expect(report.hasDrift).toBe(true);
     expect(report.summary.endpointGaps).toBe(1);
+  });
+
+  it("logs the issues as one warning, not a record per line", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    mockFetchJson.mockResolvedValueOnce({ paths: { "/some/unknown/endpoint": { get: {} } } });
+
+    const report = await checkApiDrift();
+
+    expect(report.details).toContain("  - GET /some/unknown/endpoint");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatchObject({ details: report.details });
   });
 
   it("returns hasDrift: true when spec params disagree with the tool contract", async () => {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SODAX_API_BASE_URL,
@@ -5,8 +6,13 @@ import {
   SODAX_RELAY_BASE_URL,
   SODAX_SOLVER_BASE_URL,
   SODAX_SWAPS_BASE_URL,
+  SODAX_SWAP_ORACLE_BASE_URL,
 } from "../constants.js";
-import { HttpError, fetchJson, fetchJsonOrNull } from "./http.js";
+import { TOOL_CONTRACT } from "./apiDriftCheck.js";
+import { BadResponseError, HttpError, fetchJson, fetchJsonOrNull, routeOf } from "./http.js";
+// Loads the client, which registers its routes.
+import "./sodaxApi.js";
+import { logger } from "./logger.js";
 import { runWithRequestContext } from "./requestContext.js";
 
 type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
@@ -47,6 +53,14 @@ describe("fetchJson", () => {
     await expect(fetchJson("http://example.com/x")).rejects.toThrow(
       /Empty response body from http:\/\/example\.com\/x/,
     );
+  });
+
+  it("names a 2xx body that isn't JSON a bad response, keeping the parser's message", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse("<html>", { status: 200 }));
+    const error = await fetchJson("http://example.com/x").catch(e => e);
+    expect(error).toBeInstanceOf(BadResponseError);
+    expect(error.cause).toBeInstanceOf(SyntaxError);
+    expect(error.message).toBe(error.cause.message);
   });
 
   it("throws 'Empty response body' on 204 No Content", async () => {
@@ -227,5 +241,125 @@ describe("API key forwarding", () => {
     await fetchJson(dataUrl);
     expect(sentKey()).toBeUndefined();
     expect(sentInit().redirect).toBe("follow");
+  });
+
+  const sentId = () => new Headers(sentInit().headers).get("X-Request-Id");
+  const fetchInRequest = (url: string) => runWithRequestContext({ requestId: "req-1" }, () => fetchJson(url));
+
+  it.each([dataUrl, `${SODAX_SWAP_ORACLE_BASE_URL}/oracle`, `${SODAX_RELAY_BASE_URL}/`])(
+    "sends the request's id to %s, a SODAX API host",
+    async url => {
+      await fetchInRequest(url);
+      expect(sentId()).toBe("req-1");
+    },
+  );
+
+  it.each(["https://docs.sodax.com/mcp", "http://example.com/x"])("never sends the request's id to %s", async url => {
+    await fetchInRequest(url);
+    expect(sentId()).toBeNull();
+  });
+});
+
+describe("upstream call records", () => {
+  it("logs each call with its path, status and duration, and no query string", async () => {
+    const info = vi.spyOn(logger, "info");
+    fetchSpy.mockResolvedValueOnce(jsonResponse('{"ok":true}', { status: 200 }));
+    await fetchJson(`${SODAX_API_BASE_URL}/intent/user/0x${"a".repeat(40)}?address=0x1234`);
+    const { hostname } = new URL(SODAX_API_BASE_URL);
+    expect(info).toHaveBeenCalledWith(
+      {
+        "http.request.method": "GET",
+        "server.address": hostname,
+        "url.template": "/v1/be/intent/user/*",
+        "http.response.status_code": 200,
+        "duration.ms": expect.any(Number),
+      },
+      "Upstream call",
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(/0x1234|aaaa/);
+  });
+
+  it("logs a body that fails to arrive as a failed call, with the status it came with", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    const info = vi.spyOn(logger, "info");
+    const stuck = new ReadableStream({
+      pull(controller) {
+        controller.error(Object.assign(new Error("body timed out"), { name: "TimeoutError" }));
+      },
+    });
+    fetchSpy.mockResolvedValueOnce(new Response(stuck, { status: 200 }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("body timed out");
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        "url.template": "/v1/be/thing",
+        "http.response.status_code": 200,
+        "error.type": "TimeoutError",
+      }),
+      "Upstream call",
+    );
+    expect(info).not.toHaveBeenCalledWith(expect.anything(), "Upstream call");
+  });
+
+  it("logs a failed call at warn, and a refused connection by its cause's code", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    fetchSpy.mockResolvedValueOnce(jsonResponse('{"detail":"nope"}', { status: 503 }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toBeInstanceOf(HttpError);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ "url.template": "/v1/be/thing", "http.response.status_code": 503 }),
+      "Upstream call",
+    );
+    fetchSpy.mockRejectedValueOnce(Object.assign(new Error("boom"), { name: "TimeoutError" }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("boom");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "TimeoutError" }), "Upstream call");
+    fetchSpy.mockRejectedValueOnce(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }));
+    await expect(fetchJson(`${SODAX_API_BASE_URL}/thing`)).rejects.toThrow("fetch failed");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ "error.type": "ECONNREFUSED" }), "Upstream call");
+  });
+});
+
+describe("routeOf", () => {
+  it.each([
+    // A static word beats a parameter.
+    ["/v1/be/moneymarket/asset/all", "/v1/be/moneymarket/asset/all"],
+    ["/v1/be/moneymarket/asset/0xabc", "/v1/be/moneymarket/asset/*"],
+    // Off the contract: the tail is masked from the fifth segment, and an id-shaped segment before that.
+    ["/v1/be/config/spoke/sonic", "/v1/be/config/spoke/*"],
+    ["/v1/be/intent/user/a/b", "/v1/be/intent/user/*/*"],
+    ["/v1/swaps/intents/0xabc", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/alice.near", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/0xa4b1.arbitrum", "/v1/swaps/intents/*"],
+    ["/v1/swaps/intents/GABC", "/v1/swaps/intents/*"],
+    [`/v1/relay/${"x".repeat(24)}`, "/v1/relay/*"],
+    ["/v1/intent/quote", "/v1/intent/quote"],
+    ["/v1/relay/", "/v1/relay/"],
+  ])("routes %s", (pathname, route) => {
+    expect(routeOf(pathname)).toBe(route);
+  });
+});
+
+describe("routeOf on every data API route the drift check knows", () => {
+  const templates = Object.keys(TOOL_CONTRACT).map(key => key.split(" ")[1]);
+  const routeOfTemplate = (template: string) => `/v1/be${template.replace(/:\w+/g, "*")}`;
+
+  it("logs the route itself: static segments kept, each parameter masked, whatever shape its value takes", () => {
+    expect(templates.some(path => path.includes(":"))).toBe(true);
+    for (const template of templates) {
+      // Hashes, addresses and the partner receiver are hex on the wire; anything else gets a short plain value,
+      // the hardest to spot.
+      const path = template.replace(/:(\w+)/g, (_, name: string) =>
+        /hash|address|receiver/i.test(name) ? "0xabc123" : "x1",
+      );
+      expect(routeOf(`/v1/be${path}`), template).toBe(routeOfTemplate(template));
+    }
+  });
+
+  it("knows every path the data API client builds, so none falls back to the masked guess", () => {
+    const routes = new Set(templates.map(routeOfTemplate));
+    // Every path-shaped literal in the client: a ${…} right after a slash is a path parameter.
+    const literal = /[`"](\/(?:[\w-]+|\$\{\w+\})(?:\/(?:[\w-]+|\$\{\w+\}))*)/g;
+    const source = readFileSync(new URL("./sodaxApi.ts", import.meta.url), "utf8");
+    const built = [...source.matchAll(literal)].map(match => match[1]);
+    expect(built.length).toBeGreaterThan(20);
+    for (const each of built) expect(routes, each).toContain(routeOf(`/v1/be${each.replace(/\$\{\w+\}/g, "x1")}`));
   });
 });

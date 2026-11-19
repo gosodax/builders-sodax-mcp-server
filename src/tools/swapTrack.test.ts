@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
-import { getEvmReceipt, isTxKnown } from "../services/sodax.js";
+import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -27,13 +27,14 @@ import { swapClient } from "./__fixtures__/swapClient.js";
 // Unit tests don't reach a chain: receipts are scripted per test.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), hubIntentClosed: vi.fn(), isTxKnown: vi.fn() };
 });
 
 const HUB_TX = `0x${"b".repeat(64)}`;
 const OTHER_TX = `0x${"e".repeat(64)}`;
-const track = (args: Record<string, unknown>) => callTool("sodax_swap_track", args);
+const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
+const realSleep = trackWait.sleep;
 
 beforeEach(() => {
   // A call returns at once here; the waiting has its own tests.
@@ -43,6 +44,7 @@ beforeEach(() => {
   clearCache();
   clearQuoteCache();
   clearAlerts();
+  clearUnseenMemo();
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -50,7 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000 });
+  Object.assign(trackWait, { stepMs: 5_000, maxMs: 20_000, sleep: realSleep });
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.mocked(getEvmReceipt).mockReset();
@@ -60,15 +62,27 @@ afterEach(() => {
 
 const NEVER = " The user must not send the swap again.";
 
-describe("sodax_swap_track", () => {
+describe("sodax_swap_submit_and_track", () => {
   it("checks the deposit, submits the quoted intent once, and reports it queued", async () => {
     const calls = stubBackend();
     const { quoteId } = cacheQuote();
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "queued", txHash: TX, quoteId, chain: { key: ARBITRUM }, retryAfterSec: 15 });
-    expect(out.nextStep).toContain("call sodax_swap_track again (it waits up to 20 seconds for the next step)");
+    expect(out).toMatchObject({
+      status: "queued",
+      txHash: TX,
+      quoteId,
+      intentHash: intentHash(INTENT),
+      chain: { key: ARBITRUM },
+      retryAfterSec: 15,
+    });
+    expect(out.nextStep).toContain(
+      "call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step)",
+    );
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
-    expect(logger.info).toHaveBeenCalledWith({ chainKey: ARBITRUM, quoteId }, "Submitted a swap deposit");
+    expect(logger.info).toHaveBeenCalledWith(
+      { "chain.key": ARBITRUM, "quote.id": quoteId, "tx.hash": TX, "intent.hash": intentHash(INTENT) },
+      "Submitted a swap deposit",
+    );
     const [submit] = submits(calls);
     expect(submit.body).toEqual({
       txHash: TX,
@@ -192,7 +206,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, ...args() });
     expect(out.status).toBe("source_not_found");
     expect(out).not.toHaveProperty("retryAfterSec");
-    expect(out.nextStep).toContain("If the user's wallet sped it up or replaced it, call sodax_swap_track");
+    expect(out.nextStep).toContain("If the user's wallet sped it up or replaced it, call sodax_swap_submit_and_track");
     expect(out.nextStep).toContain("Only if the wallet shows it was never sent: nothing was swapped");
   });
 
@@ -234,7 +248,7 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("track it with the quoteId it was made from. Without that quoteId, tell the user");
     expect(out.nextStep).toContain("SODAX has been alerted to recover it, and they must not send it again");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "other_quote_deposit", txHash: TX, quoteId: other.quoteId }),
+      expect.objectContaining({ alert: "other_quote_deposit", "tx.hash": TX, "quote.id": other.quoteId }),
       expect.any(String),
     );
   });
@@ -247,7 +261,7 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).toContain("from another address than its fromAddress");
     expect(out.nextStep).toContain("SODAX has been alerted");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "other_sender_deposit", txHash: TX, quoteId }),
+      expect.objectContaining({ alert: "other_sender_deposit", "tx.hash": TX, "quote.id": quoteId }),
       expect.any(String),
     );
     expect(submits(calls)).toEqual([]);
@@ -272,7 +286,7 @@ describe("sodax_swap_track", () => {
     expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits" });
     expect(out.nextStep).toContain("send each swap as its own transaction");
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ alert: "multiple_deposits", txHash: TX, quoteId }),
+      expect.objectContaining({ alert: "multiple_deposits", "tx.hash": TX, "quote.id": quoteId }),
       expect.any(String),
     );
     expect(submits(calls)).toEqual([]);
@@ -325,7 +339,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
     expect(out.nextStep).toContain(
-      "To retry the refund, call sodax_swap_track again in about 60 seconds, at most 10 times, then stop.",
+      "To retry the refund, call sodax_swap_submit_and_track again in about 60 seconds, at most 10 times, then stop.",
     );
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "refund_relay_failed", deadline: DEADLINE }),
@@ -360,7 +374,7 @@ describe("sodax_swap_track", () => {
     expect(out).toMatchObject({ status: "submit_refused", alerted: true, retryAfterSec: 15 * 60 + 15 });
     expect(out.nextStep).toContain("the deposit is on chain and safe");
     expect(out.nextStep).toContain("must not send it again");
-    expect(out.nextStep).toContain("call sodax_swap_track again in about 915 seconds");
+    expect(out.nextStep).toContain("call sodax_swap_submit_and_track again in about 915 seconds");
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ alert: "submit_rejected" }),
       expect.any(String),
@@ -457,7 +471,7 @@ describe("sodax_swap_track", () => {
     const { out } = await track({ txHash: TX, chain: "Arbitrum" });
     expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
     expect(out.nextStep).toBe(
-      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
+      "This server has no record of that SODAX deposit. If it came from sodax_swap_quote, call sodax_swap_submit_and_track again with the same arguments plus its quoteId; otherwise track it where it was made. Either way, the user must not send it again.",
     );
     expect(logger.error).not.toHaveBeenCalled();
     expect(submits(calls)).toEqual([]);
@@ -622,8 +636,7 @@ describe("sodax_swap_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sonic" }, "UNSUPPORTED_SOURCE"],
-    [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
+    [{ chain: "0x1.icon" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {
     const calls = stubBackend();
@@ -632,11 +645,22 @@ describe("sodax_swap_track", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("asks which chain a sent swap came from, not for a new swap, when that chain can't start one", async () => {
+    stubBackend();
+    const { out } = await track({ txHash: TX, chain: "0x1.icon" });
+    expect(out.nextStep).toMatch(
+      /^No swap can start from ICON: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
+    );
+    expect(out.error.sourceChains).toContainEqual({ key: ARBITRUM, name: "Arbitrum" });
+  });
+
   it("suggests a misspelled source chain, listing only chains a swap can start from", async () => {
     stubBackend();
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
-    expect((out.error.supportedChains as { key: string }[]).map(chain => chain.key)).not.toContain("sonic");
+    const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
+    expect(listed).toEqual(expect.arrayContaining(["sonic", "sui"]));
+    expect(listed).not.toContain("0x1.icon");
   });
 
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
@@ -659,7 +683,7 @@ describe("sodax_swap_track", () => {
     const chain = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(chain.out.nextStep).toBe(
-      "Call sodax_swap_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
+      "Call sodax_swap_submit_and_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
     );
 
     stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });
@@ -765,26 +789,28 @@ describe("sodax_swap_track", () => {
     expect(out.nextStep).not.toContain("API key");
   });
 
-  it("keeps waiting when a checked deposit's receipt goes missing, never calling it unsent", async () => {
-    stubBackend({
+  it("doesn't read a checked deposit again: a node that has lost its receipt can't hold up its refund", async () => {
+    const calls = stubBackend({
       submit: () => new Response("", { status: 503 }),
       status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
     });
     const { quoteId } = cacheQuote();
     await track({ txHash: TX, quoteId });
-    // A lagging RPC node, past the point where an unseen tx is no longer waited for.
+    // A node that has dropped the tx, past the deadline: the claim is the proof, so the refund relay runs.
     vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
-    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(getEvmReceipt).mockClear().mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(1);
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
     const client = await swapClient();
     const { tools } = await client.listTools();
     await client.close();
-    expect(tools.find(tool => tool.name === "sodax_swap_track")?.description).toContain(
+    expect(tools.find(tool => tool.name === "sodax_swap_submit_and_track")?.description).toContain(
       "A successful result without retryAfterSec is final; after an error, follow its nextStep.",
     );
     for (const tool of tools) expect(tool.description).not.toContain("same API key");
@@ -794,12 +820,141 @@ describe("sodax_swap_track", () => {
     const calls = stubBackend();
     const client = await swapClient();
     const result = await client.callTool({
-      name: "sodax_swap_track",
+      name: "sodax_swap_submit_and_track",
       arguments: { txHash: "0x1234", chain: ARBITRUM },
     });
     await client.close();
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
+    expect(JSON.stringify(result.content)).toContain("Must be a transaction hash as the wallet shows it.");
     expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["a Solana signature", "5".repeat(88)],
+    ["a bare 64-hex value", "a".repeat(64)],
+  ])("refuses %s as a hash on an EVM chain, saying what one looks like there", async (_case, txHash) => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash, chain: ARBITRUM });
+    expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", format: "0x and 64 hex characters" });
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("a tx no node has seen", () => {
+  beforeEach(() => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(isTxKnown).mockResolvedValue(false);
+  });
+
+  it("is read from the chain once per 10 seconds, however often it's tracked", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(NOW + 11_000);
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("once seen, is read only for its receipt until it's mined", async () => {
+    vi.mocked(isTxKnown).mockResolvedValue(true);
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    await track({ txHash: TX, quoteId });
+    await track({ txHash: TX, quoteId });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+    expect(isTxKnown).toHaveBeenCalledTimes(1);
+  });
+
+  it("is waited for within a call, as a tx just sent may not have reached this node, read once per 10 seconds", async () => {
+    // Each wait moves the clock on at once, so the call takes no real time.
+    Object.assign(trackWait, {
+      stepMs: 4_000,
+      maxMs: 20_000,
+      sleep: async (ms: number) => vi.setSystemTime(Date.now() + ms),
+    });
+    const calls = stubBackend();
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out.status).toBe("awaiting_source_confirmation");
+    // Tracked at 0, 4, 8, 12, 16 and 20 seconds: read at 0 and 12, once what it remembered was 10 seconds old.
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status?"))).toHaveLength(2);
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+    expect(isTxKnown).toHaveBeenCalledTimes(2);
+  });
+
+  it("isn't remembered unseen for another API key", async () => {
+    stubBackend();
+    // Someone else tracks the hash just before the user's wallet broadcasts it.
+    setFallbackRequestContext({ apiKey: "sodax_someone_else" });
+    await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    setFallbackRequestContext({});
+    vi.mocked(isTxKnown).mockResolvedValue(true);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
+  });
+
+  it("never calls a checked deposit unsent: it's relayed for refund past its deadline, unread", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    claimDeposit(quoteId, TX);
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
+    vi.mocked(getEvmReceipt).mockClear();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+  });
+
+  it("reads the chain again before a final answer, whatever it remembered", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    const stopAfter = Number(DEADLINE) * 1000 + 5 * 60 * 1000;
+    vi.setSystemTime(stopAfter - 5_000);
+    await track({ txHash: TX, quoteId });
+    // Within the 10 seconds it remembers "unseen", but past the stop time: the tx was mined meanwhile.
+    vi.setSystemTime(stopAfter + 1_000);
+    vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out.status).not.toBe("source_not_found");
+    expect(getEvmReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it("is polled for 15 minutes from the first call, then left to the user until it can no longer be sent", async () => {
+    stubBackend();
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    // About as long as 30 polls; never "not found" while the quote can still be sent, by a wallet that sends late.
+    const pollUntil = new Date(NOW + 15 * 60 * 1000).toISOString();
+    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
+    expect(out).toMatchObject({
+      status: "awaiting_source_confirmation",
+      seenOnChain: false,
+      pollUntil,
+      stopAfter,
+      retryAfterSec: 15,
+    });
+    expect(out.nextStep).toContain(`until ${pollUntil}`);
+    // Counted from the first call, not from each.
+    vi.setSystemTime(NOW + 60_000);
+    expect((await track({ txHash: TX, quoteId })).out.pollUntil).toBe(pollUntil);
+    vi.setSystemTime(Date.parse(pollUntil) + 1000);
+    const asked = (await track({ txHash: TX, quoteId })).out;
+    expect(asked).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false, stopAfter });
+    expect(asked.pollUntil).toBeUndefined();
+    // An agent going by retryAfterSec calls next once it's past stopAfter, not every 15 seconds until then.
+    expect(Date.now() + asked.retryAfterSec * 1000).toBeGreaterThan(Date.parse(stopAfter));
+    expect(asked.nextStep).toContain("stop calling on a timer: ask the user to check their wallet");
+    expect(asked.nextStep).not.toContain("nothing was swapped");
+    vi.setSystemTime(Date.parse(stopAfter) + 1000);
+    expect((await track({ txHash: TX, quoteId })).out.status).toBe("source_not_found");
+  });
+
+  it("is polled no longer than until the quote's deadline plus the 5 minutes a late tx gets", async () => {
+    stubBackend();
+    vi.setSystemTime(NOW + 10 * 60 * 1000);
+    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
+    expect(out).toMatchObject({ pollUntil: stopAfter, stopAfter });
   });
 });

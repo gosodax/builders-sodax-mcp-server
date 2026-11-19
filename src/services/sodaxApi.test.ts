@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_API_BASE_URL } from "../constants.js";
 
 vi.mock("./http.js", () => ({
+  addRouteTemplates: vi.fn(),
   fetchJson: vi.fn(),
   fetchJsonOrNull: vi.fn(),
 }));
@@ -136,12 +137,14 @@ describe("resolveChainKey", () => {
     expect(resolveChainKey("Arbitrum", live)).toEqual({ key: "0xa4b1.arbitrum", matchedAs: "arbitrum" });
   });
 
-  it("resolves every CHAINS entry by its display name", async () => {
+  it("resolves every SDK chain by its display name, and every ticker to its chain", async () => {
     const { resolveChainKey } = await import("./sodaxApi.js");
-    const { CHAINS } = await import("../constants.js");
-    const allKeys = Object.keys(CHAINS);
-    for (const [key, { name }] of Object.entries(CHAINS)) {
-      expect(resolveChainKey(name, allKeys).key, name).toBe(key);
+    const { CHAIN_TICKERS, chainDisplayName } = await import("../constants.js");
+    const { spokeChainConfig } = await import("@sodax/types");
+    const allKeys = Object.keys(spokeChainConfig);
+    for (const key of allKeys) expect(resolveChainKey(chainDisplayName(key), allKeys).key, key).toBe(key);
+    for (const [key, tickers] of Object.entries(CHAIN_TICKERS)) {
+      for (const ticker of tickers) expect(resolveChainKey(ticker, allKeys).key, ticker).toBe(key);
     }
   });
 
@@ -167,6 +170,43 @@ describe("resolveChainKey", () => {
   it("returns null for an unknown chain", async () => {
     const { resolveChainKey } = await import("./sodaxApi.js");
     expect(resolveChainKey("dogechain", live)).toEqual({ key: null, matchedAs: null });
+  });
+
+  it.each([
+    ["8453", "0x2105.base"],
+    ["0x2105", "0x2105.base"],
+    ["146", "sonic"],
+    ["295", "hedera"],
+  ])("resolves an EVM chain id from the SDK's chain config (%s → %s)", async (query, expected) => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey(query, live).key).toBe(expected);
+  });
+
+  it("matches a chain id against the chain config, not a key prefix: 1 is Ethereum, never ICON's 0x1", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("1", live).key).toBeNull();
+    expect(resolveChainKey("1", [...live, "ethereum"]).key).toBe("ethereum");
+    expect(resolveChainKey("0x1", [...live, "ethereum"]).key).toBe("ethereum");
+  });
+
+  it("names a number that is one chain's EVM id and another's relay id: 1 is Ethereum's and Solana's", async () => {
+    const { chainIdClash } = await import("./sodaxApi.js");
+    expect(chainIdClash("1")).toBe(
+      "1 is Ethereum's EVM chain id and Solana's intent relay chain id. Pass the chain key: ethereum or solana.",
+    );
+    expect(chainIdClash("146")).toBeUndefined();
+    expect(chainIdClash("0x1")).toBeUndefined();
+  });
+
+  it("matches a chain id whatever the live key's case", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("8453", ["0x2105.Base"]).key).toBe("0x2105.Base");
+  });
+
+  it("returns null for a chain id that names no live chain", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("10", live).key).toBeNull();
+    expect(resolveChainKey("999999", live).key).toBeNull();
   });
 });
 

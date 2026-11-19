@@ -6,7 +6,9 @@ import {
   cancelPayload,
   createIntentPayload,
   getEvmReceipt,
+  hubIntentClosed,
   initSodax,
+  intentHash,
   userHubWallet,
 } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
@@ -40,7 +42,7 @@ import {
 
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), hubIntentClosed: vi.fn(), isTxKnown: vi.fn(), userHubWallet: vi.fn() };
 });
 
 const HUB_TX = `0x${"b".repeat(64)}`;
@@ -81,6 +83,7 @@ beforeEach(() => {
   clearQuoteCache();
   receipts();
   vi.mocked(userHubWallet).mockResolvedValue(CREATOR);
+  vi.mocked(hubIntentClosed).mockResolvedValue(false);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
 
@@ -89,6 +92,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(getEvmReceipt).mockReset();
   vi.mocked(userHubWallet).mockReset();
+  vi.mocked(hubIntentClosed).mockReset();
 });
 
 const NEVER = " The user must not send the swap again.";
@@ -112,6 +116,7 @@ describe("sodax_swap_cancel", () => {
     const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
     expect(out).toMatchObject({
       status: "ready",
+      intentHash: intentHash(INTENT),
       steps: [{ kind: "cancel", chainId: 42161, tx: { ...CANCEL_TX_BUILT, value: "0x0", chainId: "0xa4b1" } }],
     });
     expect(out.nextStep).toContain("call sodax_swap_cancel again with the same arguments plus cancelTxHash");
@@ -119,6 +124,23 @@ describe("sodax_swap_cancel", () => {
       srcChainKey: ARBITRUM,
       intent: INTENT,
     });
+  });
+
+  it("asks for the swap tx when given another tx with its quote, an approval say", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue({ reverted: false, logs: [] });
+    stubBackend({ row: null });
+    const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+  });
+
+  it("builds no cancel once the hub no longer holds the intent, though the backend row still says it can", async () => {
+    vi.mocked(hubIntentClosed).mockResolvedValue(true);
+    const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
+    const { out } = await cancel({ txHash: TX, chain: ARBITRUM });
+    expect(out).toMatchObject({ status: "not_cancellable", reason: "closed", intentHash: intentHash(INTENT) });
+    expect(out.nextStep).toContain("There's nothing to cancel");
+    expect(hubIntentClosed).toHaveBeenCalledWith(intentHash(INTENT), HUB_TX);
+    expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 
   it("builds the cancel for the SDK config's chain id though the live one differs", async () => {
@@ -240,7 +262,7 @@ describe("sodax_swap_cancel", () => {
       const calls = stubBackend({ row: null });
       const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_sent" });
-      expect(out.nextStep).toContain("nothing was sent and there's nothing to cancel");
+      expect(out.nextStep).toContain("nothing was sent and there's nothing to cancel yet");
       expect(out.nextStep).toContain("cancel or replace it in their wallet");
       expect(posts(calls)).toEqual([]);
     });
@@ -250,7 +272,7 @@ describe("sodax_swap_cancel", () => {
       const { quoteId } = cacheQuote();
       const { out } = await cancel({ txHash: TX, quoteId });
       expect(out).toMatchObject({ status: "deposit_unsubmitted", retryAfterSec: 15 * 60 + 15 });
-      expect(out.nextStep).toContain("won't be swapped unless sodax_swap_track is called: don't call it");
+      expect(out.nextStep).toContain("won't be swapped unless sodax_swap_submit_and_track is called: don't call it");
       expect(out.nextStep).toContain("call sodax_swap_cancel again with the same arguments in about 915 seconds");
       expect(posts(calls)).toEqual([]);
       // Unclaimed: a track call would still submit it.
@@ -288,7 +310,12 @@ describe("sodax_swap_cancel", () => {
       stubBackend({ row: null });
       const submitted = claimedQuote();
       markSubmitted(submitted);
-      expect((await cancel({ txHash: TX, quoteId: submitted })).out).toMatchObject({ reason: "not_submitted" });
+      const { out } = await cancel({ txHash: TX, quoteId: submitted });
+      expect(out).toMatchObject({ reason: "not_submitted" });
+      // Track only reports here (queued while the backend's row lags), so the agent calls it without asking.
+      expect(out.nextStep).toBe(
+        "The swap service has no record of this swap yet, so there's nothing to cancel. Call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; once it reports the swap on the hub, call sodax_swap_cancel again.",
+      );
       clearQuoteCache();
       vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT);
       expect((await cancel({ txHash: TX, quoteId: cacheQuote().quoteId })).out).toMatchObject({

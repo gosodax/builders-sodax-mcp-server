@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { EvmHubProvider, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
+import { EvmHubProvider, EvmSolverService, NearSpokeService, SpokeService, StellarSpokeService } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { INTENT } from "../tools/__fixtures__/swapBackend.js";
 import { logger } from "./logger.js";
 import {
   approveCalldata,
+  bounded,
   cancelPayload,
   checksumValid,
   connectionFor,
@@ -14,6 +16,7 @@ import {
   evmChainIdFor,
   initSodax,
   intentChainId,
+  intentHash,
   packagedToken,
   parseRpcOverrides,
   rebuildSwapTx,
@@ -53,6 +56,24 @@ describe("before initSodax", () => {
   });
 });
 
+describe("intentHash", () => {
+  it("is the SDK's hash of the same struct with its numbers as bigints, the hub's id of the intent", () => {
+    const hash = intentHash(INTENT);
+    expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(hash).toBe(
+      EvmSolverService.getIntentHash({
+        ...INTENT,
+        intentId: 7n,
+        inputAmount: 5_000_000n,
+        minOutputAmount: 4_941_968n,
+        deadline: BigInt(INTENT.deadline),
+        srcChain: 23n,
+        dstChain: 146n,
+      } as Parameters<typeof EvmSolverService.getIntentHash>[0]),
+    );
+  });
+});
+
 describe("rebuildSwapTx", () => {
   it.each([
     ["built-intent-usdc-fee.json", "0xa4b1.arbitrum", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 5000000n],
@@ -64,7 +85,8 @@ describe("rebuildSwapTx", () => {
     expect(rebuilt?.to.toLowerCase()).toBe(tx.to.toLowerCase());
     expect(rebuilt?.value).toBe(BigInt(tx.value));
     expect(rebuilt?.data.toLowerCase()).toBe(tx.data.toLowerCase());
-    expect(rebuilt?.payload.toLowerCase()).toBe(relayData.payload.toLowerCase());
+    // The relay payload the Swaps API returned is the SDK's for this intent: the hub's own calldata from the hub.
+    expect(createIntentPayload(intent, srcChainKey === "sonic")?.toLowerCase()).toBe(relayData.payload.toLowerCase());
   });
 
   it("scales a native HBAR deposit the way Hedera expects", async () => {
@@ -345,15 +367,15 @@ describe("walletBalance", () => {
 });
 
 describe("sdkLogger", () => {
-  it("passes on only the SDK's message, never its error or data", () => {
+  it("passes on only the SDK's message, never its error or data, under one constant body", () => {
     const warn = vi.spyOn(logger, "warn");
     const error = vi.spyOn(logger, "error");
     sdkLogger.debug();
     sdkLogger.info();
     sdkLogger.warn("balance read failed");
     sdkLogger.error("rpc failed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "balance read failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "rpc failed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "balance read failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "rpc failed" }, "SODAX SDK error");
   });
 
   it("passes the message on without URLs", () => {
@@ -361,71 +383,171 @@ describe("sdkLogger", () => {
     const error = vi.spyOn(logger, "error");
     sdkLogger.warn("read from https://rpc.example/KEY failed");
     sdkLogger.error("socket wss://rpc.example/KEY closed");
-    expect(warn).toHaveBeenCalledWith({ source: "sodax-sdk" }, "read from <url> failed");
-    expect(error).toHaveBeenCalledWith({ source: "sodax-sdk" }, "socket <url> closed");
+    expect(warn).toHaveBeenCalledWith({ "sdk.message": "read from <url> failed" }, "SODAX SDK warning");
+    expect(error).toHaveBeenCalledWith({ "sdk.message": "socket <url> closed" }, "SODAX SDK error");
   });
 });
 
 describe("parseRpcOverrides", () => {
-  it("maps SODAX_RPC_URL_<chainId> and SODAX_RPC_URL_<family> to the chain's field, ignoring everything else", () => {
-    const env = {
-      SODAX_RPC_URL_42161: "https://arb.example/key",
-      SODAX_RPC_URL_146: "https://sonic.example/key",
-      SODAX_RPC_URL_137: "",
-      SODAX_RPC_URL_SOLANA: "https://solana.example/key",
-      SODAX_RPC_URL_SUI: "https://sui.example/key",
-      SODAX_RPC_URL_STELLAR_HORIZON: "https://horizon.example",
-      SODAX_RPC_URL_STELLAR_SOROBAN: "https://soroban.example/key",
-      SODAX_RPC_URL: "https://no-id.example",
-      PATH: "/bin",
-    };
-    expect(parseRpcOverrides(env)).toEqual({
+  const rpcConfig = (config: unknown) => ({ RPC_CONFIG: JSON.stringify(config) });
+  const quiet = () => vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+
+  it("reads RPC_CONFIG by chain key, in the SDK's field names, ignoring other variables", () => {
+    const want = {
       "0xa4b1.arbitrum": { rpcUrl: "https://arb.example/key" },
-      sonic: { rpcUrl: "https://sonic.example/key" },
-      solana: { rpcUrl: "https://solana.example/key" },
       sui: { grpc_url: "https://sui.example/key" },
       stellar: { horizonRpcUrl: "https://horizon.example", sorobanRpcUrl: "https://soroban.example/key" },
+    };
+    expect(parseRpcOverrides({ ...rpcConfig(want), PATH: "/bin" })).toEqual(want);
+  });
+
+  it("takes the value as an env value may hold it: single-quoted, or with escaped quotes", () => {
+    const want = { sonic: { rpcUrl: "https://sonic.example" } };
+    expect(parseRpcOverrides({ RPC_CONFIG: `'{"sonic":{"rpcUrl":"https://sonic.example"}}'` })).toEqual(want);
+    expect(parseRpcOverrides({ RPC_CONFIG: '{\\"sonic\\":{\\"rpcUrl\\":\\"https://sonic.example\\"}}' })).toEqual(want);
+  });
+
+  it("takes the backend format's documented example as is, every chain, without a warning", () => {
+    const warn = quiet();
+    const example = {
+      sonic: { rpcUrl: "https://rpc.soniclabs.com" },
+      ethereum: { rpcUrl: "https://eth.merkle.io" },
+      "0xa86a.avax": { rpcUrl: "https://api.avax.network/ext/bc/C/rpc" },
+      "0xa4b1.arbitrum": { rpcUrl: "https://arb1.arbitrum.io/rpc" },
+      "0x2105.base": { rpcUrl: "https://mainnet.base.org" },
+      "0xa.optimism": { rpcUrl: "https://mainnet.optimism.io" },
+      "0x38.bsc": { rpcUrl: "https://56.rpc.thirdweb.com" },
+      "0x89.polygon": { rpcUrl: "https://polygon-rpc.com" },
+      "0x2019.kaia": { rpcUrl: "https://public-en.node.kaia.io" },
+      hyper: { rpcUrl: "https://rpc.hyperliquid.xyz/evm" },
+      lightlink: { rpcUrl: "https://replicator.phoenix.lightlink.io/rpc/v1" },
+      redbelly: { rpcUrl: "https://governors.mainnet.redbelly.network" },
+      near: { rpcUrl: "https://1rpc.io/near" },
+      solana: { rpcUrl: "https://api.mainnet-beta.solana.com" },
+      "injective-1": { rpcUrl: "https://injective-rpc.publicnode.com:443" },
+      bitcoin: { rpcUrl: "https://mempool.space/api" },
+      stacks: { rpcUrl: "https://api.mainnet.hiro.so" },
+      hedera: { rpcUrl: "https://mainnet.hashio.io/api" },
+      sui: { grpc_url: "https://fullnode.mainnet.sui.io" },
+      stellar: { horizonRpcUrl: "https://horizon.stellar.org", sorobanRpcUrl: "https://rpc.ankr.com/stellar_soroban" },
+      "0x1.icon": { rpcUrl: "https://ctz.solidwallet.io/api/v3", debugRpcUrl: "https://ctz.solidwallet.io/api/v3d" },
+    };
+    expect(parseRpcOverrides(rpcConfig(example))).toEqual(example);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the packaged RPC without RPC_CONFIG, and for a chain or field it leaves out or leaves blank", () => {
+    const warn = quiet();
+    for (const RPC_CONFIG of [undefined, "", "  "]) expect(parseRpcOverrides({ RPC_CONFIG })).toEqual({});
+    // A workflow writes an unset secret as "".
+    expect(parseRpcOverrides(rpcConfig({ "0x2105.base": { rpcUrl: "" } }))).toEqual({});
+    expect(parseRpcOverrides(rpcConfig({ stellar: { horizonRpcUrl: "https://horizon.example" } }))).toEqual({
+      stellar: { horizonRpcUrl: "https://horizon.example" },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("skips what it can't apply with one warning naming it, never its value, and never stops", () => {
+    const warn = quiet();
+    const overrides = parseRpcOverrides(
+      rpcConfig({
+        sonic: { rpcUrl: "https://sonic.example" },
+        "a-newer-sdks-chain": { rpcUrl: "https://new.example/secret-key" },
+        sui: { rpc_url: "https://sui.example/secret-key" },
+        "0x1.icon": { rpc_url: "https://icon.example/secret-key" },
+        ethereum: { rpcUrl: "http://eth.example/secret-key" },
+        "0x89.polygon": { rpcUrl: "not a url secret-key" },
+        hedera: "https://hedera.example/secret-key",
+      }),
+    );
+    expect(overrides).toEqual({ sonic: { rpcUrl: "https://sonic.example" } });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      {
+        "rpc_config.skipped":
+          "a-newer-sdks-chain, sui.rpc_url, 0x1.icon.rpc_url, ethereum.rpcUrl, 0x89.polygon.rpcUrl, hedera",
+      },
+      "RPC_CONFIG entries this server can't apply",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-key");
+  });
+
+  // Solana's client refuses some of these when the SDK is built, which would stop the boot; the log redaction
+  // misses a URL without `//`, and stops at `'` or `<`, which would show a key.
+  it.each([
+    "HTTPS://x.example/secret-key",
+    "https:x.example/secret-key",
+    "https:/x.example/secret-key",
+    "https://",
+    "https://x.example/v1/abc'secret-key",
+    "https://x.example/<secret-key>",
+  ])("skips %j: only an https:// URL as written is taken", rpcUrl => {
+    quiet();
+    expect(parseRpcOverrides(rpcConfig({ solana: { rpcUrl } }))).toEqual({});
+  });
+
+  it("never names a key or field that isn't shaped like one: a URL pasted as a key stays out of the log", () => {
+    const warn = quiet();
+    parseRpcOverrides(
+      rpcConfig({
+        "https://polygon.example/v2/secret-key": { rpcUrl: "https://x.example" },
+        sonic: { "https://rpc.example/secret-key": true },
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      { "rpc_config.skipped": "(an unknown key), sonic.(an unknown field)" },
+      "RPC_CONFIG entries this server can't apply",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-key");
+  });
+
+  it("takes a URL with surrounding whitespace, as a secret set from a file has, trimmed", () => {
+    expect(parseRpcOverrides(rpcConfig({ sonic: { rpcUrl: " https://sonic.example/key\n" } }))).toEqual({
+      sonic: { rpcUrl: "https://sonic.example/key" },
     });
   });
 
-  it("covers every non-EVM family in the packaged config, on a field that config has", () => {
-    // One chain per family: a second one would make the family name ambiguous.
-    const families = Object.values(spokeChainConfig).flatMap(config =>
-      config.chain.type === "EVM" ? [] : [config.chain.type],
+  it.each(["not json secret-key", "[]", "null", '"https://x.example/secret-key"'])(
+    "keeps every packaged RPC when RPC_CONFIG is %s, with a warning that doesn't echo it",
+    RPC_CONFIG => {
+      const warn = quiet();
+      expect(parseRpcOverrides({ RPC_CONFIG })).toEqual({});
+      expect(warn).toHaveBeenCalledWith("RPC_CONFIG isn't a JSON object; every chain uses its packaged RPC");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-key");
+    },
+  );
+
+  it("names any old SODAX_RPC_URL_* variable still set, never its value", () => {
+    const warn = quiet();
+    expect(parseRpcOverrides({ SODAX_RPC_URL_137: "https://polygon.example/secret-key" })).toEqual({});
+    expect(warn).toHaveBeenCalledWith(
+      { "rpc_config.legacy": "SODAX_RPC_URL_137" },
+      "SODAX_RPC_URL_* is no longer read: set RPC_CONFIG",
     );
-    expect(new Set(families).size).toBe(families.length);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-key");
+  });
+
+  it("takes per chain the fields the SDK reads, as checked in its build", () => {
+    // What @sodax/sdk reads, family by family; Injective's rpcUrl is taken but unread (fixed mainnet endpoints).
+    const reads: Record<string, string[]> = {
+      SOLANA: ["rpcUrl"],
+      NEAR: ["rpcUrl"],
+      BITCOIN: ["rpcUrl"],
+      STACKS: ["rpcUrl"],
+      ICON: ["rpcUrl", "debugRpcUrl"],
+      SUI: ["grpc_url"],
+      STELLAR: ["horizonRpcUrl", "sorobanRpcUrl"],
+      INJECTIVE: ["rpcUrl"],
+      EVM: ["rpcUrl"],
+    };
+    // rpc_url included: no packaged config has it, so no chain takes it.
+    const fields = ["rpcUrl", "rpc_url", "grpc_url", "debugRpcUrl", "horizonRpcUrl", "sorobanRpcUrl"];
+    const all = Object.fromEntries(fields.map(field => [field, "https://x.example"]));
+    quiet();
     for (const [chainKey, config] of Object.entries(spokeChainConfig)) {
-      // Injective's SDK provider ignores its config's RPC, so it is refused (see the error rows).
-      if (config.chain.type === "EVM" || config.chain.type === "INJECTIVE") continue;
-      const suffixes = config.chain.type === "STELLAR" ? ["STELLAR_HORIZON", "STELLAR_SOROBAN"] : [config.chain.type];
-      for (const suffix of suffixes) {
-        const [field, ...more] = Object.keys(
-          parseRpcOverrides({ [`SODAX_RPC_URL_${suffix}`]: "https://x.example" })[chainKey] ?? {},
-        );
-        expect(more, suffix).toEqual([]);
-        expect(config, `${suffix} sets ${field}`).toHaveProperty(field);
-      }
+      const taken = Object.keys(parseRpcOverrides(rpcConfig({ [chainKey]: all }))[chainKey] ?? {});
+      expect(taken, chainKey).toEqual(reads[config.chain.type]);
     }
-  });
-
-  it.each([
-    ["SODAX_RPC_URL_42161", "http://arb.example/secret-key", "must be an https URL"],
-    ["SODAX_RPC_URL_42161", "not a url secret-key", "must be an https URL"],
-    ["SODAX_RPC_URL_999999", "https://nowhere.example/secret-key", "doesn't name a SODAX chain"],
-    ["SODAX_RPC_URL_INJECTIVE", "https://inj.example/secret-key", "doesn't name a SODAX chain"],
-    ["SODAX_RPC_URL_constructor", "https://proto.example/secret-key", "doesn't name a SODAX chain"],
-    ["SODAX_RPC_URL_STELLAR", "https://horizon.example/secret-key", "doesn't name a SODAX chain"],
-    ["SODAX_RPC_URL_EVM", "https://evm.example/secret-key", "doesn't name a SODAX chain"],
-    ["SODAX_RPC_URL_solana", "https://solana.example/secret-key", "doesn't name a SODAX chain"],
-  ])("stops on %s=%s, naming the variable and not its value", (name, value, reason) => {
-    expect(() => parseRpcOverrides({ [name]: value })).toThrow(`${name} ${reason}`);
-    expect(() => parseRpcOverrides({ [name]: value })).not.toThrow(/secret-key/);
-  });
-
-  it("names what a bad variable could have meant", () => {
-    const bare = () => parseRpcOverrides({ SODAX_RPC_URL_STELLAR: "https://horizon.example" });
-    expect(bare).toThrow("42161");
-    expect(bare).toThrow("STELLAR_HORIZON, STELLAR_SOROBAN");
   });
 });
 
@@ -455,5 +577,29 @@ describe("connectionFor", () => {
     expect(connectionFor("0xa4b1.arbitrum")).toBe("0x4555aC13D7338D9E671584C1D118c06B2a3C88eD");
     expect(connectionFor("sonic")).toBeUndefined();
     expect(connectionFor("not-a-chain")).toBeUndefined();
+  });
+});
+
+describe("chain read records", () => {
+  it("logs what was read, where and how long, and a timeout by its name", async () => {
+    const info = vi.spyOn(logger, "info");
+    const warn = vi.spyOn(logger, "warn");
+    await expect(bounded({ label: "receipt", chainKey: "sonic" }, () => Promise.resolve(1))).resolves.toBe(1);
+    expect(info).toHaveBeenCalledWith(
+      { "sdk.call": "receipt", "chain.key": "sonic", "duration.ms": expect.any(Number) },
+      "Chain read",
+    );
+    await expect(bounded({ label: "balance", timeoutMs: 1 }, () => new Promise(() => {}))).rejects.toThrow(
+      "SDK call failed",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      {
+        "sdk.call": "balance",
+        "chain.key": undefined,
+        "duration.ms": expect.any(Number),
+        "error.type": "TimeoutError",
+      },
+      "Chain read",
+    );
   });
 });

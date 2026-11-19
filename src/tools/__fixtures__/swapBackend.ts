@@ -42,6 +42,9 @@ export const INTENT = {
 
 /** A quote for the recorded deposit, made by the current caller unless `keyHash` says otherwise. */
 export function cacheQuote(overrides: Partial<CachedQuote> = {}): CachedQuote {
+  // A quote's intent names its sender, as quote checks it does.
+  const sender = overrides.srcAddress &&
+    !overrides.intent && { intent: { ...INTENT, srcAddress: overrides.srcAddress } };
   return putQuote({
     srcChainKey: ARBITRUM,
     dstChainKey: "sonic",
@@ -57,6 +60,7 @@ export function cacheQuote(overrides: Partial<CachedQuote> = {}): CachedQuote {
     keyHash: callerKeyHash(),
     minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
     ...overrides,
+    ...sender,
   });
 }
 

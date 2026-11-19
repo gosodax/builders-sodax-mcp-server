@@ -63,7 +63,7 @@ export async function readBalances(input: { chain: string; address: string; toke
   // Validated before any read; a failed read is CHAIN_UNAVAILABLE, never 0.
   const tokenUnits =
     token &&
-    chainRead(chain, "balance", async () => {
+    chainRead(chain, async () => {
       const units = await cachedBalance(chain.key, address, token);
       // Only a native read may say the account is missing.
       if (units === null) throw new Error("no balance for the token");
@@ -71,7 +71,7 @@ export async function readBalances(input: { chain: string; address: string; toke
     });
   // Settled together: a failed token read doesn't count for a Stellar account that doesn't exist.
   const [nativeRead] = await Promise.allSettled([
-    chainRead(chain, "balance", () => cachedBalance(chain.key, address, native)),
+    chainRead(chain, () => cachedBalance(chain.key, address, native)),
     tokenUnits,
   ]);
   if (nativeRead.status === "rejected") throw nativeRead.reason;
@@ -93,9 +93,7 @@ export async function readBalances(input: { chain: string; address: string; toke
       });
     }
     // Stellar's read fails when the account has no trustline for the token (0n: any trustline at all).
-    const hasTrustline = await chainRead(chain, "trustline", () =>
-      recipientReady("STELLAR", token.address, address, 0n),
-    );
+    const hasTrustline = await chainRead(chain, () => recipientReady("STELLAR", token.address, address, 0n));
     if (hasTrustline) throw error;
     return { ...base, native: held, token: holding(token, 0n), trustline: false };
   }

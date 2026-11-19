@@ -8,7 +8,7 @@
 import { SODAX_ENV } from "../../constants.js";
 import { COLOR, postToDiscord, truncate } from "../discord.js";
 import { logger, redact } from "../logger.js";
-import { callerKeyHash } from "../requestContext.js";
+import { callerKeyHash, callerKeyTag } from "../requestContext.js";
 
 export type AlertKind =
   | "unknown_quote"
@@ -16,17 +16,20 @@ export type AlertKind =
   | "other_sender_deposit"
   | "quote_used"
   | "multiple_deposits"
+  | "failed_tx_deposit"
+  | "unverified_tx"
   | "refund_relay_failed"
   | "submit_rejected"
   | "swap_error";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
-  other_quote_deposit:
-    "Swap deposit tracked under another quote of its sender's: relay it by hand if its own isn't tracked",
+  other_quote_deposit: "Swap deposit tracked under another quote: relay it by hand if its own isn't tracked",
   other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
   multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
+  failed_tx_deposit: "Swap deposit in a transaction that failed after it ran: not submitted, recover it by hand",
+  unverified_tx: "Swap transaction whose events this server can't read: not submitted, check it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
   swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
@@ -45,7 +48,13 @@ const POSTS_PER_HOUR = { public: 5, checked: 20, tools: 5 };
 const MAX_HELD = 12;
 // Discord's limit on that post's description; the deposits this server checked are listed first.
 const HELD_TEXT_MAX = 4096;
-const PUBLIC_KINDS: readonly AlertKind[] = ["unknown_quote", "other_quote_deposit"];
+// A failed tx's held deposit, or a tx whose events can't be read, may not be the quote named with it.
+const PUBLIC_KINDS: readonly AlertKind[] = [
+  "unknown_quote",
+  "other_quote_deposit",
+  "failed_tx_deposit",
+  "unverified_tx",
+];
 const HOUR_MS = 60 * 60 * 1000;
 
 type Budget = keyof typeof POSTS_PER_HOUR;
@@ -58,23 +67,33 @@ let held: Record<Budget, string[]> = { public: [], checked: [], tools: [] };
 let dropped = 0;
 let summary: NodeJS.Timeout | undefined;
 
+interface AlertFields {
+  chainKey?: string;
+  txHash?: string;
+  quoteId?: string;
+  deadline?: string;
+  tool?: string;
+  code?: string;
+  /** Which failure: a fixed message or an error class, never input or upstream text. */
+  reason?: string;
+}
+
+// Each field's name in the log, the one every other record uses, so a swap's quote.id or tx.hash finds its alert.
+const LOG_NAMES: Record<keyof AlertFields, string> = {
+  chainKey: "chain.key",
+  txHash: "tx.hash",
+  quoteId: "quote.id",
+  deadline: "deadline",
+  tool: "gen_ai.tool.name",
+  code: "error.type",
+  reason: "reason",
+};
+
 /**
  * Logs the alert and posts it, or holds it for the hourly post when its budget is spent. False when
  * it was neither posted nor held (that post is full): only the log has it.
  */
-export function alertOperator(
-  kind: AlertKind,
-  fields: {
-    chainKey?: string;
-    txHash?: string;
-    quoteId?: string;
-    deadline?: string;
-    tool?: string;
-    code?: string;
-    /** Which failure: a fixed message or an error class, never input or upstream text. */
-    reason?: string;
-  },
-): boolean {
+export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
   // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
     kind === "swap_error"
@@ -88,7 +107,8 @@ export function alertOperator(
 
   // Enough to tell callers apart, not to look a key up.
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
-  logger.error({ alert: kind, ...tagged }, TITLES[kind]);
+  const named = Object.entries(fields).map(([name, value]) => [LOG_NAMES[name as keyof AlertFields], value]);
+  logger.error({ alert: kind, ...Object.fromEntries(named), "caller.key_hash": callerKeyTag() }, TITLES[kind]);
   const budget: Budget = kind === "swap_error" ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
   const verdict = spend(budget, now);
   sent.delete(key);

@@ -5,7 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { API_KEYS_DOCS_URL } from "../constants.js";
+import { GET_A_KEY } from "../constants.js";
 import { MAX_API_KEY_LENGTH, parseApiKey } from "./requestContext.js";
 
 const PROFILES = ["builder", "swap", "all"] as const;
@@ -43,12 +43,14 @@ export function apiKeyStatus(raw: string | undefined): ApiKeyStatus {
 /**
  * A connection setting the server refuses. Sent as a JSON-RPC error before any server is built:
  * 400 is invalid params (-32602), 403 the generic server error (-32000) the MCP SDK uses for its own 403s.
+ * `code` names the refusal on the request's log record.
  */
 export class ConnectionError extends Error {
   readonly rpcCode: -32602 | -32000;
 
   constructor(
     readonly httpStatus: 400 | 403,
+    readonly code: string,
     message: string,
   ) {
     super(message);
@@ -65,16 +67,17 @@ export function parseSwapToolsEnabled(value: string | undefined): boolean {
 }
 
 // What's wrong with the caller's key and how to fix it. The value is never echoed.
-const SEND_A_KEY = `Send it in the x-api-key header (SODAX_API_KEY on stdio): ${API_KEYS_DOCS_URL}`;
+const SEND_A_KEY = `Send it in the x-api-key header (SODAX_API_KEY on stdio). ${GET_A_KEY}`;
 const NOT_A_SODAX_KEY = `The x-api-key value (SODAX_API_KEY on stdio) isn't a SODAX API key (a sodax_… key alone, at most ${MAX_API_KEY_LENGTH} characters)`;
-const KEY_DROPPED = `${NOT_A_SODAX_KEY}, so calls go out without one: ${API_KEYS_DOCS_URL}`;
+const KEY_DROPPED = `${NOT_A_SODAX_KEY}, so calls go out without one. ${GET_A_KEY}`;
 
 interface SelectOptions {
   apiKey: ApiKeyStatus;
   swapToolsEnabled: boolean;
 }
 
-function parseProfile(requested: unknown): Profile | undefined {
+/** The profile a connection asked for, "all" when it named none; undefined for one that isn't a profile. */
+export function parseProfile(requested: unknown): Profile | undefined {
   if (requested === undefined) return "all";
   if (typeof requested !== "string") return undefined; // e.g. a repeated ?profile=
   const profile = requested.trim().toLowerCase();
@@ -86,18 +89,23 @@ export function selectToolsets(requested: unknown, opts: SelectOptions): ToolSel
   if (!profile) {
     const enabled = PROFILES.filter(known => known !== "swap" || opts.swapToolsEnabled);
     // The requested value isn't echoed back: it's caller input of any size.
-    throw new ConnectionError(400, `Unknown profile. Use ${enabled.join(", ")}.`);
+    throw new ConnectionError(400, "UNKNOWN_PROFILE", `Unknown profile. Use ${enabled.join(", ")}.`);
   }
   if (profile === "swap" && !opts.swapToolsEnabled) {
-    throw new ConnectionError(400, "The swap profile is turned off on this server. Use builder or all.");
+    throw new ConnectionError(
+      400,
+      "SWAP_PROFILE_OFF",
+      "The swap profile is turned off on this server. Use builder or all.",
+    );
   }
   if (profile === "swap" && opts.apiKey === "missing") {
-    throw new ConnectionError(403, `API key required for the swap profile. ${SEND_A_KEY}`);
+    throw new ConnectionError(403, "API_KEY_REQUIRED", `API key required for the swap profile. ${SEND_A_KEY}`);
   }
   if (profile === "swap" && opts.apiKey === "malformed") {
     throw new ConnectionError(
       403,
-      `A SODAX API key is required for the swap profile. ${NOT_A_SODAX_KEY}: ${API_KEYS_DOCS_URL}`,
+      "API_KEY_MALFORMED",
+      `A SODAX API key is required for the swap profile. ${NOT_A_SODAX_KEY}. ${GET_A_KEY}`,
     );
   }
   const toolsets = {

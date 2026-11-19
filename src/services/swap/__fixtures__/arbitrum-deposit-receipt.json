@@ -1,6 +1,7 @@
 {
   "transactionHash": "0x1b5869f1eab7e14c4ee72138e7bcd54ccde8fd44459a9fe83dd142f29338307c",
   "blockNumber": 518468931,
+  "transactionIndex": 1,
   "status": "0x1",
   "logs": [
     {

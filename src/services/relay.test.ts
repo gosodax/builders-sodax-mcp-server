@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BadResponseError } from "./http.js";
 import { getRelayTransactionPackets, submitRelayTx } from "./relay.js";
 import { runWithRequestContext } from "./requestContext.js";
 
@@ -40,5 +41,24 @@ describe("relay client", () => {
       new Response('{"ok":false,"error":"rate_limited"}', { status: 429, headers: { "Retry-After": "10" } }),
     );
     await expect(submitRelayTx(params)).rejects.toThrow("HTTP 429, retry after 10s");
+  });
+
+  it("keeps a timeout while the body is read a timeout, not a bad body", async () => {
+    const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    const stalled = new ReadableStream({
+      start(controller) {
+        controller.error(timeout);
+      },
+    });
+    fetchSpy.mockResolvedValueOnce(new Response(stalled, { status: 200 }));
+    const error = await submitRelayTx(params).catch(e => e);
+    expect(error.cause).toBe(timeout);
+  });
+
+  it("names a 2xx body that isn't a relay answer a bad response, not an HTTP failure", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const error = await submitRelayTx(params).catch(e => e);
+    expect(error.message).toBe("Failed to submit relay tx: HTTP 200");
+    expect(error.cause).toBeInstanceOf(BadResponseError);
   });
 });

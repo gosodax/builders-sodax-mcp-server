@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
+import { runWithRequestContext, tagOf } from "../requestContext.js";
 import { ActionError } from "./errors.js";
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
 
@@ -24,13 +25,21 @@ export type CachedQuote = IntentRequest & {
   expiresAt: number;
   /** The deposit checked as this quote's. One intent can only come from one deposit, so the claim stays. */
   depositTxHash?: string;
-  /** How that deposit left this server: submitted to the backend, or relayed after its deadline for a refund. */
-  handedOver?: "submitted" | "relayed_for_refund";
+  /**
+   * How that deposit left this server: submitted to the backend, relayed after its deadline for a refund (from a
+   * spoke). From the hub: left expired to the backend's canceller, cancelled by its user, or found closed there.
+   */
+  handedOver?: "submitted" | "relayed_for_refund" | HubOutcome;
   /** The backend refused its submit before the deadline; it's relayed for refund after it. */
   submitRefused?: true;
   /** Epoch ms before which a failed submit isn't tried again: no later than the agent was told to wait. */
   submitRetryAt?: number;
+  /** When track was first called for a tx not yet this quote's deposit: an unseen tx is waited for from then. */
+  trackedSince?: { txHash: string; at: number };
 };
+
+/** A hub swap's end, known from the hub. */
+type HubOutcome = "left_to_refund" | "cancelled" | "closed";
 
 const MAX_QUOTES = 10_000;
 // One key can't fill the cache and crowd out other keys' quotes; past this many unclaimed ones in
@@ -43,8 +52,8 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 const quotes = new Map<string, CachedQuote>();
 // Per key, its unclaimed quotes' expiry in epoch ms, by quoteId.
 const openByKey = new Map<string, Map<string, number>>();
-let lastSweepAt = 0;
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
+let sweepTimer: NodeJS.Timeout | undefined;
 
 /**
  * Refuses a key with too many open quotes, or any key while the cache is full of quotes it can't drop;
@@ -73,33 +82,80 @@ export function checkQuoteRoom(keyHash: string): void {
 }
 
 /**
- * Drops expired quotes, then if still full the oldest unclaimed one past its deadline. A live quote may be
- * signed already, and a claimed one holds a deposit, so neither is dropped to make room.
+ * Drops expired quotes, then if still full the oldest one past its deadline, in `evictionRank` order. A full cache
+ * otherwise refuses every new quote, so a swap that's safe without its quote gives way, only to be answered on less
+ * precisely here.
  */
 function makeRoom(now: number): boolean {
   sweep(now);
   if (quotes.size < MAX_QUOTES) return true;
-  for (const cached of quotes.values()) {
-    if (cached.depositTxHash === undefined && Number(cached.deadline) * 1000 <= now) {
+  for (const rank of [0, 1, 2]) {
+    for (const cached of quotes.values()) {
+      if (Number(cached.deadline) * 1000 > now || evictionRank(cached) !== rank) continue;
       drop(cached);
+      if (rank === 0) logUnused(cached, "evicted");
       return true;
     }
   }
   return false;
 }
 
+/**
+ * Past its deadline: an unused quote first; then a swap that ended or that the backend has (`submitted`); then a hub
+ * swap waiting for the canceller's refund, which loses only its early cancel here. Never a live quote, which may be
+ * signed already, nor a deposit claimed but not handed over or relayed for refund: its quote is its only record.
+ */
+function evictionRank({ depositTxHash, handedOver }: CachedQuote): 0 | 1 | 2 | undefined {
+  if (depositTxHash === undefined) return 0;
+  if (handedOver === "submitted" || handedOver === "cancelled" || handedOver === "closed") return 1;
+  return handedOver === "left_to_refund" ? 2 : undefined;
+}
+
+/** Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute. */
 function sweep(now: number): void {
-  lastSweepAt = now;
-  for (const cached of quotes.values()) if (cached.expiresAt <= now) drop(cached);
+  for (const cached of quotes.values()) {
+    if (cached.expiresAt > now) continue;
+    drop(cached);
+    if (cached.depositTxHash === undefined) logUnused(cached, "expired");
+  }
+  if (quotes.size === 0) stopSweeping();
+}
+
+/**
+ * The drop-off between quote and deposit (#110): a quote gone without one, expired, or evicted past its deadline
+ * from a full cache. Outside the request that swept it, whose record it isn't.
+ */
+function logUnused(quote: CachedQuote, reason: "expired" | "evicted"): void {
+  runWithRequestContext({}, () =>
+    logger.info(
+      {
+        "quote.id": quote.quoteId,
+        "quote.drop_reason": reason,
+        "chain.key": quote.srcChainKey,
+        "dst_chain.key": quote.dstChainKey,
+        "caller.key_hash": tagOf(quote.keyHash),
+      },
+      "Swap quote expired unused",
+    ),
+  );
+}
+
+/** Once a minute while quotes are cached, so an unused one is recorded near its expiry, a minute's worth at a time. */
+function startSweeping(): void {
+  // Created outside any request, so its runs don't carry the one that started it.
+  sweepTimer ??= runWithRequestContext({}, () => setInterval(() => sweep(Date.now()), SWEEP_INTERVAL_MS).unref());
+}
+
+function stopSweeping(): void {
+  clearInterval(sweepTimer);
+  sweepTimer = undefined;
 }
 
 export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): CachedQuote {
   checkQuoteRoom(quote.keyHash);
-  const now = Date.now();
-  // Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute.
-  if (now - lastSweepAt >= SWEEP_INTERVAL_MS) sweep(now);
   const entry = { ...quote, quoteId: randomUUID(), expiresAt: Number(quote.deadline) * 1000 + GRACE_MS };
   quotes.set(entry.quoteId, entry);
+  startSweeping();
   const open = openByKey.get(entry.keyHash) ?? new Map<string, number>();
   open.set(entry.quoteId, entry.expiresAt);
   openByKey.set(entry.keyHash, open);
@@ -118,14 +174,10 @@ function close(quote: CachedQuote): void {
   if (open?.size === 0) openByKey.delete(quote.keyHash);
 }
 
-/** The quote, `undefined` if it's gone, or `"key_mismatch"` if another key made it. */
+/** The quote, `undefined` if it's gone or expired (the sweep drops it), or `"key_mismatch"` if another key made it. */
 export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | "key_mismatch" | undefined {
   const quote = quotes.get(quoteId);
-  if (!quote) return undefined;
-  if (quote.expiresAt <= Date.now()) {
-    drop(quote);
-    return undefined;
-  }
+  if (!quote || quote.expiresAt <= Date.now()) return undefined;
   return quote.keyHash === keyHash ? quote : "key_mismatch";
 }
 
@@ -148,9 +200,10 @@ export function markSubmitFailed(quoteId: string, waitSec: number): void {
   if (quote) quote.submitRetryAt = Date.now() + waitSec * 1000;
 }
 
+/** Unless the hub settled it while the submit ran: a cancel confirmed meanwhile stands. */
 export function markSubmitted(quoteId: string): void {
   const quote = quotes.get(quoteId);
-  if (quote) quote.handedOver = "submitted";
+  if (quote && !quote.handedOver) quote.handedOver = "submitted";
 }
 
 export function markSubmitRefused(quoteId: string): void {
@@ -158,14 +211,33 @@ export function markSubmitRefused(quoteId: string): void {
   if (quote) quote.submitRefused = true;
 }
 
-// A relayed deposit has no backend row, so its quote is the only record that it's being refunded.
-const RELAYED_RETENTION_MS = 24 * 60 * 60 * 1000;
+// With no backend row, the quote is the only record of what became of the swap.
+const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function markRelayedForRefund(quote: CachedQuote): void {
-  quote.handedOver = "relayed_for_refund";
-  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + RELAYED_RETENTION_MS);
-  // Put back if it was dropped while the relay ran.
-  if (!quotes.has(quote.quoteId)) quotes.set(quote.quoteId, quote);
+  markHandedOver(quote, "relayed_for_refund");
+}
+
+/**
+ * A hub swap never submitted: past its deadline, left to the backend's canceller (`left_to_refund`); cancelled by
+ * its user (`cancelled`); or found closed on the hub, filled or cancelled elsewhere (`closed`).
+ */
+export function markHubOutcome(quote: CachedQuote, how: HubOutcome): void {
+  markHandedOver(quote, how);
+}
+
+function markHandedOver(quote: CachedQuote, how: NonNullable<CachedQuote["handedOver"]>): void {
+  quote.handedOver = how;
+  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + HANDED_OVER_RETENTION_MS);
+  // Put back if it was dropped while a read or the relay ran, and swept again from then on.
+  quotes.set(quote.quoteId, quote);
+  startSweeping();
+}
+
+/** Since when track has been called for this quote with `txHash`: now, the first time. */
+export function trackedSince(quote: CachedQuote, txHash: string): number {
+  if (quote.trackedSince?.txHash !== txHash) quote.trackedSince = { txHash, at: Date.now() };
+  return quote.trackedSince.at;
 }
 
 /**
@@ -184,8 +256,8 @@ export function openQuotes(now = Date.now()): { open: number; openUntil: string 
 }
 
 export function clearQuoteCache(): void {
+  stopSweeping();
   quotes.clear();
   openByKey.clear();
-  lastSweepAt = 0;
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
 }

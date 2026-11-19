@@ -42,7 +42,11 @@ describe("alertOperator", () => {
     setFallbackRequestContext({ apiKey: "sodax_secret_key" });
     alertOperator("unknown_quote", FIELDS);
     const keyHash = callerKeyHash().slice(0, 12);
-    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ keyHash }), expect.any(String));
+    // The log uses the Tool call record's 16 characters, so the two join; Discord shows 12.
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ "caller.key_hash": callerKeyHash().slice(0, 16) }),
+      expect.any(String),
+    );
     const body = String(fetch.mock.calls[0][1]?.body);
     expect(body).toContain(keyHash);
     expect(body).not.toContain(callerKeyHash());
@@ -104,11 +108,16 @@ describe("alertOperator", () => {
     for (let i = 0; i < 5; i++)
       alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL", reason: `r${i}` });
     const slip = "TypeError at https://rpc.example/secret-key";
-    alertOperator("swap_error", { tool: "sodax_swap_track", code: "INTERNAL", reason: slip, chainKey: "sonic" });
+    alertOperator("swap_error", {
+      tool: "sodax_swap_submit_and_track",
+      code: "INTERNAL",
+      reason: slip,
+      chainKey: "sonic",
+    });
 
     vi.advanceTimersByTime(60 * 60 * 1000);
     const post = String(fetch.mock.calls.at(-1)?.[1]?.body);
-    expect(post).toContain("swap_error · sodax_swap_track · INTERNAL · TypeError at");
+    expect(post).toContain("swap_error · sodax_swap_submit_and_track · INTERNAL · TypeError at");
     expect(post).not.toContain("secret-key");
   });
 
@@ -161,7 +170,7 @@ describe("alertOperator", () => {
     alertOperator("unknown_quote", { ...FIELDS, quoteId: "q-2" });
     alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
     alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
-    alertOperator("swap_error", { tool: "sodax_swap_track", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_submit_and_track", code: "INTERNAL" });
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(3);
     expect(fetch).not.toHaveBeenCalled();
   });

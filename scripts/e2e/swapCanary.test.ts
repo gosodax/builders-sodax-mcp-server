@@ -5,7 +5,7 @@ import { spokeChainConfig } from "@sodax/types";
 import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SwapStep } from "../../src/services/swap/quote.js";
+import type { EvmStep } from "../../src/services/swap/sources/types.js";
 import { minimumTooLow, sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.
@@ -74,7 +74,7 @@ const depositData = (token: Hex = USDC, amount = AMOUNT) =>
     functionName: "transfer",
     args: [token, ACCOUNT.address, amount, "0x1234"],
   });
-const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId = 42161): SwapStep => ({
+const step = (kind: EvmStep["kind"], tx: Partial<EvmStep["tx"]> = {}, chainId = 42161): EvmStep => ({
   kind,
   chainId,
   tx: {
@@ -86,10 +86,10 @@ const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId 
     ...tx,
   },
 });
-const swap = (tx: Partial<SwapStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
+const swap = (tx: Partial<EvmStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
 const approveData = (spender: Hex = ASSET_MANAGER, amount = AMOUNT) =>
   encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] });
-const approve = (tx: Partial<SwapStep["tx"]> = {}, kind: SwapStep["kind"] = "approve") =>
+const approve = (tx: Partial<EvmStep["tx"]> = {}, kind: EvmStep["kind"] = "approve") =>
   step(kind, { to: USDC, data: approveData(), ...tx });
 const QUOTE = { steps: [swap()] } as never;
 
@@ -115,6 +115,25 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("wallets", () => {
+  it("reads each side's RPC from RPC_CONFIG as the server does, else viem's default", () => {
+    const defaults = wallets(ACCOUNT).map(side => side.client.transport.url);
+    vi.stubEnv(
+      "RPC_CONFIG",
+      JSON.stringify({
+        "0xa4b1.arbitrum": { rpcUrl: "https://arb.example/key\n" },
+        "0x2105.base": { rpcUrl: "http://base" },
+      }),
+    );
+    const [arbitrum, base] = wallets(ACCOUNT);
+    expect(arbitrum.client.transport.url).toBe("https://arb.example/key");
+    expect(arbitrum.lookup.transport.url).toBe("https://arb.example/key");
+    // Not https: viem's default, as the server skips it.
+    expect(base.client.transport.url).toBe(defaults[1]);
+    vi.unstubAllEnvs();
+  });
 });
 
 describe("sendSteps", () => {
@@ -203,7 +222,7 @@ describe("minimumTooLow", () => {
 });
 
 describe("stepMismatch", () => {
-  it.each<[string, SwapStep[]]>([
+  it.each<[string, EvmStep[]]>([
     ["the swap alone", [swap()]],
     ["an approve, then the swap", [approve(), swap()]],
     [
@@ -214,7 +233,7 @@ describe("stepMismatch", () => {
     expect(stepMismatch(steps, ARBITRUM(), AMOUNT)).toBeUndefined();
   });
 
-  it.each<[string, SwapStep[], string]>([
+  it.each<[string, EvmStep[], string]>([
     ["no steps", [], "steps: one swap, last"],
     ["no swap", [approve()], "steps: one swap, last"],
     ["a step after the swap", [swap(), approve()], "steps: one swap, last"],
@@ -260,7 +279,7 @@ describe("track", () => {
   const quote = (expiresInMs: number) =>
     ({
       expiresAt: new Date(Date.now() + expiresInMs).toISOString(),
-      afterSend: { tool: "sodax_swap_track", args: { quoteId: "q-1" }, needs: "txHash" },
+      afterSend: { tool: "sodax_swap_submit_and_track", args: { quoteId: "q-1" }, needs: "txHash" },
     }) as never;
   const reply = (out: object, isError = false) => ({ isError, out: out as never });
 
@@ -275,7 +294,7 @@ describe("track", () => {
     await settle(tracked);
     await expect(tracked).resolves.toBeUndefined();
     expect(call).toHaveBeenCalledTimes(4);
-    expect(call).toHaveBeenCalledWith(ENV, "sodax_swap_track", { quoteId: "q-1", txHash: "0xabc" });
+    expect(call).toHaveBeenCalledWith(ENV, "sodax_swap_submit_and_track", { quoteId: "q-1", txHash: "0xabc" });
     expect(logs).toEqual(expect.arrayContaining(["[setup] McpError -32001, retrying", "[setup] Error 429, retrying"]));
     expect(logs.join("\n")).not.toMatch(/rpc\.example|10\.0\.0\.1/);
   });

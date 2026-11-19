@@ -48,9 +48,10 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ### API Key
 
 Send your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys) in an `x-api-key` header. The builder
-tools work without one; the swap tools need it. The server forwards it on its calls to the SODAX data API, solver and
-Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY` instead. A value that isn't a SODAX key
-(`sodax_…`) is ignored.
+tools work without one; the swap tools need it. An organisation's Owner or Admin creates one in the
+[partner portal](https://portal.sodax.com), under **API keys** → **Create key**. The server forwards it on its calls to
+the SODAX data API, solver and Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY`
+instead. A value that isn't a SODAX key (`sodax_…`) is ignored, except by the `swap` profile, which refuses it.
 
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
 carries, and a session opened with a key refuses a message without that key (HTTP 403). The MCP SDKs' SSE clients
@@ -95,31 +96,68 @@ amount sent, is part of the quote, and is never a tool input.
 With the `swap` profile, or `all` with a key, an agent swaps for a user like this. The user's wallet signs and sends
 every transaction; the server never signs.
 
-1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` for a non-EVM
-   destination (an EVM one defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
-   needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId` and
-   `expiresAt`, by which the swap must be mined and tracked. Without the addresses it returns a price only.
+1. `sodax_swap_quote` with the chains, tokens, amount and the user's `fromAddress`, plus `toAddress` unless both
+   chains are EVM (then it defaults to `fromAddress`). A `ready` quote returns `steps` (an approve when one is
+   needed, after a `reset_approve` when the token needs its allowance zeroed first, then the swap), a `quoteId`, the
+   `intentHash` the hub will know the swap by, and `expiresAt`, by which the swap must be mined (track it even
+   after). Without the addresses it returns a price only.
 2. The user's wallet, on the source chain (each step's `tx` carries its `chainId`), signs and sends each step in
    order, each confirmed before the next. A wallet that supports EIP-5792 can send the quote's `batch` in place of the
    steps its `replaces` lists, adding `calls` to its params: those steps' `{to, value, data}`, in order. A
-   `reset_approve` still goes first.
-3. Right after the swap is sent, `sodax_swap_track` with the swap transaction's `txHash` (from a batch, the hash
-   `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
+   `reset_approve` still goes first. From a non-EVM chain there is one step, with `chainType` instead of `chainId`:
+   its `tx` is the SODAX SDK's unsigned transaction for that family, as the SDK returns it raw (bigints as decimal
+   strings, bytes as base64), built here from the checked intent; the quote's `nextStep` says how the family's
+   wallet sends it. Where the SDK reads what the tx calls from the chain, the unsigned tx is checked first: Solana's
+   calls against the packaged programs, Sui's call against the Swaps API's own build's package and the packaged state
+   objects, a cancel against the packaged connection. A Sui tx carries its sender. Before building anything, a quote
+   refuses (`SWAP_MISMATCH`) a live chain config whose asset manager or connection isn't the SDK's packaged one.
+3. Right after the swap is sent, `sodax_swap_submit_and_track` with the swap transaction's `txHash` (from a batch, the
+   hash `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
-   deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. While
-   the result has `retryAfterSec`, call it again after that many seconds.
+   deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
+   Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
+   there once expired, unless a solver filled it first (`expired_awaiting_refund`); one the hub no longer holds,
+   filled or cancelled, is `intent_closed`. While the result has `retryAfterSec`, call it again after that many
+   seconds. A tx no node has seen comes with `stopAfter`, 5 minutes after the deadline, when it becomes
+   `source_not_found`. It's polled until `pollUntil`, at most 15 minutes after the first call; after that the agent
+   asks the user whether their wallet sent it instead of polling, and calls again once it did, or once after
+   `stopAfter`. With its `quoteId`, such a tx is read from the chain at most once every 10 seconds per API key,
+   however often it's tracked. EVM, Solana and NEAR nodes say when they have a tx not final yet (`seenOnChain`); Sui,
+   Stellar and Injective nodes know one only once it ran. From any spoke, track reads what the relay signs: the messages the chain's
+   `connection` emitted when the tx ran. It submits a tx holding exactly one deposit, sent by the asset manager from
+   the quote's sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that
+   failed after its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose
+   events can't all be read: it's reported as unverified, which alerts with its quote. A non-EVM tx's hash goes as the
+   wallet shows it.
 4. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
-   then call it again with `cancelTxHash`.
+   then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
+   relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as
+   soon as its tx is mined, before or after its deadline, without waiting for the swap service to have it. From a
+   non-EVM chain the SDK builds the cancel here. From any spoke it's relayed once the tx ran and its `connection`
+   emitted the user's message to their hub wallet with the intent's cancel payload (from Solana, its keccak); a cancel
+   tx whose events can't all be read is relayed for the relay to check, as `cancel_relayed` with `unverified`. Without
+   its quote, a swap whose tx events can't all be read isn't cancelled here (`not_cancellable`, `unverified`). No
+   cancel is built for an intent the hub no longer holds, filled, cancelled or refunded (`closed`); one that closes
+   after it's built fails when sent (`cancel_failed`), and the next call says it's closed.
 
 `sodax_get_balance` reads a wallet's balance when the user isn't sure they hold enough (the quote doesn't check), and
-`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on an EVM spoke
-chain for now (not Sonic, the hub); the destination can be any SODAX swap chain. Every result the tools return carries
+`sodax_resolve_token` looks a token up when another swap tool returns `UNKNOWN_TOKEN`. Swaps start on Sonic (the hub),
+an EVM spoke, or a non-EVM chain of a family listed in `NON_EVM_SOURCE_TYPES` (`src/services/swap/sources/types.ts`),
+and a quote from another chain returns `UNSUPPORTED_SOURCE` naming the ones that can; `sodax_check_chain_support` says
+for any chain. The destination can be any SODAX swap chain. Bitcoin, Stacks and ICON aren't planned as sources for now.
+ICON is being retired. SODAX's Bitcoin swaps run through a Bound trading wallet (a 2-of-2 that Bound co-signs and
+broadcasts, behind a login token that expires in minutes), which an agent's wallet can't drive. A Stacks swap needs the
+sender's public key and post-conditions the wallet must add itself, and the SDK can't build a Stacks cancel yet (it
+passes the address where the public key goes). On Sonic the swap calls the intents contract directly, so its approval
+goes to that contract. A Stellar source whose trustline the SDK says has too little room for the amount is refused: the
+server doesn't build a changeTrust step. Every result the tools return carries
 a `nextStep` for the agent; an input that fails a tool's schema gets the MCP SDK's validation error instead.
 
 The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
 
 - give the user's address on the source chain, for `fromAddress`;
 - switch to the chain a step's `tx.chainId` names, then send that `tx` (`to`, `value`, `data`) and return its hash;
+  from a non-EVM chain, sign and send the family's raw transaction in the step (see step 2 above);
 - tell when a transaction is mined, since each step must be mined before the next;
 - optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
 
@@ -209,8 +247,8 @@ The swap tools never sign or move funds. They also:
 | Tool | Description |
 |------|-------------|
 | `sodax_swap_quote` | Quote a cross-chain swap; with `fromAddress`, the transactions for the user's wallet to sign |
-| `sodax_swap_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
-| `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay |
+| `sodax_swap_submit_and_track` | Submit and track a swap once the user's wallet has sent it; repeated calls never resubmit |
+| `sodax_swap_cancel` | Cancel a submitted swap that hasn't been filled: the cancel transaction to sign, then the relay (none from Sonic) |
 | `sodax_get_balance` | A wallet's native balance on a chain and, optionally, one token's |
 | `sodax_resolve_token` | Look up a token on a chain: address, decimals and hub asset |
 
@@ -312,7 +350,7 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 
 `.github/workflows/e2e-canary.yml` runs `pnpm e2e:canary` every day, and on demand, against a server it starts in the runner with `SODAX_ENV=canary`. Canary runs on mainnet chains, so it moves real funds: 5 USDC from whichever of Arbitrum and Base holds more to the other, so runs alternate. It never runs on pull requests. A failure posts the failing stage to Discord: `setup` means the swap never started (install, build or the server start failed, or an env value is missing or malformed); `read_wallet` means the balance reads failed; `balance_floor` means the wallet needs a top-up (USDC, or ETH for gas); `quote` means no ready quote came back, its steps weren't the USDC approve and swap this route needs, or its minimum output was under 97% of the amount. Nothing was signed in any of these. `send` means the swap wasn't sent, or the node refused it and no node had it (an approve may have been mined): check the logged swap hash, if there is one; `track` means a swap may be on chain and needs a look; `arrival` means it was solved but the funds haven't reached the destination yet. The script's output is printed after the run, and the server log after a failure, unless a secret (the API key, the wallet key with or without `0x`, an RPC URL's host or path) shows up in either: that fails the run on its own, Discord gets the stage `a secret in the logs`, and neither is printed.
 
-The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
+The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`, which the workflow passes to the server and the script as their `RPC_CONFIG`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
 To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
 
@@ -334,7 +372,7 @@ Don't make a habit of it — CI will still enforce the same checks on the PR.
 ### Environment Variables
 
 The server auto-loads a `.env` file on startup (via Node's `--env-file-if-exists`
-flag; the SODAX SDK needs Node ≥ 22.12.0). Copy `.env.example` to `.env` for local development;
+flag; the OpenTelemetry SDK that ships the logs needs Node ≥ 22.15.0). Copy `.env.example` to `.env` for local development;
 if no `.env` exists, every variable falls back to the default below. In production,
 Coolify injects these directly into the process environment.
 
@@ -347,12 +385,17 @@ Coolify injects these directly into the process environment.
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
-| `SODAX_RPC_URL_<chainId>` | SDK default | The RPC the swap tools read an EVM chain through (track, cancel and balances), by chain id (e.g. `SODAX_RPC_URL_42161`); Sonic's (`146`) also carries the hub reads. `https` only; anything else stops the server at startup. Set Polygon (`137`), Ethereum (`1`) and Hedera (`295`) in production: their public defaults are unreliable. Tools never take an RPC URL as input. |
-| `SODAX_RPC_URL_<family>` | SDK default | The RPC a non-EVM chain is read through (`sodax_get_balance` reads balances; the quote reads NEAR storage and Stellar trustlines), by family: `SOLANA`, `SUI`, `NEAR`, `ICON`, `STACKS`, `BITCOIN` (an Esplora-style API such as mempool.space, not a node), `STELLAR_HORIZON` and `STELLAR_SOROBAN`. Not Injective: the SDK ignores its RPC setting, so its reads keep the public endpoints. `https` only, and an unknown suffix stops the server at startup. Their public defaults can rate-limit. |
+| `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, the quote's NEAR storage and Stellar trustline checks, and the swap tx it builds on a non-EVM chain), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Public nodes keep only recent txs, so a swap from a non-EVM chain tracked late may read as not found; an archival endpoint avoids that. Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
 | `NODE_ENV` | - | Set to `production` for deployment |
 | `LOG_LEVEL` | `info` | Log verbosity. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for runtime alerts: server status (start/stop), significant errors (uncaught/unhandled), API-drift summaries and the swap alerts (see *Operating the swap tools*). Empty/unset = silent (staging/local). |
+| `OTEL_LOGS_ENABLED` | - | `true` ships every log record to SODAX unified logging over OTLP as well as stderr; anything else, stderr only. With it set, the next three are required: a missing or bad one warns at startup and leaves shipping off. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | - | The log gateway's URL: the full `/v1/logs` URL, used as given, or the gateway's bare origin, which gets `/v1/logs` appended; a trailing slash is dropped. `https` unless `DEPLOYMENT_ENV=dev`. |
+| `OTEL_LOGS_TOKEN` | - | The bearer token for that gateway, one per environment. Secret: the deployment's env only. The server sends it as its only header: `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_LOGS_HEADERS` must stay unset. |
+| `DEPLOYMENT_ENV` | - | `prod`, `canary`, `staging` or `dev`: the `deployment.environment` the records carry. `staging` is the server that follows `development`. Independent of `SODAX_ENV`, which picks the API host: the test server runs `SODAX_ENV=canary` with `DEPLOYMENT_ENV=staging`. |
+| `ORIGIN` | - | The host's label, as `sodax.origin` on the records. Optional. |
+| `GIT_SHA`, `SOURCE_COMMIT` | package version | The running commit, the records' `service.version` (`GIT_SHA` first). The Docker image sets `GIT_SHA` from the `SOURCE_COMMIT` build argument, which Coolify passes when "Include Source Commit in Build" is on. A value that isn't a git sha is ignored. |
 
 ## Deployment
 
@@ -385,9 +428,9 @@ docker-compose up -d
 
 ### Deployment notes
 
-The included `nixpacks.toml` handles deployment automatically. Set these environment variables:
-- `PORT=3000`
-- `NODE_ENV=production`
+Coolify builds the `Dockerfile`, the same image CI builds. The image sets `NODE_ENV=production`; `PORT` defaults to
+3000. With Coolify's "Include Source Commit in Build" on, the image also sets `GIT_SHA`, the version the log records
+carry (see [Logging](#logging)). `nixpacks.toml` is kept for a nixpacks build, which sets no `GIT_SHA`.
 
 ### Operating the swap tools
 
@@ -395,9 +438,57 @@ Swap quotes live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
 - A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
-- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
+- Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for or can't check against one (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
+
+## Logging
+
+Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem (over SSE, the tool calls' ids are on the `POST /messages` responses, not on the stream), and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
+
+| Record | Level | When | Attributes |
+|---|---|---|---|
+| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`, `/messages`, `/sse`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile` (not on `/messages`, which runs with its SSE session's), `caller.key_status` (`valid`: a SODAX key's shape, the backend decides the rest; `malformed`; `missing`), `caller.key_hash` with a valid key, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
+| `Tool call` | info for the caller's failure, `warn` for one on SODAX's side, `error` for a bug | each tool call, and each call the SDK refuses before a handler runs | `gen_ai.tool.name` (`other` for a name the server doesn't have), `tool.outcome` (`ok` or `error`), `error.type`, `duration.ms`, `caller.key_hash` with a key; swap tools add `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`, `intent.hash`, `chain.key`, `dst_chain.key`, `swap.usd_bucket`; a bug adds `exception.type` and its stack frames, never its message |
+| `Upstream call` | info, `warn` on failure | each call to the SODAX APIs, the solver, the relay and the docs MCP | `http.request.method`, `server.address`, `url.template` (static segments kept, parameters masked), `http.response.status_code`, `duration.ms`, `error.type` |
+| `Chain read` | info, `warn` on failure | each bounded SDK or RPC read | `sdk.call`, `chain.key`, `duration.ms`, `error.type` |
+| `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
+| `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
+| `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
+| `SODAX Builders MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
+| `RPC_CONFIG entries this server can't apply` | warn | boot, when `RPC_CONFIG` has an entry this server skips (those chains use their public RPC) | `rpc_config.skipped` (chain keys and field names only, never a value) |
+| `SODAX_RPC_URL_* is no longer read: set RPC_CONFIG` | warn | boot, when an old RPC variable is still set (it has no effect) | `rpc_config.legacy` (the variable names) |
+| `SODAX SDK warning`, `SODAX SDK error` | warn, error | the SDK's own log lines | `sdk.message` (URLs stripped) |
+| `Swaps API call failed` | warn | a Swaps API error answer | `url.template`, `http.response.status_code`, `upstream.code`, `upstream.message` (ids masked) |
+| an operator alert, titled by its kind | error | a swap needs an operator: a deposit that can't be submitted or doesn't match its quote, a refund that couldn't start, a swap the service built wrong (`SWAP_MISMATCH`) or quoted off market (`PRICE_OFF_MARKET`), a swap tool's unexpected failure. It also goes to Discord, which shows the first 12 characters of `caller.key_hash` | `alert` (the kind), `chain.key`, `tx.hash`, `quote.id`, `deadline`, `gen_ai.tool.name`, `error.type`, `reason`, `caller.key_hash` |
+| `Rate limited` | warn | a limiter's first refusal per client per window | `http.route`, `rate_limit.limit`, `rate_limit.window_ms`, `client.ip_hash` as above |
+| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `sse.sessions`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`; `unified_logging.gauges_failed` when they couldn't be read |
+
+A record's body is a constant (`Body = 'Tool call'`); what varies is in its attributes. One failure is one record of each kind: the data services don't log what `Upstream call`, `Chain read` and `Tool call` already say.
+
+`error.type` says why:
+
+- **`HTTP request`**, the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`,
+  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
+  `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST`,
+  `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
+- **`Tool call` the SDK refused** before a handler ran: `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED`,
+  `TOOL_CALL_REFUSED`.
+- **A swap tool's failure**: the code the tool returned.
+- **A data or docs tool's failure**, by its cause:
+  - `UPSTREAM_NOT_FOUND`, `UPSTREAM_4XX`, `UPSTREAM_5XX`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`,
+    `UPSTREAM_BAD_RESPONSE`;
+  - `RATE_LIMITED` (a 429 on the caller's key) or `UPSTREAM_RATE_LIMITED` (a 429 on a keyless call, so this
+    server's shared egress);
+  - `INVALID_INPUT`;
+  - `DOCS_RPC_ERROR`, `DOCS_TOOL_ERROR`, `DOCS_UNAVAILABLE` (a 4xx from the docs server: its endpoint moved or gone);
+  - `INTERNAL` when nothing explains it.
+
+A `Tool call` is at `warn` when the failure is on SODAX's side: `UPSTREAM_RATE_LIMITED`, `UPSTREAM_5XX`,
+`UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE`, `UPSTREAM_BAD_RESPONSE`, `DOCS_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`,
+`CHAIN_UNAVAILABLE`, `SWAP_MISMATCH`, `PRICE_OFF_MARKET`, `INTERNAL`.
+
+Export is batched and bounded: a gateway outage drops records and never slows a tool call; a stop or crash flushes what it can; a failure to start leaves the logs on stderr and the server serving. `GET /health` reports `unifiedLogging` (`on`, records `written`, `exported` and `failed`, `lastFailureAt`), so a token or allowlist problem shows there before Grafana; the heartbeat keeps a quiet server from looking like a stopped producer. A batch the gateway accepted but partly rejected counts as exported and is logged as a warning. The hub's `unified-logging-connect` skill has the connect check.
 
 ## API Endpoints
 
@@ -405,7 +496,7 @@ Swap quotes live in the server's memory, so:
 |----------|-------------|
 | `GET /` | Landing page |
 | `GET /api` | Server info, tool list and profiles |
-| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose |
+| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose; `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |
@@ -414,6 +505,9 @@ Swap quotes live in the server's memory, so:
 
 `/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
 Read `error.message`; `error` is an object here.
+
+Every MCP response carries an `X-Request-Id` header (over SSE, on the `POST /messages` responses). Quote it when
+reporting a problem: the server's logs find the request by it.
 
 | Status | On `/mcp` | `error.code` |
 |--------|-----------|--------------|

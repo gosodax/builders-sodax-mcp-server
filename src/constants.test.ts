@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseSodaxEnv, parseSwapUsdWarn } from "./constants.js";
+import { base32Bytes, base58Bytes, parseSodaxEnv, parseSwapUsdWarn } from "./constants.js";
 
 describe("parseSodaxEnv", () => {
   it("defaults to production when unset or blank", () => {
@@ -55,5 +55,14 @@ describe("parseSwapUsdWarn", () => {
 
   it.each(["0", "-5", "1e6", "10,000", "abc"])("refuses %j", value => {
     expect(parseSwapUsdWarn(value)).toBeUndefined();
+  });
+});
+
+describe("base58Bytes and base32Bytes", () => {
+  it("decode their alphabets, a leading 1 as a zero byte, and refuse any other character", () => {
+    expect(Buffer.from(base58Bytes("1112")).toString("hex")).toBe("00000001");
+    for (const text of ["0", "O", "I", "l", "a b"]) expect(() => base58Bytes(text)).toThrow();
+    expect(Buffer.from(base32Bytes("ME")).toString("hex")).toBe("61");
+    for (const text of ["me", "1", "="]) expect(() => base32Bytes(text)).toThrow();
   });
 });

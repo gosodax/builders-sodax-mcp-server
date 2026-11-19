@@ -61,6 +61,16 @@ describe("docsProxy allowlist", () => {
     expect(result.content[0]?.text).toContain("Unknown docs tool");
   });
 
+  it("names an HTTP refusal from the docs server as its endpoint gone, a SODAX-side failure", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("", { status: 405 })) as unknown as typeof fetch;
+    const { callDocsTool } = await import("./docsProxy.js");
+    const { failureOf } = await import("./toolFailure.js");
+    const result = await callDocsTool("search_sodax_docs", { query: "x" });
+
+    expect(result.isError).toBe(true);
+    expect(failureOf(result)).toEqual({ code: "DOCS_UNAVAILABLE" });
+  });
+
   it("reports healthy with the allowlisted tool count", async () => {
     const { checkDocsHealth } = await import("./docsProxy.js");
     expect(await checkDocsHealth()).toEqual({ healthy: true, toolCount: 2 });

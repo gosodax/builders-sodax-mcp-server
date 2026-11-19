@@ -11,7 +11,9 @@
  * Mintlify endpoint `/mcp` (MCP protocol 2025-06-18, SSE-framed HTTP).
  */
 
+import { BadResponseError, HttpError, timedFetch } from "./http.js";
 import { logger } from "./logger.js";
+import { failedResult, markFailure } from "./toolFailure.js";
 
 // SODAX docs MCP endpoint (Mintlify). The retired GitBook endpoint was
 // `https://docs.sodax.com/~gitbook/mcp` and now 405s.
@@ -116,23 +118,30 @@ async function postDocs(body: unknown): Promise<unknown> {
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
-  const response = await fetch(DOCS_MCP_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(DOCS_TIMEOUT_MS),
-  });
+  const { response, body: text } = await timedFetch(
+    DOCS_MCP_URL,
+    { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(DOCS_TIMEOUT_MS) },
+    response => response.ok,
+    response => response.text(),
+  );
 
   // Capture a session id if the server starts issuing one.
   const issued = response.headers.get("mcp-session-id");
   if (issued) sessionId = issued;
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText} from SODAX docs MCP`);
+    throw new HttpError(`HTTP ${response.status} ${response.statusText} from SODAX docs MCP`, response.status);
   }
 
-  const text = await response.text();
   return parseDocsResponse(text);
+}
+
+/** The docs server's own JSON-RPC error answer. */
+class DocsRpcError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocsRpcError";
+  }
 }
 
 /**
@@ -148,12 +157,12 @@ async function sendMcpRequest(method: string, params?: unknown): Promise<unknown
 
   if (typeof raw !== "object" || raw === null) {
     const preview = typeof raw === "string" ? raw.slice(0, 200) : String(raw);
-    throw new Error(`MCP ${method}: expected JSON-RPC object, got ${typeof raw} (${preview})`);
+    throw new BadResponseError(`MCP ${method}: expected JSON-RPC object, got ${typeof raw} (${preview})`);
   }
 
   const data = raw as { error?: { message?: string }; result?: unknown };
   if (data.error) {
-    throw new Error(data.error.message || "MCP request failed");
+    throw new DocsRpcError(data.error.message || "MCP request failed");
   }
 
   return data.result;
@@ -245,10 +254,10 @@ async function fetchAndApply(gen: number): Promise<DocsTool[]> {
 
     if (cachedTools.length > 0) {
       lastFailedFetchAt = 0;
-      logger.debug({ toolCount: cachedTools.length }, "Fetched tools from SODAX docs MCP");
+      logger.debug({ "tool.count": cachedTools.length }, "Fetched tools from SODAX docs MCP");
     } else {
       lastFailedFetchAt = Date.now();
-      logger.warn({ upstreamCount: upstream.length }, "SODAX docs MCP returned no allowlisted tools");
+      logger.warn({ "upstream.tool_count": upstream.length }, "SODAX docs MCP returned no allowlisted tools");
     }
     return cachedTools;
   } catch (error) {
@@ -284,10 +293,14 @@ export async function callDocsTool(toolName: string, args: Record<string, unknow
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return {
-      content: [{ type: "text", text: `Error calling SODAX docs tool: ${message}` }],
-      isError: true,
-    };
+    const result = failedResult(error, `Error calling SODAX docs tool: ${message}`);
+    // The docs server answered with its own JSON-RPC error: its tool's failure (the arguments, maybe), not ours.
+    if (error instanceof DocsRpcError) return markFailure(result, { code: "DOCS_RPC_ERROR" });
+    // This server builds the whole request, so a 4xx other than throttling is the docs endpoint moved or gone.
+    if (error instanceof HttpError && error.status < 500 && error.status !== 429) {
+      return markFailure(result, { code: "DOCS_UNAVAILABLE" });
+    }
+    return result;
   }
 }
 

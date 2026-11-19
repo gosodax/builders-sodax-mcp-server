@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { EVM_ADDRESS_PATTERN, EVM_TX_HASH_PATTERN, SODAX_SWAPS_BASE_URL } from "../../constants.js";
-import { HttpError, fetchJson, fetchJsonOrNull } from "../http.js";
+import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "../http.js";
 import { logger, redact } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { ActionError, type ActionErrorCode } from "./errors.js";
@@ -44,12 +44,26 @@ const intentSchema = z.object({
   data: z.string().regex(HEX_DATA),
 });
 
+// The swap tx's shape is the source family's: an EVM one is parsed where it's used (`parseEvmTx`).
 const builtIntentSchema = z.object({
-  tx: evmTxSchema,
+  tx: z.unknown(),
   intent: intentSchema,
   relayData: z.object({ address: evmAddress, payload: z.string().regex(HEX_DATA) }),
 });
 export type BuiltIntent = z.infer<typeof builtIntentSchema>;
+
+/** The Swaps API's swap tx, if it's an EVM one. */
+export function asEvmTx(tx: unknown): EvmTx | undefined {
+  const parsed = evmTxSchema.safeParse(tx);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** The Swaps API's swap tx from an EVM source; any other shape is a swap it built wrong. */
+export function parseEvmTx(tx: unknown): EvmTx {
+  const evmTx = asEvmTx(tx);
+  if (!evmTx) throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
+  return evmTx;
+}
 export type Intent = BuiltIntent["intent"];
 
 // Non-EVM destinations have their own fill hash formats.
@@ -197,10 +211,15 @@ export async function buildCancel(srcChainKey: string, intent: Intent): Promise<
 /**
  * Asks the relay to carry a mined spoke tx to the hub; `chainId` is the relay id (an intent's `srcChain`).
  * Through the Swaps API, not the relay itself (`relay.ts`), so the caller's key and limits apply (ADR §Cancel).
+ * `data` is the relay data the tx committed only the hash of (Solana), which the relay can't read from the chain.
  */
-export async function relaySpokeTx(chainId: string, txHash: string): Promise<boolean> {
+export async function relaySpokeTx(
+  chainId: string,
+  txHash: string,
+  data?: { address: string; payload: string },
+): Promise<boolean> {
   const schema = z.object({ result: z.object({ success: z.boolean() }) });
-  const { result } = await call(schema, "/intents/submit", { chainId, txHash });
+  const { result } = await call(schema, "/intents/submit", { chainId, txHash, ...(data && { data }) });
   return result.success;
 }
 
@@ -237,14 +256,14 @@ async function send(path: string, body: unknown, fetcher: typeof fetchJsonOrNull
     const options = { method: body === undefined ? "GET" : "POST", body, timeout: TIMEOUT_MS };
     return await fetcher<unknown>(`${SODAX_SWAPS_BASE_URL}${path}`, options);
   } catch (error) {
-    throw toActionError(error, routeOf(path));
+    throw toActionError(error, urlTemplate(path));
   }
 }
 
 function parse<T>(schema: Schema<T>, path: string, raw: unknown): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    logger.error({ route: routeOf(path) }, "Unexpected Swaps API response");
+    logger.error({ "url.template": urlTemplate(path) }, "Unexpected Swaps API response");
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service returned an unexpected response.");
   }
   return parsed.data;
@@ -280,12 +299,15 @@ const REFUSALS = new Map<number, Refusal>([
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
 ]);
 
-// A hash in the path is the caller's; the route logged is the endpoint, not the value.
-const routeOf = (path: string) => path.split("?")[0].replace(/0x[0-9a-fA-F]+/g, ":hash");
+/** Hex values, and long runs of letters and digits (base58, bech32, NEAR implicit), as in a masked `url.template`. */
+const withoutIds = (text: string) => text.replace(/0x[0-9a-f]{6,}|\b[a-z0-9]{24,}\b/gi, "*");
+
+// The route as the "Upstream call" record names it, so one query finds both.
+const urlTemplate = (path: string) => routeOf(new URL(`${SODAX_SWAPS_BASE_URL}${path}`).pathname);
 
 function toActionError(error: unknown, route: string): ActionError {
   if (!(error instanceof HttpError)) {
-    logger.warn({ err: error, route }, "Swaps API call failed");
+    logger.warn({ err: error, "url.template": route }, "Swaps API call failed");
     return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
   }
   // The status, code and reason go to the log, not to the agent: upstream text isn't ours to pass on.
@@ -293,8 +315,16 @@ function toActionError(error: unknown, route: string): ActionError {
   // The code is upstream data of any shape; only a short scalar is worth a log field.
   const code =
     typeof apiCode === "number" || (typeof apiCode === "string" && apiCode.length <= 64) ? apiCode : undefined;
-  // Upstream text may quote a URL, a key or the request it refused.
-  logger.warn({ route, status, apiCode: code, apiMessage: apiMessage && redact(apiMessage) }, "Swaps API call failed");
+  // Upstream text may quote a URL, a key or the request it refused: what reads like an id is masked, the reason stays.
+  logger.warn(
+    {
+      "url.template": route,
+      "http.response.status_code": status,
+      "upstream.code": code,
+      "upstream.message": apiMessage && withoutIds(redact(apiMessage)),
+    },
+    "Swaps API call failed",
+  );
   if (status === 401 || status === 403) {
     return new ActionError("API_KEY_REQUIRED", "The swap service needs a valid SODAX API key.");
   }

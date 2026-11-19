@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
-import { runWithRequestContext } from "../requestContext.js";
+import { getRequestContext, runWithRequestContext } from "../requestContext.js";
 import { clearCache } from "../sodaxApi.js";
 import { catalogFetch, fixtureText } from "./__fixtures__/catalog.js";
-import { clearSwapCatalogCache, expireSwapCatalog, getSwapCatalog } from "./tokens.js";
+import { clearSwapCatalogCache, expireSwapCatalog, getSwapCatalog, swapCatalogAgeSec } from "./tokens.js";
 
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
@@ -20,6 +20,10 @@ afterEach(() => {
 });
 
 describe("getSwapCatalog", () => {
+  it("says how old the catalog is, and nothing before the first fetch", () => {
+    expect(swapCatalogAgeSec()).toBeUndefined();
+  });
+
   it("fetches both lists once for concurrent callers and marks native tokens", async () => {
     const [first, second] = await Promise.all([getSwapCatalog(), getSwapCatalog()]);
     expect(first).toBe(second);
@@ -32,15 +36,36 @@ describe("getSwapCatalog", () => {
     });
     // Sonic is the hub: no asset manager, so no swap contract from this config.
     expect(first.chains.sonic).toEqual({ type: "EVM", chainId: 146 });
-    expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
+    // A non-EVM spoke's asset manager too, as its config spells it, for the quote to check against the SDK's.
+    expect(first.chains.sui).toEqual({
+      type: "SUI",
+      chainId: "sui",
+      swapContract:
+        "0xa17a409164d1676db71b411ab50813ba2c7dd547d2df538c699049566f1ff922::asset_manager::0xcb7346339340b7f8dea40fcafb70721dc2fcfa7e8626a89fd954d46c1f928b61",
+    });
   });
 
-  it("loads the shared catalog without the caller's key", async () => {
-    await runWithRequestContext({ apiKey: "sodax_k1" }, () => getSwapCatalog());
+  it("loads the shared catalog without the caller's key, under the caller's request id", async () => {
+    const idsOnFetch: (string | undefined)[] = [];
+    const serve = catalogFetch();
+    fetchSpy.mockImplementation((input, init) => {
+      idsOnFetch.push(getRequestContext().requestId);
+      return serve(input, init);
+    });
+    await runWithRequestContext({ apiKey: "sodax_k1", requestId: "r1" }, () => getSwapCatalog());
     expect(fetchSpy).toHaveBeenCalled();
     for (const [, init] of fetchSpy.mock.calls) {
       expect((init as RequestInit).headers).not.toHaveProperty("x-api-key");
     }
+    expect(new Set(idsOnFetch)).toEqual(new Set(["r1"]));
+  });
+
+  it("tells a caller waiting on another request's refresh which request that is", async () => {
+    const info = vi.spyOn(logger, "info");
+    const first = runWithRequestContext({ requestId: "r1" }, () => getSwapCatalog());
+    const second = runWithRequestContext({ requestId: "r2" }, () => getSwapCatalog());
+    await Promise.all([first, second]);
+    expect(info).toHaveBeenCalledWith({ "refresh.request.id": "r1" }, "Waiting for the catalog refresh in flight");
   });
 
   it.each([

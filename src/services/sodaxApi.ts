@@ -6,6 +6,7 @@
  */
 
 import {
+  CACHE_DURATION_MS,
   CHAIN_ALIASES,
   NETWORK_COUNT_EXCLUDED_CHAIN_KEYS,
   SODAX_API_BASE_URL,
@@ -22,11 +23,20 @@ import type {
   VolumeData,
   VolumeStats,
 } from "../types.js";
-import { fetchJson, fetchJsonOrNull } from "./http.js";
-import { logger } from "./logger.js";
+import { TOOL_CONTRACT } from "./apiDriftCheck.js";
+import { addRouteTemplates, fetchJson, fetchJsonOrNull } from "./http.js";
+import { evmChainIdFor, intentChainId, sdkChainKeys } from "./sodax.js";
+import { InputError } from "./toolFailure.js";
 import { TtlCache } from "./ttlCache.js";
 
-const cache = new TtlCache();
+// Bounded: volume pages are cached per filter set, and callers choose the filters.
+const cache = new TtlCache(CACHE_DURATION_MS, 1_000);
+
+// The routes this client calls are the drift check's contract, so their log records keep their static segments (#110).
+addRouteTemplates(
+  SODAX_API_BASE_URL,
+  Object.keys(TOOL_CONTRACT).map(key => key.split(" ")[1]),
+);
 
 function apiUrl(path: string): string {
   return `${SODAX_API_BASE_URL}${path}`;
@@ -40,7 +50,7 @@ const PATH_PARAM_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 function pathParam(name: string, value: string): string {
   const trimmed = value.trim();
   if (!PATH_PARAM_PATTERN.test(trimmed) || trimmed === "." || trimmed === "..") {
-    throw new Error(`Invalid ${name}: use only letters, digits, ".", "_" or "-" (max 128 characters)`);
+    throw new InputError(`Invalid ${name}: use only letters, digits, ".", "_" or "-" (max 128 characters)`);
   }
   return encodeURIComponent(trimmed);
 }
@@ -61,11 +71,11 @@ export async function getSupportedChains(): Promise<string[]> {
     const data = await fetchJson<unknown>(apiUrl("/config/spoke/chains"));
     // API returns the array of chain keys directly.
     const chains = Array.isArray(data) ? (data as string[]) : (data as { data?: string[] })?.data || [];
-    cache.set(cacheKey, chains);
+    // An empty list is a bad answer, not a fact: caching it would refuse every chain for the TTL.
+    if (chains.length > 0) cache.set(cacheKey, chains);
     return chains;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch supported chains");
-    throw new Error("Failed to fetch supported chains from SODAX API");
+    throw new Error("Failed to fetch supported chains from SODAX API", { cause: error });
   }
 }
 
@@ -132,8 +142,7 @@ export async function getSwapTokens(chainId?: string): Promise<SwapToken[]> {
     cache.set(cacheKey, tokens);
     return tokens;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch swap tokens");
-    throw new Error("Failed to fetch swap tokens from SODAX API");
+    throw new Error("Failed to fetch swap tokens from SODAX API", { cause: error });
   }
 }
 
@@ -204,7 +213,59 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
     }
   }
 
+  // 3. An EVM chain id, from the SDK's chain config (a new chain comes with the SDK bump), never a key prefix:
+  //    "0x1.icon" is ICON, not chain id 1. SDK keys are lower case, as the live ones are compared above.
+  const id = chainIdQuery(norm);
+  const viaId = id === undefined ? undefined : liveChains.find(k => evmChainIdFor(k.toLowerCase()) === id);
+  if (viaId) return { key: viaId, matchedAs: norm };
+
   return { key: null, matchedAs: null };
+}
+
+/** An EVM chain id typed as a query, in decimal or hex. */
+function chainIdQuery(query: string): number | undefined {
+  const q = query.trim();
+  return /^(\d{1,15}|0x[0-9a-f]{1,12})$/i.test(q) ? Number(q) : undefined;
+}
+
+// Numbers that are one SDK chain's EVM chain id and another's intent relay chain id (1: Ethereum, Solana).
+const CHAIN_ID_CLASHES = new Map<number, { evm: string; relay: string }>(
+  sdkChainKeys.flatMap(evm => {
+    const id = evmChainIdFor(evm);
+    const relay =
+      id === undefined ? undefined : sdkChainKeys.find(key => key !== evm && intentChainId(key) === `${id}`);
+    return id !== undefined && relay ? [[id, { evm, relay }] as const] : [];
+  }),
+);
+
+/**
+ * Why a decimal number names no single chain for the builder tools, whose intent and relay data carry relay ids:
+ * a "1" copied from them is Solana, not Ethereum. The swap tools take a number as the EVM chain id it is.
+ */
+export function chainIdClash(query: string): string | undefined {
+  const q = query.trim();
+  const clash = /^\d{1,15}$/.test(q) ? CHAIN_ID_CLASHES.get(Number(q)) : undefined;
+  if (!clash) return undefined;
+  const { evm, relay } = clash;
+  return `${q} is ${chainDisplayName(evm)}'s EVM chain id and ${chainDisplayName(relay)}'s intent relay chain id. Pass the chain key: ${evm} or ${relay}.`;
+}
+
+/**
+ * The live chain key a key, name, ticker or EVM chain id names ("Base" and "8453" are `0x2105.base`); refused with
+ * the keys when none matches. Without the live list, the SDK's chains resolve it, else it goes on as given.
+ */
+export async function toChainKey(query: string): Promise<string> {
+  const value = query.trim();
+  const clash = chainIdClash(value);
+  if (clash) throw new InputError(clash);
+  if (sdkChainKeys.includes(value)) return value;
+  const live = await getSupportedChains().catch((): string[] => []);
+  if (live.includes(value)) return value;
+  const { key } = resolveChainKey(value, live.length > 0 ? live : [...sdkChainKeys]);
+  if (key) return key;
+  if (live.length === 0) return value;
+  const offered = live.filter(chain => !NETWORK_COUNT_EXCLUDED_CHAIN_KEYS.includes(chain));
+  throw new InputError(`chainId names no SODAX chain. Pass one of these chain keys: ${offered.join(", ")}`);
 }
 
 /**
@@ -213,6 +274,8 @@ export function resolveChainKey(query: string, liveChains: string[]): { key: str
  * match the app-wide network count), so the answer is always current.
  */
 export async function resolveChainSupport(query: string): Promise<ChainSupport> {
+  const clash = chainIdClash(query);
+  if (clash) throw new InputError(clash);
   const all = await getSupportedChains();
   // Exclude wound-down chains (ICON) so this agrees with /health, /api, the
   // landing page and README, which all report the filtered count.
@@ -245,8 +308,7 @@ export async function getTransaction(txHash: string): Promise<Transaction | null
     if (data === null) return null;
     return ((data as { data?: Transaction })?.data || (data as Transaction)) ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch transaction");
-    throw new Error("Failed to fetch transaction from SODAX API");
+    throw new Error("Failed to fetch transaction from SODAX API", { cause: error });
   }
 }
 
@@ -276,8 +338,7 @@ export async function getUserTransactions(
     // API returns { items, total, offset, limit }
     return data?.items || data?.data || [];
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch user transactions");
-    throw new Error("Failed to fetch user transactions from SODAX API");
+    throw new Error("Failed to fetch user transactions from SODAX API", { cause: error });
   }
 }
 
@@ -303,8 +364,8 @@ export async function getVolume(options: {
   includeData?: boolean;
   cursor?: string;
 }): Promise<VolumeData> {
-  // Build cache key from significant params
-  const cacheKey = `volume-${options.inputToken}-${options.outputToken}-${options.chainId || "all"}-${options.limit || 50}-${options.cursor || "start"}`;
+  // Every option shapes the page, so each is in the key.
+  const cacheKey = `volume-${JSON.stringify(options)}`;
   const cached = cache.get<VolumeData>(cacheKey);
   if (cached) return cached;
 
@@ -313,10 +374,10 @@ export async function getVolume(options: {
     params.append("inputToken", options.inputToken);
     params.append("outputToken", options.outputToken);
     params.append("includeData", (options.includeData ?? false).toString());
-    if (options.chainId) params.append("chainId", options.chainId.toString());
+    if (options.chainId !== undefined) params.append("chainId", options.chainId.toString());
     if (options.solver) params.append("solver", options.solver);
-    if (options.fromBlock) params.append("fromBlock", options.fromBlock.toString());
-    if (options.toBlock) params.append("toBlock", options.toBlock.toString());
+    if (options.fromBlock !== undefined) params.append("fromBlock", options.fromBlock.toString());
+    if (options.toBlock !== undefined) params.append("toBlock", options.toBlock.toString());
     if (options.since) params.append("since", options.since);
     if (options.until) params.append("until", options.until);
     if (options.fromTs !== undefined) params.append("fromTs", options.fromTs.toString());
@@ -331,8 +392,7 @@ export async function getVolume(options: {
     cache.set(cacheKey, volumeData);
     return volumeData;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch volume");
-    throw new Error("Failed to fetch volume data from SODAX API");
+    throw new Error("Failed to fetch volume data from SODAX API", { cause: error });
   }
 }
 
@@ -350,8 +410,7 @@ export async function getVolumeStats(): Promise<VolumeStats> {
     cache.set(cacheKey, stats);
     return stats;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch volume stats");
-    throw new Error("Failed to fetch volume stats from SODAX API");
+    throw new Error("Failed to fetch volume stats from SODAX API", { cause: error });
   }
 }
 
@@ -389,21 +448,19 @@ export async function getOrderbook(options: {
     // API returns { total, data }
     return (data as { data?: OrderbookEntry[] })?.data || (data as OrderbookEntry[]) || [];
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch orderbook");
-    throw new Error("Failed to fetch orderbook from SODAX API");
+    throw new Error("Failed to fetch orderbook from SODAX API", { cause: error });
   }
 }
 
 /**
  * List lending/borrowing assets in money market
  */
-export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarketAsset[]> {
-  const cacheKey = `mm-assets-${chainId || "all"}`;
+export async function getMoneyMarketAssets(): Promise<MoneyMarketAsset[]> {
+  const cacheKey = "mm-assets";
   const cached = cache.get<MoneyMarketAsset[]>(cacheKey);
   if (cached) return cached;
 
   try {
-    // Always use the /all endpoint, API doesn't support chainId filter
     const data = await fetchJson<unknown>(apiUrl("/moneymarket/asset/all"));
     // API returns array directly
     const assets = Array.isArray(data)
@@ -412,8 +469,7 @@ export async function getMoneyMarketAssets(chainId?: string): Promise<MoneyMarke
     cache.set(cacheKey, assets);
     return assets;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market assets");
-    throw new Error("Failed to fetch money market assets from SODAX API");
+    throw new Error("Failed to fetch money market assets from SODAX API", { cause: error });
   }
 }
 
@@ -429,8 +485,7 @@ export async function getUserPosition(userAddress: string): Promise<UserPosition
     if (data === null) return null;
     return ((data as { data?: UserPosition })?.data || (data as UserPosition)) ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch user position");
-    throw new Error("Failed to fetch user position from SODAX API");
+    throw new Error("Failed to fetch user position from SODAX API", { cause: error });
   }
 }
 
@@ -453,8 +508,7 @@ export async function getPartners(chainId?: number): Promise<Partner[]> {
     cache.set(cacheKey, partners);
     return partners;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch partners");
-    throw new Error("Failed to fetch partners from SODAX API");
+    throw new Error("Failed to fetch partners from SODAX API", { cause: error });
   }
 }
 
@@ -473,8 +527,7 @@ export async function getTokenSupply(): Promise<TokenSupply> {
     cache.set(cacheKey, supply);
     return supply;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch token supply");
-    throw new Error("Failed to fetch token supply from SODAX API");
+    throw new Error("Failed to fetch token supply from SODAX API", { cause: error });
   }
 }
 
@@ -491,8 +544,7 @@ export async function getAllConfig(): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch all config");
-    throw new Error("Failed to fetch config from SODAX API");
+    throw new Error("Failed to fetch config from SODAX API", { cause: error });
   }
 }
 
@@ -509,8 +561,7 @@ export async function getRelayChainIdMap(): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch relay chain ID map");
-    throw new Error("Failed to fetch relay chain ID map from SODAX API");
+    throw new Error("Failed to fetch relay chain ID map from SODAX API", { cause: error });
   }
 }
 
@@ -527,8 +578,7 @@ export async function getAllChainsConfigs(): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch all chains configs");
-    throw new Error("Failed to fetch spoke chain configs from SODAX API");
+    throw new Error("Failed to fetch spoke chain configs from SODAX API", { cause: error });
   }
 }
 
@@ -547,8 +597,7 @@ export async function getHubAssets(chainId?: string): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch hub assets");
-    throw new Error("Failed to fetch hub assets from SODAX API");
+    throw new Error("Failed to fetch hub assets from SODAX API", { cause: error });
   }
 }
 
@@ -567,8 +616,7 @@ export async function getMoneyMarketTokens(chainId?: string): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market tokens");
-    throw new Error("Failed to fetch money market tokens from SODAX API");
+    throw new Error("Failed to fetch money market tokens from SODAX API", { cause: error });
   }
 }
 
@@ -585,8 +633,7 @@ export async function getMoneyMarketReserveAssets(): Promise<unknown> {
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market reserve assets");
-    throw new Error("Failed to fetch money market reserve assets from SODAX API");
+    throw new Error("Failed to fetch money market reserve assets from SODAX API", { cause: error });
   }
 }
 
@@ -608,8 +655,7 @@ export async function getAmmNftPositions(options?: {
     const url = apiUrl(`/amm/nft-positions${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch AMM NFT positions");
-    throw new Error("Failed to fetch AMM NFT positions from SODAX API");
+    throw new Error("Failed to fetch AMM NFT positions from SODAX API", { cause: error });
   }
 }
 
@@ -626,15 +672,14 @@ export async function getAmmPoolCandles(
   try {
     const params = new URLSearchParams();
     if (options?.interval) params.append("interval", options.interval);
-    if (options?.from) params.append("from", options.from.toString());
-    if (options?.to) params.append("to", options.to.toString());
+    if (options?.from !== undefined) params.append("from", options.from.toString());
+    if (options?.to !== undefined) params.append("to", options.to.toString());
 
     const queryString = params.toString();
     const url = apiUrl(`/amm/pools/${chain}/${pool}/candles${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch AMM pool candles");
-    throw new Error("Failed to fetch AMM pool candles from SODAX API");
+    throw new Error("Failed to fetch AMM pool candles from SODAX API", { cause: error });
   }
 }
 
@@ -648,8 +693,7 @@ export async function getIntent(intentHash: string): Promise<unknown> {
     if (data === null) return null;
     return data?.data ?? data ?? null;
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch intent");
-    throw new Error("Failed to fetch intent from SODAX API");
+    throw new Error("Failed to fetch intent from SODAX API", { cause: error });
   }
 }
 
@@ -666,8 +710,7 @@ export async function getSolverIntent(intentHash: string, includeAll?: boolean):
     const url = apiUrl(`/solver/intents/${hash}${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch solver intent");
-    throw new Error("Failed to fetch solver intent from SODAX API");
+    throw new Error("Failed to fetch solver intent from SODAX API", { cause: error });
   }
 }
 
@@ -679,8 +722,7 @@ export async function getMoneyMarketAsset(reserveAddress: string): Promise<unkno
   try {
     return await fetchJsonOrNull<unknown>(apiUrl(`/moneymarket/asset/${reserve}`));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch money market asset");
-    throw new Error("Failed to fetch money market asset from SODAX API");
+    throw new Error("Failed to fetch money market asset from SODAX API", { cause: error });
   }
 }
 
@@ -701,8 +743,7 @@ export async function getMoneyMarketAssetBorrowers(
     const url = apiUrl(`/moneymarket/asset/${reserve}/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch asset borrowers");
-    throw new Error("Failed to fetch money market asset borrowers from SODAX API");
+    throw new Error("Failed to fetch money market asset borrowers from SODAX API", { cause: error });
   }
 }
 
@@ -723,8 +764,7 @@ export async function getMoneyMarketAssetSuppliers(
     const url = apiUrl(`/moneymarket/asset/${reserve}/suppliers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch asset suppliers");
-    throw new Error("Failed to fetch money market asset suppliers from SODAX API");
+    throw new Error("Failed to fetch money market asset suppliers from SODAX API", { cause: error });
   }
 }
 
@@ -744,8 +784,7 @@ export async function getMoneyMarketBorrowers(options?: {
     const url = apiUrl(`/moneymarket/borrowers${queryString ? `?${queryString}` : ""}`);
     return await fetchJson<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch borrowers");
-    throw new Error("Failed to fetch money market borrowers from SODAX API");
+    throw new Error("Failed to fetch money market borrowers from SODAX API", { cause: error });
   }
 }
 
@@ -762,8 +801,7 @@ export async function getPartnerSummary(receiver: string, chainId?: string): Pro
     const url = apiUrl(`/partners/${partner}/summary${queryString ? `?${queryString}` : ""}`);
     return await fetchJsonOrNull<unknown>(url);
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch partner summary");
-    throw new Error("Failed to fetch partner summary from SODAX API");
+    throw new Error("Failed to fetch partner summary from SODAX API", { cause: error });
   }
 }
 
@@ -774,8 +812,7 @@ export async function getTotalSupply(): Promise<unknown> {
   try {
     return await fetchJson<unknown>(apiUrl("/sodax/total_supply"));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch total supply");
-    throw new Error("Failed to fetch total supply from SODAX API");
+    throw new Error("Failed to fetch total supply from SODAX API", { cause: error });
   }
 }
 
@@ -786,8 +823,7 @@ export async function getCirculatingSupply(): Promise<unknown> {
   try {
     return await fetchJson<unknown>(apiUrl("/sodax/circulating_supply"));
   } catch (error) {
-    logger.error({ err: error }, "Failed to fetch circulating supply");
-    throw new Error("Failed to fetch circulating supply from SODAX API");
+    throw new Error("Failed to fetch circulating supply from SODAX API", { cause: error });
   }
 }
 

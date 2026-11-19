@@ -2,6 +2,8 @@
  * Constants for the SODAX Builders MCP Server
  */
 
+import { spokeChainConfig } from "@sodax/types";
+
 export const SODAX_API_ORIGINS = {
   production: "https://api.sodax.com",
   canary: "https://canary-api.sodax.com",
@@ -70,56 +72,56 @@ export const CACHE_DURATION_MS = 2 * 60 * 1000;
 // mirrors the frontend's stats.ts fetchIntegratedNetworksCount() source of truth.
 export const NETWORK_COUNT_EXCLUDED_CHAIN_KEYS: readonly string[] = ["0x1.icon"];
 
-// Single source of truth for chain metadata, keyed by the canonical chain key
-// as returned by /config/spoke/chains. `name` is the human display name;
-// `aliases` are extra tickers/spellings a user might type that are NOT already
-// derivable from the key itself — resolveChainKey automatically matches the
-// key, its dotted suffix ("base" in "0x2105.base"), its Cosmos slug
-// ("injective" in "injective-1") and the display `name` ("Avalanche" for
-// "0xa86a.avax"), so those need not be listed here. Support is
-// always confirmed against the LIVE registry, so entries here only aid display
-// and name resolution and cannot themselves make a chain look (un)supported.
-export const CHAINS: Readonly<Record<string, { name: string; aliases: readonly string[] }>> = {
-  sonic: { name: "Sonic", aliases: ["s"] },
-  ethereum: { name: "Ethereum", aliases: ["eth", "ether"] },
-  "0xa4b1.arbitrum": { name: "Arbitrum", aliases: ["arb", "arbitrum one"] },
-  "0x2105.base": { name: "Base", aliases: [] },
-  "0x38.bsc": { name: "BNB Chain", aliases: ["bnb", "bnb chain", "binance", "binance smart chain"] },
-  "0xa86a.avax": { name: "Avalanche", aliases: ["avax"] },
-  "0xa.optimism": { name: "Optimism", aliases: ["op"] },
-  "0x89.polygon": { name: "Polygon", aliases: ["matic", "pol"] },
-  "injective-1": { name: "Injective", aliases: ["inj"] },
-  "0x1.icon": { name: "ICON", aliases: ["icx"] },
-  sui: { name: "Sui", aliases: [] },
-  solana: { name: "Solana", aliases: ["sol"] },
-  stellar: { name: "Stellar", aliases: ["xlm"] },
-  hyper: { name: "HyperEVM", aliases: ["hyperevm", "hyperliquid", "hype"] },
-  lightlink: { name: "LightLink", aliases: [] },
-  near: { name: "NEAR", aliases: [] },
-  bitcoin: { name: "Bitcoin", aliases: ["btc"] },
-  redbelly: { name: "Redbelly", aliases: ["rbnt"] },
-  "0x2019.kaia": { name: "Kaia", aliases: ["klaytn", "klay"] },
-  stacks: { name: "Stacks", aliases: ["stx"] },
-  hedera: { name: "Hedera", aliases: ["hbar", "hashgraph"] },
-  robinhood: { name: "Robinhood", aliases: ["hood"] },
+const sdkChains = spokeChainConfig as Readonly<Record<string, { chain?: { name?: unknown } } | undefined>>;
+
+/** A chain's name from the SDK's chain config ("Avalanche" for "0xa86a.avax"), if the SDK lists the chain. */
+function sdkChainName(key: string): string | undefined {
+  const name = sdkChains[key]?.chain?.name;
+  return typeof name === "string" && name ? name : undefined;
+}
+
+// Tickers and spellings a user might type that a chain's key and SDK name don't already give. resolveChainKey
+// matches the key, its dotted suffix ("base" in "0x2105.base"), its Cosmos slug ("injective" in "injective-1") and
+// the SDK's name, so a chain the SDK adds resolves with no entry here. Support is always confirmed against the live
+// registry, so an entry cannot make a chain look (un)supported.
+export const CHAIN_TICKERS: Readonly<Record<string, readonly string[]>> = {
+  sonic: ["s"],
+  ethereum: ["eth", "ether"],
+  "0xa4b1.arbitrum": ["arb", "arbitrum one"],
+  "0x38.bsc": ["bnb", "binance", "binance smart chain"],
+  // The one name its key doesn't give: listed so it doesn't hang on the SDK's wording.
+  "0xa86a.avax": ["avalanche", "avax"],
+  "0xa.optimism": ["op"],
+  "0x89.polygon": ["matic", "pol"],
+  "injective-1": ["inj"],
+  "0x1.icon": ["icx"],
+  solana: ["sol"],
+  stellar: ["xlm"],
+  hyper: ["hyperevm", "hyperliquid", "hype"],
+  bitcoin: ["btc"],
+  redbelly: ["rbnt"],
+  "0x2019.kaia": ["klaytn", "klay"],
+  stacks: ["stx"],
+  hedera: ["hbar", "hashgraph"],
+  robinhood: ["hood"],
 };
 
-// Ticker/spelling → chain-key aliases, derived from CHAINS so the two can't drift.
-// The lower-cased display name is always included: a key whose suffix differs
-// from its name (e.g. "0xa86a.avax" / "Avalanche") is otherwise unresolvable by
-// the very name sodax_get_supported_chains shows.
+// Name and ticker → chain key. The lower-cased SDK name is always included: a key whose suffix differs from its
+// name ("0xa86a.avax" / "Avalanche") is otherwise unresolvable by the very name sodax_get_supported_chains shows.
 export const CHAIN_ALIASES: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
-  Object.entries(CHAINS).map(([key, v]) => [key, [v.name.toLowerCase(), ...v.aliases]]),
+  [...new Set([...Object.keys(sdkChains), ...Object.keys(CHAIN_TICKERS)])].map(key => {
+    const name = sdkChainName(key)?.toLowerCase();
+    return [key, [...(name ? [name] : []), ...(CHAIN_TICKERS[key] ?? [])]];
+  }),
 );
 
 /**
- * Human-readable name for a chain key. Falls back to deriving one from the key
- * (the segment after a dot for EVM keys, or the slug before a Cosmos `-<n>`
- * suffix, capitalised) so a newly launched chain still reads sensibly before
- * it's added to CHAINS.
+ * Human-readable name for a chain key, from the SDK. Falls back to deriving one from the key (the segment after a
+ * dot for EVM keys, or the slug before a Cosmos `-<n>` suffix, capitalised) for a chain the live registry lists
+ * before the SDK does.
  */
 export function chainDisplayName(key: string): string {
-  const known = CHAINS[key]?.name;
+  const known = sdkChainName(key);
   if (known) return known;
   const base = key.includes(".") ? (key.split(".").pop() ?? key) : key.replace(/-\d+$/, "");
   return base ? base.charAt(0).toUpperCase() + base.slice(1) : key;

@@ -64,7 +64,7 @@ describe("sourceChainFor", () => {
           sourceChains: expect.arrayContaining([
             { key: "sonic", name: "Sonic" },
             { key: "0xa4b1.arbitrum", name: "Arbitrum" },
-            { key: "sui", name: "Sui" },
+            { key: "sui", name: "SUI" },
           ]),
         },
       }),

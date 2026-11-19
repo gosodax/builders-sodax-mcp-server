@@ -315,7 +315,7 @@ describe("a swap from a non-EVM spoke", () => {
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
     expect(out.stopAfter).toBe(new Date(Number(swap.intent.deadline) * 1000 + 5 * 60_000).toISOString());
     // Its node can't say whether it knows a tx still in flight.
-    expect(out.nextStep).toContain("Sui hasn't confirmed this transaction yet");
+    expect(out.nextStep).toContain("SUI hasn't confirmed this transaction yet");
   });
 
   it("refuses a hash that can't be its chain's, before reading anything", async () => {
@@ -466,7 +466,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: claimed(REAL.sui) });
     expect(out.error).toMatchObject({
       code: "CHAIN_UNAVAILABLE",
-      message: "Couldn't prepare the cancel on Sui right now.",
+      message: "Couldn't prepare the cancel on SUI right now.",
     });
   });
 

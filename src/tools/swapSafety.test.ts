@@ -37,9 +37,9 @@ describe("swap tool safety", () => {
   it.each([
     ["sodax_resolve_token", { chain: "arb", query: PHRASE }, "query"],
     ["sodax_get_balance", { chain: "arb", address: API_KEY }, "address"],
-    ["sodax_swap_quote", { ...QUOTE, toAddress: PHRASE }, "toAddress"],
-    ["sodax_swap_quote", { ...QUOTE, amount: PHRASE }, "amount"],
-    ["sodax_swap_quote", { ...QUOTE, amount: TX }, "amount"],
+    ["sodax_swap_prepare", { ...QUOTE, fromAddress: USER, toAddress: PHRASE }, "toAddress"],
+    ["sodax_swap_price", { ...QUOTE, amount: PHRASE }, "amount"],
+    ["sodax_swap_prepare", { ...QUOTE, fromAddress: USER, amount: TX }, "amount"],
     ["sodax_swap_submit_and_track", { txHash: TX, chain: API_KEY }, "chain"],
     ["sodax_swap_cancel", { txHash: TX, chain: API_KEY }, "chain"],
   ])("%s refuses a pasted secret before any call, and never repeats it", async (tool, args, field) => {
@@ -58,7 +58,8 @@ describe("swap tool safety", () => {
 
   // zod checks these fields before the handler, so the refusal comes back as the validation error's text.
   it.each([
-    ["sodax_swap_quote", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
+    ["sodax_swap_price", { ...QUOTE, amount: `${"abandon ".repeat(23)}art` }, "amount", "seed phrase"],
+    ["sodax_swap_prepare", { ...QUOTE, fromAddress: `${"abandon ".repeat(23)}art` }, "fromAddress", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: PHRASE }, "txHash", "seed phrase"],
     ["sodax_swap_submit_and_track", { txHash: API_KEY }, "txHash", "rotate that SODAX API key"],
     ["sodax_swap_cancel", { txHash: TX, cancelTxHash: PHRASE }, "cancelTxHash", "seed phrase"],
@@ -89,8 +90,8 @@ describe("swap tool safety", () => {
   });
 
   it.each([
-    ["sodax_swap_quote", { ...QUOTE, fromAddress: TX }],
-    ["sodax_swap_quote", { ...QUOTE, fromAddress: USER, toAddress: TX }],
+    ["sodax_swap_prepare", { ...QUOTE, fromAddress: TX }],
+    ["sodax_swap_prepare", { ...QUOTE, fromAddress: USER, toAddress: TX }],
     ["sodax_resolve_token", { chain: "arb", query: TX }],
     ["sodax_get_balance", { chain: "arb", address: TX }],
   ])("%s refuses a 64-hex value that isn't valid on an EVM chain", async (tool, args) => {
@@ -142,7 +143,10 @@ describe("swap tool safety", () => {
   it("still tells the agent a seed phrase too long for the field is exposed", async () => {
     const longPhrase = `${"abandon ".repeat(23)}art`;
     const client = await swapClient();
-    const result = await client.callTool({ name: "sodax_swap_quote", arguments: { ...QUOTE, toAddress: longPhrase } });
+    const result = await client.callTool({
+      name: "sodax_swap_prepare",
+      arguments: { ...QUOTE, fromAddress: USER, toAddress: longPhrase },
+    });
     await client.close();
     expect(result.isError).toBe(true);
     const text = JSON.stringify(result.content);
@@ -163,7 +167,7 @@ describe("swap tool safety", () => {
   });
 
   it("calls a 64-hex amount not an amount", async () => {
-    const { out } = await callTool("sodax_swap_quote", { ...QUOTE, amount: TX });
+    const { out } = await callTool("sodax_swap_price", { ...QUOTE, amount: TX });
     expect(out.error).toMatchObject({ message: "That's a 64-hex value, not an amount.", field: "amount" });
   });
 });

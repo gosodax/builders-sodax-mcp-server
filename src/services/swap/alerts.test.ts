@@ -106,7 +106,7 @@ describe("alertOperator", () => {
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     for (let i = 0; i < 5; i++)
-      alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL", reason: `r${i}` });
+      alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "INTERNAL", reason: `r${i}` });
     const slip = "TypeError at https://rpc.example/secret-key";
     alertOperator("swap_error", {
       tool: "sodax_swap_submit_and_track",
@@ -155,10 +155,10 @@ describe("alertOperator", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     for (let i = 0; i < 20; i++) alertOperator("submit_rejected", { ...FIELDS, txHash: `0x${i}` });
-    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "INTERNAL" });
     expect(fetch).toHaveBeenCalledTimes(21);
     for (const reason of ["a", "b", "c", "d", "e"]) {
-      alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL", reason });
+      alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "INTERNAL", reason });
     }
     // Four more fill the budget of 5; the fifth is held for the hourly post.
     expect(fetch).toHaveBeenCalledTimes(25);
@@ -168,16 +168,16 @@ describe("alertOperator", () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     alertOperator("unknown_quote", FIELDS);
     alertOperator("unknown_quote", { ...FIELDS, quoteId: "q-2" });
-    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
-    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "INTERNAL" });
+    alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "INTERNAL" });
     alertOperator("swap_error", { tool: "sodax_swap_submit_and_track", code: "INTERNAL" });
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(3);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("keeps a tool error on one chain apart from the same on another", () => {
-    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "SWAP_MISMATCH", reason: "r", chainKey: "sonic" });
-    alertOperator("swap_error", { tool: "sodax_swap_quote", code: "SWAP_MISMATCH", reason: "r", chainKey: "hyper" });
+    alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "SWAP_MISMATCH", reason: "r", chainKey: "sonic" });
+    alertOperator("swap_error", { tool: "sodax_swap_prepare", code: "SWAP_MISMATCH", reason: "r", chainKey: "hyper" });
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(2);
   });
 
@@ -185,7 +185,7 @@ describe("alertOperator", () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     alertOperator("swap_error", {
-      tool: "sodax_swap_quote",
+      tool: "sodax_swap_prepare",
       reason: `from https://rpc.example/KEY ${"x".repeat(2000)}`,
     });
     const { embeds } = JSON.parse(String(fetch.mock.calls[0][1]?.body));

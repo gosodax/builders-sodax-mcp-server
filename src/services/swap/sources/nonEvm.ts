@@ -120,7 +120,7 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
         payload: built.relayData.payload,
       }).catch(() => {
         throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
-          nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then quote again.`,
+          nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then call sodax_swap_prepare again.`,
         });
       });
       const to = isRecord(built.tx) ? built.tx.to : undefined;

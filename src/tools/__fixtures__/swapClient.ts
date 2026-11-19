@@ -22,7 +22,7 @@ export async function mcpClient(toolsets: ToolSelection): Promise<Client> {
 
 /** Any quote outcome's fields, so a test can assert on whichever one it expects. */
 export type QuoteOut = Partial<Extract<SwapQuote, { status: "ready" }>> &
-  Partial<Extract<SwapQuote, { status: "price_only" }>> & {
+  Partial<Extract<SwapQuote, { status: "price" }>> & {
     nextStep: string;
     error: { code: string } & Record<string, unknown>;
   };
@@ -42,4 +42,9 @@ export async function callTool<Out = ToolOut>(name: string, args: Record<string,
   return { isError: result.isError, out: result.structuredContent as Out };
 }
 
-export const callQuote = (args: Record<string, unknown>) => callTool<QuoteOut>("sodax_swap_quote", args);
+// Only sodax_swap_prepare takes these; a call with any of them goes there, any other to sodax_swap_price.
+const PREPARE_ONLY = ["fromAddress", "toAddress", "slippageBps", "deadlineMinutes"];
+
+/** A swap priced, or prepared when given anything only preparing takes. */
+export const callQuote = (args: Record<string, unknown>) =>
+  callTool<QuoteOut>(PREPARE_ONLY.some(key => key in args) ? "sodax_swap_prepare" : "sodax_swap_price", args);

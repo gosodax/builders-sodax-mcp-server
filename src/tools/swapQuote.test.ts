@@ -836,6 +836,16 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     expect(out.error.status).toBeUndefined();
   });
 
+  // A price refuses only nothing received; prepare refuses a minimum of nothing, which slippage makes of one unit.
+  it("prices an amount whose minimum would be zero, and refuses to prepare it", async () => {
+    stubSwaps({ quote: () => Response.json({ quotedAmount: "1" }) });
+    const price = await quote({ ...USDC_TO_SONIC, amount: "5" });
+    expect(price.out).toMatchObject({ status: "price", to: { expectedAmount: "0.000001" } });
+    const prepare = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
+    expect(prepare.isError).toBe(true);
+    expect(prepare.out.error).toMatchObject({ code: "AMOUNT_TOO_LOW", message: expect.stringContaining("minimum") });
+  });
+
   it.each([
     [-1, "No route was found for this pair at this amount.", "no route was found"],
     [-4, "No route was found for this pair at this amount.", "no route was found"],

@@ -167,7 +167,7 @@ describe("resolveToken", () => {
       expect.objectContaining({
         code: "UNSUPPORTED_CHAIN",
         message: "No SODAX swap chain matches that name, key or chain id.",
-        details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "Hyper" }]) },
+        details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "HyperEVM" }]) },
       }),
     );
   });
@@ -194,8 +194,8 @@ describe("resolveToken", () => {
       }
     };
     expect(chainsOf(true)).toEqual(expect.arrayContaining(["0xa4b1.arbitrum", "0xa86a.avax", "hyper"]));
-    expect(chainsOf(true)).toEqual(expect.arrayContaining(["sonic"]));
-    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["sui"]));
+    expect(chainsOf(true)).toEqual(expect.arrayContaining(["sonic", "sui"]));
+    expect(chainsOf(true)).not.toEqual(expect.arrayContaining(["0x1.icon"]));
     expect(chainsOf(false)).toEqual(expect.arrayContaining(["sonic", "sui", "0xa4b1.arbitrum"]));
   });
 

@@ -27,7 +27,7 @@ import { swapClient } from "./__fixtures__/swapClient.js";
 // Unit tests don't reach a chain: receipts are scripted per test.
 vi.mock("../services/sodax.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/sodax.js")>();
-  return { ...actual, getEvmReceipt: vi.fn(), isTxKnown: vi.fn() };
+  return { ...actual, getEvmReceipt: vi.fn(), hubIntentClosed: vi.fn(), isTxKnown: vi.fn() };
 });
 
 const HUB_TX = `0x${"b".repeat(64)}`;
@@ -636,7 +636,7 @@ describe("sodax_swap_submit_and_track", () => {
   it.each([
     [{}, "QUOTE_NOT_FOUND"],
     [{ quoteId: randomUUID() }, "QUOTE_NOT_FOUND"],
-    [{ chain: "sui" }, "UNSUPPORTED_SOURCE"],
+    [{ chain: "0x1.icon" }, "UNSUPPORTED_SOURCE"],
     [{ chain: "atlantis" }, "UNSUPPORTED_CHAIN"],
   ])("refuses %o", async (args, code) => {
     const calls = stubBackend();
@@ -647,9 +647,9 @@ describe("sodax_swap_submit_and_track", () => {
 
   it("asks which chain a sent swap came from, not for a new swap, when that chain can't start one", async () => {
     stubBackend();
-    const { out } = await track({ txHash: TX, chain: "sui" });
+    const { out } = await track({ txHash: TX, chain: "0x1.icon" });
     expect(out.nextStep).toMatch(
-      /^No swap can start from SUI: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
+      /^No swap can start from ICON: ask the user which chain they sent the swap from \(one of .*Arbitrum.*\)/,
     );
     expect(out.error.sourceChains).toContainEqual({ key: ARBITRUM, name: "Arbitrum" });
   });
@@ -659,8 +659,8 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, chain: "Arbitrm" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", didYouMean: [{ key: ARBITRUM }] });
     const listed = (out.error.supportedChains as { key: string }[]).map(chain => chain.key);
-    expect(listed).toContain("sonic");
-    expect(listed).not.toContain("sui");
+    expect(listed).toEqual(expect.arrayContaining(["sonic", "sui"]));
+    expect(listed).not.toContain("0x1.icon");
   });
 
   it("asks for the chain, keeping the quoteId, when the quote is gone", async () => {
@@ -789,20 +789,21 @@ describe("sodax_swap_submit_and_track", () => {
     expect(out.nextStep).not.toContain("API key");
   });
 
-  it("keeps waiting when a checked deposit's receipt goes missing, never calling it unsent", async () => {
-    stubBackend({
+  it("doesn't read a checked deposit again: a node that has lost its receipt can't hold up its refund", async () => {
+    const calls = stubBackend({
       submit: () => new Response("", { status: 503 }),
       status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
     });
     const { quoteId } = cacheQuote();
     await track({ txHash: TX, quoteId });
-    // A lagging RPC node, past the point where an unseen tx is no longer waited for.
+    // A node that has dropped the tx, past the deadline: the claim is the proof, so the refund relay runs.
     vi.setSystemTime((Number(DEADLINE) + 5 * 60) * 1000);
-    vi.mocked(getEvmReceipt).mockResolvedValue(null);
+    vi.mocked(getEvmReceipt).mockClear().mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(false);
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
-    expect(out.nextStep).not.toContain("hasn't seen this transaction");
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+    expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(1);
   });
 
   it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
@@ -824,7 +825,17 @@ describe("sodax_swap_submit_and_track", () => {
     });
     await client.close();
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Must be an EVM transaction hash: 0x and 64 hex characters.");
+    expect(JSON.stringify(result.content)).toContain("Must be a transaction hash as the wallet shows it.");
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["a Solana signature", "5".repeat(88)],
+    ["a bare 64-hex value", "a".repeat(64)],
+  ])("refuses %s as a hash on an EVM chain, saying what one looks like there", async (_case, txHash) => {
+    const calls = stubBackend();
+    const { out } = await track({ txHash, chain: ARBITRUM });
+    expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", format: "0x and 64 hex characters" });
     expect(calls).toEqual([]);
   });
 });
@@ -884,15 +895,15 @@ describe("a tx no node has seen", () => {
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
   });
 
-  it("gives a checked deposit with a lagging RPC no stop time: it was sent", async () => {
+  it("never calls a checked deposit unsent: it's relayed for refund past its deadline, unread", async () => {
     stubBackend();
     const { quoteId } = cacheQuote();
     claimDeposit(quoteId, TX);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 10 * 60 * 1000);
+    vi.mocked(getEvmReceipt).mockClear();
     const { out } = await track({ txHash: TX, quoteId });
-    expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
-    expect(out.stopAfter).toBeUndefined();
-    expect(out.nextStep).not.toContain("nothing was swapped");
+    expect(out.status).toBe("expired_refunding");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
   });
 
   it("reads the chain again before a final answer, whatever it remembered", async () => {

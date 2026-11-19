@@ -5,7 +5,7 @@ import { spokeChainConfig } from "@sodax/types";
 import { type Hex, encodeFunctionData, erc20Abi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SwapStep } from "../../src/services/swap/quote.js";
+import type { EvmStep } from "../../src/services/swap/sources/types.js";
 import { minimumTooLow, sendSteps, stepMismatch, track, wallets } from "./swapCanary.js";
 
 // A throwaway key: every RPC call below goes to the fake in `fakeRpc`, nothing leaves the process.
@@ -74,7 +74,7 @@ const depositData = (token: Hex = USDC, amount = AMOUNT) =>
     functionName: "transfer",
     args: [token, ACCOUNT.address, amount, "0x1234"],
   });
-const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId = 42161): SwapStep => ({
+const step = (kind: EvmStep["kind"], tx: Partial<EvmStep["tx"]> = {}, chainId = 42161): EvmStep => ({
   kind,
   chainId,
   tx: {
@@ -86,10 +86,10 @@ const step = (kind: SwapStep["kind"], tx: Partial<SwapStep["tx"]> = {}, chainId 
     ...tx,
   },
 });
-const swap = (tx: Partial<SwapStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
+const swap = (tx: Partial<EvmStep["tx"]> = {}, chainId?: number) => step("swap", tx, chainId);
 const approveData = (spender: Hex = ASSET_MANAGER, amount = AMOUNT) =>
   encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] });
-const approve = (tx: Partial<SwapStep["tx"]> = {}, kind: SwapStep["kind"] = "approve") =>
+const approve = (tx: Partial<EvmStep["tx"]> = {}, kind: EvmStep["kind"] = "approve") =>
   step(kind, { to: USDC, data: approveData(), ...tx });
 const QUOTE = { steps: [swap()] } as never;
 
@@ -222,7 +222,7 @@ describe("minimumTooLow", () => {
 });
 
 describe("stepMismatch", () => {
-  it.each<[string, SwapStep[]]>([
+  it.each<[string, EvmStep[]]>([
     ["the swap alone", [swap()]],
     ["an approve, then the swap", [approve(), swap()]],
     [
@@ -233,7 +233,7 @@ describe("stepMismatch", () => {
     expect(stepMismatch(steps, ARBITRUM(), AMOUNT)).toBeUndefined();
   });
 
-  it.each<[string, SwapStep[], string]>([
+  it.each<[string, EvmStep[], string]>([
     ["no steps", [], "steps: one swap, last"],
     ["no swap", [approve()], "steps: one swap, last"],
     ["a step after the swap", [swap(), approve()], "steps: one swap, last"],

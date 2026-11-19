@@ -308,8 +308,12 @@ describe("a swap from Sonic, the hub", () => {
       const { quoteId } = hubQuote();
       const ready = await cancel({ txHash: SONIC_TX, quoteId });
       expect(ready.out).toMatchObject({ status: "ready", steps: [{ kind: "cancel", chainId: 146 }] });
+      const swapReads = () => vi.mocked(getEvmReceipt).mock.calls.filter(([, hash]) => hash === SONIC_TX).length;
+      const readsBefore = swapReads();
       const confirmed = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
       expect(confirmed.out.status).toBe("cancel_confirmed");
+      // The swap, checked by the first call, isn't checked again: it's read once more only to order the cancel after it.
+      expect(swapReads()).toBe(readsBefore + 1);
       // Its quote remembers: track doesn't submit a cancelled intent, and a second cancel has nothing left to do.
       expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
         status: "failed",

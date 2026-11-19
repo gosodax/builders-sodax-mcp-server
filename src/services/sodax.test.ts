@@ -85,7 +85,8 @@ describe("rebuildSwapTx", () => {
     expect(rebuilt?.to.toLowerCase()).toBe(tx.to.toLowerCase());
     expect(rebuilt?.value).toBe(BigInt(tx.value));
     expect(rebuilt?.data.toLowerCase()).toBe(tx.data.toLowerCase());
-    expect(rebuilt?.payload.toLowerCase()).toBe(relayData.payload.toLowerCase());
+    // The relay payload the Swaps API returned is the SDK's for this intent: the hub's own calldata from the hub.
+    expect(createIntentPayload(intent, srcChainKey === "sonic")?.toLowerCase()).toBe(relayData.payload.toLowerCase());
   });
 
   it("scales a native HBAR deposit the way Hedera expects", async () => {

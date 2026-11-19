@@ -42,7 +42,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum, base } from "viem/chains";
 import { isRecord, isRpcUrl, parseRpcConfigJson, sameHex } from "../../src/constants.js";
 import { type ActionErrorCode, RETRYABLE_CODES } from "../../src/services/swap/errors.js";
-import type { SwapQuote, SwapStep } from "../../src/services/swap/quote.js";
+import type { SwapQuote } from "../../src/services/swap/quote.js";
+import type { EvmStep } from "../../src/services/swap/sources/types.js";
 import type { TrackResult } from "../../src/services/swap/track.js";
 import type { AfterSend } from "../../src/tools/swap.js";
 
@@ -177,7 +178,7 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
   });
   if (isError || out.status !== "ready") throw new Failure(`not ready: ${out.error?.code ?? out.status}`);
   if (!out.afterSend) throw new Failure("a ready quote without afterSend");
-  const mismatch = stepMismatch(out.steps, src, parseUnits(env.amount, src.usdc.decimals));
+  const mismatch = stepMismatch(out.steps as EvmStep[], src, parseUnits(env.amount, src.usdc.decimals));
   if (mismatch) throw new Failure(`unexpected ${mismatch}`);
   if (minimumTooLow(out.to.minimumAmount, env.amount, dst.usdc.decimals)) {
     throw new Failure(`a minimum of ${out.to.minimumAmount} USDC for ${env.amount}`);
@@ -192,7 +193,7 @@ async function quoteSwap(env: Env, src: Wallet, dst: Wallet): Promise<ReadyQuote
  * allowed), and one swap last: the asset manager's deposit of exactly the amount of USDC (an allowance
  * left by an earlier run could pull more). Names the first field that differs.
  */
-export function stepMismatch(steps: SwapStep[], src: Wallet, amount: bigint): string | undefined {
+export function stepMismatch(steps: EvmStep[], src: Wallet, amount: bigint): string | undefined {
   const { assetManager } = spokeChainConfig[src.key].addresses;
   if (steps.at(-1)?.kind !== "swap" || steps.findIndex(step => step.kind === "swap") !== steps.length - 1) {
     return "steps: one swap, last";
@@ -240,7 +241,7 @@ export async function sendSteps(wallet: Wallet, quote: ReadyQuote): Promise<Hex>
   // Counted here, not asked per step: a load-balanced public RPC can answer from a node that hasn't
   // seen the approve yet.
   let nonce = await client.getTransactionCount({ address: client.account.address, blockTag: "pending" });
-  for (const step of quote.steps) {
+  for (const step of quote.steps as EvmStep[]) {
     const request = await prepare(client, {
       to: step.tx.to as Hex,
       data: step.tx.data as Hex,

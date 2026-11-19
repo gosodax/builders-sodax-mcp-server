@@ -70,7 +70,7 @@ export async function swapSourceSupport(chainKey: string): Promise<string> {
   if (!catalog) return "This server couldn't check right now whether its swap tools can start a swap from it.";
   return isSwapSource(catalog, chainKey)
     ? "This server's swap tools (with a SODAX API key) can start a swap from it."
-    : "This server's swap tools can't start a swap from it yet.";
+    : "This server's swap tools can't start a swap from it.";
 }
 
 export function registerSodaxApiTools(server: McpServer): void {

@@ -9,6 +9,7 @@ export type ActionErrorCode =
   | "RESTRICTED_TOKEN"
   | "INVALID_AMOUNT"
   | "INVALID_ADDRESS"
+  | "INVALID_TX_HASH"
   | "AMOUNT_TOO_LOW"
   | "DEADLINE_TOO_SHORT"
   | "DESTINATION_NOT_READY"
@@ -47,13 +48,14 @@ const RETRY_LATER = "Retry in a minute; if it still fails, tell the user the SOD
 
 const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
-  UNSUPPORTED_SOURCE:
-    "Swaps can start from Sonic or an EVM chain such as Arbitrum or Base, not from non-EVM chains yet; ask the user to send from one of those.",
+  UNSUPPORTED_SOURCE: "A swap can't start from that chain: ask the user to swap from another one.",
   UNKNOWN_TOKEN:
     "Call sodax_resolve_token for that token (error.side says which, when there are two) and follow its nextStep.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",
+  INVALID_TX_HASH:
+    "Ask for the hash of the transaction the user's wallet sent on the swap's source chain, as the wallet shows it (error.format).",
   AMOUNT_TOO_LOW: "Ask the user whether to quote a larger amount.",
   DEADLINE_TOO_SHORT: "Call sodax_swap_quote again with a longer deadlineMinutes, e.g. 15.",
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",

@@ -1,12 +1,18 @@
-import { solverConfig } from "@sodax/types";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { solverConfig, spokeChainConfig } from "@sodax/types";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
-import { pinnedSourceOf } from "../sodax.js";
+import { initSodax } from "../sodax.js";
 import { fixtureCatalog } from "./__fixtures__/catalog.js";
 import { toChain } from "./resolver.js";
 import { sourceChainFor } from "./source.js";
+import { EVM_SPOKE, HUB } from "./sources/evm.js";
+import { pinnedSourceOf } from "./sources/index.js";
+import { SUI } from "./sources/sui.js";
+import { NON_EVM_SOURCE_TYPES } from "./sources/types.js";
 
 const ARBITRUM = toChain("0xa4b1.arbitrum");
+
+beforeAll(() => initSodax());
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -26,23 +32,42 @@ describe("sourceChainFor", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
+  it("takes sui, a non-EVM spoke, with its asset manager and connection from the SDK config", () => {
+    const { assetManager, connection } = spokeChainConfig.sui.addresses;
+    expect(sourceChainFor(fixtureCatalog(), toChain("sui"))).toEqual({
+      kind: "spoke",
+      adapter: SUI,
+      swapContract: assetManager,
+      connection,
+      // As its deposits' messages name it: the UTF-8 of `<package>::asset_manager::<object>`.
+      depositor: `0x${Buffer.from(assetManager).toString("hex")}`,
+    });
+  });
+
   // With no live chain config, there's no list to name; a sent swap still isn't told to swap again.
   it.each([
-    [
-      false,
-      "Swaps can start from Sonic or an EVM chain such as Arbitrum or Base, not from non-EVM chains yet; ask the user to send from one of those.",
-    ],
-    [true, "No swap can start from SUI: ask the user which chain they sent the swap from and pass its key."],
+    [false, "A swap can't start from that chain: ask the user to swap from another one."],
+    [true, "No swap can start from ICON: ask the user which chain they sent the swap from and pass its key."],
   ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
     const catalog = { ...fixtureCatalog(), chains: {} };
-    expect(() => sourceChainFor(catalog, toChain("sui"), sent)).toThrow(
+    expect(() => sourceChainFor(catalog, toChain("0x1.icon"), sent)).toThrow(
       expect.objectContaining({ code: "UNSUPPORTED_SOURCE", nextStep, details: undefined }),
     );
   });
 
-  it("refuses sui, which track can't check a deposit on", () => {
-    expect(() => sourceChainFor(fixtureCatalog(), toChain("sui"))).toThrow(
-      expect.objectContaining({ code: "UNSUPPORTED_SOURCE" }),
+  it("refuses ICON, which isn't a source here", () => {
+    expect(() => sourceChainFor(fixtureCatalog(), toChain("0x1.icon"))).toThrow(
+      expect.objectContaining({
+        code: "UNSUPPORTED_SOURCE",
+        // As the live catalog has them: the fixture's.
+        details: {
+          sourceChains: expect.arrayContaining([
+            { key: "sonic", name: "Sonic" },
+            { key: "0xa4b1.arbitrum", name: "Arbitrum" },
+            { key: "sui", name: "Sui" },
+          ]),
+        },
+      }),
     );
   });
 
@@ -50,6 +75,7 @@ describe("sourceChainFor", () => {
   it("takes sonic, the hub, with the intents contract and no connection", () => {
     expect(sourceChainFor(fixtureCatalog(), toChain("sonic"))).toEqual({
       kind: "hub",
+      adapter: HUB,
       chainId: 146,
       swapContract: solverConfig.intentsContract,
     });
@@ -58,12 +84,29 @@ describe("sourceChainFor", () => {
 
 // The chain support tool says from this whether a swap can start on a chain.
 describe("pinnedSourceOf", () => {
+  // Each non-EVM family's tx reader uses the SDK's one service for it: a second chain of a family would be read on
+  // the first one's, so it isn't a source until its reader learns to pick (and this test says so).
+  it.each(NON_EVM_SOURCE_TYPES)("finds one %s chain in the SDK config, which a swap can start from", type => {
+    const chains = Object.entries(spokeChainConfig).filter(([, config]) => config.chain.type === type);
+    expect(chains).toHaveLength(1);
+    // With the sender track proves its deposits by: a chain without one is never a source.
+    const source = pinnedSourceOf(chains[0][0]);
+    expect(source?.adapter.family).toBe(type);
+    expect(source).toMatchObject({ kind: "spoke", depositor: expect.stringMatching(/^0x/) });
+  });
+
   it.each([
     ["sonic", true],
     ["0xa4b1.arbitrum", true],
     ["0x2105.base", true],
-    ["sui", false],
-    ["solana", false],
+    ["sui", true],
+    ["solana", true],
+    ["near", true],
+    ["stellar", true],
+    ["injective-1", true],
+    ["bitcoin", false],
+    ["stacks", false],
+    ["0x1.icon", false],
     ["atlantis", false],
   ])("%s → %s", (key, startsSwap) => {
     expect(pinnedSourceOf(key) !== undefined).toBe(startsSwap);

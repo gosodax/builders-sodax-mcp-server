@@ -17,18 +17,19 @@ afterEach(() => {
 });
 
 describe("sodax_check_chain_support on starting a swap", () => {
-  it("says a swap can start from the hub and from an EVM spoke the quote takes", async () => {
+  it("says a swap can start from the hub and from the spokes the quote takes, of any family it takes", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch());
     expect(await swapSourceSupport("sonic")).toContain("can start a swap from it");
     expect(await swapSourceSupport(ARBITRUM)).toContain("can start a swap from it");
-    expect(await swapSourceSupport("sui")).toContain("can't start a swap from it yet");
+    expect(await swapSourceSupport("sui")).toContain("can start a swap from it");
+    expect(await swapSourceSupport("0x1.icon")).toContain("can't start a swap from it");
   });
 
   it("asks the live catalog, as the quote does, not only the SDK's packaged config", async () => {
     const configs = JSON.parse(fixtureText("chain-configs.json"));
     delete configs[ARBITRUM];
     vi.spyOn(globalThis, "fetch").mockImplementation(catalogFetch(undefined, JSON.stringify(configs)));
-    expect(await swapSourceSupport(ARBITRUM)).toContain("can't start a swap from it yet");
+    expect(await swapSourceSupport(ARBITRUM)).toContain("can't start a swap from it");
   });
 
   it("says it couldn't check, rather than guess, when the catalog can't be read", async () => {

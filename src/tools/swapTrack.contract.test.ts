@@ -9,23 +9,18 @@ import { solverConfig, spokeChainConfig } from "@sodax/types";
 import { http, createPublicClient, decodeFunctionData } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SODAX_SWAPS_BASE_URL } from "../constants.js";
-import {
-  getEvmReceipt,
-  hubIntentClosed,
-  initSodax,
-  intentHash,
-  isHubChain,
-  pinnedSourceOf,
-} from "../services/sodax.js";
+import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isHubChain } from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { DEPOSIT_TX } from "../services/swap/__fixtures__/deposit.js";
 import {
   HUB_RELAY_ID,
   INTENT_CREATED_TOPIC,
+  connectionMessages,
   decodeRlpList,
   depositMessages,
   hubIntentHashes,
 } from "../services/swap/sourceTx.js";
+import { pinnedSourceOf } from "../services/swap/sources/index.js";
 import { getHubIntent } from "../services/swap/swapsApi.js";
 import { getSwapCatalog } from "../services/swap/tokens.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
@@ -109,7 +104,7 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
     expect(receipt?.reverted).toBe(false);
     if (!receipt) return;
     // One `Message` log (MESSAGE_TOPIC) from the asset manager, to the hub.
-    const messages = depositMessages(receipt, connection, assetManager);
+    const messages = depositMessages(connectionMessages(receipt, connection), assetManager);
     expect(messages).toHaveLength(1);
     const [message] = messages;
     expect(message.dstChainId).toBe(HUB_RELAY_ID);

@@ -36,7 +36,13 @@ describe("getSwapCatalog", () => {
     });
     // Sonic is the hub: no asset manager, so no swap contract from this config.
     expect(first.chains.sonic).toEqual({ type: "EVM", chainId: 146 });
-    expect(first.chains.sui).toEqual({ type: "SUI", chainId: "sui" });
+    // A non-EVM spoke's asset manager too, as its config spells it, for the quote to check against the SDK's.
+    expect(first.chains.sui).toEqual({
+      type: "SUI",
+      chainId: "sui",
+      swapContract:
+        "0xa17a409164d1676db71b411ab50813ba2c7dd547d2df538c699049566f1ff922::asset_manager::0xcb7346339340b7f8dea40fcafb70721dc2fcfa7e8626a89fd954d46c1f928b61",
+    });
   });
 
   it("loads the shared catalog without the caller's key, under the caller's request id", async () => {

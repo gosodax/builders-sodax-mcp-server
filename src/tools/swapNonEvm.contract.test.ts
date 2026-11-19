@@ -117,9 +117,10 @@ describe("swaps from non-EVM chains, live", () => {
 
   // What the relay carried, the reader must find: a message from that chain to the hub in each tx, and among them
   // the asset manager's deposits, named as `assetManagerSender` says, with their 5-item RLP payload.
-  it.each(["solana", "stellar", "sui", "near", "injective-1"])(
+  it.for(["solana", "stellar", "sui", "near", "injective-1"])(
     "finds the messages the relay carried in the newest %s txs",
-    async chainKey => {
+    { timeout: 60_000 },
+    async (chainKey, { skip }) => {
       const relayId = BigInt(getIntentRelayChainId(chainKey as never));
       const source = sourceOf(chainKey);
       const depositor = source.kind === "spoke" ? source.depositor : "";
@@ -141,11 +142,13 @@ describe("swaps from non-EVM chains, live", () => {
           deposits++;
         }
       }
-      // Every relayed tx older than the public node keeps: nothing here to read today.
-      if (read === 0) return console.warn(`No ${chainKey} tx the relay carried is within its public node's history`);
+      // A reader that finds nothing fails, except Injective's: its public node keeps under a day, which a quiet day
+      // outlasts, so there it skips rather than passes.
+      if (read === 0 && chainKey === "injective-1")
+        skip("No Injective tx the relay carried is within its node's history");
+      expect(read).toBeGreaterThan(0);
       expect(deposits).toBeGreaterThan(0);
     },
-    60_000,
   );
 
   // The fixture's deposit read live: the RPC's answer must still be what the fixture holds.

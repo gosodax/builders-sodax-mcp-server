@@ -158,7 +158,7 @@ function stubSwaps(stub: SwapsStub = {}) {
       const intent: IntentJson = { ...(await sdkIntent(body)), ...stub.intent };
       if (body.srcChainKey === "sui") {
         // A non-EVM tx the server builds its own of: only the Sui package it calls is compared.
-        const payload = stub.relayPayload ?? sdk.createIntentPayload(intent);
+        const payload = stub.relayPayload ?? sdk.createIntentPayload({ ...intent, ...stub.payloadIntent });
         const to = stub.swapTo ?? SUI_RAW_TX.to;
         const tx = { from: body.srcAddress, to, value: body.inputAmount, data: "{}" };
         return Response.json({ tx, intent, relayData: { address: stub.relayAddress ?? HUB_WALLET, payload } });
@@ -1055,6 +1055,7 @@ describe("sodax_swap_quote from a non-EVM chain", () => {
   it.each([
     ["another sender in the intent", { intent: { srcAddress: `0x${"6".repeat(64)}` } }, "srcAddress"],
     ["a relay payload that isn't the SDK's for the intent", { relayPayload: "0x01" }, "relay payload"],
+    ["a lower minimum in the relay payload", { payloadIntent: { minOutputAmount: "1" } }, "relay payload"],
     ["a relay address that isn't the creator", { relayAddress: `0x${"9".repeat(40)}` }, "creator"],
   ])("refuses %s, building nothing", async (_case, stub, mismatch) => {
     stubSwaps(stub);

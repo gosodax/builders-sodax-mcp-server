@@ -54,11 +54,11 @@ importers:
         specifier: 1.6.0
         version: 1.6.0
       '@sodax/sdk':
-        specifier: 2.3.0-rc.3
-        version: 2.3.0-rc.3(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(google-protobuf@3.21.4)(libsodium-wrappers-sumo@0.7.16)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+        specifier: 2.3.0-rc.4
+        version: 2.3.0-rc.4(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(google-protobuf@3.21.4)(libsodium-wrappers-sumo@0.7.16)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
       '@sodax/types':
-        specifier: 2.3.0-rc.3
-        version: 2.3.0-rc.3
+        specifier: 2.3.0-rc.4
+        version: 2.3.0-rc.4
       express:
         specifier: 4.22.3
         version: 4.22.3
@@ -1073,12 +1073,12 @@ packages:
   '@scure/bip39@2.4.0':
     resolution: {integrity: sha512-82dxFbZUYboyOf0AXiydsQrFQ5Q4h9mX+O2UkE91ROYmsc0BKMGZLwDmy96Jpa2+vrtoxomjUhy1RPIgH/r2nA==}
 
-  '@sodax/bridge-api@2.3.0-rc.3':
-    resolution: {integrity: sha512-hXE5BijKC2jr+TywR+3957m6xtSKhXzqVRoZqzsS3tAKen9OjOfphFZ0JD0Oe5Y7HYW1ABRrGG1vehVtHlKpFA==}
+  '@sodax/bridge-api@2.3.0-rc.4':
+    resolution: {integrity: sha512-bp+idRSL3CIdnFdpKdrZ/b/cEH+3j6Y7dGQozemSE40G71mmJSYlbBXYiAxxaxiB3EhT7OgMv/6rsnjutSFrIQ==}
     engines: {node: '>=22.12.0'}
 
-  '@sodax/libs@2.3.0-rc.3':
-    resolution: {integrity: sha512-jMIlg1oMW6NHgD3zk31z3uUS2cODIvECCM0fI+tVjiB4rxhGJVaSJqH3+yuX8BWRLl49bsp9zJ4fEpTMgfWHTQ==}
+  '@sodax/libs@2.3.0-rc.4':
+    resolution: {integrity: sha512-dWRUA+jmxgBc6Tsxd/jEtTTRhHvO8xJTm8GHp4QVi/4AmlZr7ddySSlYYs2fhFjrJmIj4BEK7e537DoXq2o1oQ==}
     engines: {node: '>=22.12.0'}
     peerDependencies:
       libsodium-wrappers-sumo: ^0.7.11
@@ -1086,16 +1086,16 @@ packages:
       libsodium-wrappers-sumo:
         optional: true
 
-  '@sodax/sdk@2.3.0-rc.3':
-    resolution: {integrity: sha512-l/ceyQPBeDaARCmjJwZ7aIiwR4F8HvSXVvP6qMamgULRka8+5YglfC926T0+rhL1PH9juS7SzDjWjEdZpFbvrA==}
+  '@sodax/sdk@2.3.0-rc.4':
+    resolution: {integrity: sha512-BLv4fWgvHbFUMDIxzjJxxivezyxFltdDITUAOym0TWRkxtWFl4wgS70bsz3vF0Y5vWtukRE/NCYuAtYOtKRv9g==}
     engines: {node: '>=22.12.0'}
 
-  '@sodax/swaps-api@2.3.0-rc.3':
-    resolution: {integrity: sha512-H3CQF5c3O0KHUAkyT4QH40MYFR4lc9RbeNwYmNOHIDK2ZxDN0L/s7qyO7//v2+WZtrLW8Is6ycQha7iNRZpAGw==}
+  '@sodax/swaps-api@2.3.0-rc.4':
+    resolution: {integrity: sha512-F2FVMCsrjeNqgP9qyrFJesp4ZhlfRq5D+mSdbHCH5LrKOw4scLa00GzNCxNo57GZIXhnB6W9Nim4O8Vz3e4HXg==}
     engines: {node: '>=22.12.0'}
 
-  '@sodax/types@2.3.0-rc.3':
-    resolution: {integrity: sha512-OnIMnlV/BnSqFnubf/rxLVELTgodGFd3jU0wPTt4WsmUcHN2hC29Tim5kjH33pEtmwVrNlmGLAr2KxjgkMx/zw==}
+  '@sodax/types@2.3.0-rc.4':
+    resolution: {integrity: sha512-zamp3UcOwHsy7b6Pu8I5Sc+YkUb1oB0SnPmsaAXlRPxXDpJw9q3+r1jrfPNgysrPgi7q/Cav7fN4URkzuRlA+A==}
     engines: {node: '>=22.12.0'}
 
   '@solana/buffer-layout-utils@0.2.0':
@@ -4335,18 +4335,18 @@ snapshots:
     dependencies:
       '@noble/hashes': 2.4.0
 
-  '@sodax/bridge-api@2.3.0-rc.3(typescript@5.9.3)':
+  '@sodax/bridge-api@2.3.0-rc.4(typescript@5.9.3)':
     dependencies:
-      '@sodax/types': 2.3.0-rc.3
+      '@sodax/types': 2.3.0-rc.4
       valibot: 1.4.2(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
-  '@sodax/libs@2.3.0-rc.3(libsodium-wrappers-sumo@0.7.16)':
+  '@sodax/libs@2.3.0-rc.4(libsodium-wrappers-sumo@0.7.16)':
     optionalDependencies:
       libsodium-wrappers-sumo: 0.7.16
 
-  '@sodax/sdk@2.3.0-rc.3(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(google-protobuf@3.21.4)(libsodium-wrappers-sumo@0.7.16)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
+  '@sodax/sdk@2.3.0-rc.4(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(google-protobuf@3.21.4)(libsodium-wrappers-sumo@0.7.16)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
     dependencies:
       '@bitcoinerlab/secp256k1': 1.2.0
       '@coral-xyz/anchor': 0.30.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -4356,10 +4356,10 @@ snapshots:
       '@pancakeswap/infinity-sdk': 1.0.8(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
       '@pancakeswap/swap-sdk-core': 1.6.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@pancakeswap/v3-sdk': 3.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
-      '@sodax/bridge-api': 2.3.0-rc.3(typescript@5.9.3)
-      '@sodax/libs': 2.3.0-rc.3(libsodium-wrappers-sumo@0.7.16)
-      '@sodax/swaps-api': 2.3.0-rc.3(typescript@5.9.3)
-      '@sodax/types': 2.3.0-rc.3
+      '@sodax/bridge-api': 2.3.0-rc.4(typescript@5.9.3)
+      '@sodax/libs': 2.3.0-rc.4(libsodium-wrappers-sumo@0.7.16)
+      '@sodax/swaps-api': 2.3.0-rc.4(typescript@5.9.3)
+      '@sodax/types': 2.3.0-rc.4
       '@solana/spl-token': 0.4.9(@solana/web3.js@1.98.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@solana/web3.js': 1.98.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@stellar/stellar-sdk': 15.1.0
@@ -4386,14 +4386,14 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@sodax/swaps-api@2.3.0-rc.3(typescript@5.9.3)':
+  '@sodax/swaps-api@2.3.0-rc.4(typescript@5.9.3)':
     dependencies:
-      '@sodax/types': 2.3.0-rc.3
+      '@sodax/types': 2.3.0-rc.4
       valibot: 1.4.2(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
-  '@sodax/types@2.3.0-rc.3': {}
+  '@sodax/types@2.3.0-rc.4': {}
 
   '@solana/buffer-layout-utils@0.2.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
     dependencies:

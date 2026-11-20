@@ -1,0 +1,53 @@
+name: Bug
+description: Something in this repo is broken.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A security issue, or funds at risk?** Don't file it here: follow SECURITY.md.
+  - type: textarea
+    id: bug
+    attributes:
+      label: Describe the bug
+      description: What happens, and in which tool or endpoint.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: How you connected. Say whether you sent an API key, never the key itself.
+      value: |
+        MCP client:
+        Transport (/mcp, /sse or stdio):
+        Profile (all, builder or swap):
+        API key sent (yes or no):
+        Tool:
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce
+      description: Numbered steps. Add tx hashes, request IDs or log lines if you have them (never keys or tokens).
+      value: |
+        1.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options: [user-facing outage, degraded, cosmetic]
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: Additional Information
+      description: Environment (prod, staging, local), commit or version, screenshots.

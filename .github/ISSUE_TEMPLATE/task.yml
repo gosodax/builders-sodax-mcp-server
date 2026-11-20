@@ -1,0 +1,30 @@
+name: Task
+description: A piece of work in this repo (a feature, a change or a chore).
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs to be done
+      description: Two to four sentences, enough for a developer to start without a briefing.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it needs to be done
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Specific, checkable behaviour ("the API returns daily burn for a date range", not "the API works").
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: Additional Information
+      description: Links, dependencies, constraints, the parent Epic or cross-repo issue (owner/repo#N).

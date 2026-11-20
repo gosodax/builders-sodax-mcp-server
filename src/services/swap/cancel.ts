@@ -15,8 +15,7 @@ import {
   userHubWallet,
 } from "../sodax.js";
 import { ActionError } from "./errors.js";
-import { type CachedQuote, claimDeposit, markHubOutcome } from "./quoteCache.js";
-import { deadlineMs } from "./quoteStore.js";
+import { type CachedQuote, claimDeposit, deadlineMs, markHubOutcome } from "./quoteCache.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,

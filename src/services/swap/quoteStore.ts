@@ -37,6 +37,8 @@ export type HandedOver = "submitted" | "relayed_for_refund" | HubOutcome;
 export const MAX_QUOTES = 10_000;
 // One key can't fill the store and crowd out other keys' quotes; past this many unclaimed ones it waits instead.
 export const MAX_QUOTES_PER_KEY = 1_000;
+// With no backend row, the quote is the only record of what became of the swap.
+export const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /** A quote gone without a deposit: expired, or evicted past its deadline from a full store. */
 export type UnusedQuote = Pick<CachedQuote, "quoteId" | "srcChainKey" | "dstChainKey" | "keyHash"> & {
@@ -56,8 +58,8 @@ export type Room = { unused: UnusedQuote[] } & (
 export type OpenQuotes = { open: number; until: number };
 
 /**
- * Every method takes the caller's clock: expiry is decided by this server's time, not the store's. `get` returns a
- * copy; a change to a quote that's gone is a no-op, except `handOver`, which puts it back.
+ * A method that weighs expiry takes the caller's clock: it's decided by this server's time, not the store's. `get`
+ * returns a copy; a change to a quote that's gone is a no-op, except `handOver`, which puts it back.
  */
 export interface QuoteStore {
   readonly kind: "memory" | "redis";

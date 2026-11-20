@@ -3,7 +3,7 @@ import { ErrorReply, createClient } from "@redis/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
 import { getRequestContext, runWithRequestContext } from "../requestContext.js";
-import { REDIS_URLS, openRedisStore } from "./__fixtures__/redis.js";
+import { REDIS_URLS, openRedisStore, redisServers } from "./__fixtures__/redis.js";
 import { MemoryQuoteStore } from "./memoryQuoteStore.js";
 import {
   type CachedQuote,
@@ -322,13 +322,7 @@ describe.each(STORES)("quoteCache in $kind", ({ open }) => {
 });
 
 describe.each(REDIS_URLS)("quoteCache in Redis, across servers", url => {
-  const prefix = `test:${randomUUID()}:`;
-  const opened: QuoteStore[] = [];
-  const open = async () => {
-    const store = await openRedisStore(url, prefix);
-    opened.push(store);
-    return store;
-  };
+  const { prefix, open, closeAll } = redisServers(url);
   const raw = createClient({ url });
 
   beforeAll(async () => {
@@ -336,10 +330,8 @@ describe.each(REDIS_URLS)("quoteCache in Redis, across servers", url => {
   });
 
   afterAll(async () => {
-    await opened.at(-1)?.clear();
-    await Promise.all(opened.map(store => store.close()));
+    await closeAll();
     await raw.close();
-    useQuoteStore(new MemoryQuoteStore());
   });
 
   beforeEach(() => {

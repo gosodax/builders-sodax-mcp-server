@@ -16,6 +16,7 @@ import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
+  deadlineMs,
   getCachedQuote,
   markHubOutcome,
   markRelayedForRefund,
@@ -24,7 +25,6 @@ import {
   markSubmitted,
   trackedSince,
 } from "./quoteCache.js";
-import { deadlineMs } from "./quoteStore.js";
 import {
   RETRY_AFTER_SEC,
   type SwapRef,

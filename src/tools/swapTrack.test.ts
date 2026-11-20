@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { setFallbackRequestContext } from "../services/requestContext.js";
 import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { REDIS_URLS, redisServers } from "../services/swap/__fixtures__/redis.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { MemoryQuoteStore } from "../services/swap/memoryQuoteStore.js";
 import { clearQuoteCache, useQuoteStore } from "../services/swap/quoteCache.js";
+import type { QuoteStore } from "../services/swap/quoteStore.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
 import {
@@ -996,5 +998,62 @@ describe("a tx no node has seen", () => {
     const { out } = await track({ txHash: TX, quoteId: (await cacheQuote()).quoteId });
     const stopAfter = new Date(Number(DEADLINE) * 1000 + 5 * 60 * 1000).toISOString();
     expect(out).toMatchObject({ pollUntil: stopAfter, stopAfter });
+  });
+});
+
+// With a Redis to test against only (__fixtures__/redis.ts).
+describe.runIf(REDIS_URLS.length > 0)("swap tools on a Redis quote store, across a restart", () => {
+  const { open, closeAll } = redisServers(REDIS_URLS[0] ?? "");
+  let current: QuoteStore | undefined;
+  const relays = (calls: { path: string }[]) => calls.filter(call => call.path === "/intents/submit");
+
+  /** This server started again: a new client on the same Redis, as a deploy brings up. */
+  async function restart() {
+    await current?.close();
+    current = await open();
+    useQuoteStore(current);
+  }
+
+  beforeEach(restart);
+  afterAll(closeAll);
+
+  it("submits a deposit sent before the restart, once", async () => {
+    const calls = stubBackend();
+    const { quoteId } = await cacheQuote();
+    await restart();
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({ status: "queued", quoteId });
+    await restart();
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({ status: "queued" });
+    expect(submits(calls)).toHaveLength(1);
+  });
+
+  it("relays an expired deposit for refund after a restart, and remembers it relayed after another", async () => {
+    const calls = stubBackend();
+    const { quoteId } = await cacheQuote();
+    await restart();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({ status: "expired_refunding" });
+    await restart();
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({ status: "expired_refunding" });
+    expect((await cancel({ txHash: TX, quoteId })).out).toMatchObject({
+      status: "not_cancellable",
+      reason: "refunding",
+    });
+    expect(relays(calls)).toHaveLength(1);
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("refunds through cancel a deposit never tracked, after a restart", async () => {
+    const calls = stubBackend({ row: null });
+    const { quoteId } = await cacheQuote();
+    await restart();
+    expect((await cancel({ txHash: TX, quoteId })).out).toMatchObject({ status: "deposit_unsubmitted" });
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 60_000);
+    await restart();
+    expect((await cancel({ txHash: TX, quoteId })).out).toMatchObject({
+      status: "not_cancellable",
+      reason: "refunding",
+    });
+    expect(relays(calls)).toHaveLength(1);
   });
 });

@@ -14,6 +14,7 @@ import { ActionError } from "./errors.js";
 import { MemoryQuoteStore } from "./memoryQuoteStore.js";
 import {
   type CachedQuote,
+  HANDED_OVER_RETENTION_MS,
   type HandedOver,
   type HubOutcome,
   type QuoteStore,
@@ -22,12 +23,10 @@ import {
   deadlineMs,
 } from "./quoteStore.js";
 
-export type { CachedQuote } from "./quoteStore.js";
+export { type CachedQuote, deadlineMs } from "./quoteStore.js";
 
 const GRACE_MS = 30 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
-// With no backend row, the quote is the only record of what became of the swap.
-const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 let store: QuoteStore = new MemoryQuoteStore();
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
@@ -172,17 +171,19 @@ const leftOver = new Map<string, (() => Promise<void>)[]>();
  * step done twice. The write is made again before the quote is next read, so that call sees it: a deposit relayed for
  * refund has no backend row, and its quote is the only record of the relay.
  */
-async function record(quote: CachedQuote, write: () => Promise<void>): Promise<void> {
-  const waiting = leftOver.get(quote.quoteId);
+async function record(quoteId: string, write: (quoteId: string) => Promise<void>): Promise<void> {
+  // Keeps only the id, not the caller's quote, while the write waits.
+  const retry = () => write(quoteId);
+  const waiting = leftOver.get(quoteId);
   if (waiting) {
-    waiting.push(write);
+    waiting.push(retry);
     return;
   }
   try {
-    await write();
+    await retry();
   } catch (error) {
-    leftOver.set(quote.quoteId, [write]);
-    logger.error({ err: error, "quote.id": quote.quoteId }, "Couldn't record a swap's progress in the quote store");
+    leftOver.set(quoteId, [retry]);
+    logger.error({ err: error, "quote.id": quoteId }, "Couldn't record a swap's progress in the quote store");
   }
 }
 
@@ -199,18 +200,18 @@ async function recordLeftOver(quoteId: string): Promise<void> {
 export async function markSubmitFailed(quote: CachedQuote, waitSec: number): Promise<void> {
   const at = Date.now() + waitSec * 1000;
   quote.submitRetryAt = at;
-  await record(quote, () => store.set(quote.quoteId, { submitRetryAt: at }));
+  await record(quote.quoteId, id => store.set(id, { submitRetryAt: at }));
 }
 
 /** Unless the hub settled it while the submit ran: a cancel confirmed meanwhile stands. */
 export async function markSubmitted(quote: CachedQuote): Promise<void> {
   quote.handedOver ??= "submitted";
-  await record(quote, () => store.setSubmitted(quote.quoteId));
+  await record(quote.quoteId, id => store.setSubmitted(id));
 }
 
 export async function markSubmitRefused(quote: CachedQuote): Promise<void> {
   quote.submitRefused = true;
-  await record(quote, () => store.set(quote.quoteId, { submitRefused: true }));
+  await record(quote.quoteId, id => store.set(id, { submitRefused: true }));
 }
 
 export function markRelayedForRefund(quote: CachedQuote): Promise<void> {
@@ -229,10 +230,9 @@ async function markHandedOver(quote: CachedQuote, how: HandedOver): Promise<void
   const now = Date.now();
   quote.handedOver = how;
   quote.expiresAt = Math.max(quote.expiresAt, now + HANDED_OVER_RETENTION_MS);
-  // Put back if it was dropped while a read or the relay ran, and swept again from then on.
+  // Put back if it was dropped while a read or the relay ran.
   const handedOver = { ...quote, handedOver: how };
-  await record(quote, () => store.handOver(handedOver, now));
-  startSweeping();
+  await record(quote.quoteId, () => store.handOver(handedOver, now));
 }
 
 /** Since when track has been called for this quote with `txHash`: now, the first time. */
@@ -264,7 +264,7 @@ export function openQuoteCount(): number | undefined {
 
 /** What a restart would lose now: the open quotes in memory, none in Redis. For the stop and crash alerts. */
 export function quotesLostOnRestart(): number {
-  return store.kind === "redis" ? 0 : (store.openNow(Date.now())?.open ?? 0);
+  return store.kind === "redis" ? 0 : (openQuoteCount() ?? 0);
 }
 
 /** Test only. */

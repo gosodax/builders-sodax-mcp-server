@@ -15,6 +15,7 @@ import { logger } from "../logger.js";
 import { ActionError } from "./errors.js";
 import {
   type CachedQuote,
+  HANDED_OVER_RETENTION_MS,
   type HandedOver,
   MAX_QUOTES,
   MAX_QUOTES_PER_KEY,
@@ -32,7 +33,7 @@ const KEY_PREFIX = `sodax-mcp:quotes:v1:${SODAX_ENV}:`;
 // outage can still log an unused one. Normally the sweep deletes it within a minute of expiry.
 const EXPIRY_SLACK_MS = 60 * 60 * 1000;
 // Past the longest a quote is kept (a day once handed over), so an index outlives every quote written with it.
-const INDEX_TTL_MS = 25 * 60 * 60 * 1000;
+const INDEX_TTL_MS = HANDED_OVER_RETENTION_MS + EXPIRY_SLACK_MS;
 // A store call that takes longer fails as unreachable: track and cancel are retried, a quote is refused.
 const CALL_TIMEOUT_MS = 2_000;
 const RETRY_AFTER_SEC = 30;
@@ -47,8 +48,12 @@ const WARN_EVERY_MS = 60 * 1000;
 const LUA_COMMON = `
 local p, now, slack, indexTtl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4])
 local RANK = {submitted = 'ended', cancelled = 'ended', closed = 'ended', left_to_refund = 'hubRefund'}
+local STATE_INDEXES = {'pending', 'unclaimed', 'ended', 'hubRefund'}
 local function k(name) return p .. name end
-local function touch(name) redis.call('PEXPIRE', k(name), indexTtl) end
+local function index(name, score, id)
+  redis.call('ZADD', k(name), score, id)
+  redis.call('PEXPIRE', k(name), indexTtl)
+end
 local function expireAt(id, expiresAt)
   redis.call('PEXPIRE', k('q:' .. id), math.max(expiresAt - now + slack, 1000))
 end
@@ -56,7 +61,8 @@ local function drop(id)
   local f = redis.call('HMGET', k('q:' .. id), 'keyHash', 'src', 'dst')
   local unused = redis.call('ZSCORE', k('unclaimed'), id)
   redis.call('DEL', k('q:' .. id))
-  for _, name in ipairs({'all', 'pending', 'unclaimed', 'ended', 'hubRefund'}) do redis.call('ZREM', k(name), id) end
+  redis.call('ZREM', k('all'), id)
+  for _, name in ipairs(STATE_INDEXES) do redis.call('ZREM', k(name), id) end
   if f[1] then redis.call('ZREM', k('open:' .. f[1]), id) end
   return unused, f
 end
@@ -72,15 +78,12 @@ local function sweep(out)
 end
 -- Handed over: no longer open, and ranked for eviction by how (relayed for refund: never).
 local function setRank(id, how)
-  for _, name in ipairs({'pending', 'unclaimed', 'ended', 'hubRefund'}) do redis.call('ZREM', k(name), id) end
+  for _, name in ipairs(STATE_INDEXES) do redis.call('ZREM', k(name), id) end
   local f = redis.call('HMGET', k('q:' .. id), 'deadlineMs', 'depositTxHash')
   -- One no deposit claimed (put back after a cancel, say) ranks as unused, as in memory.
   local rank = RANK[how]
   if not f[2] then rank = 'unclaimed' end
-  if rank then
-    redis.call('ZADD', k(rank), f[1], id)
-    touch(rank)
-  end
+  if rank then index(rank, f[1], id) end
 end
 -- How many quotes are open (not handed over, not expired), and when the last of them expires.
 local function openQuotes()
@@ -124,11 +127,10 @@ if ARGV[8] then
   local f = redis.call('HMGET', q, 'expiresAt', 'deadlineMs')
   local expiresAt = tonumber(f[1])
   expireAt(id, expiresAt)
-  redis.call('ZADD', k('all'), expiresAt, id)
-  redis.call('ZADD', k('pending'), expiresAt, id)
-  redis.call('ZADD', k('unclaimed'), f[2], id)
-  redis.call('ZADD', open, expiresAt, id)
-  for _, name in ipairs({'all', 'pending', 'unclaimed', 'open:' .. keyHash}) do touch(name) end
+  index('all', expiresAt, id)
+  index('pending', expiresAt, id)
+  index('unclaimed', f[2], id)
+  index('open:' .. keyHash, expiresAt, id)
 end
 return out
 `;
@@ -175,8 +177,7 @@ if redis.call('EXISTS', q) == 0 then redis.call('HSET', q, unpack(ARGV, 8)) end
 local expiresAt = math.max(tonumber(redis.call('HGET', q, 'expiresAt')), keepUntil)
 redis.call('HSET', q, 'handedOver', how, 'expiresAt', string.format('%d', expiresAt))
 expireAt(id, expiresAt)
-redis.call('ZADD', k('all'), expiresAt, id)
-touch('all')
+index('all', expiresAt, id)
 setRank(id, how)
 return 1
 `;
@@ -197,11 +198,9 @@ return {openQuotes()}
 
 // Returns {open, until, ...unused quotes, 5 values each}: the open quotes left, for the heartbeat.
 const SWEEP = `${LUA_COMMON}
-local out = {}
+local out = {0, 0}
 sweep(out)
-local open, last = openQuotes()
-table.insert(out, 1, last)
-table.insert(out, 1, open)
+out[1], out[2] = openQuotes()
 return out
 `;
 
@@ -309,7 +308,7 @@ export class RedisQuoteStore implements QuoteStore {
 
   constructor(
     private readonly client: Client,
-    private readonly prefix = KEY_PREFIX,
+    private readonly prefix: string,
   ) {}
 
   /** A store call, or `unreachable`: it never waits for a Redis that's down or slow. */
@@ -386,15 +385,19 @@ export class RedisQuoteStore implements QuoteStore {
   }
 
   async open(now: number): Promise<OpenQuotes> {
-    const [open, until] = (await this.read(OPEN, now)) as unknown[];
-    this.lastOpen = toOpen(open, until);
-    return this.lastOpen;
+    const [open, until] = await this.read(OPEN, now);
+    return toOpen(open, until);
   }
 
-  /** A read of the open quotes: the heartbeat then says nothing rather than a count from before an outage. */
-  private async read(script: string, now: number): Promise<unknown> {
+  /**
+   * A script whose reply starts with the open quotes, kept for the heartbeat; after a failed read it says nothing
+   * rather than a count from before an outage.
+   */
+  private async read(script: string, now: number): Promise<string[]> {
     try {
-      return await this.run(script, now, []);
+      const reply = (await this.run(script, now, [])) as string[];
+      this.lastOpen = toOpen(reply[0], reply[1]);
+      return reply;
     } catch (error) {
       this.lastOpen = undefined;
       throw error;
@@ -406,9 +409,7 @@ export class RedisQuoteStore implements QuoteStore {
   }
 
   async sweep(now: number): Promise<UnusedQuote[]> {
-    const reply = (await this.read(SWEEP, now)) as string[];
-    this.lastOpen = toOpen(reply[0], reply[1]);
-    return unusedFrom(reply, 2);
+    return unusedFrom(await this.read(SWEEP, now), 2);
   }
 
   async clear(): Promise<void> {

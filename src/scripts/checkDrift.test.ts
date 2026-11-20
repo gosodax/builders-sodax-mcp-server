@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const checkApiDrift = vi.hoisted(() =>
-  vi.fn(async (): Promise<{ hasDrift: boolean; details?: string }> => ({ hasDrift: false })),
+  vi.fn(
+    async (): Promise<{ checked: boolean; hasDrift: boolean; details?: string }> => ({
+      checked: true,
+      hasDrift: false,
+    }),
+  ),
 );
 vi.mock("../services/apiDriftCheck.js", () => ({ checkApiDrift }));
 const writeSync = vi.hoisted(() => vi.fn());
@@ -23,10 +28,32 @@ describe("check:drift", () => {
   it("prints the issues a line each and exits 1 on drift", async () => {
     vi.resetModules();
     vi.stubEnv("SODAX_ENV", "production");
-    checkApiDrift.mockResolvedValueOnce({ hasDrift: true, details: "Param drift — 1 issue(s):\n  - GET /x: y" });
+    checkApiDrift.mockResolvedValueOnce({
+      checked: true,
+      hasDrift: true,
+      details: "Param drift — 1 issue(s):\n  - GET /x: y",
+    });
     const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
     await import("./checkDrift.js");
     expect(writeSync).toHaveBeenCalledWith(2, "Param drift — 1 issue(s):\n  - GET /x: y\n");
     expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it("exits 1 when the spec can't be read", async () => {
+    vi.resetModules();
+    vi.stubEnv("SODAX_ENV", "production");
+    checkApiDrift.mockResolvedValueOnce({ checked: false, hasDrift: false });
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await import("./checkDrift.js");
+    expect(writeSync).toHaveBeenCalledWith(2, "The OpenAPI spec couldn't be read, so nothing was checked.\n");
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it("exits 0 when the spec matches", async () => {
+    vi.resetModules();
+    vi.stubEnv("SODAX_ENV", "production");
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await import("./checkDrift.js");
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

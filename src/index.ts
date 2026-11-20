@@ -436,9 +436,28 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       // Before taking a slot, so a refused connection never holds one.
       const connection = resolveConnection(req, res, swapToolsEnabled);
       if (!connection) return;
+      // express.static's fs.stat can yield before this handler; a disconnect in
+      // that gap already fired the response's one-shot 'close', so a listener
+      // attached below would never run.
+      if (res.destroyed || req.socket.destroyed) return;
       const ip = req.ip || "unknown";
-      // An idle session ends its stream; the close handlers below clean up.
-      const lease = sseLimiter.open(ip, () => res.end());
+      let sessionId: string | undefined;
+      const dropSession = () => {
+        if (!sessionId) return;
+        const id = sessionId;
+        sessionId = undefined;
+        const session = sseSessions.get(id);
+        sseSessions.delete(id);
+        session?.transport.close();
+      };
+      // Idle cleanup must release the slot itself: res.end() on an already
+      // destroyed response does not emit 'close' again.
+      let lease: SseLease | null = null;
+      lease = sseLimiter.open(ip, () => {
+        dropSession();
+        lease?.release();
+        res.end();
+      });
       if (!lease) {
         noteRefusal(res, "SSE_SESSION_LIMIT");
         res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
@@ -447,21 +466,29 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       let closed = false;
       res.on("close", () => {
         closed = true;
+        dropSession();
         lease.release();
       });
+      if (res.destroyed || req.socket.destroyed) {
+        closed = true;
+        lease.release();
+        return;
+      }
 
       const sseServer = await createServer(connection.toolsets, getRequestContext().clientId);
-      if (closed) return;
+      if (closed || res.destroyed || req.socket.destroyed) {
+        if (!closed) {
+          closed = true;
+          lease.release();
+        }
+        return;
+      }
       const transport = new SSEServerTransport("/messages", res);
+      sessionId = transport.sessionId;
       sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
       // The session's own record comes when it closes; this one says it opened, under the id its messages carry.
       res.locals.sessionTag = hashTag(transport.sessionId);
       logger.info({ "mcp.session.id_hash": res.locals.sessionTag }, "SSE session opened");
-
-      res.on("close", () => {
-        sseSessions.delete(transport.sessionId);
-        transport.close();
-      });
 
       // connect() starts the transport; a second start() throws.
       await sseServer.connect(transport);

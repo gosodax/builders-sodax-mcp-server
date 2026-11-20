@@ -5,6 +5,10 @@
  * lookup-style endpoints where "not found" is a normal outcome.
  */
 
+import { SODAX_API_BASE_URL, SODAX_API_ORIGINS, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { errorName, logger } from "./logger.js";
+import { getRequestContext } from "./requestContext.js";
+
 interface FetchJsonOptions {
   timeout?: number;
   method?: string;
@@ -18,62 +22,232 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
-/**
- * Extract a human-readable message from an error response body so callers
- * see *why* a request failed, not just the status code. Handles the SODAX /
- * FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
- * `{ detail: [{ msg }] }`) plus `{ message }` / `{ error }`.
- */
-function extractApiErrorMessage(rawBody: string): string | null {
-  const text = rawBody.trim();
-  if (!text) return null;
+// Routes that take the caller's key: the data API, the solver and the Swaps API. Other routes on the
+// same host reach other origins; the relay, for one, must never get it.
+const KEYED_BASE_URLS = [SODAX_API_BASE_URL, SODAX_SOLVER_BASE_URL, SODAX_SWAPS_BASE_URL].map(base => `${base}/`);
 
+/** The caller's key, if `url` may carry it. `href` has `..` segments resolved. */
+function forwardedApiKey(url: string): string | undefined {
+  const { apiKey } = getRequestContext();
+  if (!apiKey) return undefined;
+  const { href } = new URL(url);
+  return KEYED_BASE_URLS.some(base => href.startsWith(base)) ? apiKey : undefined;
+}
+
+// SODAX's own API hosts, every route on them: they get the request's id, so their logs can name the request ours do.
+const SODAX_ORIGINS = new Set<string>(Object.values(SODAX_API_ORIGINS));
+
+/**
+ * A non-2xx response. The message is the one callers already show; the parts ride along for
+ * callers that map them. The raw body is not kept, so logging the error stays small.
+ */
+export class HttpError extends Error {
+  readonly apiMessage?: string;
+  readonly apiCode?: unknown;
+  readonly retryAfterSec?: number;
+  /** Sent with the caller's key: a 429 is that key's quota, not this server's. */
+  readonly keyed: boolean;
+
+  constructor(
+    message: string,
+    readonly status: number,
+    parts: { apiMessage?: string; apiCode?: unknown; retryAfterSec?: number; keyed?: boolean } = {},
+  ) {
+    super(message);
+    this.name = "HttpError";
+    this.apiMessage = parts.apiMessage;
+    this.apiCode = parts.apiCode;
+    this.retryAfterSec = parts.retryAfterSec;
+    this.keyed = parts.keyed ?? false;
+  }
+}
+
+/** A 2xx answer that isn't what the API promised: an empty body, not JSON, or JSON of another shape. */
+export class BadResponseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "BadResponseError";
+  }
+}
+
+const MAX_RETRY_AFTER_SEC = 3600;
+// IMF-fixdate, the HTTP-date form servers send: "Sun, 06 Nov 1994 08:49:37 GMT".
+const HTTP_DATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/** `Retry-After` as seconds from now (delta-seconds or an HTTP date), 1 s to an hour; anything else is ignored. */
+function retryAfterSeconds(value: string | null): number | undefined {
+  const text = value?.trim() ?? "";
+  let seconds: number;
+  if (/^\d+$/.test(text)) seconds = Number(text);
+  else if (HTTP_DATE.test(text)) seconds = Math.ceil((Date.parse(text) - Date.now()) / 1000);
+  else return undefined;
+  // An unparseable date ("Feb 30") is ignored; anything shorter than a second still means wait.
+  if (Number.isNaN(seconds)) return undefined;
+  return Math.min(Math.max(seconds, 1), MAX_RETRY_AFTER_SEC);
+}
+
+/**
+ * Extract a human-readable message (and the API's error `code`, if any) from an error
+ * response body so callers see *why* a request failed, not just the status code. Handles
+ * the SODAX / FastAPI shapes (`{ detail: { message } }`, `{ detail: "..." }`,
+ * `{ detail: [{ msg }] }`) plus `{ message }` (a string or NestJS's string list) / `{ error }`.
+ */
+function parseApiError(rawBody: string): { message?: string; code?: unknown } {
+  const text = rawBody.trim();
+  if (!text) return {};
+
+  let code: unknown;
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
-      const detail = obj.detail;
-
-      if (typeof detail === "string") return detail;
-      if (Array.isArray(detail)) {
-        const msgs = detail
-          .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
-          .filter((m): m is string => typeof m === "string");
-        if (msgs.length > 0) return msgs.join("; ");
-      } else if (detail && typeof detail === "object") {
-        const msg = (detail as Record<string, unknown>).message;
-        if (typeof msg === "string") return msg;
-      }
-
-      if (typeof obj.message === "string") return obj.message;
-      if (typeof obj.error === "string") return obj.error;
+      code = obj.code;
+      const message = extractApiErrorMessage(obj);
+      if (message) return { message: snippet(message), code };
     }
   } catch {
     // Body wasn't JSON; fall through to the raw-text snippet below.
   }
 
-  return text.length > 300 ? `${text.slice(0, 300)}...` : text;
+  return { message: snippet(text), code };
+}
+
+const snippet = (text: string) => (text.length > 300 ? `${text.slice(0, 300)}...` : text);
+
+function extractApiErrorMessage(obj: Record<string, unknown>): string | undefined {
+  const detail = obj.detail;
+
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map(d => (d && typeof d === "object" ? (d as Record<string, unknown>).msg : null))
+      .filter((m): m is string => typeof m === "string");
+    if (msgs.length > 0) return msgs.join("; ");
+  } else if (detail && typeof detail === "object") {
+    const msg = (detail as Record<string, unknown>).message;
+    if (typeof msg === "string") return msg;
+  }
+
+  if (typeof obj.message === "string") return obj.message;
+  if (Array.isArray(obj.message) && obj.message.every(m => typeof m === "string")) return obj.message.join("; ");
+  if (typeof obj.error === "string") return obj.error;
+  return undefined;
+}
+
+const isParam = (segment: string) => segment.startsWith(":");
+const paramCount = (parts: string[]) => parts.filter(isParam).length;
+
+// Fewest parameters first, so a static word wins: `asset/all` before `asset/:reserveAddress`.
+const routes: { parts: string[]; route: string }[] = [];
+
+/** Templates (`/intent/user/:userAddress`) of the routes a client calls under `baseUrl`. */
+export function addRouteTemplates(baseUrl: string, templates: readonly string[]): void {
+  const base = new URL(baseUrl).pathname;
+  for (const template of templates) {
+    const parts = `${base}${template}`.split("/");
+    routes.push({ parts, route: parts.map(part => (isParam(part) ? "*" : part)).join("/") });
+  }
+  routes.sort((a, b) => paramCount(a.parts) - paramCount(b.parts));
+}
+
+// What a static path segment looks like: a plain lowercase word. Hashes, addresses, account names and chain keys don't.
+const WORD = /^([a-z][a-z0-9_-]{0,22})?$/;
+
+/**
+ * The route a path belongs to: a registered template's, static segments kept and parameters masked; else a guess that
+ * masks every segment from the fifth on (the SODAX APIs put their parameters there: `/v1/be/intent/user/<address>`)
+ * and, before that, any that isn't a plain word. Either way no hash, address or account name is logged.
+ */
+export function routeOf(pathname: string): string {
+  const segments = pathname.split("/");
+  const known = routes.find(
+    ({ parts }) => parts.length === segments.length && parts.every((part, i) => isParam(part) || part === segments[i]),
+  );
+  return known?.route ?? segments.map((segment, i) => (i >= 5 || !WORD.test(segment) ? "*" : segment)).join("/");
+}
+
+/**
+ * `fetch` with one log record per upstream call (#110), written once `read` has the body: the route with its ids
+ * and addresses masked, the status or the error's name, and the time to the whole answer, so a body that never
+ * arrives is a failed call, not a fast one. `ok` decides the record's level.
+ */
+export async function timedFetch<T>(
+  url: string,
+  init: RequestInit,
+  ok: (response: Response) => boolean,
+  read: (response: Response) => Promise<T>,
+): Promise<{ response: Response; body: T }> {
+  const { origin, hostname, pathname } = new URL(url);
+  const { requestId } = getRequestContext();
+  let sent = init;
+  if (requestId && SODAX_ORIGINS.has(origin)) {
+    const headers = new Headers(init.headers);
+    headers.set("X-Request-Id", requestId);
+    sent = { ...init, headers };
+  }
+  const started = Date.now();
+  const fields = () => ({
+    "http.request.method": init.method ?? "GET",
+    "server.address": hostname,
+    "url.template": routeOf(pathname),
+    "duration.ms": Date.now() - started,
+  });
+  let response: Response;
+  try {
+    response = await fetch(url, sent);
+  } catch (error) {
+    logger.warn({ ...fields(), "error.type": errorName(error) }, "Upstream call");
+    throw error;
+  }
+  let body: T;
+  try {
+    body = await read(response);
+  } catch (error) {
+    logger.warn(
+      { ...fields(), "http.response.status_code": response.status, "error.type": errorName(error) },
+      "Upstream call",
+    );
+    throw error;
+  }
+  logger[ok(response) ? "info" : "warn"](
+    { ...fields(), "http.response.status_code": response.status },
+    "Upstream call",
+  );
+  return { response, body };
 }
 
 async function request<T>(url: string, options: FetchJsonOptions, allow404: boolean): Promise<T | null> {
   const { timeout = DEFAULT_TIMEOUT_MS, method = "GET", body, headers } = options;
 
-  const response = await fetch(url, {
-    method,
-    headers: { ...DEFAULT_HEADERS, ...headers },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeout),
-  });
+  const apiKey = forwardedApiKey(url);
+  const { response, body: text } = await timedFetch(
+    url,
+    {
+      method,
+      headers: { ...DEFAULT_HEADERS, ...(apiKey ? { "x-api-key": apiKey } : {}), ...headers },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      // fetch keeps custom headers across a cross-origin redirect, so a keyed request never follows one.
+      redirect: apiKey ? "error" : "follow",
+      signal: AbortSignal.timeout(timeout),
+    },
+    response => response.ok || (allow404 && response.status === 404),
+    response => response.text(),
+  );
 
   if (allow404 && response.status === 404) {
     return null;
   }
 
   if (!response.ok) {
-    const apiMessage = extractApiErrorMessage(await response.text().catch(() => ""));
+    const { message: apiMessage, code: apiCode } = parseApiError(text);
     const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
     const base = `${status} for ${url}`;
-    throw new Error(apiMessage ? `${base} - ${apiMessage}` : base);
+    throw new HttpError(apiMessage ? `${base} - ${apiMessage}` : base, response.status, {
+      apiMessage,
+      apiCode,
+      retryAfterSec: retryAfterSeconds(response.headers.get("Retry-After")),
+      keyed: apiKey !== undefined,
+    });
   }
 
   // 204 No Content / empty body: response.json() would throw a cryptic
@@ -83,12 +257,17 @@ async function request<T>(url: string, options: FetchJsonOptions, allow404: bool
   // fetchJson, throw a clearer error instead of returning undefined-as-T,
   // which would otherwise lie about the Promise<T> contract and let an
   // undefined parsed value leak into callers (caching, destructuring etc).
-  const text = (await response.text()).trim();
-  if (!text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
     if (allow404) return null;
-    throw new Error(`Empty response body from ${url}`);
+    throw new BadResponseError(`Empty response body from ${url}`);
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch (error) {
+    // The parser's own message, as callers have always shown it.
+    throw new BadResponseError(error instanceof Error ? error.message : "Invalid JSON", { cause: error });
+  }
 }
 
 export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}): Promise<T> {

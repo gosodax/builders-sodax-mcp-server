@@ -2,12 +2,14 @@
  * SODAX API Tools
  *
  * MCP tool definitions for accessing live SODAX API data.
- * Provides 28 tools for developers and integration partners.
+ * Provides SODAX API tools for developers and integration partners.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { chainDisplayName } from "../constants.js";
+import { parseSwapToolsEnabled } from "../services/profiles.js";
 import {
   clearCache,
   getAllChainsConfigs,
@@ -30,7 +32,7 @@ import {
   getPartners,
   getRelayChainIdMap,
   getSolverIntent,
-  getSupportedChains,
+  getSupportedChainsDetailed,
   getSwapTokens,
   getTokenSupply,
   getTotalSupply,
@@ -39,11 +41,16 @@ import {
   getUserTransactions,
   getVolume,
   getVolumeStats,
+  resolveChainSupport,
+  toChainKey,
 } from "../services/sodaxApi.js";
 import { clearSolverCache, getSolverCacheStats } from "../services/solver.js";
+import { isSwapSource } from "../services/swap/resolver.js";
+import { expireSwapCatalog, getSwapCatalog } from "../services/swap/tokens.js";
+import { failedResult } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { ResponseFormat } from "../types.js";
-import { formatResponse } from "./formatters.js";
+import { formatNotFound, formatResponse } from "./formatters.js";
 
 /**
  * Register all SODAX API tools with the MCP server
@@ -54,6 +61,17 @@ const READ_ONLY: ToolAnnotations = {
   destructiveHint: false,
   openWorldHint: true,
 };
+
+/** Whether this server's swap tools can start a swap from the chain: the quote's own check, live catalog included. */
+export async function swapSourceSupport(chainKey: string): Promise<string> {
+  // The kill switch was read at boot, so a value it refused never reaches here.
+  if (!parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED)) return "This server's swap tools are turned off.";
+  const catalog = await getSwapCatalog().catch(() => undefined);
+  if (!catalog) return "This server couldn't check right now whether its swap tools can start a swap from it.";
+  return isSwapSource(catalog, chainKey)
+    ? "This server's swap tools (with a SODAX API key) can start a swap from it."
+    : "This server's swap tools can't start a swap from it.";
+}
 
 export function registerSodaxApiTools(server: McpServer): void {
   // Tool 1: Get Supported Chains
@@ -72,20 +90,71 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ format }) => {
       try {
-        const chains = await getSupportedChains();
+        const chains = await getSupportedChainsDetailed();
+        // JSON: the {key, name} objects. Markdown: a readable "Name — `key`"
+        // list, since the raw keys (0x2105.base, injective-1) read awkwardly.
+        // The key is what other tools take as `chainId`, so it's always shown.
+        const text =
+          format === ResponseFormat.JSON
+            ? formatResponse(chains, format)
+            : `## Supported Chains (${chains.length})\n\n${chains.map(c => `- **${c.name}** — \`${c.key}\``).join("\n")}`;
+        return {
+          content: [{ type: "text", text }],
+        };
+      } catch (error) {
+        return failedResult(error);
+      }
+    },
+  );
+
+  // Tool: Check chain support (name/ticker → supported?)
+  registerAppTool(
+    server,
+    "config",
+    "sodax_check_chain_support",
+    "Check whether SODAX supports a specific blockchain, given its name, ticker, chain key or EVM chain id (e.g. 'Hedera', 'HBAR', 'hedera', 'Base', 'Arbitrum', '8453'). Use this to answer 'does SODAX support X?' questions authoritatively instead of guessing — it resolves the name to a chain key and confirms against the live network registry.",
+    {
+      chain: z
+        .string()
+        .min(1)
+        .describe(
+          "Chain name, ticker, key or EVM chain id — e.g. 'Hedera', 'HBAR', 'hedera', 'Robinhood', '0x2105.base', '8453'",
+        ),
+    },
+    READ_ONLY,
+    async ({ chain }) => {
+      try {
+        const result = await resolveChainSupport(chain);
+        if (result.supported && result.chainKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✅ Yes — SODAX supports **${result.displayName}** (chain key: \`${result.chainKey}\`). Use this key with tools like sodax_get_swap_tokens. SODAX currently supports ${result.supportedChains.length} chains. ${await swapSourceSupport(result.chainKey)}`,
+              },
+            ],
+          };
+        }
+        if (result.windingDownKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `⚠️ **${chainDisplayName(result.windingDownKey)}** (\`${result.windingDownKey}\`) is being wound down on SODAX and is no longer counted as a supported network. Do not build new integrations against it.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}`,
+              },
+            ],
+          };
+        }
         return {
           content: [
             {
               type: "text",
-              text: formatResponse(chains, format),
+              text: `❌ No chain matching "${chain}" was found in the live SODAX registry. Check the supported list below before concluding it is unsupported — the chain may be listed under a different name or key.\n\nSupported chain keys (${result.supportedChains.length}): ${result.supportedChains.join(", ")}\n\nIf you expected a match, try the exact chain key or call sodax_get_supported_chains.`,
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -101,7 +170,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter tokens by spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic', '0x1.icon', '0xa.optimism'). Call sodax_get_supported_chains for the full list.",
+          "Filter tokens by spoke chain key, name or EVM chain id (e.g. 'sonic', '0x2105.base', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -112,23 +181,21 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ chainId, format }) => {
       try {
-        const tokens = await getSwapTokens(chainId);
-        const summary = chainId
-          ? `## Swap Tokens on ${chainId}\n\n${tokens.length} tokens available\n\n`
+        const key = chainId && (await toChainKey(chainId));
+        const tokens = await getSwapTokens(key);
+        const summary = key
+          ? `## Swap Tokens on ${key}\n\n${tokens.length} tokens available\n\n`
           : `## All Swap Tokens\n\n${tokens.length} tokens available across all chains\n\n`;
         return {
           content: [
             {
               type: "text",
-              text: summary + formatResponse(tokens, format),
+              text: formatResponse(tokens, format, summary),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -153,22 +220,19 @@ export function registerSodaxApiTools(server: McpServer): void {
         const transaction = await getTransaction(txHash);
         if (!transaction) {
           return {
-            content: [{ type: "text", text: `Transaction not found: ${txHash}` }],
+            content: [{ type: "text", text: formatNotFound(format, `Transaction not found: ${txHash}`) }],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Transaction Details\n\n${formatResponse(transaction, format)}`,
+              text: formatResponse(transaction, format, "## Transaction Details\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -207,15 +271,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: header + summary + formatResponse(transactions, format),
+              text: formatResponse(transactions, format, header + summary),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -295,23 +356,22 @@ export function registerSodaxApiTools(server: McpServer): void {
           cursor,
         });
         const header = "## SODAX Filled Intents\n\n";
-        const pagination =
-          volume.hasMore && volume.nextCursor
-            ? `\n\n*Has more results. Use cursor: \`${volume.nextCursor.substring(0, 30)}...\`*`
-            : "\n\n*No more results.*";
+        // The whole cursor: the next call needs it as is.
+        const pagination = !volume.hasMore
+          ? "\n\n*No more results.*"
+          : volume.nextCursor
+            ? `\n\n*Has more results. Use cursor: \`${volume.nextCursor}\`*`
+            : "\n\n*Has more results, but the API gave no cursor to fetch them.*";
         return {
           content: [
             {
               type: "text",
-              text: header + formatResponse(volume.items, format) + pagination,
+              text: formatResponse(format === ResponseFormat.JSON ? volume : volume.items, format, header, pagination),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -337,15 +397,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODAX Solver Volume Stats\n\n${formatResponse(stats, format)}`,
+              text: formatResponse(stats, format, "## SODAX Solver Volume Stats\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -381,15 +438,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Orderbook\n\n${orderbook.length} orders found\n\n${formatResponse(orderbook, format)}`,
+              text: formatResponse(orderbook, format, `## Orderbook\n\n${orderbook.length} orders found\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -401,7 +455,6 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_assets",
     "List all assets available for lending and borrowing in the SODAX money market",
     {
-      chainId: z.string().optional().describe("Filter by chain ID"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -409,23 +462,19 @@ export function registerSodaxApiTools(server: McpServer): void {
         .describe("Response format: 'json' for raw data or 'markdown' for formatted text"),
     },
     READ_ONLY,
-    async ({ chainId, format }) => {
+    async ({ format }) => {
       try {
-        const assets = await getMoneyMarketAssets(chainId);
-        const header = chainId ? `## Money Market Assets on ${chainId}\n\n` : "## Money Market Assets\n\n";
+        const assets = await getMoneyMarketAssets();
         return {
           content: [
             {
               type: "text",
-              text: `${header}${assets.length} assets available\n\n${formatResponse(assets, format)}`,
+              text: formatResponse(assets, format, `## Money Market Assets\n\n${assets.length} assets available\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -450,22 +499,21 @@ export function registerSodaxApiTools(server: McpServer): void {
         const position = await getUserPosition(userAddress);
         if (!position) {
           return {
-            content: [{ type: "text", text: `No money market position found for ${userAddress}` }],
+            content: [
+              { type: "text", text: formatNotFound(format, `No money market position found for ${userAddress}`) },
+            ],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Money Market Position\n\n**Address:** ${userAddress}\n\n${formatResponse(position, format)}`,
+              text: formatResponse(position, format, `## Money Market Position\n\n**Address:** ${userAddress}\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -492,15 +540,16 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODAX Partners\n\n${partners.length} integration partners\n\n${formatResponse(partners, format)}`,
+              text: formatResponse(
+                partners,
+                format,
+                `## SODAX Partners\n\n${partners.length} integration partners\n\n`,
+              ),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -526,15 +575,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODA Token Supply\n\n${formatResponse(supply, format)}`,
+              text: formatResponse(supply, format, "## SODA Token Supply\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -560,15 +606,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODAX Full Configuration\n\n${formatResponse(config, format)}`,
+              text: formatResponse(config, format, "## SODAX Full Configuration\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -594,15 +637,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Relay Chain ID Map\n\n${formatResponse(map, format)}`,
+              text: formatResponse(map, format, "## Relay Chain ID Map\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -628,15 +668,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Spoke Chain Configs\n\n${formatResponse(configs, format)}`,
+              text: formatResponse(configs, format, "## Spoke Chain Configs\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -652,7 +689,7 @@ export function registerSodaxApiTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Filter by source spoke chain ID. Use the formal chain ID (e.g., '0x2105.base', 'ethereum', 'sonic'). Call sodax_get_supported_chains for the full list.",
+          "Filter by source spoke chain key, name or EVM chain id (e.g. 'sonic', 'ethereum', 'Base', '8453'). Call sodax_get_supported_chains for the full, live list.",
         ),
       format: z
         .nativeEnum(ResponseFormat)
@@ -663,21 +700,19 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ chainId, format }) => {
       try {
-        const assets = await getHubAssets(chainId);
-        const header = chainId ? `## Hub Assets from ${chainId}\n\n` : "## All Hub Assets\n\n";
+        const key = chainId && (await toChainKey(chainId));
+        const assets = await getHubAssets(key);
+        const header = key ? `## Hub Assets from ${key}\n\n` : "## All Hub Assets\n\n";
         return {
           content: [
             {
               type: "text",
-              text: header + formatResponse(assets, format),
+              text: formatResponse(assets, format, header),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -689,7 +724,10 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_money_market_tokens",
     "Get tokens supported for money market lending/borrowing, optionally filtered by chain",
     {
-      chainId: z.string().optional().describe("Filter by chain ID"),
+      chainId: z
+        .string()
+        .optional()
+        .describe("Filter by chain key, name or EVM chain id (e.g. 'sonic', 'Base', '8453')"),
       format: z
         .nativeEnum(ResponseFormat)
         .optional()
@@ -699,21 +737,19 @@ export function registerSodaxApiTools(server: McpServer): void {
     READ_ONLY,
     async ({ chainId, format }) => {
       try {
-        const tokens = await getMoneyMarketTokens(chainId);
-        const header = chainId ? `## Money Market Tokens on ${chainId}\n\n` : "## Money Market Tokens\n\n";
+        const key = chainId && (await toChainKey(chainId));
+        const tokens = await getMoneyMarketTokens(key);
+        const header = key ? `## Money Market Tokens on ${key}\n\n` : "## Money Market Tokens\n\n";
         return {
           content: [
             {
               type: "text",
-              text: header + formatResponse(tokens, format),
+              text: formatResponse(tokens, format, header),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -739,15 +775,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Money Market Reserve Assets\n\n${formatResponse(assets, format)}`,
+              text: formatResponse(assets, format, "## Money Market Reserve Assets\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -779,15 +812,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: header + formatResponse(positions, format),
+              text: formatResponse(positions, format, header),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -799,7 +829,11 @@ export function registerSodaxApiTools(server: McpServer): void {
     "sodax_get_amm_pool_candles",
     "Get OHLCV candlestick chart data for an AMM pool",
     {
-      chainId: z.string().describe("Chain ID where the pool is deployed (e.g., 'sonic')"),
+      // The API parses it as an integer: a chain key or name is a 400 there.
+      chainId: z
+        .string()
+        .regex(/^\d+$/, "chainId is the pool chain's numeric id, such as '146' for Sonic")
+        .describe("Numeric chain id where the pool is deployed (e.g. '146' for Sonic)"),
       poolId: z.string().describe("The pool contract address or ID"),
       interval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).describe("REQUIRED: Candle interval"),
       from: z.number().describe("REQUIRED: Start timestamp (unix seconds)"),
@@ -818,15 +852,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## OHLCV Candles — ${poolId.slice(0, 10)}... on ${chainId}\n\n${formatResponse(candles, format)}`,
+              text: formatResponse(candles, format, `## OHLCV Candles — ${poolId.slice(0, 10)}... on ${chainId}\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -851,22 +882,19 @@ export function registerSodaxApiTools(server: McpServer): void {
         const intent = await getIntent(intentHash);
         if (!intent) {
           return {
-            content: [{ type: "text", text: `Intent not found: ${intentHash}` }],
+            content: [{ type: "text", text: formatNotFound(format, `Intent not found: ${intentHash}`) }],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Intent Details\n\n${formatResponse(intent, format)}`,
+              text: formatResponse(intent, format, "## Intent Details\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -896,22 +924,19 @@ export function registerSodaxApiTools(server: McpServer): void {
         const intent = await getSolverIntent(intentHash, includeAll);
         if (!intent) {
           return {
-            content: [{ type: "text", text: `Solver intent not found: ${intentHash}` }],
+            content: [{ type: "text", text: formatNotFound(format, `Solver intent not found: ${intentHash}`) }],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Solver Intent Details\n\n${formatResponse(intent, format)}`,
+              text: formatResponse(intent, format, "## Solver Intent Details\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -936,22 +961,21 @@ export function registerSodaxApiTools(server: McpServer): void {
         const asset = await getMoneyMarketAsset(reserveAddress);
         if (!asset) {
           return {
-            content: [{ type: "text", text: `Money market asset not found: ${reserveAddress}` }],
+            content: [
+              { type: "text", text: formatNotFound(format, `Money market asset not found: ${reserveAddress}`) },
+            ],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Money Market Asset\n\n${formatResponse(asset, format)}`,
+              text: formatResponse(asset, format, "## Money Market Asset\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -986,15 +1010,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Borrowers for ${reserveAddress.slice(0, 10)}...\n\n${formatResponse(borrowers, format)}`,
+              text: formatResponse(borrowers, format, `## Borrowers for ${reserveAddress.slice(0, 10)}...\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1029,15 +1050,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## Suppliers for ${reserveAddress.slice(0, 10)}...\n\n${formatResponse(suppliers, format)}`,
+              text: formatResponse(suppliers, format, `## Suppliers for ${reserveAddress.slice(0, 10)}...\n\n`),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1071,15 +1089,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## All Money Market Borrowers\n\n${formatResponse(borrowers, format)}`,
+              text: formatResponse(borrowers, format, "## All Money Market Borrowers\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1105,22 +1120,19 @@ export function registerSodaxApiTools(server: McpServer): void {
         const summary = await getPartnerSummary(receiver, chainId);
         if (!summary) {
           return {
-            content: [{ type: "text", text: `Partner not found: ${receiver}` }],
+            content: [{ type: "text", text: formatNotFound(format, `Partner not found: ${receiver}`) }],
           };
         }
         return {
           content: [
             {
               type: "text",
-              text: `## Partner Summary\n\n${formatResponse(summary, format)}`,
+              text: formatResponse(summary, format, "## Partner Summary\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1146,15 +1158,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODA Total Supply\n\n${formatResponse(supply, format)}`,
+              text: formatResponse(supply, format, "## SODA Total Supply\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1180,15 +1189,12 @@ export function registerSodaxApiTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: `## SODA Circulating Supply\n\n${formatResponse(supply, format)}`,
+              text: formatResponse(supply, format, "## SODA Circulating Supply\n\n"),
             },
           ],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : "Unknown error"}` }],
-          isError: true,
-        };
+        return failedResult(error);
       }
     },
   );
@@ -1198,23 +1204,31 @@ export function registerSodaxApiTools(server: McpServer): void {
     server,
     "partnersAndToken",
     "sodax_refresh_cache",
-    "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache.",
+    "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache. At most once a minute across the server.",
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-    async () => {
-      const apiBefore = getCacheStats();
-      const solverBefore = getSolverCacheStats();
-      clearCache();
-      clearSolverCache();
-      const total = apiBefore.size + solverBefore.size;
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Cache cleared. ${total} cached entries removed (${apiBefore.size} api, ${solverBefore.size} solver).`,
-          },
-        ],
-      };
-    },
+    async () => ({ content: [{ type: "text", text: refreshCaches() }] }),
   );
+}
+
+// sodax_refresh_cache is open to every caller, and each clear sends the next reads upstream: as docs_refresh,
+// at most once per window, server-wide.
+const REFRESH_MIN_INTERVAL_MS = 60 * 1000;
+let lastRefreshAt = 0;
+
+export function refreshCaches(now = Date.now()): string {
+  const waitMs = lastRefreshAt + REFRESH_MIN_INTERVAL_MS - now;
+  // A clock stepped back would otherwise hold the window shut until it caught up.
+  if (waitMs > 0 && now >= lastRefreshAt) {
+    const ago = Math.floor((now - lastRefreshAt) / 1000);
+    return `Not cleared: the caches were cleared ${ago} s ago, and clearing again is allowed in ${Math.ceil(waitMs / 1000)} s.`;
+  }
+  lastRefreshAt = now;
+  const apiBefore = getCacheStats();
+  const solverBefore = getSolverCacheStats();
+  clearCache();
+  clearSolverCache();
+  expireSwapCatalog();
+  const total = apiBefore.size + solverBefore.size;
+  return `Cache cleared. ${total} cached entries removed (${apiBefore.size} api, ${solverBefore.size} solver).`;
 }

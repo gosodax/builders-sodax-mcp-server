@@ -2,14 +2,66 @@
  * Constants for the SODAX Builders MCP Server
  */
 
+import { spokeChainConfig } from "@sodax/types";
+
+export const SODAX_API_ORIGINS = {
+  production: "https://api.sodax.com",
+  canary: "https://canary-api.sodax.com",
+} as const;
+
+export type SodaxEnv = keyof typeof SODAX_API_ORIGINS;
+
+const SODAX_ENVS = Object.keys(SODAX_API_ORIGINS) as SodaxEnv[];
+
+/** `SODAX_ENV` picks the SODAX API host once, at boot. Unset means production; undefined means invalid. */
+export function parseSodaxEnv(value: string | undefined): SodaxEnv | undefined {
+  const env = value?.trim().toLowerCase() || "production";
+  return SODAX_ENVS.find(known => known === env);
+}
+
+const parsedSodaxEnv = parseSodaxEnv(process.env.SODAX_ENV);
+
+// Checked in main() rather than thrown here, so a bad value goes through the fatal-exit
+// path (log + Discord alert). The production fallback below is never used: main() stops first.
+export const SODAX_ENV_ERROR = parsedSodaxEnv
+  ? undefined
+  : `SODAX_ENV must be one of ${SODAX_ENVS.join(", ")}, got "${process.env.SODAX_ENV}"`;
+export const SODAX_ENV: SodaxEnv = parsedSodaxEnv ?? "production";
+export const SODAX_API_ORIGIN = SODAX_API_ORIGINS[SODAX_ENV];
+
+const DEFAULT_SWAP_USD_WARN = 10_000;
+
+/** `SODAX_SWAP_USD_WARN`: the USD value above which a quote warns. Unset means 10,000; undefined means invalid. */
+export function parseSwapUsdWarn(value: string | undefined): number | undefined {
+  const text = value?.trim();
+  if (!text) return DEFAULT_SWAP_USD_WARN;
+  const level = Number(text);
+  return /^\d+(?:\.\d+)?$/.test(text) && level > 0 ? level : undefined;
+}
+
+const parsedSwapUsdWarn = parseSwapUsdWarn(process.env.SODAX_SWAP_USD_WARN);
+// Checked in main(), like SODAX_ENV_ERROR.
+export const SWAP_USD_WARN_ERROR = parsedSwapUsdWarn
+  ? undefined
+  : `SODAX_SWAP_USD_WARN must be a positive number, got "${process.env.SODAX_SWAP_USD_WARN}"`;
+export const SWAP_USD_WARN = parsedSwapUsdWarn ?? DEFAULT_SWAP_USD_WARN;
+
 // SODAX API Base URL (Backend API)
-export const SODAX_API_BASE_URL = "https://api.sodax.com/v1/be";
+export const SODAX_API_BASE_URL = `${SODAX_API_ORIGIN}/v1/be`;
 
 // SODAX Solver API Base URL (intent oracle + quote)
-export const SODAX_SOLVER_BASE_URL = "https://api.sodax.com/v1/intent";
+export const SODAX_SOLVER_BASE_URL = `${SODAX_API_ORIGIN}/v1/intent`;
 
-// SODAX Intent Relay API Base URL (xCall relay hosted by ICON)
-export const SODAX_RELAY_BASE_URL = "https://xcall-relay.nw.iconblockchain.xyz";
+// The solver API whose oracle prices swaps. Production in both envs, like the relay: canary's swaps
+// run on mainnet chains, whose tokens production's oracle prices.
+export const SODAX_SWAP_ORACLE_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/intent`;
+
+// SODAX Intent Relay API Base URL. Production in both envs: canary's /v1/relay is the testnet
+// relay, while canary's data API and swaps run on mainnet chains.
+export const SODAX_RELAY_BASE_URL = `${SODAX_API_ORIGINS.production}/v1/relay`;
+
+// SODAX Swaps API Base URL
+export const SODAX_SWAPS_BASE_URL = `${SODAX_API_ORIGIN}/v1/swaps`;
 
 // Cache duration in milliseconds (2 minutes for live data)
 export const CACHE_DURATION_MS = 2 * 60 * 1000;
@@ -20,6 +72,65 @@ export const CACHE_DURATION_MS = 2 * 60 * 1000;
 // mirrors the frontend's stats.ts fetchIntegratedNetworksCount() source of truth.
 export const NETWORK_COUNT_EXCLUDED_CHAIN_KEYS: readonly string[] = ["0x1.icon"];
 
+const sdkChains = spokeChainConfig as Readonly<Record<string, { chain?: { name?: unknown } } | undefined>>;
+
+/** A chain's name from the SDK's chain config ("Avalanche" for "0xa86a.avax"), if the SDK lists the chain. */
+function sdkChainName(key: string): string | undefined {
+  const name = sdkChains[key]?.chain?.name;
+  return typeof name === "string" && name ? name : undefined;
+}
+
+// Tickers and spellings a user might type that a chain's key and SDK name don't already give. resolveChainKey
+// matches the key, its dotted suffix ("base" in "0x2105.base"), its Cosmos slug ("injective" in "injective-1") and
+// the SDK's name, so a chain the SDK adds resolves with no entry here. Support is always confirmed against the live
+// registry, so an entry cannot make a chain look (un)supported.
+export const CHAIN_TICKERS: Readonly<Record<string, readonly string[]>> = {
+  sonic: ["s"],
+  ethereum: ["eth", "ether"],
+  "0xa4b1.arbitrum": ["arb", "arbitrum one"],
+  "0x38.bsc": ["bnb", "binance", "binance smart chain"],
+  // The one name its key doesn't give: listed so it doesn't hang on the SDK's wording.
+  "0xa86a.avax": ["avalanche", "avax"],
+  "0xa.optimism": ["op"],
+  "0x89.polygon": ["matic", "pol"],
+  "injective-1": ["inj"],
+  "0x1.icon": ["icx"],
+  solana: ["sol"],
+  stellar: ["xlm"],
+  hyper: ["hyperevm", "hyperliquid", "hype"],
+  bitcoin: ["btc"],
+  redbelly: ["rbnt"],
+  "0x2019.kaia": ["klaytn", "klay"],
+  stacks: ["stx"],
+  hedera: ["hbar", "hashgraph"],
+  robinhood: ["hood"],
+};
+
+// Name and ticker → chain key. The lower-cased SDK name is always included: a key whose suffix differs from its
+// name ("0xa86a.avax" / "Avalanche") is otherwise unresolvable by the very name sodax_get_supported_chains shows.
+export const CHAIN_ALIASES: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  [...new Set([...Object.keys(sdkChains), ...Object.keys(CHAIN_TICKERS)])].map(key => {
+    const name = sdkChainName(key)?.toLowerCase();
+    return [key, [...(name ? [name] : []), ...(CHAIN_TICKERS[key] ?? [])]];
+  }),
+);
+
+// Where the SDK's name reads worse than the chain's own: "5 SUI on SUI" says one word twice, "Hyper" could be
+// HyperCore, and "Near" sits beside the "NEAR" messages spell.
+const DISPLAY_NAMES: Readonly<Record<string, string>> = { sui: "Sui", near: "NEAR", hyper: "HyperEVM" };
+
+/**
+ * Human-readable name for a chain key, from the SDK. Falls back to deriving one from the key (the segment after a
+ * dot for EVM keys, or the slug before a Cosmos `-<n>` suffix, capitalised) for a chain the live registry lists
+ * before the SDK does.
+ */
+export function chainDisplayName(key: string): string {
+  const known = DISPLAY_NAMES[key] ?? sdkChainName(key);
+  if (known) return known;
+  const base = key.includes(".") ? (key.split(".").pop() ?? key) : key.replace(/-\d+$/, "");
+  return base ? base.charAt(0).toUpperCase() + base.slice(1) : key;
+}
+
 // SODAX Brand Colors (for reference)
 export const BRAND_COLORS = {
   cherry: "#E53935",
@@ -27,3 +138,97 @@ export const BRAND_COLORS = {
   espresso: "#1A1A1A",
   accent: "#FFD54F",
 } as const;
+
+/** Where a SODAX API key comes from, for every message that asks for one. */
+export const GET_A_KEY =
+  "An organisation's Owner or Admin creates one in the partner portal, https://portal.sodax.com (API keys, then Create key). How to use it: https://docs.sodax.com/developers/how-to/api-keys";
+
+/** Where a user gets help with a swap, named in every result that sends them there. */
+export const SODAX_HELP_DESK = "the SODAX team on Discord, https://www.sodax.com/discord";
+
+/** In the swap instructions, and the advice on an INTERNAL failure. */
+export const SWAP_HELP = `If the user needs help with a swap, they can ask ${SODAX_HELP_DESK}, giving the requestId from the tool result and any transaction hashes.`;
+
+export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
+export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+// 64 hex characters, 0x or not: a Stellar or Injective tx hash, or as well a private key.
+export const HEX_64 = /^(?:0x)?([0-9a-fA-F]{64})$/;
+// Base58's characters, for a character class: no 0, O, I or l.
+export const BASE58 = "1-9A-HJ-NP-Za-km-z";
+// 64 bytes in base58: a Solana tx signature, or as well a Solana or NEAR secret key.
+export const BASE58_64_BYTES = new RegExp(`^[${BASE58}]{86,88}$`);
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/** The bytes of unpadded RFC 4648 base32, as Stellar's StrKey spells a key: version byte, key, checksum. */
+export function base32Bytes(text: string): Uint8Array {
+  const bytes: number[] = [];
+  let value = 0;
+  let bits = 0;
+  for (const char of text) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index === -1) throw new Error("not base32");
+    value = ((value << 5) | index) & 0xffff;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >>> bits) & 0xff);
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+/** The bytes of base58 text; each leading "1" is a zero byte. Any other character throws. */
+export function base58Bytes(text: string): Uint8Array {
+  let value = 0n;
+  for (const char of text) {
+    const index = BASE58_ALPHABET.indexOf(char);
+    if (index === -1) throw new Error("not base58");
+    value = value * 58n + BigInt(index);
+  }
+  const hex = value === 0n ? "" : value.toString(16);
+  const zeros = text.length - text.replace(/^1+/, "").length;
+  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(hex.length % 2 ? `0${hex}` : hex, "hex")]);
+}
+// A SODAX API key is `sodax_` + base64url. Global: use with match/replace, which reset it, never test.
+export const SODAX_KEY_PATTERN = /sodax_[A-Za-z0-9_-]{24,}/g;
+/** A SODAX_KEY_PATTERN match that is a key: a tool name (`sodax_get_supported_chains`) has no capital, digit or `-`. */
+export const isSodaxKey = (match: string) => /[A-Z0-9-]/.test(match.slice(6));
+// Live chain keys look like "sonic", "0xa4b1.arbitrum", "injective-1"; no "_", so "__proto__" can't pass.
+export const CHAIN_KEY_PATTERN = /^[A-Za-z0-9.-]{1,64}$/;
+
+/** An error code a log record or analytics event may carry (`error.type`): `UPSTREAM_5XX`, `INVALID_AMOUNT`. */
+export const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
+
+/** Hex values (addresses, payloads) compared the way chains do: case doesn't matter. */
+export const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** A parseable https URL: the OTLP endpoint's check. RPC URLs take the stricter `isRpcUrl`. */
+export const isHttpsUrl = (value: string): boolean => URL.canParse(value) && new URL(value).protocol === "https:";
+
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * An RPC URL the swap tools take: `https://` as written, lowercase, without whitespace and without the characters the
+ * log redaction stops at (`"'\\<>`), so all of it is masked in a logged error. Every chain client accepts that form
+ * (Solana's refuses `HTTPS:` or a missing `//` at boot). Never http: track trusts what the RPC answers, and a paid key
+ * would travel in the clear.
+ */
+export const isRpcUrl = (value: unknown): value is string =>
+  typeof value === "string" && /^https:\/\/[^\s"'\\<>]+$/.test(value) && URL.canParse(value);
+
+/**
+ * `RPC_CONFIG`'s JSON, or undefined when it doesn't parse: as an env value may hold it, wrapped in single quotes,
+ * with escaped double quotes, or with double-escaped newlines.
+ */
+export function parseRpcConfigJson(raw: string): unknown {
+  const unquoted = raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1) : raw;
+  try {
+    return JSON.parse(unquoted.replaceAll('\\"', '"').replaceAll("\\\\n", "\\n"));
+  } catch {
+    return undefined;
+  }
+}

@@ -9,10 +9,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { registerSodaxApiTools } from "../tools/sodaxApi.js";
-import { registerSolverRelayTools } from "../tools/solverRelay.js";
+import { seedToolRegistry } from "../server.js";
 import { TOOL_CONTRACT } from "./apiDriftCheck.js";
 import { renderLandingPage } from "./landingPage.js";
 import {
@@ -24,15 +22,11 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML_PATH = join(__dirname, "..", "public", "index.html");
-
-/** Minimal stand-in — registerAppTool only needs server.tool() to exist. */
-const fakeServer = { tool: () => ({}) } as unknown as McpServer;
+const README_PATH = join(__dirname, "..", "..", "README.md");
 
 beforeAll(() => {
-  // Populate the registry the same way createServer() does (minus the
-  // network-dependent GitBook proxy — its tools are dynamic by design).
-  registerSodaxApiTools(fakeServer);
-  registerSolverRelayTools(fakeServer);
+  // Every static toolset, the way the HTTP server seeds the registry.
+  seedToolRegistry({ builder: true, swap: true });
 });
 
 describe("tool registry", () => {
@@ -49,10 +43,11 @@ describe("tool registry", () => {
     }
   });
 
-  it("static api/relay counts add up to the grouped /api lists", () => {
-    const { api, relay } = getStaticToolCounts();
+  it("static api/relay/swap counts add up to the grouped /api lists", () => {
+    const { api, relay, swap } = getStaticToolCounts();
     const groups = getToolNamesByModule();
     expect(relay).toBe(groups.relay.length);
+    expect(swap).toBe(groups.swap.length);
     expect(api).toBe(
       groups.config.length +
         groups.intents.length +
@@ -80,6 +75,20 @@ describe("landing page template", () => {
     expect(literalCount, `hardcoded count "${literalCount?.[0]}" found in index.html`).toBeNull();
   });
 
+  it("names every registered tool, and no other sodax_ tool, as the README does", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const registered = getRegisteredTools().map(t => t.name);
+    for (const name of registered) {
+      expect(template, `${name} missing from index.html`).toContain(`<code>${name}</code>`);
+      expect(readme, `${name} missing from README.md`).toContain(`| \`${name}\` |`);
+    }
+    const listed = [
+      ...template.matchAll(/<code>(sodax_\w+)<\/code>/g),
+      ...readme.matchAll(/^\| `(sodax_\w+)` \|/gm),
+    ].map(match => match[1]);
+    expect(listed.filter(name => !registered.includes(name))).toEqual([]);
+  });
+
   it("contains the expected placeholders", () => {
     for (const key of [
       "NETWORK_COUNT",
@@ -90,6 +99,8 @@ describe("landing page template", () => {
       "AMM_TOOLS",
       "MONEY_MARKET_TOOLS",
       "PARTNERS_TOOLS",
+      "SWAP_TOOLS",
+      "SWAP_CARD_HIDDEN",
       "SDK_DOCS_TOOLS",
     ]) {
       expect(template, `missing {{${key}}} in index.html`).toContain(`{{${key}}}`);
@@ -109,8 +120,15 @@ describe("landing page template", () => {
   });
 
   it("derives the total tool count from the registry plus the live docs count", () => {
-    const { api, relay } = getStaticToolCounts();
+    const { api, relay, swap, total } = getStaticToolCounts();
+    expect(total).toBe(api + relay + swap);
     const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5 });
-    expect(html).toBe(String(api + relay + 5));
+    expect(html).toBe(String(total + 5));
+  });
+
+  it("shows the Swaps card once the registry has swap tools", () => {
+    expect(getStaticToolCounts().swap).toBeGreaterThan(0);
+    const html = renderLandingPage("<details {{SWAP_CARD_HIDDEN}}>", { networks: null, sdkDocsToolCount: 0 });
+    expect(html).toBe("<details >");
   });
 });

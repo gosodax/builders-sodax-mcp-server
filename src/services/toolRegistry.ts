@@ -8,9 +8,9 @@
  * grouping — derives from this registry, so adding or removing a tool
  * updates them all with no manual count edits.
  *
- * Dynamic GitBook proxy tools (`docs_getPage`, …) are intentionally NOT in
+ * Dynamic SDK docs proxy tools (`docs_search_sodax_docs`, …) are intentionally NOT in
  * the registry: they change at runtime and are counted via
- * `getGitBookToolNames()` where needed. Only the three docs_* meta-tools
+ * `getDocsToolNames()` where needed. Only the three docs_* meta-tools
  * are registered here (module "sdkDocs") so analytics can group them.
  */
 
@@ -19,7 +19,15 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
 /** Landing-page / `/api` module a tool belongs to. */
-export type ToolModule = "config" | "intents" | "relay" | "amm" | "moneyMarket" | "partnersAndToken" | "sdkDocs";
+export type ToolModule =
+  | "config"
+  | "intents"
+  | "relay"
+  | "amm"
+  | "moneyMarket"
+  | "partnersAndToken"
+  | "sdkDocs"
+  | "swap";
 
 export interface RegisteredToolInfo {
   name: string;
@@ -65,7 +73,7 @@ export function getToolModule(toolName: string): ToolModule | undefined {
 
 /**
  * Tool names grouped by module, in registration order — feeds the `/api`
- * route. `sdkDocs` is excluded (the caller appends the live GitBook list).
+ * route. `sdkDocs` is excluded (the caller appends the live SDK docs list).
  */
 export function getToolNamesByModule(): Record<Exclude<ToolModule, "sdkDocs">, string[]> {
   const groups: Record<Exclude<ToolModule, "sdkDocs">, string[]> = {
@@ -75,6 +83,7 @@ export function getToolNamesByModule(): Record<Exclude<ToolModule, "sdkDocs">, s
     amm: [],
     moneyMarket: [],
     partnersAndToken: [],
+    swap: [],
   };
   for (const tool of registry) {
     if (tool.module === "sdkDocs") continue;
@@ -94,6 +103,7 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
     amm: 0,
     moneyMarket: 0,
     partnersAndToken: 0,
+    swap: 0,
   };
   for (const tool of registry) {
     if (tool.module === "sdkDocs") continue;
@@ -103,20 +113,25 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
 }
 
 /**
- * Static per-group counts for `/health`: `relay` is the intent-relay tools,
- * `api` is every other static module (config, intents, amm, moneyMarket,
- * partnersAndToken). docs_* meta-tools (module "sdkDocs") are excluded — the
- * sdkDocs total is counted at runtime from the live GitBook tool list. Deriving
- * `api` as "not relay, not sdkDocs" keeps it consistent with analytics'
- * resolveToolGroup and means a newly added module is counted automatically
+ * The group a module reports under, in `/health` and in analytics: `relay`,
+ * `swap` and `sdkDocs` stand alone; every other module is `api`. Deriving `api`
+ * as "everything else" means a newly added module is counted automatically
  * rather than silently dropped by an allowlist.
  */
-export function getStaticToolCounts(): { api: number; relay: number } {
-  let api = 0;
-  let relay = 0;
+export function toolGroup(module: ToolModule): "api" | "relay" | "swap" | "sdkDocs" {
+  return module === "relay" || module === "swap" || module === "sdkDocs" ? module : "api";
+}
+
+/**
+ * Static per-group counts for `/health` and the landing page. docs_* meta-tools
+ * (module "sdkDocs") are excluded — the sdkDocs total is counted at runtime from
+ * the live SDK docs tool list, so callers add it to `total`.
+ */
+export function getStaticToolCounts(): { api: number; relay: number; swap: number; total: number } {
+  const counts = { api: 0, relay: 0, swap: 0 };
   for (const tool of registry) {
-    if (tool.module === "relay") relay++;
-    else if (tool.module !== "sdkDocs") api++;
+    const group = toolGroup(tool.module);
+    if (group !== "sdkDocs") counts[group]++;
   }
-  return { api, relay };
+  return { ...counts, total: counts.api + counts.relay + counts.swap };
 }

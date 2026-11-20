@@ -14,3 +14,6 @@ dist/
 # Internal dev notes (not for public repo)
 HEALTH-TOPBAR.md
 mcp-registry-listing-instructions.md
+
+# mcp-publisher download (.github/scripts/install-mcp-publisher.sh)
+/bin/

@@ -10,10 +10,10 @@
 import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
 import { encodeRecipient } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type ErrorOption } from "./errors.js";
 import { rejectHex64, rejectHex64Account } from "./secrets.js";
 import { pinnedSourceOf } from "./sources/index.js";
-import { type SwapCatalog, type SwapsApiToken, findToken, nativeToken } from "./tokens.js";
+import { type SwapCatalog, type SwapsApiToken, canUseAs, findToken, nativeToken } from "./tokens.js";
 
 export type Resolution =
   | { status: "resolved"; chain: ChainInfo; matchedBy: "address" | "symbol" | "native"; token: SwapsApiToken }
@@ -48,14 +48,20 @@ export function checkAddress(address: string, chain: ChainInfo, field = "address
  * A chain as a person would name it, or by EVM chain id. Refused otherwise with the supported list (only
  * chains a swap can start from, for a swap's source) and any within two typos.
  */
-export function resolveSwapChain(catalog: SwapCatalog, chainQuery: string, sourcesOnly = false): ChainInfo {
+export function resolveSwapChain(
+  catalog: SwapCatalog,
+  chainQuery: string,
+  sourcesOnly = false,
+  field = "chain",
+): ChainInfo {
   const key = findChainKey(catalog, chainQuery);
   if (key) return toChain(key);
   const supported = swapChains(catalog, sourcesOnly);
   const near = nearestChains(supported, chainQuery);
   const names = near.map(chain => chain.name).join(" or ");
   throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
-    details: { supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
+    details: { field, supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
+    hint: { options: chainOptions(near.length > 0 ? near : supported, field) },
     nextStep:
       near.length > 0
         ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
@@ -99,13 +105,68 @@ export function resolveExactly(
   field: string,
   side?: "from" | "to",
 ): Extract<Resolution, { status: "resolved" }> {
-  const resolution = resolveToken(catalog, chainQuery, query, field, side === "from");
+  const chainField = side ? `${side}Chain` : "chain";
+  const resolution = resolveToken(catalog, chainQuery, query, field, side === "from", chainField);
   if (resolution.status !== "resolved") {
+    // Only what this side can use: a token allowed on it, on a chain a swap can start from for the sending side.
+    // Without a side (a balance read), only the chain asked about: the address given is that chain's.
+    const usable = (token: SwapsApiToken) =>
+      side
+        ? canUseAs(token, side) && (side !== "from" || isSwapSource(catalog, token.chainKey))
+        : token.chainKey === resolution.chain.key;
     throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", {
-      details: side && { side },
+      details: { field, ...(side && { side }) },
+      hint: { options: resolutionOptions(resolution, { token: field, chain: chainField }, usable) },
     });
   }
   return resolution;
+}
+
+/** Chains to pick from, as options setting `field` to the chain's key. */
+export function chainOptions(chains: ChainInfo[], field: string): ErrorOption[] {
+  return chains.map(chain => ({ label: chain.name, args: { [field]: chain.key } }));
+}
+
+/**
+ * The catalog's tokens an unresolved query offers, as options setting the token field (and the chain field, which
+ * names the chain each is on). Labels and values are catalog symbols, addresses and chain keys only.
+ */
+export function resolutionOptions(
+  resolution: Exclude<Resolution, { status: "resolved" }>,
+  fields: { token: string; chain: string },
+  usable: (token: SwapsApiToken) => boolean = () => true,
+): ErrorOption[] {
+  const here = (tokens: SwapsApiToken[]) =>
+    tokens.filter(usable).map(token => ({
+      label: `${tokenLabel(token, tokens)} on ${resolution.chain.name}`,
+      args: { [fields.chain]: resolution.chain.key, [fields.token]: token.address },
+    }));
+  if (resolution.status === "ambiguous") return here(resolution.candidates);
+  return [
+    ...here(resolution.suggestions),
+    ...(resolution.otherChains ?? [])
+      .filter(({ token }) => usable(token))
+      .map(({ chain, token }) => ({
+        label: `${token.symbol} on ${chain.name}`,
+        args: { [fields.chain]: chain.key, [fields.token]: token.address },
+      })),
+  ];
+}
+
+/** The symbol, and where twins share it, the address that tells them apart. */
+export function tokenLabel(token: SwapsApiToken, among: SwapsApiToken[]): string {
+  const twins = among.filter(other => other.symbol.toLowerCase() === token.symbol.toLowerCase());
+  return twins.length > 1 ? `${token.symbol} (${twinAddress(token, twins)})` : token.symbol;
+}
+
+/** Head and tail, as a prefix alone repeats (every Hedera address starts `0x00000000`); in full when those collide. */
+function twinAddress(token: SwapsApiToken, twins: SwapsApiToken[]): string {
+  const short = shortAddress(token.address);
+  return twins.some(other => other !== token && shortAddress(other.address) === short) ? token.address : short;
+}
+
+function shortAddress(address: string): string {
+  return address.length > 16 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
 }
 
 export function resolveToken(
@@ -114,8 +175,9 @@ export function resolveToken(
   query: string,
   field = "query",
   sourcesOnly = false,
+  chainField = "chain",
 ): Resolution {
-  const chain = resolveSwapChain(catalog, chainQuery, sourcesOnly);
+  const chain = resolveSwapChain(catalog, chainQuery, sourcesOnly, chainField);
   const tokens = catalog.tokens[chain.key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {

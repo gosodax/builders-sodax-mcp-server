@@ -148,13 +148,25 @@ export function leavesTimeToSend(deadline: string): boolean {
   return Number(deadline) - Math.floor(Date.now() / 1000) >= MIN_TIME_TO_SEND_SEC;
 }
 
+/** An /intents-family call. One that can't build from this wallet points at the read of its balance. */
+async function intentCall<T>(schema: z.ZodType<T>, path: string, request: IntentRequest): Promise<T> {
+  try {
+    return await call(schema, path, intentBody(request));
+  } catch (error) {
+    if (!(error instanceof ActionError) || error.details?.reason !== "wallet_cannot_build") throw error;
+    const balance = { chain: request.srcChainKey, address: request.srcAddress, token: request.inputToken };
+    const { code, message, nextStep, details } = error;
+    throw new ActionError(code, message, { nextStep, details, hint: { balance } });
+  }
+}
+
 export async function buildIntent(request: IntentRequest): Promise<BuiltIntent> {
-  return call(builtIntentSchema, "/intents", intentBody(request));
+  return intentCall(builtIntentSchema, "/intents", request);
 }
 
 /** Whether the source token is already approved for this swap (always true for a native token). */
 export async function checkAllowance(request: IntentRequest): Promise<boolean> {
-  const { valid } = await call(z.object({ valid: z.boolean() }), "/allowance/check", intentBody(request));
+  const { valid } = await intentCall(z.object({ valid: z.boolean() }), "/allowance/check", request);
   return valid;
 }
 
@@ -165,7 +177,7 @@ export interface Approval {
 }
 
 export async function buildApprove(request: IntentRequest): Promise<Approval> {
-  return call(z.object({ tx: evmTxSchema, resetTx: evmTxSchema.optional() }), "/approve", intentBody(request));
+  return intentCall(z.object({ tx: evmTxSchema, resetTx: evmTxSchema.optional() }), "/approve", request);
 }
 
 /** The token list, unchecked: the catalog checks it. Fails like any other Swaps API call. */
@@ -276,18 +288,22 @@ interface Refusal {
   code: ActionErrorCode;
   message: string;
   nextStep?: string;
+  /** Which of SWAP_REJECTED's refusals: each has its own way forward. */
+  reason?: "no_route" | "no_liquidity" | "amount_too_large" | "wallet_cannot_build";
 }
 
 /** A refusal a smaller amount or another token may get past. */
-const tryOther = (message: string, reason: string): Refusal => ({
+const tryOther = (message: string, said: string, reason: NonNullable<Refusal["reason"]>): Refusal => ({
   code: "SWAP_REJECTED",
   message,
-  nextStep: `Tell the user ${reason}; ask whether to try a smaller amount or another token.`,
+  nextStep: `Tell the user ${said}; ask whether to try a smaller amount or another token.`,
+  reason,
 });
-const NO_ROUTE = tryOther("No route was found for this pair at this amount.", "no route was found");
+const NO_ROUTE = tryOther("No route was found for this pair at this amount.", "no route was found", "no_route");
 const NO_LIQUIDITY = tryOther(
   "There isn't enough liquidity for this pair at this amount.",
   "there isn't enough liquidity",
+  "no_liquidity",
 );
 
 // Upstream codes with a reason the agent can act on: the solver's (the SDK's SolverIntentErrorCode), -23, and the
@@ -299,7 +315,10 @@ const REFUSALS = new Map<number | string, Refusal>([
   [-5, NO_LIQUIDITY],
   // Also the SDK's QUOTE_NOT_FOUND, but only the solver's execute returns that, and nothing here calls it.
   [-8, NO_LIQUIDITY],
-  [-14, tryOther("The amount is too large for the swap service to quote.", "the amount is too large")],
+  [
+    -14,
+    tryOther("The amount is too large for the swap service to quote.", "the amount is too large", "amount_too_large"),
+  ],
   [-23, { code: "AMOUNT_TOO_LOW", message: "The amount is too small for the swap service to quote." }],
   // `/intents` couldn't build the source tx for this wallet: on Sui too little of the coin, on Stellar or Injective no
   // account yet (live answers, 2026-11-19). sodax_get_balance says which.
@@ -308,6 +327,7 @@ const REFUSALS = new Map<number | string, Refusal>([
     {
       code: "SWAP_REJECTED",
       message: "The swap service couldn't build this swap from that wallet.",
+      reason: "wallet_cannot_build",
       nextStep:
         "Check with sodax_get_balance that the wallet holds the amount plus fees on the source chain. If it doesn't, tell the user what's missing; if it does, tell the user the swap couldn't be built right now and to try again later.",
     },
@@ -351,8 +371,11 @@ function toActionError(error: unknown, route: string): ActionError {
   // Only these two say something about the swap itself; a 404 or 408 is the service's problem.
   if (status === 400 || status === 422) {
     const refusal = code === undefined ? undefined : REFUSALS.get(code);
-    if (refusal) return new ActionError(refusal.code, refusal.message, { nextStep: refusal.nextStep });
-    return new ActionError("SWAP_REJECTED", "The swap service refused this swap.");
+    if (refusal) {
+      const { code: refused, message, nextStep, reason } = refusal;
+      return new ActionError(refused, message, { nextStep, ...(reason && { details: { reason } }) });
+    }
+    return new ActionError("SWAP_REJECTED", "The swap service refused this swap.", { details: { reason: "rejected" } });
   }
   return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap service is unavailable.");
 }

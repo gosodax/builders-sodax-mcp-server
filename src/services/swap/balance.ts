@@ -57,6 +57,8 @@ export async function readBalances(input: { chain: string; address: string; toke
   if (token && chainType === "BITCOIN") {
     throw new ActionError("UNKNOWN_TOKEN", "Only the BTC balance can be read on Bitcoin.", {
       nextStep: "Ask for the BTC balance instead.",
+      details: { field: "token" },
+      hint: { options: [{ label: native.symbol, args: { token: "native" } }] },
     });
   }
 
@@ -90,6 +92,7 @@ export async function readBalances(input: { chain: string; address: string; toke
     if (!stellarRecipientCheckable(token.address)) {
       throw new ActionError("UNKNOWN_TOKEN", `Couldn't read ${token.symbol} on Stellar for this wallet.`, {
         nextStep: `Tell the user this server can't read their ${token.symbol} on Stellar for now; their wallet shows it.`,
+        details: { reason: "unreadable" },
       });
     }
     // Stellar's read fails when the account has no trustline for the token (0n: any trustline at all).

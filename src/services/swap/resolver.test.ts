@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSodax } from "../sodax.js";
 import { fixtureCatalog, fixtureText } from "./__fixtures__/catalog.js";
-import { type Resolution, resolveToken } from "./resolver.js";
-import { parseCatalog } from "./tokens.js";
+import { type Resolution, resolutionOptions, resolveExactly, resolveToken } from "./resolver.js";
+import { canUseAs, parseCatalog } from "./tokens.js";
 
 // A 64-hex query is judged against the chain's own address format, which the SDK knows.
 beforeAll(() => initSodax());
@@ -161,13 +161,52 @@ describe("resolveToken", () => {
     expect(resolveToken(parseCatalog(tokens, configs), "42161", "USDC").chain.key).toBe("0xa4b1.arbitrum");
   });
 
+  // A balance read's address belongs to the chain it asked about: no option moves it to another.
+  it("offers a balance read only tokens on its own chain", () => {
+    const catalog = fixtureCatalog();
+    const listedElsewhere = Object.values(catalog.tokens)
+      .flat()
+      .find(
+        token =>
+          token.chainKey !== "0xa4b1.arbitrum" &&
+          !catalog.tokens["0xa4b1.arbitrum"].some(here => here.symbol === token.symbol),
+      );
+    expect(listedElsewhere).toBeDefined();
+    let options: { args: Record<string, string> }[] | undefined;
+    try {
+      resolveExactly(catalog, "Arbitrum", listedElsewhere?.symbol ?? "", "token");
+    } catch (error) {
+      options = (error as { hint?: { options?: { args: Record<string, string> }[] } }).hint?.options;
+    }
+    expect(options?.every(option => option.args.chain === "0xa4b1.arbitrum")).toBe(true);
+  });
+
+  it("offers a quote side only the tokens it can use", () => {
+    const arbitrum = fixtureCatalog().tokens["0xa4b1.arbitrum"];
+    const candidates = arbitrum.filter(token => ["tBTC", "WBTC"].includes(token.symbol));
+    expect(candidates.map(token => token.access)).toContain("withdrawOnly");
+    const resolution = {
+      status: "ambiguous" as const,
+      chain: { key: "0xa4b1.arbitrum", name: "Arbitrum" },
+      query: "btc",
+      candidates,
+    };
+    const options = resolutionOptions(resolution, { token: "fromToken", chain: "fromChain" }, token =>
+      canUseAs(token, "from"),
+    );
+    expect(options.map(option => option.label)).toEqual(["WBTC on Arbitrum"]);
+  });
+
   // 250 / 0xfa is Fantom; 1 is Ethereum, absent here, and must not match the "0x1." of ICON's key.
   it.each(["Fantom", "250", "0xfa", "1", "0x1"])("refuses an unknown chain %j with the supported list", chain => {
     expect(() => resolve(chain, "USDC")).toThrow(
       expect.objectContaining({
         code: "UNSUPPORTED_CHAIN",
         message: "No SODAX swap chain matches that name, key or chain id.",
-        details: { supportedChains: expect.arrayContaining([{ key: "hyper", name: "HyperEVM" }]) },
+        details: {
+          field: "chain",
+          supportedChains: expect.arrayContaining([{ key: "hyper", name: "HyperEVM" }]),
+        },
       }),
     );
   });

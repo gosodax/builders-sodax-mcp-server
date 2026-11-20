@@ -135,6 +135,7 @@ export const STELLAR = nonEvmAdapter({
   notApproved: symbol =>
     new ActionError("SWAP_REJECTED", `The wallet's ${symbol} trustline has too little room for this amount.`, {
       nextStep: `Tell the user their Stellar wallet must raise its ${symbol} trustline limit by the amount sent, then call sodax_swap_prepare again.`,
+      details: { reason: "trustline_room" },
     }),
 });
 

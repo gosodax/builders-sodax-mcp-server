@@ -79,6 +79,16 @@ describe("sodax_swap_submit_and_track", () => {
       "call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step)",
     );
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
+    expect(out).toMatchObject({
+      terminal: false,
+      nextAction: {
+        type: "call_tool",
+        tool: "sodax_swap_submit_and_track",
+        args: { txHash: TX, chain: ARBITRUM, quoteId },
+        maxAttempts: 30,
+        retryKey: `sodax_swap_submit_and_track:${TX}:queued`,
+      },
+    });
     expect(logger.info).toHaveBeenCalledWith(
       { "chain.key": ARBITRUM, "quote.id": quoteId, "tx.hash": TX, "intent.hash": intentHash(INTENT) },
       "Submitted a swap deposit",
@@ -540,7 +550,7 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
     expect(out.delivery).toBeUndefined();
     expect(out.nextStep).toBe(
-      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.",
+      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again; call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step), at most 30 times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.",
     );
   });
 
@@ -552,7 +562,7 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.delivery).toBe("in_transit");
     expect(out.nextStep).toBe(
-      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.",
+      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop. Don't send it again; call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step), at most 30 times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.",
     );
   });
 
@@ -592,7 +602,7 @@ describe("sodax_swap_submit_and_track", () => {
     [{ relayedForRefundAt: "2026-10-26T12:00:00Z" }, "refunding", false],
     [{ abandonedAt: "2026-10-26T12:00:00Z" }, "abandoned", true],
     [{}, "cancel_to_recover", true],
-  ])("words a failure from its flags %o", async (flags, outcome, canCancel) => {
+  ])("words a failure from its flags %o", async (flags, failure, canCancel) => {
     stubBackend({
       row: {
         status: "failed",
@@ -604,7 +614,7 @@ describe("sodax_swap_submit_and_track", () => {
       },
     });
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
-    expect(out).toMatchObject({ status: "failed", failedAtStep: "posting_execution", outcome, canCancel });
+    expect(out).toMatchObject({ status: "failed", failedAtStep: "posting_execution", failure, canCancel });
     expect(JSON.stringify(out)).not.toMatch(/Upstream text|internal detail/);
     expect(out.nextStep.includes("sodax_swap_cancel")).toBe(canCancel);
   });
@@ -612,11 +622,22 @@ describe("sodax_swap_submit_and_track", () => {
   it("can't offer a cancel before the swap reached the hub, and says the deposit is safe", async () => {
     stubBackend({ row: { status: "failed", failedAtStep: "made-up" } });
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
-    expect(out).toMatchObject({ status: "failed", outcome: "unknown", canCancel: false });
+    // Held: the backend has its row, so the deposit is on chain, waiting for an operator.
+    expect(out).toMatchObject({ status: "failed", failure: "unknown", canCancel: false, outcome: "held" });
     expect(out.failedAtStep).toBeUndefined();
     expect(out.nextStep).toBe(
       "The swap failed. The deposit is safe on chain and SODAX operators will recover it; the user must not send it again.",
     );
+  });
+
+  // The MCP SDK refuses an argument its schema rejects before the tool runs: a result outside the contract.
+  it("leaves a malformed argument to the SDK, with no nextAction", async () => {
+    const client = await swapClient();
+    const result = await client.callTool({ name: "sodax_swap_submit_and_track", arguments: { txHash: "nope" } });
+    await client.close();
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect(JSON.stringify(result.content)).toContain("Input validation error");
   });
 
   it("refuses another key's quote before reading anything", async () => {
@@ -806,12 +827,12 @@ describe("sodax_swap_submit_and_track", () => {
     expect(calls.filter(call => call.path === "/intents/submit")).toHaveLength(1);
   });
 
-  it("says when to stop calling: a success without retryAfterSec, or what an error's nextStep says", async () => {
+  it("says when to stop calling: once a result is terminal", async () => {
     const client = await swapClient();
     const { tools } = await client.listTools();
     await client.close();
     expect(tools.find(tool => tool.name === "sodax_swap_submit_and_track")?.description).toContain(
-      "A successful result without retryAfterSec is final; after an error, follow its nextStep.",
+      "then follow each result's nextAction until terminal is true",
     );
     for (const tool of tools) expect(tool.description).not.toContain("same API key");
   });

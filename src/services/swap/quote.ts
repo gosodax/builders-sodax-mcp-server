@@ -128,7 +128,7 @@ function suggestAmount(
   const suggestedAmount = formatUnits(((base + step - 1n) / step) * step, token.decimals);
   return new ActionError("AMOUNT_TOO_LOW", error.message, {
     nextStep: `The swap service usually quotes swaps worth about $${USUAL_MIN_USD} or more: ask the user whether to quote at least ${suggestedAmount} ${token.symbol} instead.`,
-    details: { suggestedAmount },
+    details: { suggestedAmount, symbol: token.symbol },
   });
 }
 
@@ -227,7 +227,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
       "A swap quote is off market",
     );
     throw new ActionError("PRICE_OFF_MARKET", "The quoted amount is worth far less than the amount sent.", {
-      details: { chainKey: from.chain.key, usdValue: usd?.toFixed(2), usdOut: usdOut.toFixed(2) },
+      details: { field: "amount", chainKey: from.chain.key, usdValue: usd?.toFixed(2), usdOut: usdOut.toFixed(2) },
     });
   }
 
@@ -339,7 +339,9 @@ function resolveSide(
   const resolution = resolveExactly(catalog, chain, token, `${side}Token`, side);
   if (!canUseAs(resolution.token, side)) {
     const { symbol } = resolution.token;
-    throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`);
+    throw new ActionError("RESTRICTED_TOKEN", `${symbol} on ${resolution.chain.name} can't be used on that side.`, {
+      details: { side, field: `${side}Token` },
+    });
   }
   const config = catalog.chains[resolution.chain.key];
   if (!config) throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX chain config doesn't describe that chain.");
@@ -348,7 +350,7 @@ function resolveSide(
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `This server can't check that a Stellar account can receive ${symbol}.`, {
       nextStep: `Tell the user a swap to ${symbol} on Stellar isn't available here for now, and ask whether they want another token.`,
-      details: { side },
+      details: { side, field: `${side}Token` },
     });
   }
   // The amount is scaled by these decimals and the intent checked against this hub asset.

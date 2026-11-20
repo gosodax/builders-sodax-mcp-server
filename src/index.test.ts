@@ -181,9 +181,11 @@ describe("HTTP routes", () => {
     );
   });
 
-  it("reports on /health that unified logging is off here", async () => {
+  it("reports on /health that unified logging is off here, and that swap quotes are kept in memory", async () => {
     const res = await fetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.43" } });
-    expect(((await res.json()) as { unifiedLogging: unknown }).unifiedLogging).toEqual({ on: false });
+    const body = (await res.json()) as { unifiedLogging: unknown; swapQuotes: unknown };
+    expect(body.unifiedLogging).toEqual({ on: false });
+    expect(body.swapQuotes).toEqual({ store: "memory", open: 0, openUntil: null });
   });
 
   it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {

@@ -1,81 +1,86 @@
 /**
- * Quotes ready to sign, by `quoteId`, so the agent never retypes the intent's
- * bigint fields and track/cancel trust only what was quoted. In memory: a quote
- * lost to a restart can't be submitted from here (see ADR §Quote cache).
+ * Quotes ready to sign, by `quoteId`, so the agent never retypes the intent's bigint fields and track/cancel trust
+ * only what was quoted. Kept in memory, where a restart loses them (see ADR §Quote cache), or in Redis when
+ * `REDIS_URL` is set (#125): `useQuoteStore`.
  *
- * A quote belongs to the API key that made it: the cache is shared by every caller,
- * so only its creator may submit, relay or alert on it.
+ * A quote belongs to the API key that made it: the store is shared by every caller, so only its creator may submit,
+ * relay or alert on it. A change is made in the store and on the caller's copy alike.
  */
 
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
 import { runWithRequestContext, tagOf } from "../requestContext.js";
 import { ActionError } from "./errors.js";
-import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
+import { MemoryQuoteStore } from "./memoryQuoteStore.js";
+import {
+  type CachedQuote,
+  type HandedOver,
+  type HubOutcome,
+  type QuoteStore,
+  type Room,
+  type UnusedQuote,
+  deadlineMs,
+} from "./quoteStore.js";
 
-export type CachedQuote = IntentRequest & {
-  quoteId: string;
-  intent: BuiltIntent["intent"];
-  relayData: BuiltIntent["relayData"];
-  /** SHA-256 of the creator's API key. */
-  keyHash: string;
-  /** The least the recipient gets, as track reports it once the swap is solved. */
-  minimumReceived: { amount: string; symbol: string; chainName: string };
-  /** Epoch ms: the deadline plus a grace period, so a tx signed near expiry can still be tracked. */
-  expiresAt: number;
-  /** The deposit checked as this quote's. One intent can only come from one deposit, so the claim stays. */
-  depositTxHash?: string;
-  /**
-   * How that deposit left this server: submitted to the backend, relayed after its deadline for a refund (from a
-   * spoke). From the hub: left expired to the backend's canceller, cancelled by its user, or found closed there.
-   */
-  handedOver?: "submitted" | "relayed_for_refund" | HubOutcome;
-  /** The backend refused its submit before the deadline; it's relayed for refund after it. */
-  submitRefused?: true;
-  /** Epoch ms before which a failed submit isn't tried again: no later than the agent was told to wait. */
-  submitRetryAt?: number;
-  /** When track was first called for a tx not yet this quote's deposit: an unseen tx is waited for from then. */
-  trackedSince?: { txHash: string; at: number };
-};
+export type { CachedQuote } from "./quoteStore.js";
 
-/** A hub swap's end, known from the hub. */
-type HubOutcome = "left_to_refund" | "cancelled" | "closed";
-
-const MAX_QUOTES = 10_000;
-// One key can't fill the cache and crowd out other keys' quotes; past this many unclaimed ones in
-// the cache it waits instead.
-const MAX_QUOTES_PER_KEY = 1_000;
 const GRACE_MS = 30 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
+// With no backend row, the quote is the only record of what became of the swap.
+const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-// Insertion order is age order, which eviction relies on.
-const quotes = new Map<string, CachedQuote>();
-// Per key, its unclaimed quotes' expiry in epoch ms, by quoteId.
-const openByKey = new Map<string, Map<string, number>>();
+let store: QuoteStore = new MemoryQuoteStore();
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
 let sweepTimer: NodeJS.Timeout | undefined;
+let lastSweep: Promise<void> = Promise.resolve();
+
+/** Swaps the store, at startup. Redis may hold expired quotes already, so it's swept from now on. */
+export function useQuoteStore(next: QuoteStore): void {
+  stopSweeping();
+  store = next;
+  leftOver.clear();
+  lastFullWarningAt = Number.NEGATIVE_INFINITY;
+  startSweeping();
+}
+
+export function quoteStoreKind(): QuoteStore["kind"] {
+  return store.kind;
+}
+
+export async function closeQuoteStore(): Promise<void> {
+  stopSweeping();
+  await store.close();
+}
 
 /**
- * Refuses a key with too many open quotes, or any key while the cache is full of quotes it can't drop;
+ * Refuses a key with too many open quotes, or any key while the store is full of quotes it can't drop;
  * checked before a quote is built, and again when it's put.
  */
-export function checkQuoteRoom(keyHash: string): void {
-  const now = Date.now();
-  const open = openByKey.get(keyHash);
-  if (open && open.size >= MAX_QUOTES_PER_KEY) {
-    for (const [quoteId, expiresAt] of open) if (expiresAt <= now) open.delete(quoteId);
-    if (open.size >= MAX_QUOTES_PER_KEY) {
-      throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
-        nextStep:
-          "Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, use sodax_swap_price, which holds none.",
-        details: { retryAfterSec: Math.ceil((Math.min(...open.values()) - now) / 1000) },
-      });
-    }
+export async function checkQuoteRoom(keyHash: string): Promise<void> {
+  refuseIfFull(await store.reserve(keyHash, Date.now()));
+}
+
+export async function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): Promise<CachedQuote> {
+  const entry = { ...quote, quoteId: randomUUID(), expiresAt: deadlineMs(quote) + GRACE_MS };
+  refuseIfFull(await store.reserve(entry.keyHash, Date.now(), entry));
+  startSweeping();
+  return entry;
+}
+
+function refuseIfFull(room: Room): void {
+  logUnused(room.unused);
+  if (room.full === "key") {
+    throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
+      nextStep:
+        "Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, use sodax_swap_price, which holds none.",
+      details: { retryAfterSec: Math.ceil((room.retryAt - Date.now()) / 1000) },
+    });
   }
-  if (quotes.size >= MAX_QUOTES && !makeRoom(now)) {
+  if (room.full === "store") {
+    const now = Date.now();
     if (now - lastFullWarningAt >= SWEEP_INTERVAL_MS) {
       lastFullWarningAt = now;
-      logger.warn("The quote cache is full of live and claimed quotes; refusing new ones");
+      logger.warn("The quote store is full of live and claimed quotes; refusing new ones");
     }
     throw new ActionError("RATE_LIMITED", "This server holds too many open swap quotes right now.", {
       nextStep: "Wait retryAfterSec seconds, then try again. sodax_swap_price still works meanwhile: it holds none.",
@@ -85,68 +90,46 @@ export function checkQuoteRoom(keyHash: string): void {
 }
 
 /**
- * Drops expired quotes, then if still full the oldest one past its deadline, in `evictionRank` order. A full cache
- * otherwise refuses every new quote, so a swap that's safe without its quote gives way, only to be answered on less
- * precisely here.
- */
-function makeRoom(now: number): boolean {
-  sweep(now);
-  if (quotes.size < MAX_QUOTES) return true;
-  for (const rank of [0, 1, 2]) {
-    for (const cached of quotes.values()) {
-      if (Number(cached.deadline) * 1000 > now || evictionRank(cached) !== rank) continue;
-      drop(cached);
-      if (rank === 0) logUnused(cached, "evicted");
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Past its deadline: an unused quote first; then a swap that ended or that the backend has (`submitted`); then a hub
- * swap waiting for the canceller's refund, which loses only its early cancel here. Never a live quote, which may be
- * signed already, nor a deposit claimed but not handed over or relayed for refund: its quote is its only record.
- */
-function evictionRank({ depositTxHash, handedOver }: CachedQuote): 0 | 1 | 2 | undefined {
-  if (depositTxHash === undefined) return 0;
-  if (handedOver === "submitted" || handedOver === "cancelled" || handedOver === "closed") return 1;
-  return handedOver === "left_to_refund" ? 2 : undefined;
-}
-
-/** Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute. */
-function sweep(now: number): void {
-  for (const cached of quotes.values()) {
-    if (cached.expiresAt > now) continue;
-    drop(cached);
-    if (cached.depositTxHash === undefined) logUnused(cached, "expired");
-  }
-  if (quotes.size === 0) stopSweeping();
-}
-
-/**
  * The drop-off between quote and deposit (#110): a quote gone without one, expired, or evicted past its deadline
- * from a full cache. Outside the request that swept it, whose record it isn't.
+ * from a full store. Outside the request that dropped it, whose record it isn't.
  */
-function logUnused(quote: CachedQuote, reason: "expired" | "evicted"): void {
-  runWithRequestContext({}, () =>
-    logger.info(
-      {
-        "quote.id": quote.quoteId,
-        "quote.drop_reason": reason,
-        "chain.key": quote.srcChainKey,
-        "dst_chain.key": quote.dstChainKey,
-        "caller.key_hash": tagOf(quote.keyHash),
-      },
-      "Swap quote expired unused",
-    ),
+function logUnused(quotes: UnusedQuote[]): void {
+  for (const quote of quotes) {
+    runWithRequestContext({}, () =>
+      logger.info(
+        {
+          "quote.id": quote.quoteId,
+          "quote.drop_reason": quote.reason,
+          "chain.key": quote.srcChainKey,
+          "dst_chain.key": quote.dstChainKey,
+          "caller.key_hash": tagOf(quote.keyHash),
+        },
+        "Swap quote expired unused",
+      ),
+    );
+  }
+}
+
+/**
+ * Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute, which records an
+ * unused one near its expiry. From the first quote, or from startup with a store set.
+ */
+function startSweeping(): void {
+  // Created outside any request, so its runs don't carry the one that started it.
+  sweepTimer ??= runWithRequestContext({}, () =>
+    setInterval(() => {
+      lastSweep = sweep();
+    }, SWEEP_INTERVAL_MS).unref(),
   );
 }
 
-/** Once a minute while quotes are cached, so an unused one is recorded near its expiry, a minute's worth at a time. */
-function startSweeping(): void {
-  // Created outside any request, so its runs don't carry the one that started it.
-  sweepTimer ??= runWithRequestContext({}, () => setInterval(() => sweep(Date.now()), SWEEP_INTERVAL_MS).unref());
+async function sweep(): Promise<void> {
+  const now = Date.now();
+  try {
+    logUnused(await store.sweep(now));
+  } catch {
+    // Unreachable: the store logged it, and the next sweep tries again.
+  }
 }
 
 function stopSweeping(): void {
@@ -154,113 +137,139 @@ function stopSweeping(): void {
   sweepTimer = undefined;
 }
 
-export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): CachedQuote {
-  checkQuoteRoom(quote.keyHash);
-  const entry = { ...quote, quoteId: randomUUID(), expiresAt: Number(quote.deadline) * 1000 + GRACE_MS };
-  quotes.set(entry.quoteId, entry);
-  startSweeping();
-  const open = openByKey.get(entry.keyHash) ?? new Map<string, number>();
-  open.set(entry.quoteId, entry.expiresAt);
-  openByKey.set(entry.keyHash, open);
-  return entry;
-}
-
-function drop(quote: CachedQuote): void {
-  quotes.delete(quote.quoteId);
-  close(quote);
-}
-
-/** No longer counts toward its key's cap: claimed, or gone. */
-function close(quote: CachedQuote): void {
-  const open = openByKey.get(quote.keyHash);
-  open?.delete(quote.quoteId);
-  if (open?.size === 0) openByKey.delete(quote.keyHash);
+/** Test only: the sweep a timer started, finished. */
+export function sweepDone(): Promise<void> {
+  return lastSweep;
 }
 
 /** The quote, `undefined` if it's gone or expired (the sweep drops it), or `"key_mismatch"` if another key made it. */
-export function getCachedQuote(quoteId: string, keyHash: string): CachedQuote | "key_mismatch" | undefined {
-  const quote = quotes.get(quoteId);
+export async function getCachedQuote(
+  quoteId: string,
+  keyHash: string,
+): Promise<CachedQuote | "key_mismatch" | undefined> {
+  await recordLeftOver(quoteId);
+  const quote = await store.get(quoteId);
   if (!quote || quote.expiresAt <= Date.now()) return undefined;
   return quote.keyHash === keyHash ? quote : "key_mismatch";
 }
 
 /**
- * Claims the quote for a checked deposit. Synchronous, so a second tx tracked at the same time sees
- * the claim. `taken` if another deposit took it first, `gone` if the quote was dropped meanwhile.
+ * Claims the quote for a checked deposit, atomically, so a second tx tracked at the same time sees the claim.
+ * `taken` if another deposit took it first, `gone` if the quote was dropped meanwhile.
  */
-export function claimDeposit(quoteId: string, txHash: string): "claimed" | "taken" | "gone" {
-  const quote = quotes.get(quoteId);
-  if (!quote) return "gone";
-  if (quote.depositTxHash === undefined) {
-    quote.depositTxHash = txHash;
-    close(quote);
-  }
-  return quote.depositTxHash === txHash ? "claimed" : "taken";
+export async function claimDeposit(quote: CachedQuote, txHash: string): Promise<"claimed" | "taken" | "gone"> {
+  const claim = await store.claim(quote.quoteId, txHash);
+  if (claim === "claimed") quote.depositTxHash = txHash;
+  return claim;
 }
 
-export function markSubmitFailed(quoteId: string, waitSec: number): void {
-  const quote = quotes.get(quoteId);
-  if (quote) quote.submitRetryAt = Date.now() + waitSec * 1000;
+// Writes the store failed, by quoteId, in order: made before the quote is next read. Lost only with this process.
+const leftOver = new Map<string, (() => Promise<void>)[]>();
+
+/**
+ * Records what a step outside this server did (a submit, a relay, the hub's answer). That step stands whatever the
+ * store does, so a store that fails here is logged, not the caller's error: told to retry, the agent would have the
+ * step done twice. The write is made again before the quote is next read, so that call sees it: a deposit relayed for
+ * refund has no backend row, and its quote is the only record of the relay.
+ */
+async function record(quote: CachedQuote, write: () => Promise<void>): Promise<void> {
+  const waiting = leftOver.get(quote.quoteId);
+  if (waiting) {
+    waiting.push(write);
+    return;
+  }
+  try {
+    await write();
+  } catch (error) {
+    leftOver.set(quote.quoteId, [write]);
+    logger.error({ err: error, "quote.id": quote.quoteId }, "Couldn't record a swap's progress in the quote store");
+  }
+}
+
+/** The writes left over for this quote, in order; throws while the store still fails them. */
+async function recordLeftOver(quoteId: string): Promise<void> {
+  const waiting = leftOver.get(quoteId);
+  while (waiting?.length) {
+    await waiting[0]();
+    waiting.shift();
+  }
+  leftOver.delete(quoteId);
+}
+
+export async function markSubmitFailed(quote: CachedQuote, waitSec: number): Promise<void> {
+  const at = Date.now() + waitSec * 1000;
+  quote.submitRetryAt = at;
+  await record(quote, () => store.set(quote.quoteId, { submitRetryAt: at }));
 }
 
 /** Unless the hub settled it while the submit ran: a cancel confirmed meanwhile stands. */
-export function markSubmitted(quoteId: string): void {
-  const quote = quotes.get(quoteId);
-  if (quote && !quote.handedOver) quote.handedOver = "submitted";
+export async function markSubmitted(quote: CachedQuote): Promise<void> {
+  quote.handedOver ??= "submitted";
+  await record(quote, () => store.setSubmitted(quote.quoteId));
 }
 
-export function markSubmitRefused(quoteId: string): void {
-  const quote = quotes.get(quoteId);
-  if (quote) quote.submitRefused = true;
+export async function markSubmitRefused(quote: CachedQuote): Promise<void> {
+  quote.submitRefused = true;
+  await record(quote, () => store.set(quote.quoteId, { submitRefused: true }));
 }
 
-// With no backend row, the quote is the only record of what became of the swap.
-const HANDED_OVER_RETENTION_MS = 24 * 60 * 60 * 1000;
-
-export function markRelayedForRefund(quote: CachedQuote): void {
-  markHandedOver(quote, "relayed_for_refund");
+export function markRelayedForRefund(quote: CachedQuote): Promise<void> {
+  return markHandedOver(quote, "relayed_for_refund");
 }
 
 /**
  * A hub swap never submitted: past its deadline, left to the backend's canceller (`left_to_refund`); cancelled by
  * its user (`cancelled`); or found closed on the hub, filled or cancelled elsewhere (`closed`).
  */
-export function markHubOutcome(quote: CachedQuote, how: HubOutcome): void {
-  markHandedOver(quote, how);
+export function markHubOutcome(quote: CachedQuote, how: HubOutcome): Promise<void> {
+  return markHandedOver(quote, how);
 }
 
-function markHandedOver(quote: CachedQuote, how: NonNullable<CachedQuote["handedOver"]>): void {
+async function markHandedOver(quote: CachedQuote, how: HandedOver): Promise<void> {
+  const now = Date.now();
   quote.handedOver = how;
-  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + HANDED_OVER_RETENTION_MS);
+  quote.expiresAt = Math.max(quote.expiresAt, now + HANDED_OVER_RETENTION_MS);
   // Put back if it was dropped while a read or the relay ran, and swept again from then on.
-  quotes.set(quote.quoteId, quote);
+  const handedOver = { ...quote, handedOver: how };
+  await record(quote, () => store.handOver(handedOver, now));
   startSweeping();
 }
 
 /** Since when track has been called for this quote with `txHash`: now, the first time. */
-export function trackedSince(quote: CachedQuote, txHash: string): number {
-  if (quote.trackedSince?.txHash !== txHash) quote.trackedSince = { txHash, at: Date.now() };
-  return quote.trackedSince.at;
+export async function trackedSince(quote: CachedQuote, txHash: string): Promise<number> {
+  if (quote.trackedSince?.txHash === txHash) return quote.trackedSince.at;
+  const now = Date.now();
+  const at = (await store.trackedSince(quote.quoteId, txHash, now)) ?? now;
+  quote.trackedSince = { txHash, at };
+  return at;
 }
 
 /**
- * The quotes a restart would lose before their deposit reached the backend: not handed over, not expired.
- * `/health` shows them so a deploy can wait until `open` is 0 or `openUntil` has passed.
+ * The quotes whose deposit hasn't reached the backend yet: not handed over, not expired. In memory a restart loses
+ * them, so `/health` shows them for a deploy to wait until `open` is 0 or `openUntil` has passed.
  */
-export function openQuotes(now = Date.now()): { open: number; openUntil: string | null } {
-  let open = 0;
-  let until = 0;
-  for (const quote of quotes.values()) {
-    if (quote.handedOver || quote.expiresAt <= now) continue;
-    open++;
-    until = Math.max(until, quote.expiresAt);
-  }
-  return { open, openUntil: open > 0 ? new Date(until).toISOString() : null };
+export async function openQuotes(now = Date.now()): Promise<{ open: number; openUntil: string | null }> {
+  return toOpen(await store.open(now));
 }
 
-export function clearQuoteCache(): void {
-  stopSweeping();
-  quotes.clear();
-  openByKey.clear();
+const toOpen = ({ open, until }: { open: number; until: number }) => ({
+  open,
+  openUntil: open > 0 ? new Date(until).toISOString() : null,
+});
+
+/** For the heartbeat, which can't wait: in Redis, what the last sweep found, `undefined` before one. */
+export function openQuoteCount(): number | undefined {
+  return store.openNow(Date.now())?.open;
+}
+
+/** What a restart would lose now: the open quotes in memory, none in Redis. For the stop and crash alerts. */
+export function quotesLostOnRestart(): number {
+  return store.kind === "redis" ? 0 : (store.openNow(Date.now())?.open ?? 0);
+}
+
+/** Test only. */
+export async function clearQuoteCache(): Promise<void> {
+  leftOver.clear();
+  await store.clear();
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
 }

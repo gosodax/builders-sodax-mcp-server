@@ -16,6 +16,7 @@ import {
 } from "../sodax.js";
 import { ActionError } from "./errors.js";
 import { type CachedQuote, claimDeposit, markHubOutcome } from "./quoteCache.js";
+import { deadlineMs } from "./quoteStore.js";
 import {
   type NotCancellable,
   RETRY_AFTER_SEC,
@@ -32,7 +33,7 @@ import {
 import { holdsCancel } from "./sourceTx.js";
 import type { CancelStep, SourceTx, SwapSource } from "./sources/types.js";
 import { type Intent, getHubIntent, getSubmitTxStatus, relaySpokeTx } from "./swapsApi.js";
-import { checkQuoteDeposit, deadlineMs, refundExpired, untilRefundSec } from "./track.js";
+import { checkQuoteDeposit, refundExpired, untilRefundSec } from "./track.js";
 
 export type CancelState =
   | {
@@ -167,7 +168,7 @@ async function unsubmittedDeposit(
   if (Date.now() < deadlineMs(quote)) {
     return { ...base, status: "deposit_unsubmitted", retryAfterSec: untilRefundSec(quote) };
   }
-  if (!claimed && claimDeposit(quote.quoteId, base.txHash) !== "claimed") return undefined;
+  if (!claimed && (await claimDeposit(quote, base.txHash)) !== "claimed") return undefined;
   const refund = await refundExpired(base, quote, source);
   return refund.status === "expired_unsubmitted" ? refund : { ...base, status: "not_cancellable", reason: "refunding" };
 }
@@ -188,7 +189,7 @@ async function hubCancel(
   if (quote.depositTxHash !== base.txHash) {
     const swap = await checkSwapTx(base, source, quote);
     if (swap !== "match") return swap;
-    if (claimDeposit(quote.quoteId, base.txHash) === "taken") {
+    if ((await claimDeposit(quote, base.txHash)) === "taken") {
       throw quoteMismatch("That quote was used by another transaction.");
     }
   }
@@ -234,7 +235,7 @@ async function readyCancel(
   const hash = intentHash(intent);
   if (await intentClosed(hash, createdIn)) {
     // Track then reports a quoted hub swap closed, not waiting for a refund.
-    if (quote && isHubSource(source)) markHubOutcome(quote, "closed");
+    if (quote && isHubSource(source)) await markHubOutcome(quote, "closed");
     return { ...base, intentHash: hash, status: "not_cancellable", reason: "closed" };
   }
   return { ...base, status: "ready", steps: [await source.adapter.cancelStep(source, intent)] };
@@ -276,7 +277,7 @@ async function hubCancelled(
   const created = await readSourceTx(source, createdIn);
   if (!created) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
   if (created.kind !== "hub" || !minedAfter(receipt, created)) return { ...base, status: "not_a_cancel_tx" };
-  if (quote) markHubOutcome(quote, "cancelled");
+  if (quote) await markHubOutcome(quote, "cancelled");
   return { ...base, status: "cancel_confirmed" };
 }
 

@@ -35,8 +35,10 @@ import {
   TX,
   USER,
   cacheQuote,
+  cachedQuote,
   callTool,
   cancelReceipt,
+  claimQuote,
   stubBackend,
 } from "./__fixtures__/swapBackend.js";
 
@@ -70,17 +72,17 @@ function receipts(cancelTx: EvmReceipt | null = cancelReceipt(PAYLOAD)) {
 }
 
 /** A quote whose deposit track checked: TX. */
-function claimedQuote(): string {
-  const { quoteId } = cacheQuote();
-  claimDeposit(quoteId, TX);
+async function claimedQuote(): Promise<string> {
+  const { quoteId } = await cacheQuote();
+  await claimQuote(quoteId, TX);
   return quoteId;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   clearSwapCatalogCache();
   clearCache();
-  clearQuoteCache();
+  await clearQuoteCache();
   receipts();
   vi.mocked(userHubWallet).mockResolvedValue(CREATOR);
   vi.mocked(hubIntentClosed).mockResolvedValue(false);
@@ -113,7 +115,7 @@ describe("sodax_swap_cancel", () => {
 
   it("returns the checked cancel for the user's wallet, built from the hub's intent", async () => {
     const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
-    const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
+    const { out } = await cancel({ txHash: TX, quoteId: await claimedQuote() });
     expect(out).toMatchObject({
       status: "ready",
       intentHash: intentHash(INTENT),
@@ -129,7 +131,7 @@ describe("sodax_swap_cancel", () => {
   it("asks for the swap tx when given another tx with its quote, an approval say", async () => {
     vi.mocked(getEvmReceipt).mockResolvedValue({ reverted: false, logs: [] });
     stubBackend({ row: null });
-    const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+    const { out } = await cancel({ txHash: TX, quoteId: (await cacheQuote()).quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
   });
 
@@ -181,14 +183,14 @@ describe("sodax_swap_cancel", () => {
     { allowPartialFill: true },
   ])("refuses a hub intent that isn't the quoted one (%o)", async change => {
     const calls = stubBackend({ row: OPEN, hubIntent: { ...INTENT, ...change }, cancelTx: CANCEL_TX_BUILT });
-    const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
+    const { out } = await cancel({ txHash: TX, quoteId: await claimedQuote() });
     expect(out.error).toMatchObject({ code: "SWAP_MISMATCH", chainKey: ARBITRUM });
     expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 
   it("compares a quote with the hub only for the deposit track checked as its own", async () => {
     stubBackend({ row: null });
-    const { quoteId } = cacheQuote();
+    const { quoteId } = await cacheQuote();
     expect((await cancel({ txHash: TX, quoteId })).out).toMatchObject({ reason: "not_submitted" });
 
     // Any public tx with a backend record: its intent says nothing about this quote, and alerts nobody.
@@ -232,16 +234,16 @@ describe("sodax_swap_cancel", () => {
       hubIntent: { ...INTENT, inputToken: INTENT.inputToken.toLowerCase() },
       cancelTx: CANCEL_TX_BUILT,
     });
-    const { out } = await cancel({ txHash: TX, quoteId: claimedQuote() });
+    const { out } = await cancel({ txHash: TX, quoteId: await claimedQuote() });
     expect(out.status).toBe("ready");
   });
 
   it("calls a deposit this server relayed for refund already refunding, though the backend has no row", async () => {
     stubBackend({ row: null });
-    const quote = cacheQuote();
+    const quote = await cacheQuote();
     const { quoteId } = quote;
-    claimDeposit(quoteId, TX);
-    markRelayedForRefund(quote);
+    await claimDeposit(quote, TX);
+    await markRelayedForRefund(quote);
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "refunding" });
     expect(out.nextStep).toContain("already being refunded");
@@ -260,7 +262,7 @@ describe("sodax_swap_cancel", () => {
     ])("says nothing was sent when its tx %s", async (_case, receipt) => {
       vi.mocked(getEvmReceipt).mockResolvedValue(receipt);
       const calls = stubBackend({ row: null });
-      const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+      const { out } = await cancel({ txHash: TX, quoteId: (await cacheQuote()).quoteId });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_sent" });
       expect(out.nextStep).toContain("nothing was sent and there's nothing to cancel yet");
       expect(out.nextStep).toContain("cancel or replace it in their wallet");
@@ -269,26 +271,26 @@ describe("sodax_swap_cancel", () => {
 
     it("says, before the deadline, it won't be swapped unless tracked, and to cancel again after it", async () => {
       const calls = stubBackend({ row: null });
-      const { quoteId } = cacheQuote();
+      const { quoteId } = await cacheQuote();
       const { out } = await cancel({ txHash: TX, quoteId });
       expect(out).toMatchObject({ status: "deposit_unsubmitted", retryAfterSec: 15 * 60 + 15 });
       expect(out.nextStep).toContain("won't be swapped unless sodax_swap_submit_and_track is called: don't call it");
       expect(out.nextStep).toContain("call sodax_swap_cancel again with the same arguments in about 915 seconds");
       expect(posts(calls)).toEqual([]);
       // Unclaimed: a track call would still submit it.
-      expect(getCachedQuote(quoteId, callerKeyHash())).not.toHaveProperty("depositTxHash");
+      expect(await getCachedQuote(quoteId, callerKeyHash())).not.toHaveProperty("depositTxHash");
     });
 
     it("claims and relays it for refund after the deadline, as track does, once", async () => {
       vi.setSystemTime(Number(DEADLINE) * 1000 + 60_000);
       const calls = stubBackend({ row: null });
-      const { quoteId } = cacheQuote();
+      const { quoteId } = await cacheQuote();
       for (let i = 0; i < 2; i++) {
         const { out } = await cancel({ txHash: TX, quoteId });
         expect(out).toMatchObject({ status: "not_cancellable", reason: "refunding" });
       }
       expect(posts(calls)).toEqual([{ path: "/intents/submit", body: { chainId: "23", txHash: TX } }]);
-      expect(getCachedQuote(quoteId, callerKeyHash())).toMatchObject({
+      expect(await getCachedQuote(quoteId, callerKeyHash())).toMatchObject({
         depositTxHash: TX,
         handedOver: "relayed_for_refund",
       });
@@ -297,7 +299,7 @@ describe("sodax_swap_cancel", () => {
     it("alerts and asks to call again when that relay fails", async () => {
       vi.setSystemTime(Number(DEADLINE) * 1000 + 60_000);
       stubBackend({ row: null, relay: () => Response.json({ result: { success: false } }) });
-      const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
+      const { out } = await cancel({ txHash: TX, quoteId: (await cacheQuote()).quoteId });
       expect(out).toMatchObject({ status: "expired_unsubmitted", alerted: true, retryAfterSec: 60 });
       expect(out.nextStep).toContain("call sodax_swap_cancel again in about 60 seconds, at most 10 times, then stop.");
       expect(logger.error).toHaveBeenCalledWith(
@@ -308,17 +310,17 @@ describe("sodax_swap_cancel", () => {
 
     it("keeps today's answer once the deposit was submitted, or for a tx that isn't the quote's deposit", async () => {
       stubBackend({ row: null });
-      const submitted = claimedQuote();
-      markSubmitted(submitted);
+      const submitted = await claimedQuote();
+      await markSubmitted(await cachedQuote(submitted));
       const { out } = await cancel({ txHash: TX, quoteId: submitted });
       expect(out).toMatchObject({ reason: "not_submitted" });
       // Track only reports here (queued while the backend's row lags), so the agent calls it without asking.
       expect(out.nextStep).toBe(
         "The swap service has no record of this swap yet, so there's nothing to cancel. Call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; once it reports the swap on the hub, call sodax_swap_cancel again.",
       );
-      clearQuoteCache();
+      await clearQuoteCache();
       vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT);
-      expect((await cancel({ txHash: TX, quoteId: cacheQuote().quoteId })).out).toMatchObject({
+      expect((await cancel({ txHash: TX, quoteId: (await cacheQuote()).quoteId })).out).toMatchObject({
         reason: "not_submitted",
       });
     });
@@ -336,8 +338,8 @@ describe("sodax_swap_cancel", () => {
 
   it("calls a quote whose deposit is another tx a mismatch, before reading anything, without an error log", async () => {
     const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
-    const { quoteId } = cacheQuote();
-    claimDeposit(quoteId, `0x${"e".repeat(64)}`);
+    const { quoteId } = await cacheQuote();
+    await claimQuote(quoteId, `0x${"e".repeat(64)}`);
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out.error.code).toBe("QUOTE_MISMATCH");
     expect(out.nextStep).toBe(

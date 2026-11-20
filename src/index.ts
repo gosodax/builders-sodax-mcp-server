@@ -66,7 +66,16 @@ import {
 } from "./services/requestContext.js";
 import { type RpcOverride, initSodax, parseRpcOverrides } from "./services/sodax.js";
 import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
-import { openQuotes } from "./services/swap/quoteCache.js";
+import { ActionError } from "./services/swap/errors.js";
+import {
+  closeQuoteStore,
+  openQuoteCount,
+  openQuotes,
+  quoteStoreKind,
+  quotesLostOnRestart,
+  useQuoteStore,
+} from "./services/swap/quoteCache.js";
+import { parseRedisUrl } from "./services/swap/quoteStore.js";
 import { swapCatalogAgeSec } from "./services/swap/tokens.js";
 import { getStaticToolCounts, getToolNamesByModule } from "./services/toolRegistry.js";
 import { getCachedDocsToolNames } from "./tools/docsProxy.js";
@@ -133,7 +142,13 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
     swapToolsEnabled,
   });
   // The SDK only for the swap tools, and before the partner fee: its checksum check needs it.
-  if (toolsets.swap) await initSodax(rpcOverrides);
+  if (toolsets.swap) {
+    await openQuoteStore(process.env.REDIS_URL);
+    // The server exits once its client closes stdin and nothing else keeps it running, which a Redis connection would.
+    // Closed a while later, after the calls in flight (a track waits up to 20 s).
+    process.stdin.once("end", () => setTimeout(() => void closeQuoteStore().catch(() => {}), 30_000).unref());
+    await initSodax(rpcOverrides);
+  }
   const partnerFee = partnerFeeFromEnv(process.env);
 
   // Warm SDK docs cache before creating server; a swap-only server has no docs tools.
@@ -171,6 +186,7 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
   }
   // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
+  if (swapToolsEnabled) await openQuoteStore(process.env.REDIS_URL);
   await Promise.all([swapToolsEnabled ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
@@ -365,6 +381,8 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     // Live integrated-networks count (ICON filtered out), mirroring the
     // frontend. Best-effort: a backend hiccup must not fail the health check,
     // so this stays null and callers fall back to the evergreen floor.
+    // The quote store is read meanwhile: in Redis it can take as long as its call timeout.
+    const swapQuotes = swapQuotesHealth();
     let networks: number | null = null;
     try {
       const count = await getIntegratedNetworksCount();
@@ -392,8 +410,8 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         healthy: docsHealth.healthy,
         toolCount: docsHealth.toolCount,
       },
-      // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
-      swapQuotes: openQuotes(),
+      // In memory, a deploy waits for open to reach 0 (README, Operating the swap tools).
+      swapQuotes: await swapQuotes,
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
@@ -572,6 +590,7 @@ export function bootConfig(rpcOverrides: Record<string, RpcOverride>, swapToolsE
     "app.version": SERVER_VERSION,
     "sodax.env": SODAX_ENV,
     "swap_tools.enabled": swapToolsEnabled,
+    "swap_quotes.store": swapToolsEnabled ? quoteStoreKind() : undefined,
     "rpc_overrides.chains": Object.keys(rpcOverrides).sort().join(",") || undefined,
     "posthog.enabled": POSTHOG_ENABLED,
     "discord.enabled": isDiscordConfigured(),
@@ -591,7 +610,7 @@ export function serverGauges(): () => Record<string, unknown> {
     loopDelay.reset();
     const { rss, heapUsed } = process.memoryUsage();
     return {
-      "swap_quotes.open": openQuotes().open,
+      "swap_quotes.open": openQuoteCount(),
       "sse.sessions": openSseSessions(),
       "process.memory.rss_bytes": rss,
       "process.memory.heap_used_bytes": heapUsed,
@@ -600,6 +619,29 @@ export function serverGauges(): () => Record<string, unknown> {
       "docs_proxy.healthy": getCachedDocsHealth().healthy,
     };
   };
+}
+
+/** Redis when `REDIS_URL` is set, its client loaded only then; never memory instead (#125). */
+async function openQuoteStore(redisUrl: string | undefined): Promise<void> {
+  const url = parseRedisUrl(redisUrl);
+  if (!url) return;
+  const { connectRedisQuoteStore } = await import("./services/swap/redisQuoteStore.js");
+  useQuoteStore(connectRedisQuoteStore(url));
+}
+
+/**
+ * `/health`'s `swapQuotes`: where quotes are kept, and the open ones. In Redis, `reachable: false` if it doesn't answer,
+ * `refused: true` if it answers with an error (out of memory, say).
+ */
+async function swapQuotesHealth() {
+  const store = quoteStoreKind();
+  try {
+    return { store, ...(await openQuotes()) };
+  } catch (error) {
+    return error instanceof ActionError && error.code === "INTERNAL"
+      ? { store, reachable: true, refused: true }
+      : { store, reachable: false };
+  }
 }
 
 async function main(): Promise<void> {
@@ -643,8 +685,8 @@ function fatalExit(context: string, error: unknown): void {
   logger.fatal({ err: error }, context);
   if (exiting) return;
   exiting = true;
-  const open = openQuotes().open;
-  const alert = open > 0 ? `${context} (${open} open swap quote(s) lost)` : context;
+  const lost = quotesLostOnRestart();
+  const alert = lost > 0 ? `${context} (${lost} open swap quote(s) lost)` : context;
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
@@ -664,18 +706,19 @@ function fatalExit(context: string, error: unknown): void {
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  // The open quotes are in memory: a restart drops them.
-  const open = openQuotes().open;
-  logger.info({ signal, "swap_quotes.open": open }, "Shutting down");
+  // In memory, a restart drops the open quotes; Redis keeps them.
+  const lost = quotesLostOnRestart();
+  logger.info({ signal, "swap_quotes.open": openQuoteCount() }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal, open);
+  await notifyServerStopping(signal, lost);
   await shutdownAnalytics();
-  // A failing export rejects the shutdown; the exit must still happen.
-  await Promise.race([otel?.shutdown().catch(() => {}), sleep(2000, undefined, { ref: false })]);
+  // A failing export or a Redis that doesn't answer rejects its close; the exit must still happen.
+  const closing = Promise.all([otel?.shutdown().catch(() => {}), closeQuoteStore().catch(() => {})]);
+  await Promise.race([closing, sleep(2000, undefined, { ref: false })]);
   process.exit(0);
 }
 

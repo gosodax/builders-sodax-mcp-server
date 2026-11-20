@@ -125,7 +125,7 @@ describe("a swap from Sonic, the hub", () => {
     expect(out).toMatchObject({ status: "submit_refused", alerted: false });
     // No operator recovers a hub intent: the expiry does.
     expect(out.nextStep).toContain("unless a solver fills it first, it's refunded to them once its quote expires");
-    expect(out.nextStep).not.toContain("SODAX support");
+    expect(out.nextStep).not.toContain("discord");
     expect(relays(calls)).toEqual([]);
     vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
     expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_awaiting_refund");

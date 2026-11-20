@@ -1204,24 +1204,31 @@ export function registerSodaxApiTools(server: McpServer): void {
     server,
     "partnersAndToken",
     "sodax_refresh_cache",
-    "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache.",
+    "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache. At most once a minute across the server.",
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-    async () => {
-      const apiBefore = getCacheStats();
-      const solverBefore = getSolverCacheStats();
-      clearCache();
-      clearSolverCache();
-      expireSwapCatalog();
-      const total = apiBefore.size + solverBefore.size;
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Cache cleared. ${total} cached entries removed (${apiBefore.size} api, ${solverBefore.size} solver).`,
-          },
-        ],
-      };
-    },
+    async () => ({ content: [{ type: "text", text: refreshCaches() }] }),
   );
+}
+
+// sodax_refresh_cache is open to every caller, and each clear sends the next reads upstream: as docs_refresh,
+// at most once per window, server-wide.
+const REFRESH_MIN_INTERVAL_MS = 60 * 1000;
+let lastRefreshAt = 0;
+
+export function refreshCaches(now = Date.now()): string {
+  const waitMs = lastRefreshAt + REFRESH_MIN_INTERVAL_MS - now;
+  // A clock stepped back would otherwise hold the window shut until it caught up.
+  if (waitMs > 0 && now >= lastRefreshAt) {
+    const ago = Math.floor((now - lastRefreshAt) / 1000);
+    return `Not cleared: the caches were cleared ${ago} s ago, and clearing again is allowed in ${Math.ceil(waitMs / 1000)} s.`;
+  }
+  lastRefreshAt = now;
+  const apiBefore = getCacheStats();
+  const solverBefore = getSolverCacheStats();
+  clearCache();
+  clearSolverCache();
+  expireSwapCatalog();
+  const total = apiBefore.size + solverBefore.size;
+  return `Cache cleared. ${total} cached entries removed (${apiBefore.size} api, ${solverBefore.size} solver).`;
 }

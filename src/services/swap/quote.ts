@@ -108,6 +108,8 @@ export type SwapQuote =
 const MIN_MARKET_SHARE = 0.9;
 // The swap service doesn't say how much it needs; swaps worth this much in USD are usually quoted.
 const USUAL_MIN_USD = 1.5;
+// Where EVM tokens are sent to burn them; `checkAddress` refuses the zero address already.
+const EVM_BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD";
 
 /**
  * AMOUNT_TOO_LOW names an amount of the token worth about USUAL_MIN_USD, so the agent asks once
@@ -166,6 +168,12 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     : defaultsToSender
       ? fromAddress
       : undefined;
+  // The recipient the swap ends with, the sender's own address included: a placeholder sender pays the burn address.
+  if (toAddress !== undefined && to.config.type === "EVM" && same(toAddress, EVM_BURN_ADDRESS)) {
+    throw new ActionError("INVALID_ADDRESS", `That address burns whatever it receives on ${to.chain.name}.`, {
+      details: { field: input.toAddress ? "toAddress" : "fromAddress" },
+    });
+  }
   const missing: AddressField[] = [];
   if (!fromAddress) missing.push("fromAddress");
   if (!toAddress && !defaultsToSender) missing.push("toAddress");
@@ -278,7 +286,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   if (intentMismatch) throw swapMismatch(request, intentMismatch, built.tx);
   const prepared = await source.adapter.prepareSwap(
     { ...source, chain: from.chain },
-    { request, built, approved, symbol: from.token.symbol },
+    { request, built, approved, symbol: from.token.symbol, decimals: from.token.decimals },
   );
   // The builds above can take most of a minute, which a short deadline can't spare.
   if (!leavesTimeToSend(deadline)) {

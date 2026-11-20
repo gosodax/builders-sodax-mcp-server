@@ -77,11 +77,23 @@ export type SwapSource = SourceChain & { chain: ChainInfo; quote?: CachedQuote }
 /** `value` and `chainId` are hex quantities. */
 export type StepTx = EvmTx & { chainId: string };
 
+/** What an approve step lets the spender take, as its calldata sets it. */
+export interface Allowance {
+  /** The token contract the tx calls. */
+  token: string;
+  symbol: string;
+  spender: string;
+  /** In token units, like the quote's amounts: 0 on a reset. */
+  amount: string;
+}
+
 /** A step an EVM wallet sends. */
 export interface EvmStep {
   kind: "reset_approve" | "approve" | "swap";
   chainId: number;
   tx: StepTx;
+  /** On an approve or a reset. */
+  approves?: Allowance;
 }
 
 /** A non-EVM step: the SDK's unsigned raw tx for the family's wallets, as JSON (`jsonSafe`). */
@@ -114,6 +126,7 @@ export interface SwapToBuild {
   /** The token's allowance (or trustline room) already covers the amount. */
   approved: boolean;
   symbol: string;
+  decimals: number;
 }
 
 /**

@@ -439,7 +439,8 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     stubBackend({ row, hubIntent: REAL.sui.intent });
     const { out } = await cancel({ txHash: REAL.sui.txHash, chain: "sui" });
     expect(out.error.code).toBe("QUOTE_NOT_FOUND");
-    expect(out.nextStep).toContain("give SODAX support its transaction hash");
+    expect(out.nextStep).toContain("its transaction hash");
+    expect(out.nextStep).toContain("https://www.sodax.com/discord");
     expect(buildNonEvmCancel).not.toHaveBeenCalled();
   });
 
@@ -569,7 +570,8 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     stubBackend({ row, hubIntent: swap.intent });
     const { out } = await cancel({ txHash: swap.txHash, chain: "sui" });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "unverified" });
-    expect(out.nextStep).toContain("give SODAX support its transaction hash");
+    expect(out.nextStep).toContain("its transaction hash");
+    expect(out.nextStep).toContain("https://www.sodax.com/discord");
     expect(logger.error).not.toHaveBeenCalled();
     expect(buildNonEvmCancel).not.toHaveBeenCalled();
   });

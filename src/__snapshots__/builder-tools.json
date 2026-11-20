@@ -1123,7 +1123,7 @@
   },
   {
     "name": "sodax_refresh_cache",
-    "description": "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache.",
+    "description": "Clear both the backend API cache and the solver oracle cache to force fresh fetches on next requests. Reports the number of entries cleared per cache. At most once a minute across the server.",
     "inputSchema": {
       "type": "object",
       "properties": {},

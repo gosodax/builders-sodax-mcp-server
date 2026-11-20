@@ -1,6 +1,6 @@
 /** Failures the swap tools return as `{ status: "error", error: { code, message }, nextStep }` with `isError`. */
 
-import { GET_A_KEY } from "../../constants.js";
+import { GET_A_KEY, SWAP_HELP } from "../../constants.js";
 
 export type ActionErrorCode =
   | "UNSUPPORTED_CHAIN"
@@ -63,7 +63,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
   SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
   PRICE_OFF_MARKET:
-    "Tell the user the swap service quoted far below market prices (error.usdValue sent, error.usdOut received), so the swap wasn't prepared; try again later.",
+    "Tell the user the swap service quoted far below market prices (error.usdValue sent, error.usdOut received), so the swap wasn't prepared. On a small swap, fixed fees (to Bitcoin, for one) can cost this much: ask whether to try a larger amount; otherwise try again later.",
   SECRET_REJECTED:
     "Tell the user to treat it as exposed and move their funds, and never to paste it into a chat; ask for the wallet's public address instead.",
   QUOTE_NOT_FOUND:
@@ -73,9 +73,12 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
     "This connection's SODAX API key has changed since the quote was made, and only that key can use it: tell the user.",
   API_KEY_REQUIRED: `Ask the user for a valid SODAX API key, sent as the x-api-key header. ${GET_A_KEY}`,
   RATE_LIMITED: "Wait retryAfterSec seconds, then try again.",
-  CHAIN_UNAVAILABLE: RETRY_LATER,
+  // One chain's node, not the swap service: the other chains may still work.
+  CHAIN_UNAVAILABLE:
+    "Retry in a minute; if it still fails, tell the user that chain can't be read right now (error.message names it) and to try again later.",
   UPSTREAM_UNAVAILABLE: RETRY_LATER,
-  INTERNAL: RETRY_LATER,
+  // A bug: retrying may not help, and someone at SODAX should look.
+  INTERNAL: `${RETRY_LATER} ${SWAP_HELP}`,
 };
 
 export class ActionError extends Error {

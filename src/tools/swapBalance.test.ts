@@ -197,7 +197,11 @@ describe("sodax_get_balance", () => {
       token.address === ARB_ETH ? 1n : tokenRead(),
     );
     const { out } = await balance({ chain: "arb", address: USER, token: "USDC" });
-    expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
+    expect(out.error).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Couldn't read Arbitrum right now." });
+    // One chain's node is down, not the swap service.
+    expect(out.nextStep).toBe(
+      "Retry in a minute; if it still fails, tell the user that chain can't be read right now (error.message names it) and to try again later.",
+    );
     expect(recipientReady).not.toHaveBeenCalled();
   });
 

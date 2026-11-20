@@ -3,16 +3,25 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { SWAP_HELP } from "../constants.js";
 import { withAnalytics } from "../services/analytics.js";
 import { logger } from "../services/logger.js";
+import { runWithRequestContext } from "../services/requestContext.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { ActionError } from "../services/swap/errors.js";
 import { registerActionTool } from "./actionTool.js";
 
-/** A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is. */
-async function callTool(value: string, run: () => Promise<never | { status: string; nextStep: string }>) {
+/**
+ * A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is; without
+ * `analytics`, nothing gives the call a request id.
+ */
+async function callTool(
+  value: string,
+  run: () => Promise<never | { status: string; nextStep: string }>,
+  { analytics = true } = {},
+) {
   const server = new McpServer({ name: "test", version: "0.0.0" });
-  withAnalytics(server);
+  if (analytics) withAnalytics(server);
   // Non-empty annotations: the SDK reads an empty object here as a second input schema.
   registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -56,7 +65,39 @@ describe("registerActionTool", () => {
       status: "error",
       error: { code: "UNSUPPORTED_CHAIN", message: "No.", hint: 1 },
       nextStep: "Ask the user.",
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+  });
+
+  it("carries the request's id on a result and a failure, with the text the same output as compact JSON", async () => {
+    const results = await runWithRequestContext({ requestId: "req-1" }, () =>
+      Promise.all([
+        callTool("x", async () => ({ status: "ok", nextStep: "Done." })),
+        callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down.")),
+      ]),
+    );
+    const [ok, failed] = results;
+    expect(ok.structuredContent).toEqual({ status: "ok", nextStep: "Done.", requestId: "req-1" });
+    expect(failed.structuredContent).toMatchObject({ status: "error", requestId: "req-1" });
+    for (const result of results) {
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.structuredContent) }]);
+    }
+  });
+
+  it("carries no requestId when the call has none", async () => {
+    const result = await callTool("x", async () => ({ status: "ok", nextStep: "Done." }), { analytics: false });
+    expect(result.structuredContent).toEqual({ status: "ok", nextStep: "Done." });
+  });
+
+  it("points the user to the SODAX team on Discord on an INTERNAL failure only", async () => {
+    for (const error of [new Error("bug"), new ActionError("INTERNAL", "Built something unrecognized.")]) {
+      const { nextStep } = (await callFailingTool(error)).structuredContent as { nextStep: string };
+      expect(nextStep).toMatch(/^Retry in a minute/);
+      expect(nextStep.endsWith(SWAP_HELP)).toBe(true);
+      expect(nextStep).toContain("https://www.sodax.com/discord");
+    }
+    const expected = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
+    expect(JSON.stringify(expected.structuredContent)).not.toContain("discord");
   });
 
   it("never lets details overwrite the code or message", async () => {

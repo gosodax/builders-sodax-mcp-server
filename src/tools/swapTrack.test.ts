@@ -723,7 +723,7 @@ describe("sodax_swap_submit_and_track", () => {
     const chain = await track({ txHash: TX, quoteId: (await cacheQuote()).quoteId });
     expect(chain.out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(chain.out.nextStep).toBe(
-      "Call sodax_swap_submit_and_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give SODAX support the swap's transaction hash.",
+      "Call sodax_swap_submit_and_track again in 30 seconds with the same arguments, at most 10 times, and don't send the swap again meanwhile. If it still fails, stop: tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to the SODAX team on Discord, https://www.sodax.com/discord.",
     );
 
     stubBackend({ status: () => new Response("", { status: 429, headers: { "Retry-After": "7" } }) });

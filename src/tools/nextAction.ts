@@ -36,7 +36,8 @@ export type ExternalReason =
  * arguments of the call that returned this action, as the runtime kept them, with `args` (and a person's answer)
  * on top. Unbounded, it's one call; with `until` or `maxAttempts` (counted per `retryKey` across the workflow) it
  * repeats while the result asks again, then follows `onExhausted`. A `consecutive` bound counts only calls in a row:
- * any other result in between starts it again, so scattered failures of a long swap never add up.
+ * any other result in between starts it again, so scattered failures of a long swap never add up. A call a person's
+ * answer leads back to is bounded too, under a key the answers don't change: an agent answering for them still stops.
  */
 export interface CallTool {
   type: "call_tool";
@@ -92,20 +93,26 @@ export type ConfirmSummary =
       warnings: ("usd_unchecked" | "above_warn_level" | "rate_unchecked" | "own_address_other_chain")[];
     }
   | { kind: "cancel"; chain: string; txHash: string }
-  /** The user confirms the wallet never sent this cancel, before a new one replaces it. */
+  /** The wallet shows this cancel can never land, before a new one replaces it. */
   | { kind: "unsent_cancel"; chain: string; txHash: string; cancelTxHash: string }
   | { kind: "amount"; amount: string; symbol: string };
 
-/** The user agrees to what `summary` says before `next`. */
+/**
+ * The user agrees to what `summary` says before `next`. With `by: "wallet"` only the wallet's own record answers (a
+ * person reading it there counts, an agent's yes doesn't): a tx can't land once its nonce went to another, or its
+ * blockhash expired.
+ */
 export interface Confirm {
   type: "confirm";
   summary: ConfirmSummary;
+  by?: "wallet";
   next: NextAction;
 }
 
 /**
  * The wallet sends the result's `steps` (or the `batch` in place of those it replaces) in order, each receipt a
  * success before the next; once the last is broadcast, `afterSend` runs with its hash, whatever its receipt says.
+ * A bounded `afterSend` counts sends: it's counted before the wallet signs, and past it nothing is sent.
  */
 export interface Execute {
   type: "execute";

@@ -8,6 +8,7 @@ import type { CallTool, Exhausted, NextAction } from "../nextAction.js";
 type Args = Record<string, unknown>;
 export type ToolResult = Args & { status?: string; nextAction?: NextAction; terminal?: boolean; outcome?: string };
 type PersonAction = Extract<NextAction, { type: "choose" | "provide" | "confirm" | "external" }>;
+type Confirm = Extract<NextAction, { type: "confirm" }>;
 
 export interface Host {
   /** Calls a swap tool; returns its `structuredContent`. */
@@ -26,6 +27,8 @@ export interface Host {
   ): Promise<{ hash: string } | { batchId: string }>;
   /** `wallet_getCallsStatus`: the batch's transaction hash, once it has one. */
   batchHash(batchId: string): Promise<string | undefined>;
+  /** A `by: "wallet"` confirm, from the wallet's own record: true only when it shows what `summary` says. */
+  walletShows(action: Confirm): Promise<boolean>;
   /** Kept across sessions: what was sent, so nothing is ever sent twice. */
   saved: Saved;
 }
@@ -92,19 +95,12 @@ async function follow(
     case "none":
       return { stop: "terminal", result, outcome: result.outcome };
     case "call_tool": {
-      // Bounded calls count per retryKey across the whole workflow, or stop at `until`.
+      // Bounded calls stop at `until`, or count per retryKey across the whole workflow.
       if (action.until && host.now() >= Date.parse(action.until) && action.onExhausted) {
         return exhaust(action.onExhausted);
       }
-      if (action.maxAttempts !== undefined && action.retryKey && action.onExhausted) {
-        host.saved.attempts ??= {};
-        const attempts = host.saved.attempts;
-        // A consecutive bound starts again after any other call: only failures in a row add up.
-        if (action.consecutive && host.saved.lastKey !== action.retryKey) attempts[action.retryKey] = 0;
-        const made = attempts[action.retryKey] ?? 0;
-        if (made >= action.maxAttempts) return exhaust(action.onExhausted);
-        attempts[action.retryKey] = made + 1;
-      }
+      const ranOut = count(host.saved, action);
+      if (ranOut) return exhaust(ranOut);
       host.saved.lastKey = action.retryKey;
       await host.sleep(action.afterSec);
       return { tool: action.tool, args: { ...(action.sameArgs ? callArgs : {}), ...action.args, ...answer } };
@@ -112,6 +108,9 @@ async function follow(
     case "execute": {
       // Never start a send past the quote's expiry: prepare and confirm again instead.
       if (action.expiresAt && host.now() >= Date.parse(action.expiresAt)) return { stop: "handoff", result };
+      // A bounded afterSend counts sends, before the wallet signs anything: past it, nothing is sent.
+      const ranOut = count(host.saved, action.afterSend);
+      if (ranOut) return exhaust(ranOut);
       return send(host, result, action);
     }
     case "confirm": {
@@ -119,7 +118,9 @@ async function follow(
       const pending = action.summary.kind === "cancel" ? host.saved.cancel : undefined;
       if (pending?.follow) return go(pending.follow, {});
       if (pending) return { tool: "sodax_swap_cancel", args: { ...pending.args, cancelTxHash: pending.cancelTxHash } };
-      if ((await host.ask(action, result)) !== true) return { stop: "declined", result };
+      // Only the wallet knows a tx it signed can't land any more: a yes from whoever answers isn't proof.
+      const agreed = action.by === "wallet" ? await host.walletShows(action) : await host.ask(action, result);
+      if (agreed !== true) return { stop: "declined", result };
       return go(action.next);
     }
     case "choose":
@@ -141,6 +142,19 @@ async function follow(
       // A type this runtime doesn't know goes to a person.
       return { stop: "handoff", result };
   }
+}
+
+/** Counts a bounded call against its retryKey: its `onExhausted` once the bound has run out. */
+function count(saved: Saved, action: CallTool): Exhausted | undefined {
+  const { maxAttempts, retryKey, onExhausted } = action;
+  if (maxAttempts === undefined || !retryKey || !onExhausted) return undefined;
+  saved.attempts ??= {};
+  // A consecutive bound starts again after any other call: only failures in a row add up.
+  if (action.consecutive && saved.lastKey !== retryKey) saved.attempts[retryKey] = 0;
+  const made = saved.attempts[retryKey] ?? 0;
+  if (made >= maxAttempts) return onExhausted;
+  saved.attempts[retryKey] = made + 1;
+  return undefined;
 }
 // #endregion loop
 
@@ -188,7 +202,9 @@ function keepSent(saved: Saved, call: { tool: string; args: Args }): void {
     saved.swap = { tool: call.tool, args: rest, needs: "txHash", hash: txHash };
   }
   if (call.tool !== "sodax_swap_cancel" || typeof cancelTxHash !== "string") return;
-  if (saved.cancel?.cancelTxHash !== cancelTxHash) saved.cancel = { args: { ...rest, txHash }, cancelTxHash };
+  // The latest arguments, a corrected chain included; the same cancel keeps the track that follows it.
+  const follow = saved.cancel?.cancelTxHash === cancelTxHash ? saved.cancel.follow : undefined;
+  saved.cancel = { args: { ...rest, txHash }, cancelTxHash, ...(follow && { follow }) };
 }
 
 /**

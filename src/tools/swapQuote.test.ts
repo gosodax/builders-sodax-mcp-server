@@ -951,7 +951,15 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     expect(out.nextAction).toEqual({
       type: "provide",
       fields: [{ name: "amount" }, { name: "toToken", optional: true }],
-      next: { type: "call_tool", tool: "sodax_swap_price", sameArgs: true, afterSec: 0 },
+      next: {
+        type: "call_tool",
+        tool: "sodax_swap_price",
+        sameArgs: true,
+        afterSec: 0,
+        maxAttempts: 3,
+        retryKey: "sodax_swap_price:ask:SWAP_REJECTED",
+        onExhausted: { nextAction: { type: "none" }, terminal: true },
+      },
     });
   });
 

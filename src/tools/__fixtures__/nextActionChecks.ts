@@ -53,6 +53,17 @@ export function unboundedTopCall(decision: Decision): CallTool | undefined {
   return nextAction.until === undefined && nextAction.maxAttempts === undefined ? nextAction : undefined;
 }
 
+/** Calls a person's answer leads to with no bound: an agent answering for them could loop through them forever. */
+export function unboundedAnswers(action: NextAction): CallTool[] {
+  return actionsOf(action).flatMap(held => {
+    if (held.type !== "choose" && held.type !== "provide" && held.type !== "confirm" && held.type !== "external") {
+      return [];
+    }
+    const { next } = held;
+    return next?.type === "call_tool" && next.maxAttempts === undefined && next.until === undefined ? [next] : [];
+  });
+}
+
 /** Every action a decision holds, nested ones included. */
 export function actionsOf(action: NextAction): NextAction[] {
   const nested: NextAction[] = [];

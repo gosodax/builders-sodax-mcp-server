@@ -185,8 +185,8 @@ says the same in a sentence: both come from one decision, so they don't disagree
 | `call_tool` | the agent | calls `tool` after `afterSec`, with `args` (on top of the last call's arguments when `sameArgs`); with `until` or `maxAttempts` it repeats while the result asks again, counting per `retryKey` across the workflow (only calls in a row when `consecutive`), then follows `onExhausted` |
 | `choose` | the user | picks one of `options`, whose `args` go into `next` |
 | `provide` | the user | gives `fields`, by name, for `next`; declining follows `onDecline` where there is one |
-| `confirm` | the user | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: the wallet never sent that cancel), then `next` |
-| `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash |
+| `confirm` | the user, or the wallet when `by: "wallet"` | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: that cancel can never land), then `next` |
+| `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash. A bounded `afterSend` is counted before anything is signed, and past its bound nothing is |
 | `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it |
 | `none` | nobody | the workflow is over |
 
@@ -199,11 +199,17 @@ What a runtime keeps to:
   then fails (a NEAR tx can fail after its deposit ran). From a batch, save the batch id at once and track the hash
   `wallet_getCallsStatus` reports: a resumed session reads it again and never resends the batch. Save every track
   call's arguments before making it, so a session resumed after the user corrected a hash or a chain uses theirs.
+- **Bounds.** A call goes unbounded only when the server's clock forces a new answer (past a deadline) or it hands
+  over to another tool's bounded actions. A call a person's answer leads back to is bounded too, under a key the
+  answers don't change, so an agent answering for the user still stops: before a send the workflow then ends, after
+  one it goes to the help desk. A workflow is one swap; keep its counts with what was sent.
 - **Cancels.** A cancel already sent is followed, never sent again. Any cancel call carrying a `cancelTxHash` (from
   the wallet, the user or the start) makes it pending: a resumed session reads it with that hash first, a `confirm`
   of a cancel re-reads it, and once it's relayed (`cancel_relayed`) its own bounded track takes over. A cancel's
-  retries carry its hash. A new cancel replaces a pending one only after the user confirms the wallet never sent it
-  (`confirm` of `unsent_cancel`). A cancel never hands a swap with no record to track: track would submit it.
+  retries carry its hash. A new cancel replaces a pending one only once the wallet's own record shows it can never
+  land (`confirm` of `unsent_cancel`, `by: "wallet"`): its nonce went to another transaction, or its blockhash
+  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel never
+  hands a swap with no record to track: track would submit it.
 - **Handoffs.** A person declining ends the loop; the saved hash resumes it later. An unknown `type` goes to a person.
   On a terminal `external`, show it before stopping.
 - **No contract.** A result with no `nextAction` came from the MCP SDK refusing the arguments before the tool ran, or
@@ -252,19 +258,12 @@ async function follow(
     case "none":
       return { stop: "terminal", result, outcome: result.outcome };
     case "call_tool": {
-      // Bounded calls count per retryKey across the whole workflow, or stop at `until`.
+      // Bounded calls stop at `until`, or count per retryKey across the whole workflow.
       if (action.until && host.now() >= Date.parse(action.until) && action.onExhausted) {
         return exhaust(action.onExhausted);
       }
-      if (action.maxAttempts !== undefined && action.retryKey && action.onExhausted) {
-        host.saved.attempts ??= {};
-        const attempts = host.saved.attempts;
-        // A consecutive bound starts again after any other call: only failures in a row add up.
-        if (action.consecutive && host.saved.lastKey !== action.retryKey) attempts[action.retryKey] = 0;
-        const made = attempts[action.retryKey] ?? 0;
-        if (made >= action.maxAttempts) return exhaust(action.onExhausted);
-        attempts[action.retryKey] = made + 1;
-      }
+      const ranOut = count(host.saved, action);
+      if (ranOut) return exhaust(ranOut);
       host.saved.lastKey = action.retryKey;
       await host.sleep(action.afterSec);
       return { tool: action.tool, args: { ...(action.sameArgs ? callArgs : {}), ...action.args, ...answer } };
@@ -272,6 +271,9 @@ async function follow(
     case "execute": {
       // Never start a send past the quote's expiry: prepare and confirm again instead.
       if (action.expiresAt && host.now() >= Date.parse(action.expiresAt)) return { stop: "handoff", result };
+      // A bounded afterSend counts sends, before the wallet signs anything: past it, nothing is sent.
+      const ranOut = count(host.saved, action.afterSend);
+      if (ranOut) return exhaust(ranOut);
       return send(host, result, action);
     }
     case "confirm": {
@@ -279,7 +281,9 @@ async function follow(
       const pending = action.summary.kind === "cancel" ? host.saved.cancel : undefined;
       if (pending?.follow) return go(pending.follow, {});
       if (pending) return { tool: "sodax_swap_cancel", args: { ...pending.args, cancelTxHash: pending.cancelTxHash } };
-      if ((await host.ask(action, result)) !== true) return { stop: "declined", result };
+      // Only the wallet knows a tx it signed can't land any more: a yes from whoever answers isn't proof.
+      const agreed = action.by === "wallet" ? await host.walletShows(action) : await host.ask(action, result);
+      if (agreed !== true) return { stop: "declined", result };
       return go(action.next);
     }
     case "choose":
@@ -301,6 +305,19 @@ async function follow(
       // A type this runtime doesn't know goes to a person.
       return { stop: "handoff", result };
   }
+}
+
+/** Counts a bounded call against its retryKey: its `onExhausted` once the bound has run out. */
+function count(saved: Saved, action: CallTool): Exhausted | undefined {
+  const { maxAttempts, retryKey, onExhausted } = action;
+  if (maxAttempts === undefined || !retryKey || !onExhausted) return undefined;
+  saved.attempts ??= {};
+  // A consecutive bound starts again after any other call: only failures in a row add up.
+  if (action.consecutive && saved.lastKey !== retryKey) saved.attempts[retryKey] = 0;
+  const made = saved.attempts[retryKey] ?? 0;
+  if (made >= maxAttempts) return onExhausted;
+  saved.attempts[retryKey] = made + 1;
+  return undefined;
 }
 ```
 

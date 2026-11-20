@@ -4,7 +4,7 @@ import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode } from "../servic
 import type { SwapQuote } from "../services/swap/quote.js";
 import type { Resolution } from "../services/swap/resolver.js";
 import type { SwapsApiToken } from "../services/swap/tokens.js";
-import { actionsOf, contractBreaks, unboundedTopCall } from "./__fixtures__/nextActionChecks.js";
+import { actionsOf, contractBreaks, unboundedAnswers, unboundedTopCall } from "./__fixtures__/nextActionChecks.js";
 import type { ToolResult } from "./__fixtures__/nextActionRuntime.js";
 import {
   ARBITRUM,
@@ -25,6 +25,8 @@ import type { CallTool, Decision, NextAction, SwapToolName } from "./nextAction.
 import { balanceDecision, errorDecision, quoteDecision, resolveDecision } from "./swapDecisions.js";
 
 const ARGS = { txHash: TX, chain: ARBITRUM.key, quoteId: QUOTE_ID };
+const HELP_DESK = { nextAction: { type: "external", reason: "help_desk" }, terminal: false };
+const ENDED = { nextAction: { type: "none" }, terminal: true };
 
 /** A tool result as the decision it carries. */
 const decided = (result: ToolResult) => result as unknown as Decision;
@@ -199,6 +201,14 @@ describe("every decision", () => {
     if (call) expect(UNBOUNDED_OK.has(name), `${name} calls ${call.tool} unbounded`).toBe(true);
   });
 
+  // Price asks for what prepare needs: a step on, never back, as prepare doesn't price.
+  it.each(ALL.filter(([name]) => name !== "price"))(
+    "%s bounds every call a person's answer leads back to",
+    (_, decision) => {
+      expect(unboundedAnswers(decision.nextAction)).toEqual([]);
+    },
+  );
+
   it.each(TRACKED)("%s writes back only the swap it found", (_, decision) => {
     const found: Record<string, unknown[]> = {
       txHash: [TX],
@@ -343,7 +353,16 @@ describe("trackDecision", () => {
     expect(find("track failed, cancellable").nextAction).toEqual({
       type: "confirm",
       summary: { kind: "cancel", chain: ARBITRUM.key, txHash: TX },
-      next: { type: "call_tool", tool: "sodax_swap_cancel", args: ARGS, afterSec: 0 },
+      // Every cancel the user agrees to shares one budget, whichever result offered it.
+      next: {
+        type: "call_tool",
+        tool: "sodax_swap_cancel",
+        args: ARGS,
+        afterSec: 0,
+        maxAttempts: 3,
+        retryKey: "sodax_swap_cancel:ask:cancel",
+        onExhausted: HELP_DESK,
+      },
     });
     expect(find("track not_submitted deposit_mismatch").nextAction).toMatchObject({
       type: "provide",
@@ -408,21 +427,38 @@ describe("cancelDecision", () => {
     expect(find("cancel cancel_awaiting_confirmation").nextAction).toMatchObject({
       args: { ...ARGS, cancelTxHash: CANCEL_TX },
       maxAttempts: 10,
-      // A new cancel only once the user confirms this one was never sent.
+      // A new cancel only once the wallet's own record shows this one can never land.
       onExhausted: {
         nextAction: {
           type: "confirm",
           summary: { kind: "unsent_cancel", chain: ARBITRUM.key, txHash: TX, cancelTxHash: CANCEL_TX },
-          next: { type: "call_tool", tool: "sodax_swap_cancel", args: ARGS, afterSec: 0 },
+          by: "wallet",
+          next: {
+            type: "call_tool",
+            tool: "sodax_swap_cancel",
+            args: ARGS,
+            afterSec: 0,
+            maxAttempts: 3,
+            retryKey: "sodax_swap_cancel:ask:cancel",
+            onExhausted: HELP_DESK,
+          },
         },
         terminal: false,
       },
     });
-    // Another cancel costs gas again: the user confirms it, never a loop of signatures.
+    // Another cancel costs gas again: the user confirms it, from the same budget.
     expect(find("cancel cancel_failed").nextAction).toEqual({
       type: "confirm",
       summary: { kind: "cancel", chain: ARBITRUM.key, txHash: TX },
-      next: { type: "call_tool", tool: "sodax_swap_cancel", args: ARGS, afterSec: 0 },
+      next: {
+        type: "call_tool",
+        tool: "sodax_swap_cancel",
+        args: ARGS,
+        afterSec: 0,
+        maxAttempts: 3,
+        retryKey: "sodax_swap_cancel:ask:cancel",
+        onExhausted: HELP_DESK,
+      },
     });
   });
 
@@ -432,11 +468,15 @@ describe("cancelDecision", () => {
       chain: ARBITRUM.key,
       stepsAt: "steps",
       waitFor: "receipt_success",
+      // Counted before the wallet signs: three cancels for one swap, whatever led here.
       afterSend: {
         type: "call_tool",
         tool: "sodax_swap_cancel",
         args: ARGS,
         afterSec: 0,
+        maxAttempts: 3,
+        retryKey: "sodax_swap_cancel:send",
+        onExhausted: HELP_DESK,
         on: "broadcast",
         needs: ["cancelTxHash"],
       },
@@ -531,7 +571,15 @@ describe("errorDecision", () => {
       type: "choose",
       field: "fromChain",
       options: [option],
-      next: { type: "call_tool", tool: "sodax_swap_price", sameArgs: true, afterSec: 0 },
+      next: {
+        type: "call_tool",
+        tool: "sodax_swap_price",
+        sameArgs: true,
+        afterSec: 0,
+        maxAttempts: 3,
+        retryKey: "sodax_swap_price:ask:UNSUPPORTED_SOURCE",
+        onExhausted: ENDED,
+      },
     });
     expect(failed("RESTRICTED_TOKEN", "sodax_swap_prepare", { side: "to", field: "toToken" }).nextAction).toMatchObject(
       {
@@ -548,7 +596,16 @@ describe("errorDecision", () => {
       next: {
         type: "provide",
         fields: [{ name: "txHash" }],
-        next: { type: "call_tool", tool: "sodax_swap_submit_and_track", sameArgs: true, afterSec: 0 },
+        next: {
+          type: "call_tool",
+          tool: "sodax_swap_submit_and_track",
+          sameArgs: true,
+          afterSec: 0,
+          maxAttempts: 3,
+          retryKey: "sodax_swap_submit_and_track:ask:SECRET_REJECTED",
+          // After a send, a bound that runs out goes to the help desk, never ends the workflow.
+          onExhausted: HELP_DESK,
+        },
       },
     });
   });
@@ -564,7 +621,16 @@ describe("errorDecision", () => {
       {
         type: "confirm",
         summary: { kind: "amount", amount: "1.5", symbol: "USDC" },
-        next: { type: "call_tool", tool: "sodax_swap_price", sameArgs: true, args: { amount: "1.5" }, afterSec: 0 },
+        next: {
+          type: "call_tool",
+          tool: "sodax_swap_price",
+          sameArgs: true,
+          args: { amount: "1.5" },
+          afterSec: 0,
+          maxAttempts: 3,
+          retryKey: "sodax_swap_price:ask:AMOUNT_TOO_LOW",
+          onExhausted: ENDED,
+        },
       },
     );
     expect(type(failed("AMOUNT_TOO_LOW", "sodax_swap_price"))).toBe("provide");

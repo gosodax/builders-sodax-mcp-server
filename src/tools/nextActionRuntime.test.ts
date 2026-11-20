@@ -26,8 +26,13 @@ interface Script {
   answers?: { [Type in Asked["type"]]?: (action: Extract<Asked, { type: Type }>) => Args | boolean | undefined };
   wallet?: () => { hash: string } | { batchId: string };
   batch?: (batchId: string) => string | undefined;
+  /** Whether the wallet's record shows what a `by: "wallet"` confirm asks. */
+  walletShows?: () => boolean;
   saved?: Saved;
 }
+
+// Far past any bound: a runtime that gets here never stops on its own.
+const RUNAWAY = 200;
 
 const PRICE_ARGS = { fromChain: "arb", fromToken: "USDC", toChain: "sonic", toToken: "S", amount: "5" };
 const TRACK_ARGS = { txHash: TX, chain: ARBITRUM.key, quoteId: QUOTE_ID };
@@ -54,6 +59,7 @@ function harness(script: Script) {
   const host: Host = {
     async call(tool, args) {
       calls.push({ tool, args });
+      if (calls.length > RUNAWAY) throw new Error("the runtime never stopped");
       return actionOnly(script.respond(tool, args, calls.filter(made => made.tool === tool).length, now));
     },
     async sleep(seconds) {
@@ -71,6 +77,10 @@ function harness(script: Script) {
     },
     async batchHash(batchId) {
       return script.batch?.(batchId);
+    },
+    async walletShows() {
+      asked.push("wallet");
+      return script.walletShows?.() ?? false;
     },
     saved: script.saved ?? {},
   };
@@ -346,8 +356,8 @@ describe("the reference runtime", () => {
     expect(first.sends() + second.sends() + third.sends()).toBe(1);
   });
 
-  /** A cancel the wallet reports pending forever, and a new one confirmed at once. */
-  const unsentCancel = () =>
+  /** A cancel no node ever confirms, a new one confirmed at once, and an agent that agrees to everything. */
+  const unsentCancel = (dropped: boolean) =>
     harness({
       respond: (_, args) =>
         args.cancelTxHash === CANCEL_TX
@@ -355,30 +365,100 @@ describe("the reference runtime", () => {
           : args.cancelTxHash
             ? cancelled({ status: "cancel_confirmed" })
             : cancelled({ status: "ready", steps: [{ kind: "cancel", chainId: 42161, tx: {} }] }),
-      answers: { confirm: action => action.summary.kind === "unsent_cancel" && neverSent },
+      answers: { confirm: () => true },
+      walletShows: () => dropped,
       wallet: () => ({ hash: `0x${"d".repeat(64)}` }),
     });
-  let neverSent = false;
 
-  it("builds a new cancel only once the user confirms the pending one was never sent", async () => {
-    neverSent = true;
-    const swap = unsentCancel();
+  it("builds a new cancel only once the wallet shows the pending one can never land", async () => {
+    const swap = unsentCancel(true);
     const ending = await run(swap.host, { tool: CANCEL, args: { ...TRACK_ARGS, cancelTxHash: CANCEL_TX } });
     expect(ending).toMatchObject({ stop: "terminal", outcome: "cancelled" });
-    // Ten re-reads of the unsent one, then the user's explicit "never sent" builds and sends a new one.
-    expect(swap.asked).toEqual(["confirm"]);
+    // Ten re-reads of the unsent one, then the wallet's record, not a yes, builds and sends a new one.
+    expect(swap.asked).toEqual(["wallet"]);
     expect(swap.of(CANCEL).filter(made => !made.args.cancelTxHash)).toHaveLength(1);
     expect(swap.sends()).toBe(1);
   });
 
-  it("never builds another cancel while the user can't say the pending one was never sent", async () => {
-    neverSent = false;
-    const swap = unsentCancel();
+  it("never replaces a pending cancel on an agent's yes alone", async () => {
+    const swap = unsentCancel(false);
     expect(await run(swap.host, { tool: CANCEL, args: { ...TRACK_ARGS, cancelTxHash: CANCEL_TX } })).toMatchObject({
       stop: "declined",
     });
     expect(swap.of(CANCEL).filter(made => !made.args.cancelTxHash)).toEqual([]);
     expect(swap.sends()).toBe(0);
+  });
+
+  it("sends at most three cancels for one swap, however often the agent agrees to another", async () => {
+    const swap = harness({
+      respond: (_, args) =>
+        args.cancelTxHash
+          ? cancelled({ status: "cancel_failed" })
+          : cancelled({ status: "ready", steps: [{ kind: "cancel", chainId: 42161, tx: {} }] }),
+      answers: { confirm: () => true },
+      wallet: () => ({ hash: CANCEL_TX }),
+    });
+    expect(await run(swap.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
+    expect(swap.sends()).toBe(3);
+    expect(swap.asked.at(-1)).toBe("external:help_desk");
+  });
+
+  it("shares one budget between failed cancels and dropped ones", async () => {
+    let sent = 0;
+    const swap = harness({
+      respond: (_, args) => {
+        if (!args.cancelTxHash)
+          return cancelled({ status: "ready", steps: [{ kind: "cancel", chainId: 42161, tx: {} }] });
+        // The first cancel fails, the second never lands, the third fails.
+        return String(args.cancelTxHash).endsWith("2")
+          ? cancelled({ status: "cancel_awaiting_confirmation", retryAfterSec: 15, cancelTxHash: args.cancelTxHash })
+          : cancelled({ status: "cancel_failed" });
+      },
+      answers: { confirm: () => true },
+      walletShows: () => true,
+      wallet: () => ({ hash: `0x${String(++sent).padStart(64, "0")}` }),
+    });
+    expect(await run(swap.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
+    expect(swap.asked).toEqual(["confirm", "wallet", "confirm", "external:help_desk"]);
+    expect(swap.sends()).toBe(3);
+  });
+
+  it("stops preparing a swap whose destination the agent keeps calling ready", async () => {
+    const swap = harness({ respond: (_, args) => failure("DESTINATION_NOT_READY", "sodax_swap_prepare", args) });
+    expect(await run(swap.host, { tool: "sodax_swap_prepare", args: PRICE_ARGS })).toMatchObject({ stop: "terminal" });
+    // The first prepare, then three more once the person said it's ready.
+    expect(swap.of("sodax_swap_prepare")).toHaveLength(4);
+  });
+
+  it("stops asking for a hash when no node has seen any the agent gives, with no quote to go by", async () => {
+    let given = 0;
+    const swap = harness({
+      respond: (_, args) =>
+        tracked({ status: "source_not_found", quoteId: undefined }, ref(ARBITRUM, String(args.txHash))),
+      answers: { provide: () => ({ txHash: `0x${String(++given).padStart(64, "0")}` }) },
+    });
+    expect(await run(swap.host, { tool: TRACK, args: { txHash: TX, chain: ARBITRUM.key } })).toMatchObject({
+      stop: "handoff",
+    });
+    expect(swap.of(TRACK)).toHaveLength(4);
+    expect(swap.asked.at(-1)).toBe("external:help_desk");
+  });
+
+  it("resumes a pending cancel with the chain the user added once its quote was lost", async () => {
+    const saved: Saved = {};
+    const lost = { txHash: TX, quoteId: QUOTE_ID, cancelTxHash: CANCEL_TX };
+    const first = harness({
+      saved,
+      respond: (_, args) => {
+        if (args.chain) throw new Error("the session dropped");
+        return failure("QUOTE_NOT_FOUND", CANCEL, args, { field: "chain" });
+      },
+      answers: { provide: () => ({ chain: ARBITRUM.key }) },
+    });
+    await expect(run(first.host, { tool: CANCEL, args: lost })).rejects.toThrow("dropped");
+    const second = harness({ saved, respond: () => cancelled({ status: "cancel_confirmed" }) });
+    await run(second.host, { tool: CANCEL, args: lost });
+    expect(second.calls).toEqual([{ tool: CANCEL, args: { ...TRACK_ARGS, cancelTxHash: CANCEL_TX } }]);
   });
 
   it("resumes with the hash the user corrected, not the one first tracked", async () => {

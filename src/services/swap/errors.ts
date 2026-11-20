@@ -2,29 +2,32 @@
 
 import { GET_A_KEY, SWAP_HELP } from "../../constants.js";
 
-export type ActionErrorCode =
-  | "UNSUPPORTED_CHAIN"
-  | "UNSUPPORTED_SOURCE"
-  | "UNKNOWN_TOKEN"
-  | "RESTRICTED_TOKEN"
-  | "INVALID_AMOUNT"
-  | "INVALID_ADDRESS"
-  | "INVALID_TX_HASH"
-  | "AMOUNT_TOO_LOW"
-  | "DEADLINE_TOO_SHORT"
-  | "DESTINATION_NOT_READY"
-  | "SWAP_REJECTED"
-  | "SWAP_MISMATCH"
-  | "PRICE_OFF_MARKET"
-  | "SECRET_REJECTED"
-  | "QUOTE_NOT_FOUND"
-  | "QUOTE_MISMATCH"
-  | "QUOTE_KEY_MISMATCH"
-  | "API_KEY_REQUIRED"
-  | "RATE_LIMITED"
-  | "CHAIN_UNAVAILABLE"
-  | "UPSTREAM_UNAVAILABLE"
-  | "INTERNAL";
+export const ACTION_ERROR_CODES = [
+  "UNSUPPORTED_CHAIN",
+  "UNSUPPORTED_SOURCE",
+  "UNKNOWN_TOKEN",
+  "RESTRICTED_TOKEN",
+  "INVALID_AMOUNT",
+  "INVALID_ADDRESS",
+  "INVALID_TX_HASH",
+  "AMOUNT_TOO_LOW",
+  "DEADLINE_TOO_SHORT",
+  "DESTINATION_NOT_READY",
+  "SWAP_REJECTED",
+  "SWAP_MISMATCH",
+  "PRICE_OFF_MARKET",
+  "SECRET_REJECTED",
+  "QUOTE_NOT_FOUND",
+  "QUOTE_MISMATCH",
+  "QUOTE_KEY_MISMATCH",
+  "API_KEY_REQUIRED",
+  "RATE_LIMITED",
+  "CHAIN_UNAVAILABLE",
+  "UPSTREAM_UNAVAILABLE",
+  "INTERNAL",
+] as const;
+
+export type ActionErrorCode = (typeof ACTION_ERROR_CODES)[number];
 
 /** Failures that may pass on their own: calling again with the same arguments can work. */
 export const RETRYABLE_CODES: readonly ActionErrorCode[] = [
@@ -50,7 +53,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   UNSUPPORTED_CHAIN: "Ask the user which chain in error.supportedChains they mean and pass its key.",
   UNSUPPORTED_SOURCE: "A swap can't start from that chain: ask the user to swap from another one.",
   UNKNOWN_TOKEN:
-    "Call sodax_resolve_token for that token (error.side says which, when there are two) and follow its nextStep.",
+    "Ask the user which token they mean (error.side says which side, when there are two; sodax_resolve_token lists candidates), then call the same tool again with it.",
   RESTRICTED_TOKEN: "Ask the user to pick a different token for that side of the swap.",
   INVALID_AMOUNT: "Ask the user for the amount as a plain number in token units, e.g. 0.5.",
   INVALID_ADDRESS: "Ask the user for a valid address on that chain.",
@@ -81,18 +84,38 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INTERNAL: `${RETRY_LATER} ${SWAP_HELP}`,
 };
 
+/** A value the user can pick to fix a failure: what it's called, and the arguments it sets. */
+export interface ErrorOption {
+  label: string;
+  args: Record<string, string>;
+}
+
+/**
+ * What a failure's next action needs beyond its details, never returned as is: `options` from the catalog for the
+ * user to pick from, or the canonical arguments of the balance read that explains it.
+ */
+export interface ErrorHint {
+  options?: ErrorOption[];
+  balance?: { chain: string; address: string; token: string };
+}
+
 export class ActionError extends Error {
   readonly nextStep: string;
   readonly details?: Record<string, unknown>;
+  readonly hint?: ErrorHint;
+  /** Calling again with the same arguments can work: its code's default, unless the throw site knows better. */
+  readonly retryable: boolean;
 
   constructor(
     readonly code: ActionErrorCode,
     message: string,
-    options: { nextStep?: string; details?: Record<string, unknown> } = {},
+    options: { nextStep?: string; details?: Record<string, unknown>; hint?: ErrorHint; retryable?: boolean } = {},
   ) {
     super(message);
     this.name = "ActionError";
     this.nextStep = options.nextStep ?? DEFAULT_NEXT_STEP[code];
     this.details = options.details;
+    this.hint = options.hint;
+    this.retryable = options.retryable ?? RETRYABLE_CODES.includes(code);
   }
 }

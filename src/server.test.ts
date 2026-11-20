@@ -132,9 +132,7 @@ describe("instructions", () => {
     expect(swap).toContain("sodax_swap_submit_and_track");
     expect(swap).toContain("sodax_swap_cancel");
     expect(swap).toContain("To show or watch a price, call `sodax_swap_price`");
-    expect(swap).toContain(
-      "again after retryAfterSec seconds while the result has one; after an error, follow its nextStep",
-    );
+    expect(swap).toContain("carries nextAction: follow it until the result is terminal");
     expect(swap).not.toContain("sodax_check_chain_support");
     expect(swap).not.toContain("sodax_relay_submit_tx");
     expect(await instructions({ builder: true, swap: true })).toBe(

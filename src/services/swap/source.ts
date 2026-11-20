@@ -11,7 +11,7 @@ import { hubIntentClosed } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
 import { getCachedQuote } from "./quoteCache.js";
-import { isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
+import { chainOptions, isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
 import { depositMessages } from "./sourceTx.js";
 import { hexBytes } from "./sources/bytes.js";
 import { pinnedSourceOf, sourceChainKeys } from "./sources/index.js";
@@ -63,9 +63,11 @@ function unsupportedSource(
   const nextStep = sent
     ? `No swap can start from ${chain.name}: ask the user which chain they sent the swap from${names && ` (one of ${names})`} and pass its key.`
     : names && `A swap can start only from ${names}: ask the user to swap from one of them.`;
+  const field = sent ? "chain" : "fromChain";
   return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here.`, {
     nextStep: nextStep || undefined,
-    details: sources.length > 0 ? { sourceChains: sources } : undefined,
+    details: { field, ...(sources.length > 0 && { sourceChains: sources }) },
+    hint: { options: chainOptions(sources, field) },
   });
 }
 
@@ -97,15 +99,22 @@ export async function resolveSource(input: { quoteId?: string; chain?: string })
   if (cached) {
     const chain = toChain(cached.srcChainKey);
     if (input.chain && !namesChain(input.chain, chain.key)) {
-      throw new ActionError("QUOTE_MISMATCH", "That quote is for another source chain.");
+      throw new ActionError("QUOTE_MISMATCH", "That quote is for another source chain.", {
+        details: { field: "quoteId" },
+      });
     }
     return { chain, ...pinnedSource(chain), quote: cached };
   }
   if (!input.chain) {
-    if (!input.quoteId) throw new ActionError("QUOTE_NOT_FOUND", "Pass the quoteId or the source chain.");
+    if (!input.quoteId) {
+      throw new ActionError("QUOTE_NOT_FOUND", "Pass the quoteId or the source chain.", {
+        details: { field: "chain" },
+      });
+    }
     // With the chain the tx is still checked, and a stranded deposit reported.
     throw new ActionError("QUOTE_NOT_FOUND", "That quote has expired, or was lost when this server restarted.", {
       nextStep: "Call again with the same arguments plus chain set to the swap's source chain key.",
+      details: { field: "chain" },
     });
   }
   const catalog = await getSwapCatalog();

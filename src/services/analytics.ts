@@ -1,7 +1,7 @@
 /**
  * Analytics Service — PostHog integration, and the per-call records for unified logging (#110).
  *
- * Wraps every MCP tool call through server.tool(): each call runs under its own `request.id`, gets one
+ * Wraps every MCP tool call through server.tool() and server.registerTool(): each call runs under its own `request.id`, gets one
  * "Tool call" log record (outcome, duration, the ids a swap is followed by), and one PostHog event.
  * Events are sent asynchronously and never block tool responses.
  *
@@ -186,7 +186,7 @@ function whereThrown(error: unknown): { type: string; stack?: string } {
 // ── Server wrapper ───────────────────────────────────────────────────
 
 /**
- * Monkey-patches server.tool() so every registered tool is
+ * Monkey-patches server.tool() and server.registerTool() so every registered tool is
  * automatically wrapped with PostHog event tracking.
  *
  * Call this BEFORE registering any tools.
@@ -195,53 +195,59 @@ function whereThrown(error: unknown): { type: string; stack?: string } {
  *                   Pass hashClientIp(req.ip) from the request handler.
  */
 export function withAnalytics(server: McpServer, clientId?: string): void {
-  const originalTool = server.tool.bind(server);
   // A refused call is named only when its tool exists: registered here, or in the registry (a swap tool called without
   // a key). `handled` holds the calls that reached a handler, so only the SDK's own refusals are logged below.
   const registered = new Set<string>();
   const handled = new WeakSet<object>();
 
-  (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (...allArgs: unknown[]) => {
-    const toolName = allArgs[0] as string;
-    registered.add(toolName);
-    const lastIdx = allArgs.length - 1;
-    const handler = allArgs[lastIdx];
+  // Both overloads take the tool's name first and its handler last; a tool with an output schema uses registerTool.
+  type Register = (...args: unknown[]) => unknown;
+  const instrumented =
+    (register: Register): Register =>
+    (...allArgs: unknown[]) => {
+      const toolName = allArgs[0] as string;
+      registered.add(toolName);
+      const lastIdx = allArgs.length - 1;
+      const handler = allArgs[lastIdx];
 
-    if (typeof handler === "function") {
-      const run = handler as (...args: unknown[]) => unknown;
-      // Every record of one call carries a `request.id` (#110): the HTTP request's when there is one, else its own (stdio).
-      allArgs[lastIdx] = (...handlerArgs: unknown[]) => {
-        const extra = handlerArgs.at(-1);
-        if (extra && typeof extra === "object") handled.add(extra);
-        const context = getRequestContext();
-        return runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, async () => {
-          const start = Date.now();
-          try {
-            const result = await run(...handlerArgs);
-            const outcome = resultOutcome(toolName, result);
-            const durationMs = Date.now() - start;
-            logToolCall(toolName, durationMs, outcome, result);
-            trackToolCall(toolName, durationMs, outcome, clientId);
-            return result;
-          } catch (err) {
-            const durationMs = Date.now() - start;
-            // Named as a returned failure would be, but logged as a bug whatever its cause: tools return their failures.
-            const { code } = classifyFailure(err);
-            logToolCall(toolName, durationMs, { success: false, error_code: code }, undefined, { code, thrown: err });
-            trackToolCall(
-              toolName,
-              durationMs,
-              { success: false, error_code: code, error_message: String(err) },
-              clientId,
-            );
-            throw err;
-          }
-        });
-      };
-    }
+      if (typeof handler === "function") {
+        const run = handler as (...args: unknown[]) => unknown;
+        // Every record of one call carries a `request.id` (#110): the HTTP request's when there is one, else its own (stdio).
+        allArgs[lastIdx] = (...handlerArgs: unknown[]) => {
+          const extra = handlerArgs.at(-1);
+          if (extra && typeof extra === "object") handled.add(extra);
+          const context = getRequestContext();
+          return runWithRequestContext({ ...context, requestId: context.requestId ?? randomUUID() }, async () => {
+            const start = Date.now();
+            try {
+              const result = await run(...handlerArgs);
+              const outcome = resultOutcome(toolName, result);
+              const durationMs = Date.now() - start;
+              logToolCall(toolName, durationMs, outcome, result);
+              trackToolCall(toolName, durationMs, outcome, clientId);
+              return result;
+            } catch (err) {
+              const durationMs = Date.now() - start;
+              // Named as a returned failure would be, but logged as a bug whatever its cause: tools return their failures.
+              const { code } = classifyFailure(err);
+              logToolCall(toolName, durationMs, { success: false, error_code: code }, undefined, { code, thrown: err });
+              trackToolCall(
+                toolName,
+                durationMs,
+                { success: false, error_code: code, error_message: String(err) },
+                clientId,
+              );
+              throw err;
+            }
+          });
+        };
+      }
 
-    return (originalTool as unknown as (...args: unknown[]) => unknown)(...allArgs);
-  };
+      return register(...allArgs);
+    };
+  const overloads = server as unknown as Record<"tool" | "registerTool", Register>;
+  overloads.tool = instrumented(server.tool.bind(server) as Register);
+  overloads.registerTool = instrumented(server.registerTool.bind(server) as Register);
 
   // The SDK answers an unknown tool or invalid arguments itself, as `isError`, before any handler runs (#110): that
   // call gets its record here. `server.server` is the protocol layer McpServer installs its tools/call handler on.

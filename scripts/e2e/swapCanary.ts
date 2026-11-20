@@ -328,7 +328,7 @@ export async function track(env: Env, quote: ReadyQuote, txHash: Hex, call = cal
     } else {
       log(`status ${out.status}${out.status === "in_progress" ? ` (${out.stage})` : ""}`);
       if (out.status === "solved") return;
-      if (out.status === "failed") throw new Failure(`ended failed: ${out.outcome}, canCancel ${out.canCancel}`);
+      if (out.status === "failed") throw new Failure(`ended failed: ${out.failure}, canCancel ${out.canCancel}`);
       if (!PENDING.includes(out.status)) throw new Failure(`ended ${out.status}`);
     }
     const retryAfterSec =

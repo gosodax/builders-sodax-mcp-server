@@ -48,15 +48,17 @@ export type CancelState =
   /** That refund's relay failed; the next call tries again. */
   | { status: "expired_unsubmitted"; alerted: boolean; retryAfterSec: number }
   | { status: "ready"; steps: [CancelStep] }
-  | { status: "cancel_awaiting_confirmation"; retryAfterSec: number }
+  /** `cancelTxHash`: the sent cancel, as its chain spells it. */
+  | { status: "cancel_awaiting_confirmation"; retryAfterSec: number; cancelTxHash: string }
   | { status: "cancel_failed" }
   | { status: "not_a_cancel_tx" }
   /** `unverified`: its events couldn't be read, so only the relay checked that it's this swap's cancel. */
-  | { status: "cancel_relayed"; unverified?: true }
+  | { status: "cancel_relayed"; cancelTxHash: string; unverified?: true }
   /** A swap from the hub: the cancel ran there, so nothing is relayed. */
   | { status: "cancel_confirmed" };
 
-export type CancelResult = SwapRef & CancelState;
+/** `cancelTxHash`: the cancel the call named, checked, on any result that came before it was read. */
+export type CancelResult = SwapRef & { cancelTxHash?: string } & CancelState;
 
 export async function cancelSwap(input: {
   txHash: string;
@@ -99,7 +101,14 @@ export async function cancelSwap(input: {
     if (unsubmitted) return unsubmitted;
   }
   const hubTxHash = row?.result?.dstIntentTxHash;
-  if (reason || !hubTxHash) return { ...base, status: "not_cancellable", reason: reason ?? "not_on_hub_yet" };
+  if (reason || !hubTxHash) {
+    return {
+      ...base,
+      ...(cancelTxHash && { cancelTxHash }),
+      status: "not_cancellable",
+      reason: reason ?? "not_on_hub_yet",
+    };
+  }
   // Only a deposit track checked is the quote's: any other tx's intent says nothing about it.
   if (quote && quote.depositTxHash !== txHash) {
     throw quoteMismatch("That quote has no checked deposit in this transaction.");
@@ -128,7 +137,7 @@ export async function cancelSwap(input: {
     });
   }
   if (!receipt || !cancelTxHash) return readyCancel(base, source, intent, hubTxHash, quote);
-  if (receipt.kind === "hub") return hubCancelled(base, source, intent, hubTxHash, receipt, quote);
+  if (receipt.kind === "hub") return hubCancelled(base, source, intent, hubTxHash, receipt, cancelTxHash, quote);
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
   if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
@@ -145,7 +154,12 @@ export async function cancelSwap(input: {
   if (!(await relaySpokeTx(intent.srcChain, cancelTxHash, data))) {
     throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay didn't take the cancel.");
   }
-  return { ...base, status: "cancel_relayed", ...(receipt.unreadable && { unverified: true as const }) };
+  return {
+    ...base,
+    status: "cancel_relayed",
+    cancelTxHash,
+    ...(receipt.unreadable && { unverified: true as const }),
+  };
 }
 
 /**
@@ -195,7 +209,9 @@ async function hubCancel(
   // A swap from the hub created its intent itself.
   if (!cancelTxHash) return readyCancel(base, source, quote.intent, base.txHash, quote);
   const receipt = await sentCancel(base, source, cancelTxHash, quote.srcAddress);
-  return "status" in receipt ? receipt : hubCancelled(base, source, quote.intent, base.txHash, receipt, quote);
+  return "status" in receipt
+    ? receipt
+    : hubCancelled(base, source, quote.intent, base.txHash, receipt, cancelTxHash, quote);
 }
 
 /**
@@ -248,7 +264,9 @@ async function sentCancel(
   sender?: string,
 ): Promise<SourceTx | CancelResult> {
   const receipt = await readSourceTx(source, cancelTxHash, sender);
-  if (receipt === null) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
+  if (receipt === null) {
+    return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC, cancelTxHash };
+  }
   // A failed cancel is a new one to send, whether or not its events could be read.
   if (receipt.failed || (receipt.kind === "spoke" && receipt.unreadable?.failed)) {
     return { ...base, status: "cancel_failed" };
@@ -266,6 +284,7 @@ async function hubCancelled(
   intent: Intent,
   createdIn: string,
   receipt: SourceTx,
+  cancelTxHash: string,
   quote?: CachedQuote,
 ): Promise<CancelResult> {
   const hash = intentHash(intent);
@@ -274,7 +293,9 @@ async function hubCancelled(
   }
   // The hub deletes a cancelled intent, so the same one may be created again: an earlier cancel isn't this one's.
   const created = await readSourceTx(source, createdIn);
-  if (!created) return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC };
+  if (!created) {
+    return { ...base, status: "cancel_awaiting_confirmation", retryAfterSec: RETRY_AFTER_SEC, cancelTxHash };
+  }
   if (created.kind !== "hub" || !minedAfter(receipt, created)) return { ...base, status: "not_a_cancel_tx" };
   if (quote) markHubOutcome(quote, "cancelled");
   return { ...base, status: "cancel_confirmed" };
@@ -288,6 +309,7 @@ const minedAfter = (later: Mined, earlier: Mined) =>
 const quoteMismatch = (message: string) =>
   new ActionError("QUOTE_MISMATCH", message, {
     nextStep: "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
+    details: { field: "quoteId" },
   });
 
 /**
@@ -315,6 +337,7 @@ async function depositsIntent(
     if (!source.adapter.prunes) throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${name} right now.`);
     throw new ActionError("QUOTE_NOT_FOUND", `Without its quote, this server can't check this swap on ${name}.`, {
       nextStep: `${name}'s node no longer has the swap's transaction. Call sodax_swap_cancel again with its quoteId if the user has it; if not, tell the user this server can't cancel it, that it is safe on the SODAX hub, and to give its transaction hash to ${SODAX_HELP_DESK}.`,
+      details: { field: "quoteId" },
     });
   }
   // Events it can't read prove nothing either way: not an upstream mismatch.

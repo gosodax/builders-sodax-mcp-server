@@ -37,6 +37,8 @@ export type ToolOut = Record<string, unknown> & {
 /** Calls a swap tool on a fresh connection and closes it. */
 export async function callTool<Out = ToolOut>(name: string, args: Record<string, unknown>) {
   const client = await swapClient();
+  // Listed first, so the client checks every result, errors included, against the tool's output schema.
+  await client.listTools();
   const result = await client.callTool({ name, arguments: args });
   await client.close();
   return { isError: result.isError, out: result.structuredContent as Out };

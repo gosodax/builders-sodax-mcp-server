@@ -12,7 +12,7 @@ import { callerKeyHash } from "../requestContext.js";
 import { intentHash, isHubChain } from "../sodax.js";
 import { TtlCache } from "../ttlCache.js";
 import { alertOperator } from "./alerts.js";
-import { ActionError, RETRYABLE_CODES } from "./errors.js";
+import { ActionError } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
@@ -108,7 +108,8 @@ export type TrackState =
       /** With the quote: `complete` to a hub recipient, else `in_transit` (one more cross-chain hop). */
       delivery?: "complete" | "in_transit";
     }
-  | { status: "failed"; failedAtStep?: string; outcome: TrackOutcome; canCancel: boolean }
+  /** `failure`: how the backend's failed row ended (the result's `outcome` is where the funds are). */
+  | { status: "failed"; failedAtStep?: string; failure: TrackOutcome; canCancel: boolean }
   /** A backend status this server doesn't know, past the quote's deadline or without a quote. */
   | { status: "unknown" };
 
@@ -292,7 +293,7 @@ function alertStranded(source: SwapSource, ...[kind, fields]: Parameters<typeof 
  * swap: past the claim it's retried, and from the deadline on the same call relays it for refund.
  */
 const isRefusal = (error: unknown): error is ActionError =>
-  error instanceof ActionError && !RETRYABLE_CODES.includes(error.code) && error.code !== "API_KEY_REQUIRED";
+  error instanceof ActionError && !error.retryable && error.code !== "API_KEY_REQUIRED";
 
 /** The error for the agent past the claim: never "get a new key", which leads to a second quote and deposit. */
 const retryable = (error: unknown) =>
@@ -423,7 +424,7 @@ function handedOverState(how: Exclude<NonNullable<CachedQuote["handedOver"]>, "l
     case "relayed_for_refund":
       return { status: "expired_refunding" };
     case "cancelled":
-      return { status: "failed", outcome: "cancelled", canCancel: false };
+      return { status: "failed", failure: "cancelled", canCancel: false };
     case "closed":
       return { status: "intent_closed" };
   }
@@ -506,7 +507,7 @@ function fromStatus(row: SubmitTxStatus, quote?: CachedQuote): TrackState {
       // The same rule sodax_swap_cancel applies, so track never offers a cancel that cancel refuses.
       const canCancel = whyNotCancellable(row) === undefined;
       const failedAtStep = STATUSES.includes(row.failedAtStep ?? "") ? row.failedAtStep : undefined;
-      return { status: "failed", ...(failedAtStep && { failedAtStep }), outcome: outcomeOf(row, canCancel), canCancel };
+      return { status: "failed", ...(failedAtStep && { failedAtStep }), failure: outcomeOf(row, canCancel), canCancel };
     }
     default: {
       const known = STAGES.includes(row.status);

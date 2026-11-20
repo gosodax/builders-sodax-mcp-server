@@ -1,7 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { ErrorReply, createClient } from "@redis/client";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
 import { getRequestContext, runWithRequestContext } from "../requestContext.js";
+import { REDIS_URLS, openRedisStore, redisServers } from "./__fixtures__/redis.js";
+import { MemoryQuoteStore } from "./memoryQuoteStore.js";
 import {
+  type CachedQuote,
   checkQuoteRoom,
   claimDeposit,
   clearQuoteCache,
@@ -11,12 +16,24 @@ import {
   markSubmitted,
   openQuotes,
   putQuote,
+  sweepDone,
+  useQuoteStore,
 } from "./quoteCache.js";
+import type { QuoteStore } from "./quoteStore.js";
+import { RedisQuoteStore, connectRedisQuoteStore } from "./redisQuoteStore.js";
 
 const NOW = Date.parse("2026-10-26T12:00:00Z");
 const KEY = "a".repeat(64);
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
 
-/** A quote whose deadline is `minutes` from now. */
+// The same tests run against Redis when there's one to test (__fixtures__/redis.ts).
+const STORES: { kind: QuoteStore["kind"]; open: () => Promise<QuoteStore> }[] = [
+  { kind: "memory", open: async () => new MemoryQuoteStore() },
+  ...REDIS_URLS.map(url => ({ kind: "redis" as const, open: () => openRedisStore(url) })),
+];
+
+/** A quote whose deadline is `minutes` from NOW. */
 function quoteDue(minutes: number, keyHash = KEY) {
   const deadline = String(Math.floor(NOW / 1000) + minutes * 60);
   return putQuote({
@@ -51,46 +68,73 @@ function quoteDue(minutes: number, keyHash = KEY) {
   });
 }
 
-/** What `put` threw. */
-function refusal(put: () => unknown): unknown {
-  try {
-    put();
-  } catch (error) {
-    return error;
+/** `count` quotes put a batch at a time: the order between them doesn't matter, and Redis answers faster so. */
+async function quotesDue(count: number, minutes: number, keyHash: (i: number) => string) {
+  const put: CachedQuote[] = [];
+  for (let from = 0; from < count; from += 500) {
+    const batch = Array.from({ length: Math.min(500, count - from) }, (_, i) => quoteDue(minutes, keyHash(from + i)));
+    put.push(...(await Promise.all(batch)));
   }
+  return put;
 }
 
-beforeEach(() => {
-  vi.useFakeTimers({ now: NOW });
-  clearQuoteCache();
-});
+/** What `put` threw. */
+const refusal = (put: Promise<unknown>) =>
+  put.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
 
-afterEach(() => {
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-});
+/** Moves the clock on, firing the sweeps due on the way, and waits for the last of them. */
+async function advance(ms: number) {
+  await vi.advanceTimersByTimeAsync(ms);
+  await sweepDone();
+}
 
-describe("quoteCache", () => {
-  it("keeps a quote until 30 minutes past its deadline", () => {
-    const { quoteId } = quoteDue(15);
-    vi.setSystemTime(NOW + 44 * 60_000);
-    expect(getCachedQuote(quoteId, KEY)?.quoteId).toBe(quoteId);
-    vi.setSystemTime(NOW + 45 * 60_000);
-    expect(getCachedQuote(quoteId, KEY)).toBeUndefined();
+describe.each(STORES)("quoteCache in $kind", ({ open }) => {
+  let store: QuoteStore;
+
+  beforeAll(async () => {
+    store = await open();
   });
 
-  it("records each quote that expires without a deposit within a minute, outside the request that started the sweep", () => {
-    const unused = runWithRequestContext({ requestId: "first-quote" }, () => quoteDue(15));
-    const deposited = quoteDue(15);
-    claimDeposit(deposited.quoteId, "0x01");
+  afterAll(async () => {
+    await store.clear();
+    await store.close();
+    useQuoteStore(new MemoryQuoteStore());
+  });
+
+  beforeEach(async () => {
+    // Real timeouts, so the Redis client and its call timeout run as usual; the sweep's interval is driven by hand.
+    vi.useFakeTimers({ now: NOW, toFake: ["Date", "setInterval", "clearInterval"] });
+    useQuoteStore(store);
+    await clearQuoteCache();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps a quote until 30 minutes past its deadline", async () => {
+    const { quoteId } = await quoteDue(15);
+    vi.setSystemTime(NOW + 44 * MINUTE);
+    expect((await getCachedQuote(quoteId, KEY)) as CachedQuote).toMatchObject({ quoteId, inputAmount: 5000000n });
+    vi.setSystemTime(NOW + 45 * MINUTE);
+    expect(await getCachedQuote(quoteId, KEY)).toBeUndefined();
+  });
+
+  it("records each quote that expires without a deposit within a minute, outside the request that started the sweep", async () => {
+    const unused = await runWithRequestContext({ requestId: "first-quote" }, () => quoteDue(15));
+    await claimDeposit(await quoteDue(15), "0x01");
     const seen: (string | undefined)[] = [];
     const info = vi.spyOn(logger, "info").mockImplementation((() => {
       seen.push(getRequestContext().requestId);
     }) as never);
     // Expiry is 30 minutes past the deadline; the sweep runs once a minute.
-    vi.advanceTimersByTime(45 * 60_000 - 1);
+    await advance(45 * MINUTE - 1);
     expect(info).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(60_000);
+    await advance(MINUTE);
     expect(info.mock.calls).toEqual([
       [
         {
@@ -106,108 +150,129 @@ describe("quoteCache", () => {
     expect(seen).toEqual([undefined]);
   });
 
-  it("leaves an expired quote to the sweep: a lookup finds nothing and writes no record of its own", () => {
+  it("leaves an expired quote to the sweep: a lookup finds nothing and writes no record of its own", async () => {
     const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
-    const { quoteId } = quoteDue(15);
-    vi.setSystemTime(NOW + 45 * 60_000);
-    expect(getCachedQuote(quoteId, KEY)).toBeUndefined();
-    expect(getCachedQuote(quoteId, "b".repeat(64))).toBeUndefined();
+    const { quoteId } = await quoteDue(15);
+    vi.setSystemTime(NOW + 45 * MINUTE);
+    expect(await getCachedQuote(quoteId, KEY)).toBeUndefined();
+    expect(await getCachedQuote(quoteId, "b".repeat(64))).toBeUndefined();
     expect(info).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(60_000);
+    await advance(MINUTE);
     expect(info).toHaveBeenCalledTimes(1);
   });
 
-  it("serves a quote only to the key that made it, and says so to another", () => {
-    const { quoteId } = quoteDue(15);
-    expect(getCachedQuote(quoteId, "b".repeat(64))).toBe("key_mismatch");
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ quoteId });
+  it("serves a quote only to the key that made it, and says so to another", async () => {
+    const { quoteId } = await quoteDue(15);
+    expect(await getCachedQuote(quoteId, "b".repeat(64))).toBe("key_mismatch");
+    expect(await getCachedQuote(quoteId, KEY)).toMatchObject({ quoteId });
   });
 
-  it("gives a quote to its first checked deposit for good, and records how it was handed over", () => {
-    const { quoteId } = quoteDue(15);
-    expect(claimDeposit(quoteId, "0x01")).toBe("claimed");
-    expect(claimDeposit(quoteId, "0x02")).toBe("taken");
-    expect(claimDeposit(quoteId, "0x01")).toBe("claimed");
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01" });
-    expect(getCachedQuote(quoteId, KEY)).not.toHaveProperty("handedOver");
-    markSubmitted(quoteId);
-    expect(getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01", handedOver: "submitted" });
-    expect(claimDeposit("not-a-quote", "0x01")).toBe("gone");
+  it("gives a quote to its first checked deposit for good, and records how it was handed over", async () => {
+    const quote = await quoteDue(15);
+    const { quoteId } = quote;
+    expect(await claimDeposit(quote, "0x01")).toBe("claimed");
+    expect(await claimDeposit(quote, "0x02")).toBe("taken");
+    expect(await claimDeposit(quote, "0x01")).toBe("claimed");
+    expect(await getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01" });
+    expect(await getCachedQuote(quoteId, KEY)).not.toHaveProperty("handedOver");
+    await markSubmitted(quote);
+    expect(await getCachedQuote(quoteId, KEY)).toMatchObject({ depositTxHash: "0x01", handedOver: "submitted" });
+    expect(await claimDeposit({ ...quote, quoteId: randomUUID() }, "0x01")).toBe("gone");
   });
 
-  it("keeps a relayed quote for a day, its only record of the refund, even one dropped while it was relayed", () => {
-    const quote = quoteDue(15);
-    claimDeposit(quote.quoteId, "0xaa");
-    markRelayedForRefund(quote);
-    vi.setSystemTime(NOW + 23 * 60 * 60 * 1000);
-    expect(getCachedQuote(quote.quoteId, KEY)).toMatchObject({
+  it("gives a quote claimed by two txs at once to exactly one of them", async () => {
+    const quote = await quoteDue(15);
+    const claims = await Promise.all([claimDeposit({ ...quote }, "0x01"), claimDeposit({ ...quote }, "0x02")]);
+    expect(claims.sort()).toEqual(["claimed", "taken"]);
+  });
+
+  it("keeps a relayed quote for a day, its only record of the refund, even one dropped while it was relayed", async () => {
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0xaa");
+    await markRelayedForRefund(quote);
+    vi.setSystemTime(NOW + 23 * 60 * MINUTE);
+    expect(await getCachedQuote(quote.quoteId, KEY)).toMatchObject({
       depositTxHash: "0xaa",
       handedOver: "relayed_for_refund",
     });
 
-    const dropped = quoteDue(15);
-    claimDeposit(dropped.quoteId, "0xbb");
-    clearQuoteCache();
-    markRelayedForRefund(dropped);
-    expect(getCachedQuote(dropped.quoteId, KEY)).toMatchObject({ handedOver: "relayed_for_refund" });
-    // Put back into an empty cache, it's still swept once its day is over.
-    expect(vi.getTimerCount()).toBe(1);
-    vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 60_000);
-    expect(getCachedQuote(dropped.quoteId, KEY)).toBeUndefined();
-    expect(vi.getTimerCount()).toBe(0);
+    const dropped = await quoteDue(15);
+    await claimDeposit(dropped, "0xbb");
+    await clearQuoteCache();
+    await markRelayedForRefund(dropped);
+    expect(await getCachedQuote(dropped.quoteId, KEY)).toMatchObject({
+      depositTxHash: "0xbb",
+      handedOver: "relayed_for_refund",
+    });
+    // Put back into an empty store, it's still swept once its day is over.
+    await advance(DAY + MINUTE);
+    expect(await getCachedQuote(dropped.quoteId, KEY)).toBeUndefined();
   });
 
-  it("keeps a cancel the hub confirmed while the submit ran: submitted doesn't overwrite it", () => {
-    const quote = quoteDue(15);
-    claimDeposit(quote.quoteId, "0x01");
-    markHubOutcome(quote, "cancelled");
-    markSubmitted(quote.quoteId);
-    expect(getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "cancelled" });
+  it("keeps a cancel the hub confirmed while the submit ran: submitted doesn't overwrite it", async () => {
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    // The copy track read before the cancel was confirmed.
+    const submitting = { ...quote };
+    await markHubOutcome(quote, "cancelled");
+    await markSubmitted(submitting);
+    expect(await getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "cancelled" });
   });
 
-  it("returns nothing for an unknown id", () => {
-    expect(getCachedQuote("not-a-quote", KEY)).toBeUndefined();
-  });
-
-  it("when full, drops an expired quote, an unclaimed one past its deadline, then a hub swap the hub holds, never a live or other claimed one", () => {
+  it("counts a quote handed over without a claim (put back after a cancel) as unused once it expires", async () => {
     const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
-    const live = quoteDue(15);
-    const expired = quoteDue(-31);
-    const pastDeadline = quoteDue(-1);
-    const claimed = quoteDue(-2);
-    claimDeposit(claimed.quoteId, "0x01");
-    const relayed = quoteDue(-3);
-    claimDeposit(relayed.quoteId, "0x02");
-    markRelayedForRefund(relayed);
-    const leftToRefund = quoteDue(-4);
-    claimDeposit(leftToRefund.quoteId, "0x03");
-    markHubOutcome(leftToRefund, "left_to_refund");
-    const cancelled = quoteDue(-5);
-    claimDeposit(cancelled.quoteId, "0x04");
-    markHubOutcome(cancelled, "cancelled");
-    for (let i = 0; i < 9_993; i++) quoteDue(15, `key-${i % 20}`);
+    const quote = await quoteDue(15);
+    await markHubOutcome(quote, "cancelled");
+    await advance(DAY + MINUTE);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ "quote.id": quote.quoteId }),
+      "Swap quote expired unused",
+    );
+  });
+
+  it("returns nothing for an unknown id", async () => {
+    expect(await getCachedQuote(randomUUID(), KEY)).toBeUndefined();
+  });
+
+  it("when full, drops an expired quote, an unclaimed one past its deadline, then a hub swap the hub holds, never a live or other claimed one", async () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const live = await quoteDue(15);
+    const expired = await quoteDue(-31);
+    const pastDeadline = await quoteDue(-1);
+    const claimed = await quoteDue(-2);
+    await claimDeposit(claimed, "0x01");
+    const relayed = await quoteDue(-3);
+    await claimDeposit(relayed, "0x02");
+    await markRelayedForRefund(relayed);
+    const leftToRefund = await quoteDue(-4);
+    await claimDeposit(leftToRefund, "0x03");
+    await markHubOutcome(leftToRefund, "left_to_refund");
+    const cancelled = await quoteDue(-5);
+    await claimDeposit(cancelled, "0x04");
+    await markHubOutcome(cancelled, "cancelled");
+    await quotesDue(9_993, 15, i => `key-${i % 20}`);
 
     // Full, within a minute of the last sweep: the expired quote goes first.
-    const next = quoteDue(15);
-    expect(getCachedQuote(expired.quoteId, KEY)).toBeUndefined();
-    expect(getCachedQuote(pastDeadline.quoteId, KEY)).toBeDefined();
+    const next = await quoteDue(15);
+    expect(await getCachedQuote(expired.quoteId, KEY)).toBeUndefined();
+    expect(await getCachedQuote(pastDeadline.quoteId, KEY)).toBeDefined();
 
-    quoteDue(15);
-    expect(getCachedQuote(pastDeadline.quoteId, KEY)).toBeUndefined();
-    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
+    await quoteDue(15);
+    expect(await getCachedQuote(pastDeadline.quoteId, KEY)).toBeUndefined();
+    expect(await getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
 
     // Then a swap that ended, though newer; then one waiting for its refund, which only loses its early cancel here.
     // A relayed deposit's quote is its only record, so it stays.
-    quoteDue(15);
-    expect(getCachedQuote(cancelled.quoteId, KEY)).toBeUndefined();
-    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
-    quoteDue(15);
-    expect(getCachedQuote(leftToRefund.quoteId, KEY)).toBeUndefined();
+    await quoteDue(15);
+    expect(await getCachedQuote(cancelled.quoteId, KEY)).toBeUndefined();
+    expect(await getCachedQuote(leftToRefund.quoteId, KEY)).toBeDefined();
+    await quoteDue(15);
+    expect(await getCachedQuote(leftToRefund.quoteId, KEY)).toBeUndefined();
 
     // Nothing left that can go: new quotes wait, before any is built.
-    expect(refusal(() => quoteDue(15))).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 60 } });
-    expect(() => checkQuoteRoom("c".repeat(64))).toThrow("too many open swap quotes");
-    for (const kept of [live, claimed, relayed, next]) expect(getCachedQuote(kept.quoteId, KEY)).toBeDefined();
+    await expect(quoteDue(15)).rejects.toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 60 } });
+    await expect(checkQuoteRoom("c".repeat(64))).rejects.toThrow("too many open swap quotes");
+    for (const kept of [live, claimed, relayed, next]) expect(await getCachedQuote(kept.quoteId, KEY)).toBeDefined();
     const dropped = info.mock.calls
       .filter(([, msg]) => msg === "Swap quote expired unused")
       .map(([fields]) => [
@@ -218,40 +283,149 @@ describe("quoteCache", () => {
       [expired.quoteId, "expired"],
       [pastDeadline.quoteId, "evicted"],
     ]);
-  });
+  }, 60_000);
 
-  it("makes a key with 1,000 open quotes wait until one leaves the cache, never dropping another key's", () => {
-    const other = quoteDue(15, "b".repeat(64));
-    for (let i = 0; i < 1_000; i++) quoteDue(15);
-    const refused = refusal(() => quoteDue(15));
-    // A quote stays in the cache 30 minutes past its deadline, so it counts until then.
+  it("makes a key with 1,000 open quotes wait until one leaves the store, never dropping another key's", async () => {
+    const other = await quoteDue(15, "b".repeat(64));
+    await quotesDue(1_000, 15, () => KEY);
+    const refused = await refusal(quoteDue(15));
+    // A quote is kept 30 minutes past its deadline, so it counts until then.
     expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 45 * 60 } });
-    expect(() => checkQuoteRoom(KEY)).toThrow(refused as Error);
-    expect(getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
+    await expect(checkQuoteRoom(KEY)).rejects.toThrow(refused as Error);
+    expect(await getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
 
-    vi.setSystemTime(NOW + 15 * 60_000);
-    expect(() => checkQuoteRoom(KEY)).toThrow("too many open swap quotes");
-    vi.setSystemTime(NOW + 45 * 60_000);
-    expect(quoteDue(15).quoteId).toEqual(expect.any(String));
-  });
+    vi.setSystemTime(NOW + 15 * MINUTE);
+    await expect(checkQuoteRoom(KEY)).rejects.toThrow("too many open swap quotes");
+    vi.setSystemTime(NOW + 45 * MINUTE);
+    expect((await quoteDue(15)).quoteId).toEqual(expect.any(String));
+  }, 30_000);
 
-  it("counts as open, for /health, every quote not handed over and not expired, until the last one expires", () => {
-    expect(openQuotes()).toEqual({ open: 0, openUntil: null });
-    quoteDue(15);
-    const late = quoteDue(20);
-    claimDeposit(quoteDue(10).quoteId, "0x01"); // claimed, not yet submitted: a restart still loses it
-    const submitted = quoteDue(25);
-    markSubmitted(submitted.quoteId);
-    markRelayedForRefund(quoteDue(25));
-    expect(openQuotes()).toEqual({ open: 3, openUntil: new Date(late.expiresAt).toISOString() });
+  it("counts as open, for /health, every quote not handed over and not expired, until the last one expires", async () => {
+    expect(await openQuotes()).toEqual({ open: 0, openUntil: null });
+    await quoteDue(15);
+    const late = await quoteDue(20);
+    await claimDeposit(await quoteDue(10), "0x01"); // claimed, not yet submitted: in memory a restart still loses it
+    const submitted = await quoteDue(25);
+    await markSubmitted(submitted);
+    await markRelayedForRefund(await quoteDue(25));
+    expect(await openQuotes()).toEqual({ open: 3, openUntil: new Date(late.expiresAt).toISOString() });
     vi.setSystemTime(late.expiresAt);
-    expect(openQuotes()).toEqual({ open: 0, openUntil: null });
+    expect(await openQuotes()).toEqual({ open: 0, openUntil: null });
   });
 
-  it("doesn't count a quote a deposit claimed toward its key's cap", () => {
-    const [first] = Array.from({ length: 1_000 }, () => quoteDue(15));
-    expect(() => checkQuoteRoom(KEY)).toThrow("too many open swap quotes");
-    claimDeposit(first.quoteId, "0x01");
-    expect(() => quoteDue(15)).not.toThrow();
+  it("doesn't count a quote a deposit claimed toward its key's cap", async () => {
+    const [first] = await quotesDue(1_000, 15, () => KEY);
+    await expect(checkQuoteRoom(KEY)).rejects.toThrow("too many open swap quotes");
+    await claimDeposit(first, "0x01");
+    await expect(quoteDue(15)).resolves.toBeDefined();
+  }, 30_000);
+});
+
+describe.each(REDIS_URLS)("quoteCache in Redis, across servers", url => {
+  const { prefix, open, closeAll } = redisServers(url);
+  const raw = createClient({ url });
+
+  beforeAll(async () => {
+    await raw.connect();
+  });
+
+  afterAll(async () => {
+    await closeAll();
+    await raw.close();
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW, toFake: ["Date", "setInterval", "clearInterval"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a quote, its claim and its hand-over across a restart", async () => {
+    const first = await open();
+    useQuoteStore(first);
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    await markHubOutcome(quote, "left_to_refund");
+    await first.close();
+
+    useQuoteStore(await open());
+    expect(await getCachedQuote(quote.quoteId, KEY)).toEqual(quote);
+  });
+
+  it("gives a quote two servers claim at once to exactly one of them", async () => {
+    const [one, two] = [await open(), await open()];
+    useQuoteStore(one);
+    const quote = await quoteDue(15);
+    const claims = await Promise.all([one.claim(quote.quoteId, "0x01"), two.claim(quote.quoteId, "0x02")]);
+    expect(claims.sort()).toEqual(["claimed", "taken"]);
+  });
+
+  it("has Redis drop a quote shortly after it expires, and a handed-over one a day on", async () => {
+    useQuoteStore(await open());
+    const quote = await quoteDue(15);
+    const ttl = () => raw.pTTL(`${prefix}q:${quote.quoteId}`);
+    // An hour past expiry, so a sweep after an outage can still record it if unused.
+    expect(await ttl()).toBeGreaterThan(105 * MINUTE - 5_000);
+    expect(await ttl()).toBeLessThanOrEqual(105 * MINUTE);
+    await claimDeposit(quote, "0x01");
+    await markRelayedForRefund(quote);
+    expect(await ttl()).toBeGreaterThan(DAY + 60 * MINUTE - 5_000);
+  });
+
+  it("calls an error Redis answers with a fault, not an outage: logged each time, and alerted", async () => {
+    useQuoteStore(await open());
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    // Another writer left a key of another type where an index goes.
+    await raw.set(`${prefix}all`, "not a sorted set");
+    await expect(quoteDue(15)).rejects.toMatchObject({ code: "INTERNAL" });
+    await expect(checkQuoteRoom(KEY)).rejects.toMatchObject({ code: "INTERNAL" });
+    expect(error).toHaveBeenCalledTimes(2);
+    await raw.del(`${prefix}all`);
+  });
+});
+
+// Needs no Redis: nothing listens on port 1.
+describe("quoteCache with Redis unreachable", () => {
+  let down: QuoteStore;
+
+  beforeAll(() => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    down = connectRedisQuoteStore("redis://127.0.0.1:1", `test:${randomUUID()}:`);
+    useQuoteStore(down);
+  });
+
+  afterAll(async () => {
+    await down.close();
+    useQuoteStore(new MemoryQuoteStore());
+    vi.restoreAllMocks();
+  });
+
+  it("refuses new quotes and fails a lookup as retryable, never falling back to memory", async () => {
+    const unreachable = { code: "UPSTREAM_UNAVAILABLE", details: { retryAfterSec: 30 } };
+    await expect(checkQuoteRoom(KEY)).rejects.toMatchObject(unreachable);
+    await expect(quoteDue(15)).rejects.toMatchObject(unreachable);
+    await expect(getCachedQuote(randomUUID(), KEY)).rejects.toMatchObject(unreachable);
+    await expect(openQuotes()).rejects.toMatchObject(unreachable);
+  });
+});
+
+describe("quoteCache on a Redis that answers with an error", () => {
+  it.each([
+    [
+      "is loading its data: an outage that passes",
+      "LOADING Redis is loading the dataset in memory",
+      "UPSTREAM_UNAVAILABLE",
+    ],
+    ["is out of memory: a fault, alerted", "OOM command not allowed when used memory > 'maxmemory'.", "INTERNAL"],
+  ])("calls one that %s", async (_case, reply, code) => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const client = { isReady: true, eval: vi.fn().mockRejectedValue(new ErrorReply(reply)) };
+    const store = new RedisQuoteStore(client as never, "test:");
+    await expect(store.open(Date.now())).rejects.toMatchObject({ code });
+    expect(store.openNow()).toBeUndefined();
+    vi.restoreAllMocks();
   });
 });

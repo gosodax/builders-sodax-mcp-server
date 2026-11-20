@@ -18,6 +18,18 @@ jobs:
     timeout-minutes: 5
     runs-on: ubuntu-latest
 
+    # The swap quote store's tests run against Redis as well as memory (#125). Pinned by digest.
+    services:
+      redis:
+        image: redis:8.2.10-alpine@sha256:cead8b06d60a363832e64f5007101ae917fe8a77ec354dfb3be3655a2a351018
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -46,6 +58,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+        env:
+          REDIS_TEST_URL: redis://localhost:6379
 
       # Checks server.json with the live registry's validator (schema and semantic
       # rules). Publish can still fail on namespace auth or an existing version.

@@ -15,7 +15,7 @@ import {
   USER,
   messageReceipt,
 } from "../../services/swap/__fixtures__/deposit.js";
-import { type CachedQuote, putQuote } from "../../services/swap/quoteCache.js";
+import { type CachedQuote, claimDeposit, getCachedQuote, putQuote } from "../../services/swap/quoteCache.js";
 
 export const NOW = Date.parse("2026-10-26T12:00:00Z");
 export const DEADLINE = String(NOW / 1000 + 15 * 60);
@@ -41,10 +41,16 @@ export const INTENT = {
 };
 
 /** A quote for the recorded deposit, made by the current caller unless `keyHash` says otherwise. */
-export function cacheQuote(overrides: Partial<CachedQuote> = {}): CachedQuote {
-  // A quote's intent names its sender, as quote checks it does.
-  const sender = overrides.srcAddress &&
-    !overrides.intent && { intent: { ...INTENT, srcAddress: overrides.srcAddress } };
+export function cacheQuote(overrides: Partial<CachedQuote> = {}): Promise<CachedQuote> {
+  // A quote's intent names its sender and deadline, as quote checks it does.
+  const sender = !overrides.intent &&
+    (overrides.srcAddress || overrides.deadline) && {
+      intent: {
+        ...INTENT,
+        ...(overrides.srcAddress && { srcAddress: overrides.srcAddress }),
+        ...(overrides.deadline && { deadline: overrides.deadline }),
+      },
+    };
   return putQuote({
     srcChainKey: ARBITRUM,
     dstChainKey: "sonic",
@@ -62,6 +68,18 @@ export function cacheQuote(overrides: Partial<CachedQuote> = {}): CachedQuote {
     ...overrides,
     ...sender,
   });
+}
+
+/** The current caller's quote, as track and cancel read it. */
+export async function cachedQuote(quoteId: string): Promise<CachedQuote> {
+  const quote = await getCachedQuote(quoteId, callerKeyHash());
+  if (!quote || quote === "key_mismatch") throw new Error(`no quote ${quoteId} for this caller`);
+  return quote;
+}
+
+/** Claims a quote for `txHash`, as track does once it checked the deposit. */
+export async function claimQuote(quoteId: string, txHash: string) {
+  return claimDeposit(await cachedQuote(quoteId), txHash);
 }
 
 /** A receipt with one `connection` Message from the user to their hub wallet (a cancel). */

@@ -182,7 +182,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const ready = input.mode === "prepare" && fromAddress !== undefined && toAddress !== undefined;
   const { probe } = source.adapter;
   // Before any upstream call, so a key at its cap of open quotes costs nothing.
-  if (ready) checkQuoteRoom(callerKeyHash());
+  if (ready) await checkQuoteRoom(callerKeyHash());
 
   const usdSent = usdValue(from.token.hubAsset, formatUnits(amount, from.token.decimals));
   const [{ amount: quoted, quotedAt }, deadline, usd] = await Promise.all([
@@ -293,7 +293,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
   }
 
-  const { quoteId } = putQuote({
+  const { quoteId } = await putQuote({
     ...request,
     intent: built.intent,
     relayData: built.relayData,

@@ -128,7 +128,7 @@ const submits = (calls: { path: string; body?: Record<string, unknown> }[]) =>
 const relays = (calls: { path: string; body?: Record<string, unknown> }[]) =>
   calls.filter(call => call.path === "/intents/submit");
 
-beforeEach(() => {
+beforeEach(async () => {
   for (const adapter of [SOLANA, STELLAR, SUI, NEAR, INJECTIVE]) {
     vi.spyOn(adapter, "read").mockImplementation(async (source, txHash, sender) => {
       const evidence = await readSpoke(source.chain.key, txHash, sender);
@@ -145,7 +145,7 @@ beforeEach(() => {
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   clearSwapCatalogCache();
   clearCache();
-  clearQuoteCache();
+  await clearQuoteCache();
   clearAlerts();
   clearUnseenMemo();
   // The hub still holds every intent here: a cancel is built.
@@ -171,7 +171,7 @@ describe("a swap from a non-EVM spoke", () => {
       const swap = REAL[name];
       readSpoke.mockResolvedValue(swap.evidence());
       const calls = stubBackend();
-      const quote = quoteOf(swap);
+      const quote = await quoteOf(swap);
       const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
       expect(out).toMatchObject({ status: "queued", txHash: swap.txHash, chain: { key: swap.chainKey } });
       expect(readSpoke).toHaveBeenCalledWith(swap.chainKey, swap.txHash, SENDERS[swap.chainKey]);
@@ -193,11 +193,11 @@ describe("a swap from a non-EVM spoke", () => {
     const forged = [`Program ${noop} invoke [1]`, `Program log: ${keccak}`, event, `Program ${noop} success`];
     readSpoke.mockResolvedValueOnce(solanaEvidence({ meta: { err: null, logMessages: forged } }, connection("solana")));
     const calls = stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     const fake = `${"5".repeat(87)}`;
     const { out } = await track({ txHash: fake, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "not_a_deposit" });
-    expect(getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
+    expect(await getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
     readSpoke.mockResolvedValueOnce(swap.evidence());
     expect((await track({ txHash: swap.txHash, quoteId: quote.quoteId })).out.status).toBe("queued");
     expect(submits(calls)).toHaveLength(1);
@@ -225,11 +225,11 @@ describe("a swap from a non-EVM spoke", () => {
     const twoDeposits = { tx_response: { code: 0, events: [first, ...tx_response.events] } };
     readSpoke.mockResolvedValueOnce(injectiveEvidence(twoDeposits, connection("injective-1")));
     const calls = stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     const bundle = "B".repeat(64);
     const { out } = await track({ txHash: bundle, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits", alerted: true });
-    expect(getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
+    expect(await getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
     readSpoke.mockResolvedValueOnce(evidence);
     expect((await track({ txHash: swap.txHash, quoteId: quote.quoteId })).out.status).toBe("queued");
     expect(submits(calls)).toHaveLength(1);
@@ -239,7 +239,10 @@ describe("a swap from a non-EVM spoke", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue(swap.evidence());
     const calls = stubBackend();
-    const { out } = await track({ txHash: swap.txHash, quoteId: quoteOf(swap, anotherIntent(swap.intent)).quoteId });
+    const { out } = await track({
+      txHash: swap.txHash,
+      quoteId: (await quoteOf(swap, anotherIntent(swap.intent))).quoteId,
+    });
     expect(out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch", alerted: true });
     expect(out.nextStep).toContain("track it with the quoteId it was made from");
     expect(logger.error).toHaveBeenCalledWith(
@@ -256,8 +259,8 @@ describe("a swap from a non-EVM spoke", () => {
       readSpoke.mockResolvedValue(swap.evidence());
       const calls = stubBackend();
       // The quote's intent, sent from someone else's account: the message names the real sender.
-      const quote = cacheQuote({
-        ...quoteOf(swap),
+      const quote = await cacheQuote({
+        ...(await quoteOf(swap)),
         srcAddress: "someone",
         intent: { ...swap.intent, srcAddress: `0x${"9".repeat(40)}` },
       });
@@ -279,7 +282,7 @@ describe("a swap from a non-EVM spoke", () => {
     ] as (raw: unknown, connection: string) => SpokeEvidence;
     readSpoke.mockResolvedValue(read(raw, connection(swap.chainKey)));
     const calls = stubBackend();
-    const { out } = await track({ txHash: swap.txHash, quoteId: quoteOf(swap).quoteId });
+    const { out } = await track({ txHash: swap.txHash, quoteId: (await quoteOf(swap)).quoteId });
     expect(out).toEqual(expect.objectContaining({ status: "source_failed" }));
     expect(out).not.toHaveProperty("depositHeld");
     expect(out.nextStep).toContain("nothing was swapped");
@@ -297,7 +300,7 @@ describe("a swap from a non-EVM spoke", () => {
     const raw = { ...fixtures.near.tx, receipts_outcome: failedLater };
     readSpoke.mockResolvedValue(nearEvidence(raw, connection("near")));
     const calls = stubBackend();
-    const { out } = await track({ txHash: swap.txHash, quoteId: quoteOf(swap).quoteId });
+    const { out } = await track({ txHash: swap.txHash, quoteId: (await quoteOf(swap)).quoteId });
     expect(out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: true });
     expect(out.nextStep).toContain("SODAX has been alerted");
     expect(logger.error).toHaveBeenCalledWith(
@@ -311,7 +314,7 @@ describe("a swap from a non-EVM spoke", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue(null);
     stubBackend();
-    const { out } = await track({ txHash: swap.txHash, quoteId: quoteOf(swap).quoteId });
+    const { out } = await track({ txHash: swap.txHash, quoteId: (await quoteOf(swap)).quoteId });
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
     expect(out.stopAfter).toBe(new Date(Number(swap.intent.deadline) * 1000 + 5 * 60_000).toISOString());
     // Its node can't say whether it knows a tx still in flight.
@@ -320,7 +323,7 @@ describe("a swap from a non-EVM spoke", () => {
 
   it("refuses a hash that can't be its chain's, before reading anything", async () => {
     const calls = stubBackend();
-    const { out } = await track({ txHash: `0x${"a".repeat(64)}`, quoteId: quoteOf(REAL.sui).quoteId });
+    const { out } = await track({ txHash: `0x${"a".repeat(64)}`, quoteId: (await quoteOf(REAL.sui)).quoteId });
     expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", format: "a base58 digest" });
     expect(readSpoke).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
@@ -330,7 +333,7 @@ describe("a swap from a non-EVM spoke", () => {
     const swap = REAL.solana;
     readSpoke.mockResolvedValue(swap.evidence());
     const calls = stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     vi.setSystemTime(Number(swap.intent.deadline) * 1000 + 1000);
     const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
     expect(out.status).toBe("expired_refunding");
@@ -343,7 +346,7 @@ describe("a swap from a non-EVM spoke", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue(swap.evidence());
     const calls = stubBackend();
-    const { quoteId } = quoteOf(swap);
+    const { quoteId } = await quoteOf(swap);
     vi.setSystemTime(Number(swap.intent.deadline) * 1000 + 1000);
     await track({ txHash: swap.txHash, quoteId });
     expect(relays(calls)).toEqual([{ path: "/intents/submit", body: { chainId: "21", txHash: swap.txHash } }]);
@@ -376,9 +379,9 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
   const row = { status: "failed", result: { dstIntentTxHash: HUB_TX } };
   const CANCEL_TX = "FushAhTwsQY8eqnFPVbjPXjZhM8kpAyHbK8JiG47FwCp";
   const SOLANA_CANCEL_TX = `${"4".repeat(87)}`;
-  const claimed = (swap: RealSwap) => {
-    const quote = quoteOf(swap);
-    claimDeposit(quote.quoteId, swap.txHash);
+  const claimed = async (swap: RealSwap) => {
+    const quote = await quoteOf(swap);
+    await claimDeposit(quote, swap.txHash);
     return quote.quoteId;
   };
   /** The user's cancel as their connection emits it: from their address to their hub wallet. */
@@ -394,7 +397,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const swap = REAL.sui;
     vi.mocked(hubIntentClosed).mockResolvedValue(true);
     stubBackend({ row, hubIntent: swap.intent });
-    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap) });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap) });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "closed" });
     expect(hubIntentClosed).toHaveBeenCalledWith(intentHash(swap.intent), HUB_TX);
     expect(buildNonEvmCancel).not.toHaveBeenCalled();
@@ -406,7 +409,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const built = builds.sui.cancel;
     vi.mocked(buildNonEvmCancel).mockResolvedValue({ ...built, value: 0n });
     stubBackend({ row, hubIntent: swap.intent });
-    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap) });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap) });
     expect(out.status).toBe("ready");
     expect(out.steps).toEqual([
       {
@@ -457,14 +460,14 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
   it("refuses a Solana cancel the SDK built to another program than the packaged connection", async () => {
     vi.mocked(buildNonEvmCancel).mockResolvedValue({ from: SENDERS.solana, to: "Fake1111111111111111111111111111" });
     stubBackend({ row, hubIntent: REAL.solana.intent });
-    const { out } = await cancel({ txHash: REAL.solana.txHash, quoteId: claimed(REAL.solana) });
+    const { out } = await cancel({ txHash: REAL.solana.txHash, quoteId: await claimed(REAL.solana) });
     expect(out.error.code).toBe("SWAP_MISMATCH");
   });
 
   it("says what to check when the SDK can't build the cancel", async () => {
     vi.mocked(buildNonEvmCancel).mockRejectedValue(new Error("SDK call failed"));
     stubBackend({ row, hubIntent: REAL.sui.intent });
-    const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: claimed(REAL.sui) });
+    const { out } = await cancel({ txHash: REAL.sui.txHash, quoteId: await claimed(REAL.sui) });
     expect(out.error).toMatchObject({
       code: "CHAIN_UNAVAILABLE",
       message: "Couldn't prepare the cancel on Sui right now.",
@@ -479,7 +482,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
       readSpoke.mockResolvedValue({ failed: false, messages: [cancelMessage(swap, payload)] });
       const calls = stubBackend({ row, hubIntent: swap.intent });
       const cancelTx = name === "sui" || name === "near" ? CANCEL_TX : "C".repeat(64);
-      const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: cancelTx });
+      const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap), cancelTxHash: cancelTx });
       expect(out.status).toBe("cancel_relayed");
       expect(relays(calls)).toEqual([
         { path: "/intents/submit", body: { chainId: swap.intent.srcChain, txHash: expect.any(String) } },
@@ -494,7 +497,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     // The SDK's Solana cancel sends the payload's hash; the full payload is no cancel there.
     readSpoke.mockResolvedValue({ failed: false, messages: [cancelMessage(swap, payload)] });
     const calls = stubBackend({ row, hubIntent: swap.intent });
-    const quoteId = claimed(swap);
+    const quoteId = await claimed(swap);
     const first = await cancel({ txHash: swap.txHash, quoteId, cancelTxHash: SOLANA_CANCEL_TX });
     expect(first.out.status).toBe("not_a_cancel_tx");
     readSpoke.mockResolvedValue({ failed: false, messages: [cancelMessage(swap, keccak)] });
@@ -511,7 +514,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
   it("isn't relayed from a tx that holds the cancel's payload but no message of the user's to their hub wallet", async () => {
     const swap = REAL.sui;
     const payload = cancelPayload(swap.intent) as string;
-    const quoteId = claimed(swap);
+    const quoteId = await claimed(swap);
     const calls = stubBackend({ row, hubIntent: swap.intent });
     for (const messages of [
       [],
@@ -537,7 +540,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const payload = cancelPayload(swap.intent) as string;
     readSpoke.mockResolvedValue({ failed: true, messages: [cancelMessage(swap, payload)] });
     const calls = stubBackend({ row, hubIntent: swap.intent });
-    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: CANCEL_TX });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap), cancelTxHash: CANCEL_TX });
     expect(out.status).toBe("cancel_failed");
     expect(relays(calls)).toEqual([]);
   });
@@ -546,7 +549,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const swap = REAL.near;
     readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: true } });
     const calls = stubBackend({ row, hubIntent: swap.intent });
-    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: CANCEL_TX });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap), cancelTxHash: CANCEL_TX });
     expect(out.status).toBe("cancel_failed");
     expect(relays(calls)).toEqual([]);
   });
@@ -555,7 +558,7 @@ describe("a swap from a non-EVM spoke, cancelled", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: false } });
     const calls = stubBackend({ row, hubIntent: swap.intent });
-    const { out } = await cancel({ txHash: swap.txHash, quoteId: claimed(swap), cancelTxHash: CANCEL_TX });
+    const { out } = await cancel({ txHash: swap.txHash, quoteId: await claimed(swap), cancelTxHash: CANCEL_TX });
     expect(out).toMatchObject({ status: "cancel_relayed", unverified: true });
     expect(out.nextStep).toContain("couldn't confirm it's this swap's cancel");
     expect(relays(calls)).toHaveLength(1);
@@ -581,11 +584,11 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     const swap = REAL.solana;
     readSpoke.mockResolvedValue(unreadable);
     const calls = stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: true });
     expect(out.nextStep).toContain("can't tell whether it holds this swap");
-    expect(getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
+    expect(await getCachedQuote(quote.quoteId, quote.keyHash)).not.toHaveProperty("depositTxHash");
     expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ alert: "unverified_tx" }), expect.any(String));
     expect(submits(calls)).toEqual([]);
   });
@@ -594,7 +597,7 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     const swap = REAL.near;
     readSpoke.mockResolvedValue({ failed: false, messages: [], unreadable: { failed: true } });
     stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "unverified", alerted: true });
     expect(logger.error).toHaveBeenCalledWith(
@@ -607,7 +610,7 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     readSpoke.mockResolvedValue(null);
     seenSpoke.mockResolvedValue(true);
     stubBackend();
-    const { out } = await track({ txHash: REAL.solana.txHash, quoteId: quoteOf(REAL.solana).quoteId });
+    const { out } = await track({ txHash: REAL.solana.txHash, quoteId: (await quoteOf(REAL.solana)).quoteId });
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: true });
     expect(out).not.toHaveProperty("stopAfter");
     // Asked with the quote's sender, which routes a NEAR lookup.
@@ -618,7 +621,7 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     const swap = REAL.sui;
     readSpoke.mockResolvedValue(null);
     stubBackend();
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     for (let call = 0; call < 2; call++) {
       const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
       expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: false });
@@ -644,13 +647,16 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
     readSpoke.mockResolvedValue({ failed: true, messages: swap.evidence().messages });
     stubBackend();
     const alertOf = () => vi.mocked(logger.error).mock.calls.at(-1)?.[0];
-    const other = await track({ txHash: swap.txHash, quoteId: quoteOf(swap, anotherIntent(swap.intent)).quoteId });
+    const other = await track({
+      txHash: swap.txHash,
+      quoteId: (await quoteOf(swap, anotherIntent(swap.intent))).quoteId,
+    });
     expect(other.out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: true, notThisQuote: true });
     // The agent asks for this swap's own hash rather than call it safe.
     expect(other.out.nextStep).toContain("Ask the user for this swap's transaction hash");
     expect(alertOf()).toMatchObject({ alert: "failed_tx_deposit", reason: "not this quote's" });
     clearAlerts();
-    const own = await track({ txHash: swap.txHash, quoteId: quoteOf(swap).quoteId });
+    const own = await track({ txHash: swap.txHash, quoteId: (await quoteOf(swap)).quoteId });
     expect(own.out).toMatchObject({ status: "source_failed", depositHeld: true, alerted: true });
     expect(own.out).not.toHaveProperty("notThisQuote");
     expect(alertOf()).toMatchObject({ alert: "failed_tx_deposit" });
@@ -673,10 +679,10 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
       submit: () => new Response("", { status: 503 }),
       status: () => Response.json({ message: "Swap transaction not found" }, { status: 404 }),
     });
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     readSpoke.mockResolvedValue(swap.evidence());
     await track({ txHash: swap.txHash, quoteId: quote.quoteId });
-    expect(getCachedQuote(quote.quoteId, quote.keyHash)).toMatchObject({ depositTxHash: swap.txHash });
+    expect(await getCachedQuote(quote.quoteId, quote.keyHash)).toMatchObject({ depositTxHash: swap.txHash });
     readSpoke.mockReset().mockResolvedValue(null);
     vi.setSystemTime(Number(swap.intent.deadline) * 1000 + 1000);
     const { out } = await track({ txHash: swap.txHash, quoteId: quote.quoteId });
@@ -688,8 +694,8 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
 
   it("is cancelled toward its refund once checked, though its node has dropped it", async () => {
     const swap = REAL.injective;
-    const quote = quoteOf(swap);
-    claimDeposit(quote.quoteId, swap.txHash);
+    const quote = await quoteOf(swap);
+    await claimDeposit(quote, swap.txHash);
     readSpoke.mockResolvedValue(null);
     stubBackend({ row: null });
     const { out } = await cancel({ txHash: swap.txHash, quoteId: quote.quoteId });
@@ -698,7 +704,7 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
   });
 
   it("isn't called never sent when a node that drops old txs doesn't have it after the quote's deadline", async () => {
-    const quote = quoteOf(REAL.sui);
+    const quote = await quoteOf(REAL.sui);
     vi.setSystemTime(Number(REAL.sui.intent.deadline) * 1000 + 1000);
     readSpoke.mockResolvedValue(null);
     stubBackend({ row: null });
@@ -709,7 +715,7 @@ describe("a non-EVM swap whose evidence is incomplete", () => {
   // Track would submit it once it lands, so cancel mustn't send the agent there.
   it("waits for a tx its node doesn't have yet before the quote's deadline, rather than send it to track", async () => {
     const swap = REAL.sui;
-    const quote = quoteOf(swap);
+    const quote = await quoteOf(swap);
     readSpoke.mockResolvedValue(null);
     stubBackend({ row: null });
     const { out } = await cancel({ txHash: swap.txHash, quoteId: quote.quoteId });

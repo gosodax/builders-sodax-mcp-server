@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sodax-builders": {
+      "type": "http",
+      "url": "https://builders.sodax.com/mcp"
+    }
+  }
+}

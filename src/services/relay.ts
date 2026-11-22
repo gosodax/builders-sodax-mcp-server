@@ -50,7 +50,7 @@ const RELAY_TIMEOUT_MS = 30_000;
  * Never send the caller's API key here: the relay takes none, and the gateway
  * passes this route on to an origin outside the SODAX API.
  */
-async function callRelay<T>(action: string, params: unknown): Promise<T> {
+async function callRelay<T>(action: string, params: unknown, timeoutMs = RELAY_TIMEOUT_MS): Promise<T> {
   // The relay answers "not found" with a 404 and a normal body; 5xx and non-relay bodies are the failures.
   const { response, body } = await timedFetch(
     `${SODAX_RELAY_BASE_URL}/`,
@@ -61,7 +61,7 @@ async function callRelay<T>(action: string, params: unknown): Promise<T> {
         Accept: "application/json",
       },
       body: JSON.stringify({ action, params }),
-      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     },
     response => response.status < 500,
     // A body that isn't JSON is checked below; a timeout or a dropped socket while reading it stays a failure.
@@ -103,10 +103,14 @@ export async function submitRelayTx(params: SubmitParams): Promise<RelaySubmitRe
 /**
  * List every cross-chain packet emitted by the given source transaction.
  * Use this to track relay status — a packet is complete when status === "executed".
+ * `timeoutMs` shortens the wait for a caller that answers within a tool call's budget.
  */
-export async function getRelayTransactionPackets(params: GetTransactionPacketsParams): Promise<RelayPacketsResponse> {
+export async function getRelayTransactionPackets(
+  params: GetTransactionPacketsParams,
+  timeoutMs?: number,
+): Promise<RelayPacketsResponse> {
   try {
-    return await callRelay<RelayPacketsResponse>("get_transaction_packets", params);
+    return await callRelay<RelayPacketsResponse>("get_transaction_packets", params, timeoutMs);
   } catch (error) {
     throw new Error(
       `Failed to fetch relay transaction packets: ${error instanceof Error ? error.message : "Unknown error"}`,

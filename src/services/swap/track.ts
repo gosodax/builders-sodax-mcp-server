@@ -12,6 +12,7 @@ import { callerKeyHash } from "../requestContext.js";
 import { intentHash, isHubChain } from "../sodax.js";
 import { TtlCache } from "../ttlCache.js";
 import { alertOperator } from "./alerts.js";
+import { readDelivery } from "./delivery.js";
 import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
@@ -105,8 +106,14 @@ export type TrackState =
       hubTxHash?: string;
       fillTxHash?: string;
       minimumReceived?: CachedQuote["minimumReceived"];
-      /** With the quote: `complete` to a hub recipient, else `in_transit` (one more cross-chain hop). */
-      delivery?: "complete" | "in_transit";
+      /**
+       * With the quote: `complete` to a hub recipient. Elsewhere `in_transit` until the relay executed this swap's
+       * packet from its fill on the destination, then `delivered` with that chain's `dstTxHash`.
+       */
+      delivery?: "complete" | "in_transit" | "delivered";
+      dstTxHash?: string;
+      /** While `in_transit` with a fill to follow. */
+      retryAfterSec?: number;
     }
   | { status: "failed"; failedAtStep?: string; outcome: TrackOutcome; canCancel: boolean }
   /** A backend status this server doesn't know, past the quote's deadline or without a quote. */
@@ -124,6 +131,9 @@ export const trackWait = {
   sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
 };
 const WAITABLE: readonly string[] = ["awaiting_source_confirmation", "queued", "in_progress"];
+// A solved swap waits only while its delivery can still be read: `retryAfterSec` says so.
+const waits = (result: TrackResult) =>
+  WAITABLE.includes(result.status) || (result.status === "solved" && result.retryAfterSec !== undefined);
 
 /** `trackSwap`, repeated every few seconds while the swap waits, until its state changes or `maxMs` passes. */
 export async function trackSwapWaiting(input: {
@@ -135,7 +145,7 @@ export async function trackSwapWaiting(input: {
   const stateOf = (result: TrackResult) => `${result.status}:${"stage" in result ? result.stage : ""}`;
   let result = await trackSwap(input);
   const first = stateOf(result);
-  while (WAITABLE.includes(result.status) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
+  while (waits(result) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
     await trackWait.sleep(trackWait.stepMs);
     result = await trackSwap(input);
     if (stateOf(result) !== first) break;
@@ -175,7 +185,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   });
   // Found closed on the hub: a lagging row would offer a cancel that cancel refuses. Only its fill says more.
   if (claimed && quote.handedOver === "closed" && row?.status !== "solved") return { ...base, status: "intent_closed" };
-  if (row && (!quote || claimed)) return { ...base, ...fromStatus(row, claimed ? quote : undefined) };
+  if (row && (!quote || claimed)) return { ...base, ...(await fromRow(row, claimed ? quote : undefined)) };
   // Already handed over by this server: the backend's row may lag its answer, and a resubmit costs
   // one of the 10 submits a minute this server's IP gets.
   if (claimed && quote.handedOver) {
@@ -217,7 +227,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     const alerted = alertStranded(source, "quote_used", { chainKey: chain.key, txHash, quoteId: quote.quoteId });
     return { ...base, status: "not_submitted", reason: "quote_used", alerted };
   }
-  if (row) return { ...base, ...fromStatus(row, quote) };
+  if (row) return { ...base, ...(await fromRow(row, quote)) };
   return submitDeposit(base, source, quote);
 }
 
@@ -483,6 +493,17 @@ async function hubExpired(base: SwapRef, quote: CachedQuote): Promise<ExpiredSta
 function hubClosed(base: SwapRef, quote: CachedQuote): SwapRef & { status: "intent_closed" } {
   markHubOutcome(quote, "closed");
   return { ...base, status: "intent_closed" };
+}
+
+/**
+ * `fromStatus`, then for a swap filled toward another chain, its delivery: read from the relay packets of its fill.
+ * A fill confirmed without its tx (from the backend's journal) has nothing to read, now or later: no retry.
+ */
+async function fromRow(row: SubmitTxStatus, quote?: CachedQuote): Promise<TrackState> {
+  const state = fromStatus(row, quote);
+  if (state.status !== "solved" || state.delivery !== "in_transit" || !quote || !state.fillTxHash) return state;
+  const dstTxHash = await readDelivery(state.fillTxHash, quote.intent);
+  return dstTxHash ? { ...state, delivery: "delivered", dstTxHash } : { ...state, retryAfterSec: RETRY_AFTER_SEC };
 }
 
 /** The backend's record in our words: enums and hashes checked at the API boundary, never its text. */

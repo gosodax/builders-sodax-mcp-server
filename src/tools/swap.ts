@@ -522,9 +522,19 @@ export function trackNextStep(result: TrackResult): string {
         return `The swap is filled on the SODAX hub${fill}; to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.`;
       }
       const atLeast = `at least ${promised.amount} ${promised.symbol}`;
-      return result.delivery === "complete"
-        ? `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`
-        : `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.`;
+      switch (result.delivery) {
+        case "complete":
+          return `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`;
+        case "delivered":
+          return `The swap is complete: the user received ${atLeast} on ${promised.chainName} (delivery tx ${result.dstTxHash}).`;
+        default: {
+          const onItsWay = `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, one more cross-chain hop`;
+          // Only a delivered result is evidence tied to this swap: a balance can't tell one swap's funds from another's.
+          return result.retryAfterSec !== undefined
+            ? `${onItsWay} that isn't confirmed yet. Don't send it again, and don't tell the user it arrived before a result says delivered; ${POLL}`
+            : `${onItsWay} this server can't follow without the fill transaction: tell the user it's on its way and that they must not send it again.`;
+        }
+      }
     }
     case "failed":
       return `${OUTCOME[result.outcome]} ${failedNextStep(result)}`;

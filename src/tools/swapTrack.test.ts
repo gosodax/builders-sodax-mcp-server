@@ -5,6 +5,7 @@ import { setFallbackRequestContext } from "../services/requestContext.js";
 import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import fillPackets from "../services/swap/__fixtures__/fill-packets.json" with { type: "json" };
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -34,6 +35,7 @@ const HUB_TX = `0x${"b".repeat(64)}`;
 const OTHER_TX = `0x${"e".repeat(64)}`;
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 const submits = (calls: { path: string }[]) => calls.filter(call => call.path === "/submit-tx");
+const relayReads = (calls: { path: string }[]) => calls.filter(call => call.path === "/relay");
 const realSleep = trackWait.sleep;
 
 beforeEach(() => {
@@ -525,34 +527,180 @@ describe("sodax_swap_submit_and_track", () => {
     expect(out.nextStep).toContain("must not send it again");
   });
 
-  it("says what the user received once solved, from the quote this server submitted it for", async () => {
-    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+  it("says what the user received once solved to the hub, from the quote, without asking the relay", async () => {
+    const calls = stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } } });
     const { quoteId } = cacheQuote();
     claimDeposit(quoteId, TX);
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.minimumReceived).toEqual({ amount: "4.941968", symbol: "USDC", chainName: "Sonic" });
     expect(out.delivery).toBe("complete");
-    expect(out.nextStep).toBe("The swap is complete on Sonic: the user received at least 4.941968 USDC.");
+    expect(out).not.toHaveProperty("retryAfterSec");
+    expect(out.nextStep).toBe(
+      "The swap is complete on Sonic: the user received at least 4.941968 USDC (fill tx 0xfill).",
+    );
+    expect(relayReads(calls)).toEqual([]);
   });
 
   it("calls a solved swap without its quote filled on the hub, not delivered", async () => {
-    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } } });
+    const calls = stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: "0xfill" } } });
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
     expect(out.delivery).toBeUndefined();
     expect(out.nextStep).toBe(
       "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.",
     );
+    expect(relayReads(calls)).toEqual([]);
   });
 
-  it("calls a solved swap to another chain filled, its tokens one cross-chain hop away", async () => {
-    stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
+  it("calls a solved swap to another chain without its fill tx on its way, with nothing to follow", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+    const calls = stubBackend({ row: { status: "solved", result: { dstIntentTxHash: HUB_TX } } });
     const minimumReceived = { amount: "4.9", symbol: "USDC", chainName: "Base" };
     const { quoteId } = cacheQuote({ dstChainKey: "0x2105.base", minimumReceived });
     claimDeposit(quoteId, TX);
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.delivery).toBe("in_transit");
+    expect(out).not.toHaveProperty("retryAfterSec");
     expect(out.nextStep).toBe(
-      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.",
+      "The swap is filled: at least 4.9 USDC is on its way to Base, one more cross-chain hop this server can't follow without the fill transaction: tell the user it's on its way and that they must not send it again.",
+    );
+    expect(relayReads(calls)).toEqual([]);
+    // Final: the call doesn't wait on it.
+    expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(1);
+  });
+
+  describe("delivery to another chain, from the relay packets of the fill", () => {
+    type Fill = (typeof fillPackets)["solana"];
+    type Packet = Fill["relay"]["body"]["data"][number];
+    // The packet that carries each recorded fill's delivery, as the relay explorer shows it for the intent.
+    const DELIVERIES = [
+      { fill: fillPackets.solana, dstChainKey: "solana", chainName: "Solana", connSn: 229700 },
+      { fill: fillPackets.ethereum, dstChainKey: "ethereum", chainName: "Ethereum", connSn: 225050 },
+    ];
+    const [SOLANA] = DELIVERIES;
+
+    /** Tracks the recorded fill's swap, claimed: its intent's destination and recipient as the hub logged them. */
+    async function trackFill({ fill, dstChainKey, chainName }: (typeof DELIVERIES)[number], packets: () => Response) {
+      const calls = stubBackend({
+        row: { status: "solved", result: { dstIntentTxHash: HUB_TX, fillTxHash: fill.fillTxHash } },
+        packets,
+      });
+      const intent = { ...INTENT, dstChain: fill.intent.dstChain, dstAddress: fill.intent.dstAddress };
+      const minimumReceived = { amount: "1.5", symbol: "TOKEN", chainName };
+      const { quoteId } = cacheQuote({ dstChainKey, intent, minimumReceived });
+      claimDeposit(quoteId, TX);
+      const { out } = await track({ txHash: TX, quoteId });
+      return { calls, out };
+    }
+
+    /** The fill's real relay answer, with its packets edited. */
+    const answer = (fill: Fill, edit: (packets: Packet[]) => Packet[] = packets => packets) =>
+      Response.json({ ...fill.relay.body, data: edit(structuredClone(fill.relay.body.data)) });
+
+    const ours = (packets: Packet[]) => packets.find(packet => packet.conn_sn === SOLANA.connSn) as Packet;
+    /** The delivery packet patched; the fill's other packets as they are. */
+    const editOurs = (patch: Partial<Packet>) => (packets: Packet[]) =>
+      packets.map(packet => (packet.conn_sn === SOLANA.connSn ? { ...packet, ...patch } : packet));
+    /** One more executed packet like the delivery, under its own conn_sn and destination tx, patched by `edit`. */
+    const withCopy = (edit: (delivery: Packet) => Partial<Packet>) => (packets: Packet[]) => [
+      ...packets,
+      { ...ours(packets), conn_sn: 229702, dst_tx_hash: `0x${"c".repeat(64)}`, ...edit(ours(packets)) },
+    ];
+    /** The answer with the delivery packet still on its way, and the fill's other packets executed. */
+    const inFlight = editOurs({ status: "executing", dst_tx_hash: "" });
+
+    it.each(DELIVERIES)("reports a swap to $dstChainKey delivered once its packet ran there", async delivery => {
+      const { calls, out: result } = await trackFill(delivery, () => answer(delivery.fill));
+      const packet = delivery.fill.relay.body.data.find(each => each.conn_sn === delivery.connSn);
+      expect(result).toMatchObject({ status: "solved", delivery: "delivered", dstTxHash: packet?.dst_tx_hash });
+      expect(result).not.toHaveProperty("retryAfterSec");
+      expect(result.nextStep).toBe(
+        `The swap is complete: the user received at least 1.5 TOKEN on ${delivery.chainName} (delivery tx ${packet?.dst_tx_hash}).`,
+      );
+      expect(relayReads(calls)).toEqual([
+        {
+          path: "/relay",
+          body: { action: "get_transaction_packets", params: { chain_id: "146", tx_hash: delivery.fill.fillTxHash } },
+        },
+      ]);
+    });
+
+    it("keeps a swap in transit while its packet runs, whatever the fill's other packets did", async () => {
+      const { out: result } = await trackFill(SOLANA, () => answer(SOLANA.fill, inFlight));
+      expect(result).toMatchObject({ status: "solved", delivery: "in_transit", retryAfterSec: 15 });
+      expect(result).not.toHaveProperty("dstTxHash");
+      expect(result.nextStep).toContain("isn't confirmed yet");
+      expect(result.nextStep).toContain("don't tell the user it arrived before a result says delivered");
+      expect(result.nextStep).toContain("call sodax_swap_submit_and_track again");
+      expect(result.nextStep).not.toContain("sodax_get_balance");
+    });
+
+    const failures: [string, () => Response][] = [
+      [
+        "the relay doesn't know the fill yet (its real 404)",
+        () => Response.json(fillPackets.notFound.body, { status: 404 }),
+      ],
+      ["the relay fails", () => new Response("upstream error", { status: 502 })],
+      ["the relay answers a page, not packets", () => new Response("<html></html>", { status: 200 })],
+      [
+        "the relay times out",
+        () => {
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        },
+      ],
+      ["the packets aren't the relay's shape", () => Response.json({ success: true, data: [{ status: "executed" }] })],
+      [
+        "none of the fill's packets is its delivery",
+        () => answer(SOLANA.fill, packets => packets.filter(packet => packet.conn_sn !== SOLANA.connSn)),
+      ],
+      [
+        "two packets look like the delivery",
+        () =>
+          answer(
+            SOLANA.fill,
+            withCopy(() => ({})),
+          ),
+      ],
+      [
+        "its packet still runs, though it already names a destination tx",
+        () => answer(SOLANA.fill, editOurs({ status: "executing" })),
+      ],
+      ...["pending", "x", "not_a_hash", ""].map((hash): [string, () => Response] => [
+        `its executed packet's destination hash is ${JSON.stringify(hash)}`,
+        () => answer(SOLANA.fill, editOurs({ dst_tx_hash: hash })),
+      ]),
+    ];
+
+    it.each(failures)("never reports a swap delivered when %s", async (_, packets) => {
+      vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      const { out: result } = await trackFill(SOLANA, packets);
+      expect(result).toMatchObject({ status: "solved", delivery: "in_transit", retryAfterSec: 15 });
+      expect(result).not.toHaveProperty("dstTxHash");
+    });
+
+    it("waits within one call until the swap's packet runs on its destination", async () => {
+      Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+      const edits = [inFlight];
+      const { calls, out } = await trackFill(SOLANA, () => answer(SOLANA.fill, edits.shift()));
+      expect(out).toMatchObject({ delivery: "delivered" });
+      expect(relayReads(calls)).toHaveLength(2);
+    });
+
+    // In the real Solana fill, the delivery's payload names the intents contract as sender; the fill's other
+    // packets name another sender.
+    const INTENTS_CONTRACT_BYTES = "6382d6ccd780758c5e8a6123c33ee8f4472f96ef";
+    const OTHER_SENDER_BYTES = "e77e9642c0953f804f5051e12b36b4adf86fd0ef";
+
+    it.each([
+      ["another recipient", SOLANA.fill.intent.dstAddress.slice(2), "11".repeat(32)],
+      ["another sender than the intents contract", INTENTS_CONTRACT_BYTES, OTHER_SENDER_BYTES],
+    ])(
+      "doesn't take an executed packet from the fill to the same chain with %s for the delivery",
+      async (_, from, to) => {
+        const lookalike = withCopy(delivery => ({ payload: delivery.payload.replace(from, to) }));
+        const { out: result } = await trackFill(SOLANA, () => answer(SOLANA.fill, lookalike));
+        const { dst_tx_hash } = ours(SOLANA.fill.relay.body.data);
+        expect(result).toMatchObject({ status: "solved", delivery: "delivered", dstTxHash: dst_tx_hash });
+      },
     );
   });
 

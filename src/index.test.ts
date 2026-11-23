@@ -1,11 +1,10 @@
 import { once } from "node:events";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { type MockInstance, afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootConfig, createHttpApp, serverGauges } from "./index.js";
 import { createServer } from "./server.js";
-import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
+import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE } from "./services/httpGuards.js";
 import { logger } from "./services/logger.js";
 import { getRequestContext, runWithRequestContext } from "./services/requestContext.js";
 import { clearCache } from "./services/sodaxApi.js";
@@ -34,9 +33,6 @@ vi.mock("./tools/docsProxy.js", async importOriginal => ({
 
 let server: Server;
 let base: string;
-const streams: AbortController[] = [];
-// Fetch cancels the stream of a collected response, which would free its SSE session mid-test.
-const held: Response[] = [];
 // The data API answers /health and tool calls; this suite never reaches it (100 parallel /health below).
 const realFetch = fetch;
 const upstreamStub = (...args: Parameters<typeof fetch>) =>
@@ -53,8 +49,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const stream of streams.splice(0)) stream.abort();
-  held.length = 0;
   vi.restoreAllMocks();
   // Tests that touch the data API warm its cache; the upstream-key tests count every fetch.
   clearCache();
@@ -86,38 +80,9 @@ function post(path: string, body: string, ip: string, headers: Record<string, st
   });
 }
 
-async function openSse(ip: string): Promise<Response> {
-  const stream = new AbortController();
-  streams.push(stream);
-  const res = await fetch(`${base}/sse`, { headers: { "X-Forwarded-For": ip }, signal: stream.signal });
-  held.push(res);
-  return res;
-}
-
-/** Opens an SSE session and returns its reader and message endpoint. */
-async function sseSession(ip: string) {
-  const sse = await openSse(ip);
-  const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
-  const [, endpoint] = await readUntil(reader, /event: endpoint\ndata: (\S+)\n/);
-  return { sse, reader, endpoint };
-}
-
-/** Reads the SSE stream until `match` shows up; the test times out if it never does. */
-async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, match: RegExp): Promise<RegExpMatchArray> {
-  const decoder = new TextDecoder();
-  let text = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) throw new Error(`SSE stream ended before ${match}`);
-    text += decoder.decode(value, { stream: true });
-    const found = text.match(match);
-    if (found) return found;
-  }
-}
-
 /**
  * The "HTTP request" record with these fields: written when the response closes, just after the client has it.
- * Matched, not the first one, because an SSE stream aborted in afterEach writes its record during the next test.
+ * Matched, not the first one, because a test may write several.
  */
 function httpRequestRecord(spy: MockInstance, match: Record<string, unknown>): Promise<Record<string, unknown>> {
   const matches = (fields: Record<string, unknown>) =>
@@ -200,7 +165,7 @@ describe("HTTP routes", () => {
     expect(((await res.json()) as { unifiedLogging: unknown }).unifiedLogging).toEqual({ on: false });
   });
 
-  it("sends each call's own x-api-key upstream, on /mcp and on each /messages POST", async () => {
+  it("sends each /mcp request's own x-api-key upstream, and none for a keyless one", async () => {
     const keys: (string | null)[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (String(input).startsWith(base)) return realFetch(input, init);
@@ -215,13 +180,13 @@ describe("HTTP routes", () => {
         params: { name: "sodax_get_supported_chains", arguments: {} },
       });
 
-    const res = await post("/mcp", call(1), "198.51.100.40", { "x-api-key": "sodax_route_key_a" });
-    expect(res.status).toBe(200);
+    // The data API cache would answer the later calls without a fetch.
+    expect((await post("/mcp", call(1), "198.51.100.40", { "x-api-key": "sodax_route_key_a" })).status).toBe(200);
     clearCache();
-    const { reader, endpoint } = await sseSession("198.51.100.41");
-    await post(endpoint, call(2), "198.51.100.41", { "x-api-key": "sodax_route_key_b" });
-    await readUntil(reader, /event: message\ndata: .*"id":2/);
-    expect(keys).toEqual(["sodax_route_key_a", "sodax_route_key_b"]);
+    expect((await post("/mcp", call(2), "198.51.100.40", { "x-api-key": "sodax_route_key_b" })).status).toBe(200);
+    clearCache();
+    expect((await post("/mcp", call(3), "198.51.100.40")).status).toBe(200);
+    expect(keys).toEqual(["sodax_route_key_a", "sodax_route_key_b", null]);
   });
 
   it("answers GET /mcp with 405 and the allowed methods, and logs the request", async () => {
@@ -325,13 +290,11 @@ describe("HTTP routes", () => {
 
   it("names the setting a refused connection got wrong", async () => {
     const info = vi.spyOn(logger, "info");
-    // A sessionId on any route but /messages names no session: it could be someone else's.
-    const unknown = await post("/mcp?profile=bogus&sessionId=abc", JSON.stringify(initialize(1)), "198.51.100.49");
+    const unknown = await post("/mcp?profile=bogus", JSON.stringify(initialize(1)), "198.51.100.49");
     expect(unknown.status).toBe(400);
     const profile = await httpRequestRecord(info, { "http.route": "/mcp", "error.type": "UNKNOWN_PROFILE" });
     // The value a client typed is never logged.
     expect(profile["mcp.profile"]).toBeUndefined();
-    expect(profile["mcp.session.id_hash"]).toBeUndefined();
     expect(JSON.stringify(profile)).not.toContain("bogus");
     const keyless = await post("/mcp?profile=swap", JSON.stringify(initialize(1)), "198.51.100.49", {
       "x-api-key": "not-a-key",
@@ -341,15 +304,6 @@ describe("HTTP routes", () => {
     expect(key).toMatchObject({ "mcp.profile": "swap", "caller.key_status": "malformed" });
     expect(key["caller.key_hash"]).toBeUndefined();
     expect(JSON.stringify(key)).not.toContain("not-a-key");
-  });
-
-  it("names a /messages POST for a session that doesn't exist", async () => {
-    const info = vi.spyOn(logger, "info");
-    const res = await post("/messages?sessionId=nope", JSON.stringify(initialize(1)), "198.51.100.50");
-    expect(res.status).toBe(400);
-    const fields = await httpRequestRecord(info, { "http.route": "/messages", "error.type": "SSE_SESSION_NOT_FOUND" });
-    // A message runs with its session's profile, named on that session's GET /sse.
-    expect(fields["mcp.profile"]).toBeUndefined();
   });
 
   it("turns a throwing /mcp handler into a JSON 500 and keeps serving", async () => {
@@ -366,78 +320,34 @@ describe("HTTP routes", () => {
     expect((await res.json()).result.serverInfo.name).toBe("builders-sodax-mcp-server");
   });
 
-  it("keeps an SSE session open and answers its messages over the stream", async () => {
-    const ip = "198.51.100.6";
-    const { sse, reader, endpoint } = await sseSession(ip);
-    expect(sse.status).toBe(200);
-    expect(sse.headers.get("content-type")).toContain("text/event-stream");
-
-    const info = vi.spyOn(logger, "info");
-    const res = await post(endpoint, JSON.stringify(initialize(7)), ip);
-    expect(res.status).toBe(202);
-    await readUntil(reader, /event: message\ndata: .*"id":7/);
-    await httpRequestRecord(info, {
-      "http.route": "/messages",
-      "http.response.status_code": 202,
-      "mcp.method.name": "initialize",
-    });
-  });
-
-  it("names an SSE session by a hash of its id: when it opens, on its messages and on its close", async () => {
-    const ip = "198.51.100.52";
-    const info = vi.spyOn(logger, "info");
-    const { reader, endpoint } = await sseSession(ip);
-    const sessionId = new URL(endpoint, base).searchParams.get("sessionId") as string;
-    const opened = info.mock.calls.find(([, msg]) => msg === "SSE session opened")?.[0] as Record<string, unknown>;
-    const tag = opened["mcp.session.id_hash"];
-    expect(tag).toMatch(/^[0-9a-f]{16}$/);
-    expect(JSON.stringify(info.mock.calls)).not.toContain(sessionId);
-    await post(endpoint, JSON.stringify(initialize(7)), ip);
-    await readUntil(reader, /"id":7/);
-    await httpRequestRecord(info, { "http.route": "/messages", "mcp.session.id_hash": tag });
-    // The open sessions are a heartbeat gauge, next to the others.
-    expect(serverGauges()()).toMatchObject({
-      "swap_quotes.open": expect.any(Number),
-      "sse.sessions": expect.any(Number),
-      "process.memory.rss_bytes": expect.any(Number),
-      "process.memory.heap_used_bytes": expect.any(Number),
-      "event_loop.delay_p99_ms": expect.any(Number),
-      "docs_proxy.healthy": expect.any(Boolean),
-    });
-    expect(serverGauges()()["sse.sessions"]).toBeGreaterThanOrEqual(1);
-    streams.splice(0).forEach(stream => stream.abort());
-    await httpRequestRecord(info, { "http.route": "/sse", "mcp.session.id_hash": tag });
-  });
-
-  it("turns a throwing /sse handler into a JSON 500 and keeps serving", async () => {
-    const ip = "198.51.100.8";
-    vi.mocked(createServer).mockRejectedValueOnce(new Error("boom"));
-    const failed = await openSse(ip);
-    expect(failed.status).toBe(500);
-    expect((await failed.json()).error).toBe("Internal Server Error");
-    expect((await sseSession(ip)).sse.status).toBe(200);
-  });
-
-  it("turns a throwing /messages handler into a JSON 500 and keeps the session", async () => {
-    const ip = "198.51.100.9";
-    const { reader, endpoint } = await sseSession(ip);
-    vi.spyOn(SSEServerTransport.prototype, "handlePostMessage").mockRejectedValueOnce(new Error("boom"));
-    const failed = await post(endpoint, JSON.stringify(initialize(8)), ip);
-    expect(failed.status).toBe(500);
-    expect((await failed.json()).error).toBe("Internal Server Error");
-
-    expect((await post(endpoint, JSON.stringify(initialize(9)), ip)).status).toBe(202);
-    await readUntil(reader, /event: message\ndata: .*"id":9/);
-  });
-
-  it("counts /messages and /sse against the MCP rate limit", async () => {
+  it("counts /mcp against the MCP rate limit", async () => {
     const ip = "198.51.100.10";
-    // Under the global limit (100), so only the MCP limiter can refuse.
-    for (let i = 0; i < MCP_REQUESTS_PER_MINUTE; i++) {
-      expect((await post("/messages?sessionId=none", "{}", ip)).status).toBe(400);
+    // Under the global limit (100), so only the MCP limiter can refuse; an unknown profile is refused after it.
+    const statuses = await Promise.all(
+      Array.from({ length: MCP_REQUESTS_PER_MINUTE }, (_, i) =>
+        post("/mcp?profile=bogus", JSON.stringify(initialize(i)), ip).then(res => res.status),
+      ),
+    );
+    expect(statuses).toEqual(Array(MCP_REQUESTS_PER_MINUTE).fill(400));
+    const refused = await post("/mcp?profile=bogus", JSON.stringify(initialize(0)), ip);
+    expect(refused.status).toBe(429);
+    expect((await refused.json()).error.message).toBe("Too many MCP requests, please try again later.");
+  });
+
+  it("answers the legacy SSE routes with 404 and logs no request for them", async () => {
+    const ip = "198.51.100.11";
+    const sse = await fetch(`${base}/sse`, { headers: { "X-Forwarded-For": ip } });
+    const messages = await post("/messages?sessionId=x", JSON.stringify(initialize(1)), ip);
+    for (const res of [sse, messages]) {
+      expect(res.status).toBe(404);
+      // The request logger sets X-Request-Id on every request it records.
+      expect(res.headers.get("x-request-id")).toBeNull();
     }
-    expect((await post("/messages?sessionId=none", "{}", ip)).status).toBe(429);
-    expect((await openSse(ip)).status).toBe(429);
+  });
+
+  it("lists only /mcp, /health and /api as endpoints on /api", async () => {
+    const res = await fetch(`${base}/api`, { headers: { "X-Forwarded-For": "198.51.100.14" } });
+    expect((await res.json()).endpoints).toEqual({ mcp: "/mcp", health: "/health", api: "/api" });
   });
 
   it("answers the global limit on /mcp with a JSON-RPC error too", async () => {
@@ -473,68 +383,14 @@ describe("HTTP routes", () => {
     await Promise.all(
       Array.from({ length: 100 }, () => fetch(`${base}${path}`, { headers: { "X-Forwarded-For": ip } })),
     );
-    expect((await fetch(`${base}${path}`, { headers: { "X-Forwarded-For": ip } })).status).toBe(429);
+    const refused = await fetch(`${base}${path}`, { headers: { "X-Forwarded-For": ip } });
+    expect(refused.status).toBe(429);
+    // Off /mcp a limiter answers plain JSON, not a JSON-RPC error.
+    expect(await refused.json()).toEqual({ error: "Too many requests, please try again later." });
     const limited = warn.mock.calls.filter(([, msg]) => msg === "Rate limited");
     expect(limited).toHaveLength(1);
     expect(limited[0][0]).toMatchObject({ "http.route": "other" });
     expect(JSON.stringify(limited)).not.toContain("made_up");
-  });
-
-  it("doesn't count refused /sse connections against the per-IP cap", async () => {
-    const ip = "198.51.100.50";
-    for (let i = 0; i <= SSE_MAX_SESSIONS_PER_IP; i++) {
-      const refused = await fetch(`${base}/sse?profile=bogus`, { headers: { "X-Forwarded-For": ip } });
-      expect(refused.status).toBe(400);
-    }
-    expect((await openSse(ip)).status).toBe(200);
-  });
-
-  it("caps open SSE sessions per IP", async () => {
-    const ip = "198.51.100.7";
-    for (let i = 0; i < SSE_MAX_SESSIONS_PER_IP; i++) expect((await openSse(ip)).status).toBe(200);
-    const info = vi.spyOn(logger, "info");
-    const refused = await openSse(ip);
-    expect(refused.status).toBe(429);
-    expect((await refused.json()).error).toContain("Too many open SSE sessions");
-    await httpRequestRecord(info, { "http.route": "/sse", "error.type": "SSE_SESSION_LIMIT" });
-  });
-
-  it("disconnect before SSE route", async () => {
-    const fs = (await import("node:fs")).default;
-    const stat = fs.stat;
-    const timeout = globalThis.setTimeout;
-    const gauges = serverGauges();
-    let response: ServerResponse | undefined;
-    let abort = true;
-    const capture = (_req: IncomingMessage, res: ServerResponse) => {
-      response = res;
-    };
-    server.prependListener("request", capture);
-    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: unknown[]) =>
-      timeout(fn, ms === 3_600_000 ? 10 : ms, ...args)) as typeof setTimeout);
-    vi.spyOn(fs, "stat").mockImplementation(((
-      path: Parameters<typeof stat>[0],
-      callback: (err: NodeJS.ErrnoException | null, stats: import("node:fs").Stats) => void,
-    ) => {
-      if (!abort || !String(path).endsWith("/public/sse")) return stat(path, callback);
-      const res = response;
-      if (!res) return stat(path, callback);
-      const closed = once(res, "close");
-      res.destroy();
-      return stat(path, async (...cbArgs: Parameters<typeof callback>) => {
-        await closed;
-        callback(...cbArgs);
-      });
-    }) as typeof fs.stat);
-    try {
-      for (let i = 0; i < 10; i++) await expect(openSse("198.51.100.80")).rejects.toThrow();
-      await new Promise(resolve => timeout(resolve, 50));
-      expect(gauges()["sse.sessions"]).toBe(0);
-      abort = false;
-      expect((await openSse("198.51.100.80")).status).toBe(200);
-    } finally {
-      server.removeListener("request", capture);
-    }
   });
 });
 
@@ -555,5 +411,17 @@ describe("the records about the server itself", () => {
     });
     expect(JSON.stringify(config)).not.toContain("rpc.example");
     expect(bootConfig({}, false)["rpc_overrides.chains"]).toBeUndefined();
+  });
+
+  it("carries the heartbeat gauges, and none for SSE sessions", () => {
+    const gauges = serverGauges()();
+    expect(gauges).toMatchObject({
+      "swap_quotes.open": expect.any(Number),
+      "process.memory.rss_bytes": expect.any(Number),
+      "process.memory.heap_used_bytes": expect.any(Number),
+      "event_loop.delay_p99_ms": expect.any(Number),
+      "docs_proxy.healthy": expect.any(Boolean),
+    });
+    expect(gauges).not.toHaveProperty("sse.sessions");
   });
 });

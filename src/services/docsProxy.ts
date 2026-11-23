@@ -37,7 +37,7 @@ let cachedTools: DocsTool[] | null = null;
 let toolsCacheTime = 0;
 const TOOLS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-// Negative cache. createServer() awaits fetchDocsTools() on EVERY /mcp and /sse
+// Negative cache. createServer() awaits fetchDocsTools() on EVERY /mcp
 // request, so without a back-off a failed or empty fetch would make each request
 // re-run the initialize + tools/list round-trips (up to 30s each when upstream
 // hangs). After a failed or empty fetch we serve whatever is cached (possibly

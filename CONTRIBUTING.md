@@ -57,7 +57,7 @@ The release workflows authenticate as a **GitHub App** rather than a personal ac
 
 The App must be:
 - **Owned by the `gosodax` org.**
-- **Installed on this repository** (`gosodax/builders-sodax-mcp-server`).
+- **Installed on this repository** (`gosodax/sodax-mcp`).
 - Granted these repository permissions:
   - `Contents`: Read and write
   - `Pull requests`: Read and write

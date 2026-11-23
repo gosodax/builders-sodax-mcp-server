@@ -1,7 +1,7 @@
 services:
-  builders-sodax-mcp-server:
+  sodax-mcp:
     build: .
-    container_name: builders-sodax-mcp-server
+    container_name: sodax-mcp
     # .env is optional — if absent, the defaults below apply (no error).
     env_file:
       - path: .env

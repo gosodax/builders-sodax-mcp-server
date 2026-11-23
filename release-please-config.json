@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "builders-sodax-mcp-server",
+      "package-name": "sodax-mcp",
       "include-v-in-tag": true,
       "draft": false,
       "prerelease": false,

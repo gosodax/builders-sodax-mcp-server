@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.gosodax/builders-mcp",
-  "title": "SODAX Builders MCP",
+  "name": "io.github.gosodax/sodax-mcp",
+  "title": "SODAX MCP",
   "description": "Cross-network DeFi data, SDK docs, and swap tools that quote and track swaps the user's wallet signs",
   "version": "1.6.0",
   "repository": {
-    "url": "https://github.com/gosodax/builders-sodax-mcp-server",
+    "url": "https://github.com/gosodax/sodax-mcp",
     "source": "github"
   },
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://builders.sodax.com/mcp",
+      "url": "https://mcp.sodax.com/mcp",
       "headers": [
         {
           "name": "x-api-key",

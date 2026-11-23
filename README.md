@@ -11,11 +11,11 @@
 
 <p align="center">
   <b>One-click install</b><br><br>
-  <a href="https://cursor.com/en/install-mcp?name=sodax-builders&amp;config=eyJ1cmwiOiJodHRwczovL2J1aWxkZXJzLnNvZGF4LmNvbS9tY3AifQ=="><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add to Cursor" height="32" /></a>
+  <a href="https://cursor.com/en/install-mcp?name=sodax&amp;config=eyJ1cmwiOiJodHRwczovL21jcC5zb2RheC5jb20vbWNwIn0="><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add to Cursor" height="32" /></a>
   &nbsp;
-  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax-builders&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fbuilders.sodax.com%2Fmcp%22%7D"><img src="https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge" alt="Install in VS Code" /></a>
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D"><img src="https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge" alt="Install in VS Code" /></a>
   &nbsp;
-  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax-builders&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fbuilders.sodax.com%2Fmcp%22%7D&amp;quality=insiders"><img src="https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=for-the-badge" alt="Install in VS Code Insiders" /></a>
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D&amp;quality=insiders"><img src="https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=for-the-badge" alt="Install in VS Code Insiders" /></a>
 </p>
 
 > The default one-click config connects without an API key — the builder and documentation tools work immediately. To use the swap tools, add an `x-api-key` header with your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys). See [API Key](#api-key) below. A `.mcp.json` at the repo root lets Cursor Directory and Claude Code project config pick up the server entry automatically.

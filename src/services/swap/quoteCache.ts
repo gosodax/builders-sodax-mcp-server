@@ -36,7 +36,11 @@ export type CachedQuote = IntentRequest & {
   submitRetryAt?: number;
   /** When track was first called for a tx not yet this quote's deposit: an unseen tx is waited for from then. */
   trackedSince?: { txHash: string; at: number };
+  /** Its delivery once the relay executed it: a later relay read that fails can't take it back. */
+  delivered?: Delivered;
 };
+
+export type Delivered = { delivery: "delivered" | "sent"; dstTxHash: string };
 
 /** A hub swap's end, known from the hub. */
 type HubOutcome = "left_to_refund" | "cancelled" | "closed";
@@ -207,6 +211,10 @@ export function markSubmitFailed(quoteId: string, waitSec: number): void {
 export function markSubmitted(quoteId: string): void {
   const quote = quotes.get(quoteId);
   if (quote && !quote.handedOver) quote.handedOver = "submitted";
+}
+
+export function markDelivered(quote: CachedQuote, delivered: Delivered): void {
+  quote.delivered = delivered;
 }
 
 export function markSubmitRefused(quoteId: string): void {

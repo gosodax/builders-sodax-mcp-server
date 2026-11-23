@@ -527,6 +527,8 @@ export function trackNextStep(result: TrackResult): string {
           return `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`;
         case "delivered":
           return `The swap is complete: the user received ${atLeast} on ${promised.chainName} (delivery tx ${result.dstTxHash}).`;
+        case "sent":
+          return `The swap is filled and SODAX sent ${atLeast} to the user on ${promised.chainName} (delivery tx ${result.dstTxHash}), which may not be confirmed there yet: tell the user it was sent in that tx, and that they must not send the swap again.`;
         default: {
           const onItsWay = `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, one more cross-chain hop`;
           // Only a delivered result is evidence tied to this swap: a balance can't tell one swap's funds from another's.

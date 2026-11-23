@@ -66,9 +66,6 @@ export function parseEvmTx(tx: unknown): EvmTx {
 }
 export type Intent = BuiltIntent["intent"];
 
-// Non-EVM destinations have their own fill hash formats.
-const FILL_TX_HASH = /^[A-Za-z0-9:_-]{1,128}$/;
-
 // Only what track and cancel act on; `userMessage` and `failureReason` are upstream text and stay out.
 // A hash that doesn't look like one is dropped, not passed on.
 const submitTxStatusSchema = z.object({
@@ -81,7 +78,8 @@ const submitTxStatusSchema = z.object({
     result: z
       .object({
         dstIntentTxHash: z.string().regex(EVM_TX_HASH_PATTERN).optional().catch(undefined),
-        fillTxHash: z.string().regex(FILL_TX_HASH).optional().catch(undefined),
+        // The solver fills an intent on the hub, whatever its destination.
+        fillTxHash: z.string().regex(EVM_TX_HASH_PATTERN).optional().catch(undefined),
       })
       .optional(),
   }),

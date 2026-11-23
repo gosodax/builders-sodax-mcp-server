@@ -12,11 +12,13 @@ import { callerKeyHash } from "../requestContext.js";
 import { intentHash, isHubChain } from "../sodax.js";
 import { TtlCache } from "../ttlCache.js";
 import { alertOperator } from "./alerts.js";
-import { readDelivery } from "./delivery.js";
+import { deliveryProof, readDelivery } from "./delivery.js";
 import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
+  type Delivered,
   claimDeposit,
+  markDelivered,
   markHubOutcome,
   markRelayedForRefund,
   markSubmitFailed,
@@ -108,9 +110,10 @@ export type TrackState =
       minimumReceived?: CachedQuote["minimumReceived"];
       /**
        * With the quote: `complete` to a hub recipient. Elsewhere `in_transit` until the relay executed this swap's
-       * packet from its fill on the destination, then `delivered` with that chain's `dstTxHash`.
+       * packet from its fill on the destination, then `delivered` with that chain's `dstTxHash`, or `sent` where
+       * an executed packet only proves the relay sent it (`deliveryProof`).
        */
-      delivery?: "complete" | "in_transit" | "delivered";
+      delivery?: "complete" | "in_transit" | Delivered["delivery"];
       dstTxHash?: string;
       /** While `in_transit` with a fill to follow. */
       retryAfterSec?: number;
@@ -144,10 +147,21 @@ export async function trackSwapWaiting(input: {
   const started = Date.now();
   const stateOf = (result: TrackResult) => `${result.status}:${"stage" in result ? result.stage : ""}`;
   let result = await trackSwap(input);
+  let passMs = Date.now() - started;
   const first = stateOf(result);
-  while (waits(result) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
+  // A pass may take as long as the last one: one that would end past `maxMs` doesn't start.
+  while (waits(result) && Date.now() - started + trackWait.stepMs + passMs <= trackWait.maxMs) {
     await trackWait.sleep(trackWait.stepMs);
-    result = await trackSwap(input);
+    const passStarted = Date.now();
+    try {
+      result = await trackSwap(input);
+      passMs = Date.now() - passStarted;
+    } catch (error) {
+      // Already filled: a retryable failure while the delivery is awaited leaves the last answer standing.
+      const retryableFailure = error instanceof ActionError && RETRYABLE_CODES.includes(error.code);
+      if (result.status !== "solved" || !retryableFailure) throw error;
+      break;
+    }
     if (stateOf(result) !== first) break;
   }
   return result;
@@ -496,14 +510,20 @@ function hubClosed(base: SwapRef, quote: CachedQuote): SwapRef & { status: "inte
 }
 
 /**
- * `fromStatus`, then for a swap filled toward another chain, its delivery: read from the relay packets of its fill.
- * A fill confirmed without its tx (from the backend's journal) has nothing to read, now or later: no retry.
+ * `fromStatus`, then for a swap filled toward another chain, its delivery: read from the relay packets of its fill,
+ * and kept once read. A fill confirmed without its tx (from the backend's journal) has nothing to read, now or later:
+ * no retry.
  */
 async function fromRow(row: SubmitTxStatus, quote?: CachedQuote): Promise<TrackState> {
   const state = fromStatus(row, quote);
-  if (state.status !== "solved" || state.delivery !== "in_transit" || !quote || !state.fillTxHash) return state;
+  if (state.status !== "solved" || state.delivery !== "in_transit" || !quote) return state;
+  if (quote.delivered) return { ...state, ...quote.delivered };
+  if (!state.fillTxHash) return state;
   const dstTxHash = await readDelivery(state.fillTxHash, quote.intent);
-  return dstTxHash ? { ...state, delivery: "delivered", dstTxHash } : { ...state, retryAfterSec: RETRY_AFTER_SEC };
+  if (!dstTxHash) return { ...state, retryAfterSec: RETRY_AFTER_SEC };
+  const delivered = { delivery: deliveryProof(quote.dstChainKey), dstTxHash };
+  markDelivered(quote, delivered);
+  return { ...state, ...delivered };
 }
 
 /** The backend's record in our words: enums and hashes checked at the API boundary, never its text. */

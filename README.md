@@ -138,8 +138,10 @@ every transaction; the server never signs.
    wallet shows it. With its quote, a `solved` swap (filled on the hub) to Sonic is `delivery: "complete"`. To any
    other chain it's `in_transit`, with `retryAfterSec`, until the relay has executed this swap's packet from its fill
    transaction on that chain. It's then `delivered`, with the destination's `dstTxHash`. Only `delivered` means the
-   funds arrived: a balance can't tell one swap's funds from another's. A fill the swap service reports without its
-   transaction can't be followed, so it stays `in_transit` without `retryAfterSec`.
+   funds arrived: a balance can't tell one swap's funds from another's. To Bitcoin and Injective it's `sent` instead:
+   there the relay marks a packet executed once it has sent the destination transaction, before that chain has
+   confirmed it. A fill the swap service reports without its transaction can't be followed, so it stays `in_transit`
+   without `retryAfterSec`.
 5. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as

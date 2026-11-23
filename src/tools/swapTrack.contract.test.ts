@@ -213,7 +213,9 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
 
   it("reads a recent fill's delivery from the live relay: its tx paid the intent's recipient on the destination", async () => {
     const { fillTxHash, intent, chainKey, token } = await recentSpokeFill();
-    const dstTxHash = await readDelivery(fillTxHash, intent);
+    // The fill is settled: a relay slower than track's budget reads as undelivered, so it's asked again.
+    let dstTxHash: string | undefined;
+    for (let attempt = 0; attempt < 3 && !dstTxHash; attempt++) dstTxHash = await readDelivery(fillTxHash, intent);
     expect(dstTxHash, "the fill's delivery, executed").toBeDefined();
     const destination = createPublicClient({ transport: http(packagedChains[chainKey]?.rpcUrl) });
     const receipt = await destination.getTransactionReceipt({ hash: dstTxHash as Hex });

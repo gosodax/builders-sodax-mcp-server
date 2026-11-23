@@ -1,7 +1,8 @@
 services:
-  sodax-mcp:
+  # Pre-rename name on purpose: a new name leaves the old container holding the port on redeploy.
+  builders-sodax-mcp-server:
     build: .
-    container_name: sodax-mcp
+    container_name: builders-sodax-mcp-server
     # .env is optional — if absent, the defaults below apply (no error).
     env_file:
       - path: .env

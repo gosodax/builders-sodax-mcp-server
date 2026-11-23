@@ -22,6 +22,7 @@ import { getToolModule, toolGroup } from "./toolRegistry.js";
 // ── Configuration ────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
 const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://eu.i.posthog.com";
+// Pre-rename defaults on purpose, so the PostHog dashboards keep matching.
 const DISTINCT_ID = process.env.POSTHOG_DISTINCT_ID || "sodax-builders-mcp";
 const SERVER_NAME = process.env.POSTHOG_SERVER_NAME || "builders-mcp";
 const CLIENT_ID_SECRET = process.env.POSTHOG_CLIENT_ID_SECRET || "";

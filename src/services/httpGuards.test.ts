@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { notifyError } from "./discord.js";
 import {
   MCP_MAX_BATCH_SIZE,
-  SseSessionLimiter,
   asyncHandler,
   createMcpLimiter,
   jsonErrorHandler,
@@ -36,16 +35,13 @@ function post(url: string, body: string): Promise<Response> {
 }
 
 describe("createMcpLimiter", () => {
-  /** One limiter shared by /mcp and /messages, as in index.ts. */
+  /** The limiter on /mcp, as in index.ts. */
   async function limitedApp(limit: number): Promise<string> {
     const app = express();
     app.use(express.json());
-    const limiter = createMcpLimiter(limit);
-    for (const path of ["/mcp", "/messages"]) {
-      app.post(path, limiter, (_req, res) => {
-        res.json({ ok: true });
-      });
-    }
+    app.post("/mcp", createMcpLimiter(limit), (_req, res) => {
+      res.json({ ok: true });
+    });
     return serve(app);
   }
 
@@ -96,25 +92,14 @@ describe("createMcpLimiter", () => {
     expect(limited[0][0]).toMatchObject({ "http.route": "/mcp", "rate_limit.limit": 5 });
   });
 
-  it("counts a batch on /messages once, since the SSE transport refuses batches", async () => {
-    const url = await limitedApp(2);
-
-    expect((await post(`${url}/messages`, JSON.stringify([rpc(1), rpc(2), rpc(3)]))).status).toBe(200);
-    expect((await post(`${url}/messages`, JSON.stringify(rpc(4)))).status).toBe(200);
-    expect((await post(`${url}/messages`, JSON.stringify(rpc(5)))).status).toBe(429);
-  });
-
-  it("answers the limit with a JSON-RPC error on /mcp and a plain JSON error elsewhere", async () => {
+  it("answers the limit with a JSON-RPC error on /mcp whatever its case or trailing slash", async () => {
     const url = await limitedApp(1);
     await post(`${url}/mcp`, JSON.stringify(rpc(1)));
 
     const onMcp = await post(`${url}/MCP/`, JSON.stringify(rpc(2)));
-    const onMessages = await post(`${url}/messages`, JSON.stringify(rpc(3)));
 
     expect(onMcp.status).toBe(429);
     expect(await onMcp.json()).toEqual(limitError);
-    expect(onMessages.status).toBe(429);
-    expect(await onMessages.json()).toEqual({ error: "Too many MCP requests, please try again later." });
   });
 
   it("counts a single message once", async () => {
@@ -147,74 +132,6 @@ describe("mcpGetNotAllowed", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST, DELETE");
     expect(await res.json()).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 } });
-  });
-});
-
-describe("SseSessionLimiter", () => {
-  it("caps sessions per IP and frees a slot on release", () => {
-    const limiter = new SseSessionLimiter(10, 2, 1000);
-    const a = limiter.open("1.1.1.1", () => {});
-    const b = limiter.open("1.1.1.1", () => {});
-
-    expect(a).not.toBeNull();
-    expect(b).not.toBeNull();
-    expect(limiter.open("1.1.1.1", () => {})).toBeNull();
-    expect(limiter.open("2.2.2.2", () => {})).not.toBeNull();
-
-    a?.release();
-    a?.release(); // a second release must not free another slot
-    expect(limiter.open("1.1.1.1", () => {})).not.toBeNull();
-    expect(limiter.open("1.1.1.1", () => {})).toBeNull();
-  });
-
-  it("counts IPv6 clients per /56 subnet, like the rate limiter", () => {
-    const limiter = new SseSessionLimiter(10, 2, 1000);
-    limiter.open("2001:db8:0:1::1", () => {});
-    limiter.open("2001:db8:0:2::2", () => {});
-
-    expect(limiter.open("2001:db8:0:ff::3", () => {})).toBeNull();
-    expect(limiter.open("2001:db8:0:100::1", () => {})).not.toBeNull();
-  });
-
-  it("caps sessions globally across IPs", () => {
-    const limiter = new SseSessionLimiter(2, 5, 1000);
-    limiter.open("1.1.1.1", () => {});
-    const second = limiter.open("2.2.2.2", () => {});
-
-    expect(limiter.open("3.3.3.3", () => {})).toBeNull();
-    second?.release();
-    expect(limiter.open("3.3.3.3", () => {})).not.toBeNull();
-  });
-
-  it("ends a session after the idle timeout, restarted by touch()", () => {
-    vi.useFakeTimers();
-    try {
-      const onIdle = vi.fn();
-      const lease = new SseSessionLimiter(10, 10, 1000).open("1.1.1.1", onIdle);
-
-      vi.advanceTimersByTime(900);
-      lease?.touch();
-      vi.advanceTimersByTime(900);
-      expect(onIdle).not.toHaveBeenCalled();
-
-      vi.advanceTimersByTime(100);
-      expect(onIdle).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops the idle timer on release", () => {
-    vi.useFakeTimers();
-    try {
-      const onIdle = vi.fn();
-      new SseSessionLimiter(10, 10, 1000).open("1.1.1.1", onIdle)?.release();
-
-      vi.advanceTimersByTime(5000);
-      expect(onIdle).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 

@@ -47,11 +47,8 @@ function keyHash(apiKey: string | undefined): string {
     .digest("hex");
 }
 
-/** A SHA-256 hex as log records name it (`caller.key_hash`, `mcp.session.id_hash`): its first 16 characters. */
+/** A SHA-256 hex as log records name it (`caller.key_hash`): its first 16 characters. */
 export const tagOf = (sha256Hex: string): string => sha256Hex.slice(0, 16);
-
-/** A secret's tag: what a record can carry instead of it (an SSE session id). */
-export const hashTag = (secret: string): string => tagOf(createHash("sha256").update(secret).digest("hex"));
 
 /** A key as log records name it, none without a key. */
 export function keyTag(apiKey: string | undefined): string | undefined {

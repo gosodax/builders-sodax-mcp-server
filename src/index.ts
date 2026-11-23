@@ -14,15 +14,13 @@ import { dirname, join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ClientNotificationSchema, ClientRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Express, type NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { callerApiKey, messageContext, resolveConnection } from "./connection.js";
+import { callerApiKey, resolveConnection } from "./connection.js";
 import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js";
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { CLIENT_ID_KEYED, POSTHOG_ENABLED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
@@ -30,14 +28,11 @@ import { checkApiDrift } from "./services/apiDriftCheck.js";
 import { isDiscordConfigured, notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import {
-  type SseLease,
-  SseSessionLimiter,
   asyncHandler,
   createMcpLimiter,
   jsonErrorHandler,
   limitBody,
   mcpGetNotAllowed,
-  noteRefusal,
   rateLimitHandler,
   refusalOf,
   requestRoute,
@@ -56,9 +51,7 @@ import {
   selectToolsets,
 } from "./services/profiles.js";
 import {
-  type RequestContext,
   getRequestContext,
-  hashTag,
   keyTag,
   parseApiKey,
   runWithRequestContext,
@@ -226,31 +219,24 @@ function clientFields(body: unknown): Record<string, string | undefined> {
 /**
  * One "HTTP request" record per MCP request (#110), the ones a guard refuses included, and the request id every
  * other record of the request carries: the context opens here and the handlers extend it with the connection's.
- * On GET /sse the record is the session's: 200 and its length. Not for /health and the pages. A refusal names
- * its guard (`error.type`); the caller's key is a status and a hash, never the key.
+ * Not for /health and the pages. A refusal names its guard (`error.type`); the caller's key is a status and a
+ * hash, never the key.
  */
 function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
   const requestId = randomUUID();
   const clientId = hashClientIp(req.ip || "unknown");
   const started = Date.now();
   const connection = {
-    // A POST /messages runs with its SSE session's profile, named on that session's GET /sse.
-    "mcp.profile": requestRoute(req) === "/messages" ? undefined : parseProfile(profileFromRequest(req)),
+    "mcp.profile": parseProfile(profileFromRequest(req)),
     "caller.key_status": apiKeyStatus(req.get("x-api-key")),
     "caller.key_hash": keyTag(callerApiKey(req)),
     "user_agent.original": label(req.get("user-agent"), 256),
   };
-  // A message names its session in the URL; GET /sse sets it once its session opens. Never the id itself: a
-  // session's messages may be sent with the id alone.
-  if (requestRoute(req) === "/messages" && typeof req.query.sessionId === "string") {
-    res.locals.sessionTag = hashTag(req.query.sessionId);
-  }
   // "close" follows "finish", and comes alone when the client went away first; it may run outside the context.
   res.once("close", () => {
     const status = res.statusCode;
     const refusal = refusalOf(res);
     // A limiter logs its refusals once per window (rateLimitHandler); one record each would let a flood write the log.
-    // The SSE cap's 429 is no limiter's: those come after the MCP limiter, so they stay at info.
     logger[refusal === "RATE_LIMITED" ? "debug" : "info"](
       {
         "request.id": requestId,
@@ -263,7 +249,6 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
         "mcp.method.name": mcpMethod(req.body),
         ...clientFields(req.body),
         ...connection,
-        "mcp.session.id_hash": res.locals.sessionTag,
         "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
       },
       "HTTP request",
@@ -298,7 +283,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
   );
 
   // Before the limiters: a refused request is a request too. Routed, so /MCP and /mcp/ count like the handlers do.
-  app.all(["/mcp", "/messages", "/sse"], logMcpRequests);
+  app.all("/mcp", logMcpRequests);
 
   // Rate limiting
   const limiter = rateLimit({
@@ -309,9 +294,6 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     handler: rateLimitHandler(limitBody("Too many requests, please try again later.")),
   });
   app.use(limiter);
-
-  // Stricter rate limit for MCP endpoints (60 per minute; a batch on /mcp counts per message)
-  const mcpLimiter = createMcpLimiter();
 
   app.use(express.json({ limit: "100kb" }));
 
@@ -402,7 +384,8 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
 
   app.all(
     "/mcp",
-    mcpLimiter,
+    // Stricter rate limit for /mcp (60 per minute; a batch counts per message)
+    createMcpLimiter(),
     asyncHandler(async (req: Request, res: Response) => {
       const connection = resolveConnection(req, res, swapToolsEnabled);
       if (!connection) return;
@@ -416,102 +399,6 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       // The request's context (logMcpRequests) plus the connection's: one id on every record (#110).
       await runWithRequestContext({ ...getRequestContext(), ...connection.context }, () =>
         transport.handleRequest(req, res, req.body),
-      );
-    }),
-  );
-
-  // Legacy SSE transport for clients that don't support streamable HTTP (e.g. Gemini CLI)
-  const sseLimiter = new SseSessionLimiter();
-  openSseSessions = () => sseLimiter.sessions;
-  // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
-  const sseSessions = new Map<
-    string,
-    { transport: SSEServerTransport; server: McpServer; context: RequestContext; lease: SseLease }
-  >();
-
-  app.get(
-    "/sse",
-    mcpLimiter,
-    asyncHandler(async (req: Request, res: Response) => {
-      // Before taking a slot, so a refused connection never holds one.
-      const connection = resolveConnection(req, res, swapToolsEnabled);
-      if (!connection) return;
-      // express.static's fs.stat can yield before this handler; a disconnect in
-      // that gap already fired the response's one-shot 'close', so a listener
-      // attached below would never run.
-      if (res.destroyed || req.socket.destroyed) return;
-      const ip = req.ip || "unknown";
-      let sessionId: string | undefined;
-      const dropSession = () => {
-        if (!sessionId) return;
-        const id = sessionId;
-        sessionId = undefined;
-        const session = sseSessions.get(id);
-        sseSessions.delete(id);
-        session?.transport.close();
-      };
-      // Idle cleanup must release the slot itself: res.end() on an already
-      // destroyed response does not emit 'close' again.
-      let lease: SseLease | null = null;
-      lease = sseLimiter.open(ip, () => {
-        dropSession();
-        lease?.release();
-        res.end();
-      });
-      if (!lease) {
-        noteRefusal(res, "SSE_SESSION_LIMIT");
-        res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
-        return;
-      }
-      let closed = false;
-      res.on("close", () => {
-        closed = true;
-        dropSession();
-        lease.release();
-      });
-      if (res.destroyed || req.socket.destroyed) {
-        closed = true;
-        lease.release();
-        return;
-      }
-
-      const sseServer = await createServer(connection.toolsets, getRequestContext().clientId);
-      if (closed || res.destroyed || req.socket.destroyed) {
-        if (!closed) {
-          closed = true;
-          lease.release();
-        }
-        return;
-      }
-      const transport = new SSEServerTransport("/messages", res);
-      sessionId = transport.sessionId;
-      sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
-      // The session's own record comes when it closes; this one says it opened, under the id its messages carry.
-      res.locals.sessionTag = hashTag(transport.sessionId);
-      logger.info({ "mcp.session.id_hash": res.locals.sessionTag }, "SSE session opened");
-
-      // connect() starts the transport; a second start() throws.
-      await sseServer.connect(transport);
-    }),
-  );
-
-  app.post(
-    "/messages",
-    mcpLimiter,
-    asyncHandler(async (req: Request, res: Response) => {
-      const sessionId = req.query.sessionId as string;
-      const session = sseSessions.get(sessionId);
-      if (!session) {
-        noteRefusal(res, "SSE_SESSION_NOT_FOUND");
-        res.status(400).json({ error: "Invalid or expired session. Reconnect via GET /sse." });
-        return;
-      }
-      // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-      const context = messageContext(session.context, req, res);
-      if (!context) return;
-      session.lease.touch();
-      await runWithRequestContext({ ...getRequestContext(), ...context }, () =>
-        session.transport.handlePostMessage(req, res, req.body),
       );
     }),
   );
@@ -536,7 +423,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       name: "SODAX Builders MCP Server",
       version: SERVER_VERSION,
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
-      endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
+      endpoints: { mcp: "/mcp", health: "/health", api: "/api" },
       profiles: {
         default: "all",
         select: "?profile=<name> or the x-sodax-profile header",
@@ -590,9 +477,6 @@ function listen(app: Express, boot: ReturnType<typeof bootConfig>): void {
 
 let otel: OtelLogs | undefined;
 
-/** The open SSE sessions of the app serving, for the heartbeat; none before it serves. */
-let openSseSessions = () => 0;
-
 /** How this server was started (#110): what a record can't otherwise say. Names only, never a URL or a key. */
 export function bootConfig(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean) {
   return {
@@ -619,7 +503,6 @@ export function serverGauges(): () => Record<string, unknown> {
     const { rss, heapUsed } = process.memoryUsage();
     return {
       "swap_quotes.open": openQuotes().open,
-      "sse.sessions": openSseSessions(),
       "process.memory.rss_bytes": rss,
       "process.memory.heap_used_bytes": heapUsed,
       "event_loop.delay_p99_ms": Math.round(delayP99Ms * 10) / 10,

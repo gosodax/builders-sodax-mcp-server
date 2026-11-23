@@ -30,20 +30,15 @@ Add the MCP server URL to your AI coding assistant's configuration:
 
 Works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation.
 
-### SSE Transport (Legacy)
+### Gemini CLI
 
-For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE endpoint instead:
-
-```json
-{
-  "mcpServers": {
-    "sodax-builders": {
-      "type": "sse",
-      "url": "https://builders.sodax.com/sse"
-    }
-  }
-}
+```bash
+gemini mcp add --scope user --transport http sodax-builders https://builders.sodax.com/mcp
 ```
+
+The Quick Start config works in Gemini CLI's settings too; older versions take `httpUrl` in place of `url`. For the swap
+tools, add `-H "x-api-key: <your key>"` (see API Key): `--scope user` keeps the key in your user settings, not in the
+project's, which may be committed.
 
 ### API Key
 
@@ -52,10 +47,6 @@ tools work without one; the swap tools need it. An organisation's Owner or Admin
 [partner portal](https://portal.sodax.com), under **API keys** → **Create key**. The server forwards it on its calls to
 the SODAX data API, solver and Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY`
 instead. A value that isn't a SODAX key (`sodax_…`) is ignored, except by the `swap` profile, which refuses it.
-
-SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
-carries, and a session opened with a key refuses a message without that key (HTTP 403). The MCP SDKs' SSE clients
-already send their headers on both.
 
 ```json
 {
@@ -453,17 +444,16 @@ Swap quotes live in the server's memory, so:
 
 ## Logging
 
-Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem (over SSE, the tool calls' ids are on the `POST /messages` responses, not on the stream), and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
+Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem, and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
 
 | Record | Level | When | Attributes |
 |---|---|---|---|
-| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`, `/messages`, `/sse`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile` (not on `/messages`, which runs with its SSE session's), `caller.key_status` (`valid`: a SODAX key's shape, the backend decides the rest; `malformed`; `missing`), `caller.key_hash` with a valid key, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
+| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile`, `caller.key_status` (`valid`: a SODAX key's shape, the backend decides the rest; `malformed`; `missing`), `caller.key_hash` with a valid key, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
 | `Tool call` | info for the caller's failure, `warn` for one on SODAX's side, `error` for a bug | each tool call, and each call the SDK refuses before a handler runs | `gen_ai.tool.name` (`other` for a name the server doesn't have), `tool.outcome` (`ok` or `error`), `error.type`, `duration.ms`, `caller.key_hash` with a key; swap tools add `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`, `intent.hash`, `chain.key`, `dst_chain.key`, `swap.usd_bucket`; a bug adds `exception.type` and its stack frames, never its message |
 | `Upstream call` | info, `warn` on failure | each call to the SODAX APIs, the solver, the relay and the docs MCP | `http.request.method`, `server.address`, `url.template` (static segments kept, parameters masked), `http.response.status_code`, `duration.ms`, `error.type` |
 | `Chain read` | info, `warn` on failure | each bounded SDK or RPC read | `sdk.call`, `chain.key`, `duration.ms`, `error.type` |
 | `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
 | `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
-| `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
 | `SODAX Builders MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
 | `RPC_CONFIG entries this server can't apply` | warn | boot, when `RPC_CONFIG` has an entry this server skips (those chains use their public RPC) | `rpc_config.skipped` (chain keys and field names only, never a value) |
 | `SODAX_RPC_URL_* is no longer read: set RPC_CONFIG` | warn | boot, when an old RPC variable is still set (it has no effect) | `rpc_config.legacy` (the variable names) |
@@ -471,16 +461,15 @@ Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `O
 | `Swaps API call failed` | warn | a Swaps API error answer | `url.template`, `http.response.status_code`, `upstream.code`, `upstream.message` (ids masked) |
 | an operator alert, titled by its kind | error | a swap needs an operator: a deposit that can't be submitted or doesn't match its quote, a refund that couldn't start, a swap the service built wrong (`SWAP_MISMATCH`) or quoted off market (`PRICE_OFF_MARKET`), a swap tool's unexpected failure. It also goes to Discord, which shows the first 12 characters of `caller.key_hash` | `alert` (the kind), `chain.key`, `tx.hash`, `quote.id`, `deadline`, `gen_ai.tool.name`, `error.type`, `reason`, `caller.key_hash` |
 | `Rate limited` | warn | a limiter's first refusal per client per window | `http.route`, `rate_limit.limit`, `rate_limit.window_ms`, `client.ip_hash` as above |
-| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `sse.sessions`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`; `unified_logging.gauges_failed` when they couldn't be read |
+| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`; `unified_logging.gauges_failed` when they couldn't be read |
 
 A record's body is a constant (`Body = 'Tool call'`); what varies is in its attributes. One failure is one record of each kind: the data services don't log what `Upstream call`, `Chain read` and `Tool call` already say.
 
 `error.type` says why:
 
 - **`HTTP request`**, the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`,
-  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
-  `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST`,
-  `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
+  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`,
+  `BODY_TOO_LARGE`, `INVALID_REQUEST`, `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
 - **`Tool call` the SDK refused** before a handler ran: `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED`,
   `TOOL_CALL_REFUSED`.
 - **A swap tool's failure**: the code the tool returned.
@@ -507,16 +496,14 @@ Export is batched and bounded: a gateway outage drops records and never slows a 
 | `GET /api` | Server info, tool list and profiles |
 | `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose; `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
-| `GET /sse` | SSE endpoint (legacy transport) |
-| `POST /messages` | SSE message endpoint |
 
 ### Errors and limits
 
 `/mcp` answers HTTP errors with a JSON-RPC error, `{"jsonrpc":"2.0","error":{"code":…,"message":"…"},"id":null}`.
 Read `error.message`; `error` is an object here.
 
-Every MCP response carries an `X-Request-Id` header (over SSE, on the `POST /messages` responses). Quote it when
-reporting a problem: the server's logs find the request by it.
+Every MCP response carries an `X-Request-Id` header. Quote it when reporting a problem: the server's logs find the
+request by it.
 
 | Status | On `/mcp` | `error.code` |
 |--------|-----------|--------------|
@@ -527,12 +514,8 @@ reporting a problem: the server's logs find the request by it.
 | 429 | A rate limit | -32000 |
 | 500 | A server error | -32603 |
 
-On `/sse` and `/messages`, the rate limits, an unknown session and server errors answer `{"error":"…"}`; the SSE
-transport's own errors (a message it can't parse, for one) are plain text.
-
-Limits are per client IP (IPv6 per /56): 100 requests a minute on all routes, and 60 a minute on `/mcp`, `/sse` and
-`/messages`, where each message of a `/mcp` batch counts. A rate-limit 429 carries `Retry-After` and `RateLimit-*`
-headers. SSE allows 10 open sessions per client and 200 in all, and closes a session after an hour without a message.
+Limits are per client IP (IPv6 per /56): 100 requests a minute on all routes, and 60 a minute on `/mcp`, where each
+message of a batch counts. A rate-limit 429 carries `Retry-After` and `RateLimit-*` headers.
 
 ## Related
 

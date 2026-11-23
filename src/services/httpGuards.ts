@@ -1,16 +1,11 @@
 /**
- * HTTP guards for the MCP endpoints: the request limiter, SSE session caps and
- * the final JSON error handler.
+ * HTTP guards for the MCP endpoint: the request limiter and the final JSON
+ * error handler.
  */
 
 import { STATUS_CODES } from "node:http";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
-import rateLimit, {
-  MemoryStore,
-  type RateLimitExceededEventHandler,
-  type RateLimitInfo,
-  ipKeyGenerator,
-} from "express-rate-limit";
+import rateLimit, { MemoryStore, type RateLimitExceededEventHandler, type RateLimitInfo } from "express-rate-limit";
 import { CLIENT_ID_KEYED } from "./analytics.js";
 import { notifyError } from "./discord.js";
 import { logger } from "./logger.js";
@@ -20,9 +15,6 @@ export const MCP_REQUESTS_PER_MINUTE = 60;
 // Protocol 2025-03-26 allows JSON-RPC batches; each message counts as one request.
 export const MCP_MAX_BATCH_SIZE = 10;
 
-export const SSE_MAX_SESSIONS = 200;
-export const SSE_MAX_SESSIONS_PER_IP = 10;
-export const SSE_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour without a client message
 // A run of failing requests alerts once, not once per request.
 export const ERROR_ALERT_INTERVAL_MS = 60 * 1000;
 
@@ -44,7 +36,7 @@ export function limitBody(message: string) {
   return (req: Request) => (isMcpPath(req) ? jsonRpcError(-32000, message) : { error: message });
 }
 
-const mcpLimitBody = limitBody(MCP_LIMIT_MESSAGE);
+const mcpLimitBody = () => jsonRpcError(-32000, MCP_LIMIT_MESSAGE);
 
 /** Why a guard refused the request, for its "HTTP request" record (#110): a code, never what the client sent. */
 export function noteRefusal(res: Response, errorType: string): void {
@@ -58,7 +50,7 @@ export function refusalOf(res: Response): string | undefined {
 /** The route as the handlers see it: Express ignores case and a trailing slash. */
 export const requestRoute = (req: Request): string => req.path.toLowerCase().replace(/\/$/, "");
 // A record names only routes this server has; whatever else a client typed is "other", never logged.
-const APP_ROUTE = /^\/(mcp|messages|sse|health|api)$/;
+const APP_ROUTE = /^\/(mcp|health|api)$/;
 const knownRoute = (req: Request): string => (APP_ROUTE.test(requestRoute(req)) ? requestRoute(req) : "other");
 
 const WINDOW_MS = 60 * 1000;
@@ -100,9 +92,8 @@ export function asyncHandler(
 }
 
 /**
- * Per-IP limiter for /mcp, /sse and /messages. On /mcp a batch body counts once
- * per message and may hold at most MCP_MAX_BATCH_SIZE messages; the SSE
- * transport refuses batches, so elsewhere every request counts once.
+ * Per-IP limiter for /mcp. A batch body counts once per message and may hold at
+ * most MCP_MAX_BATCH_SIZE messages.
  */
 export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandler[] {
   const store = new MemoryStore();
@@ -116,7 +107,7 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
   });
 
   const countBatch = asyncHandler(async (req, res, next) => {
-    if (!isMcpPath(req) || !Array.isArray(req.body)) return next();
+    if (!Array.isArray(req.body)) return next();
     if (req.body.length > MCP_MAX_BATCH_SIZE) {
       noteRefusal(res, "BATCH_TOO_LARGE");
       res
@@ -133,7 +124,7 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
       // The limiter let the first message through, so this batch is the one that crossed the line.
       logRateLimited(req, limit);
       noteRefusal(res, "RATE_LIMITED");
-      res.set("Retry-After", String(resetSeconds)).status(429).json(mcpLimitBody(req));
+      res.set("Retry-After", String(resetSeconds)).status(429).json(mcpLimitBody());
       return;
     }
     next();
@@ -146,59 +137,6 @@ export function createMcpLimiter(limit = MCP_REQUESTS_PER_MINUTE): RequestHandle
 export function mcpGetNotAllowed(_req: Request, res: Response): void {
   noteRefusal(res, "METHOD_NOT_ALLOWED");
   res.status(405).set("Allow", "POST, DELETE").json(jsonRpcError(-32000, "Method not allowed."));
-}
-
-export interface SseLease {
-  /** Restarts the idle timer. */
-  touch(): void;
-  /** Frees the slot and stops the idle timer; safe to call twice. */
-  release(): void;
-}
-
-/**
- * Caps open SSE sessions globally and per client, and ends idle ones. A client
- * is keyed like the rate limiter: an IPv4 address or an IPv6 /56 subnet.
- */
-export class SseSessionLimiter {
-  private readonly perIp = new Map<string, number>();
-  private total = 0;
-
-  /** The sessions holding a slot, the count the cap is checked against. */
-  get sessions(): number {
-    return this.total;
-  }
-
-  constructor(
-    private readonly maxSessions = SSE_MAX_SESSIONS,
-    private readonly maxPerIp = SSE_MAX_SESSIONS_PER_IP,
-    private readonly idleMs = SSE_IDLE_TIMEOUT_MS,
-  ) {}
-
-  /** Takes a slot for `ip`, or returns null when a cap is reached. `onIdle` runs after idleMs without touch(). */
-  open(ip: string, onIdle: () => void): SseLease | null {
-    const client = ipKeyGenerator(ip);
-    const count = this.perIp.get(client) ?? 0;
-    if (this.total >= this.maxSessions || count >= this.maxPerIp) return null;
-    this.perIp.set(client, count + 1);
-    this.total++;
-
-    const timer = setTimeout(onIdle, this.idleMs);
-    let released = false;
-    return {
-      touch: () => {
-        if (!released) timer.refresh();
-      },
-      release: () => {
-        if (released) return;
-        released = true;
-        clearTimeout(timer);
-        this.total--;
-        const left = (this.perIp.get(client) ?? 1) - 1;
-        if (left > 0) this.perIp.set(client, left);
-        else this.perIp.delete(client);
-      },
-    };
-  }
 }
 
 let lastErrorAlertAt = Number.NEGATIVE_INFINITY;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * SODAX Builders MCP Server
+ * SODAX MCP Server
  *
  * Live API data for developers and integration partners.
  * Data fetched live from api.sodax.com.
@@ -153,7 +153,7 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
       "mcp.transport": "stdio",
       "partner_fee.set": !!partnerFee,
     },
-    "SODAX Builders MCP server started",
+    "SODAX MCP server started",
   );
 }
 
@@ -377,7 +377,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }
     res.json({
       status: "healthy",
-      service: "builders-sodax-mcp-server",
+      service: "sodax-mcp",
       version: SERVER_VERSION,
       uptime_seconds: Math.floor(process.uptime()),
       networks,
@@ -533,7 +533,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }
 
     res.json({
-      name: "SODAX Builders MCP Server",
+      name: "SODAX MCP Server",
       version: SERVER_VERSION,
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
@@ -569,7 +569,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
 function listen(app: Express, boot: ReturnType<typeof bootConfig>): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info({ ...boot, "mcp.transport": "http", "server.port": port }, "SODAX Builders MCP server started");
+    logger.info({ ...boot, "mcp.transport": "http", "server.port": port }, "SODAX MCP server started");
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,

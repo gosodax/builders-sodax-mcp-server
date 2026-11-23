@@ -1,5 +1,5 @@
 /**
- * Constants for the SODAX Builders MCP Server
+ * Constants for the SODAX MCP Server
  */
 
 import { spokeChainConfig } from "@sodax/types";

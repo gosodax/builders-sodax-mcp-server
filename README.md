@@ -1,13 +1,24 @@
-# SODAX Builders MCP Server
+# SODAX MCP Server
 
 <p align="center">
   <b>Install from your preferred MCP directory</b><br><br>
-  <a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp"><img src="https://img.shields.io/badge/Glama-SODAX_Builders_MCP-4285F4?style=for-the-badge" alt="Glama" /></a>
+  <a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp"><img src="https://img.shields.io/badge/Glama-SODAX_MCP-4285F4?style=for-the-badge" alt="Glama" /></a>
   &nbsp;
   <a href="https://registry.modelcontextprotocol.io/?q=sodax"><img src="https://img.shields.io/badge/MCP_Registry-SODAX-10B981?style=for-the-badge" alt="MCP Registry" /></a>
   &nbsp;
-  <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_Builders_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
+  <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
 </p>
+
+<p align="center">
+  <b>One-click install</b><br><br>
+  <a href="https://cursor.com/en/install-mcp?name=sodax&amp;config=eyJ1cmwiOiJodHRwczovL21jcC5zb2RheC5jb20vbWNwIn0="><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add to Cursor" height="32" /></a>
+  &nbsp;
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D"><img src="https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge" alt="Install in VS Code" /></a>
+  &nbsp;
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D&amp;quality=insiders"><img src="https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=for-the-badge" alt="Install in VS Code Insiders" /></a>
+</p>
+
+> The default one-click config connects without an API key — the builder and documentation tools work immediately. To use the swap tools, add an `x-api-key` header with your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys). See [API Key](#api-key) below. A `.mcp.json` at the repo root lets Cursor Directory and Claude Code project config pick up the server entry automatically.
 
 SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 20+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow. With a SODAX API key, it also quotes and tracks swaps that the user's own wallet signs.
 
@@ -20,9 +31,9 @@ Add the MCP server URL to your AI coding assistant's configuration:
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "http",
-      "url": "https://builders.sodax.com/mcp"
+      "url": "https://mcp.sodax.com/mcp"
     }
   }
 }
@@ -37,9 +48,9 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "sse",
-      "url": "https://builders.sodax.com/sse"
+      "url": "https://mcp.sodax.com/sse"
     }
   }
 }
@@ -60,16 +71,16 @@ already send their headers on both.
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "http",
-      "url": "https://builders.sodax.com/mcp",
+      "url": "https://mcp.sodax.com/mcp",
       "headers": { "x-api-key": "<your key>" }
     }
   }
 }
 ```
 
-In Claude Code: `claude mcp add --transport http sodax-builders https://builders.sodax.com/mcp --header "x-api-key: <your key>"`.
+In Claude Code: `claude mcp add --transport http sodax https://mcp.sodax.com/mcp --header "x-api-key: <your key>"`.
 
 ### Profiles
 
@@ -412,7 +423,7 @@ Coolify injects these directly into the process environment.
 
 The server is deployed via Coolify with a branch-based promotion flow:
 
-- **Production** — tracks `master`, serves https://builders.sodax.com
+- **Production** — tracks `master`, serves https://mcp.sodax.com
 - **Staging** — tracks `development` (internal-only)
 
 Promotion flow:
@@ -425,8 +436,8 @@ Hotfixes can branch off `master` and PR directly into `master`, then be merged b
 ### Docker
 
 ```bash
-docker build -t builders-sodax-mcp-server .
-docker run -p 3000:3000 builders-sodax-mcp-server
+docker build -t sodax-mcp .
+docker run -p 3000:3000 sodax-mcp
 ```
 
 ### Docker Compose
@@ -464,7 +475,7 @@ Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `O
 | `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
 | `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
 | `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
-| `SODAX Builders MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
+| `SODAX MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
 | `RPC_CONFIG entries this server can't apply` | warn | boot, when `RPC_CONFIG` has an entry this server skips (those chains use their public RPC) | `rpc_config.skipped` (chain keys and field names only, never a value) |
 | `SODAX_RPC_URL_* is no longer read: set RPC_CONFIG` | warn | boot, when an old RPC variable is still set (it has no effect) | `rpc_config.legacy` (the variable names) |
 | `SODAX SDK warning`, `SODAX SDK error` | warn, error | the SDK's own log lines | `sdk.message` (URLs stripped) |

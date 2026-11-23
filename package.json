@@ -1,5 +1,5 @@
 {
-  "name": "builders-sodax-mcp-server",
+  "name": "sodax-mcp",
   "version": "1.6.0",
   "description": "SODAX MCP server for developers - live API data, swap tools and integration support",
   "type": "module",

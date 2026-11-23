@@ -87,7 +87,7 @@ function enabled<T>(toolsets: Toolsets, perToolset: Record<keyof Toolsets, T>): 
 export async function createServer(toolsets: ToolSelection, clientId?: string): Promise<McpServer> {
   const server = new McpServer(
     {
-      name: "builders-sodax-mcp-server",
+      name: "sodax-mcp",
       version: SERVER_VERSION,
     },
     {

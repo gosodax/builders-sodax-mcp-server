@@ -363,7 +363,7 @@ describe("HTTP routes", () => {
 
     const res = await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.5");
     expect(res.status).toBe(200);
-    expect((await res.json()).result.serverInfo.name).toBe("builders-sodax-mcp-server");
+    expect((await res.json()).result.serverInfo.name).toBe("sodax-mcp");
   });
 
   it("keeps an SSE session open and answers its messages over the stream", async () => {

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SODAX_API_BASE_URL } from "../constants.js";
 
 vi.mock("./http.js", () => ({
+  addRouteTemplates: vi.fn(),
   fetchJson: vi.fn(),
   fetchJsonOrNull: vi.fn(),
 }));
@@ -114,5 +116,269 @@ describe("getVolumeStats", () => {
 
     expect(second).toEqual({ filledCount: 7 });
     expect(mockFetchJson).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resolveChainKey", () => {
+  const live = ["sonic", "0x2105.base", "0xa4b1.arbitrum", "hedera", "0x1.icon", "robinhood"];
+
+  it("matches an exact chain key", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("hedera", live)).toEqual({ key: "hedera", matchedAs: "hedera" });
+  });
+
+  it("resolves a ticker/alias case-insensitively (HBAR → hedera)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("HBAR", live)).toEqual({ key: "hedera", matchedAs: "hbar" });
+  });
+
+  it("resolves the human suffix of a dotted key (arbitrum → 0xa4b1.arbitrum)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("Arbitrum", live)).toEqual({ key: "0xa4b1.arbitrum", matchedAs: "arbitrum" });
+  });
+
+  it("resolves every SDK chain by its display name, and every ticker to its chain", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    const { CHAIN_TICKERS, chainDisplayName } = await import("../constants.js");
+    const { spokeChainConfig } = await import("@sodax/types");
+    const allKeys = Object.keys(spokeChainConfig);
+    for (const key of allKeys) expect(resolveChainKey(chainDisplayName(key), allKeys).key, key).toBe(key);
+    for (const [key, tickers] of Object.entries(CHAIN_TICKERS)) {
+      for (const ticker of tickers) expect(resolveChainKey(ticker, allKeys).key, ticker).toBe(key);
+    }
+  });
+
+  it("resolves a display name that differs from the key suffix (Avalanche → 0xa86a.avax)", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("Avalanche", ["0xa86a.avax", "sonic"]).key).toBe("0xa86a.avax");
+  });
+
+  it.each([
+    ["Avalanche C-Chain", "0xa86a.avax"],
+    ["Robinhood Chain", "robinhood"],
+    ["BNB Smart Chain", "0x38.bsc"],
+    ["Polygon PoS", "0x89.polygon"],
+    ["Hedera Hashgraph", "hedera"],
+    ["Hyper EVM", "hyper"],
+    ["Base mainnet", "0x2105.base"],
+  ])("drops a trailing qualifier (%s → %s)", async (query, expected) => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    const live = ["0xa86a.avax", "robinhood", "0x38.bsc", "0x89.polygon", "hedera", "hyper", "0x2105.base"];
+    expect(resolveChainKey(query, live).key).toBe(expected);
+  });
+
+  it("returns null for an unknown chain", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("dogechain", live)).toEqual({ key: null, matchedAs: null });
+  });
+
+  it.each([
+    ["8453", "0x2105.base"],
+    ["0x2105", "0x2105.base"],
+    ["146", "sonic"],
+    ["295", "hedera"],
+  ])("resolves an EVM chain id from the SDK's chain config (%s → %s)", async (query, expected) => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey(query, live).key).toBe(expected);
+  });
+
+  it("matches a chain id against the chain config, not a key prefix: 1 is Ethereum, never ICON's 0x1", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("1", live).key).toBeNull();
+    expect(resolveChainKey("1", [...live, "ethereum"]).key).toBe("ethereum");
+    expect(resolveChainKey("0x1", [...live, "ethereum"]).key).toBe("ethereum");
+  });
+
+  it("names a number that is one chain's EVM id and another's relay id: 1 is Ethereum's and Solana's", async () => {
+    const { chainIdClash } = await import("./sodaxApi.js");
+    expect(chainIdClash("1")).toBe(
+      "1 is Ethereum's EVM chain id and Solana's intent relay chain id. Pass the chain key: ethereum or solana.",
+    );
+    expect(chainIdClash("146")).toBeUndefined();
+    expect(chainIdClash("0x1")).toBeUndefined();
+  });
+
+  it("matches a chain id whatever the live key's case", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("8453", ["0x2105.Base"]).key).toBe("0x2105.Base");
+  });
+
+  it("returns null for a chain id that names no live chain", async () => {
+    const { resolveChainKey } = await import("./sodaxApi.js");
+    expect(resolveChainKey("10", live).key).toBeNull();
+    expect(resolveChainKey("999999", live).key).toBeNull();
+  });
+});
+
+describe("resolveChainSupport", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports supported:true against the live registry (Hedera)", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "hedera", "0x2105.base"]);
+
+    const result = await mod.resolveChainSupport("Hedera");
+
+    expect(result.supported).toBe(true);
+    expect(result.chainKey).toBe("hedera");
+  });
+
+  it("reports supported:false (and no key) when an alias names a chain not in the live set", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    // hbar aliases hedera, but the live registry does NOT include it here
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "ethereum"]);
+
+    const result = await mod.resolveChainSupport("HBAR");
+
+    expect(result.supported).toBe(false);
+    // never assert a key the live registry didn't confirm
+    expect(result.chainKey).toBeNull();
+  });
+
+  it("resolves an alias to the live key spelling even if the live key is reformatted", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    // Live registry moved hedera to an EVM-style key; alias map still says "hedera"
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x128.hedera"]);
+
+    const result = await mod.resolveChainSupport("HBAR");
+
+    expect(result.supported).toBe(true);
+    expect(result.chainKey).toBe("0x128.hedera");
+    expect(result.displayName).toBe("Hedera");
+  });
+
+  it("excludes wound-down ICON from support and the count", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "hedera", "0x1.icon"]);
+
+    const result = await mod.resolveChainSupport("icon");
+
+    expect(result.supported).toBe(false);
+    expect(result.windingDownKey).toBe("0x1.icon");
+    expect(result.supportedChains).not.toContain("0x1.icon");
+    expect(result.supportedChains).toHaveLength(2);
+  });
+
+  it("leaves windingDownKey null for an unknown chain", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x1.icon"]);
+
+    const result = await mod.resolveChainSupport("dogechain");
+
+    expect(result.supported).toBe(false);
+    expect(result.windingDownKey).toBeNull();
+  });
+});
+
+describe("getSupportedChainsDetailed", () => {
+  it("omits wound-down ICON so the list matches the network count", async () => {
+    vi.resetModules();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    vi.mocked(http.fetchJson).mockResolvedValueOnce(["sonic", "0x1.icon", "0xa86a.avax"]);
+
+    expect(await mod.getSupportedChainsDetailed()).toEqual([
+      { key: "sonic", name: "Sonic" },
+      { key: "0xa86a.avax", name: "Avalanche" },
+    ]);
+  });
+});
+
+describe("path parameters", () => {
+  type Api = typeof import("./sodaxApi.js");
+
+  async function load() {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const mod = await import("./sodaxApi.js");
+    const http = await import("./http.js");
+    const fetchJson = vi.mocked(http.fetchJson).mockResolvedValue({});
+    const fetchJsonOrNull = vi.mocked(http.fetchJsonOrNull).mockResolvedValue({});
+    const requestedUrls = () => [...fetchJson.mock.calls, ...fetchJsonOrNull.mock.calls].map(([url]) => url);
+    return { mod, requestedUrls };
+  }
+
+  // Every service that puts caller input into a URL path, with that input set to `value`.
+  const callers: Array<[string, (mod: Api, value: string) => Promise<unknown>]> = [
+    ["getSwapTokens", (m, v) => m.getSwapTokens(v)],
+    ["getTransaction", (m, v) => m.getTransaction(v)],
+    ["getUserTransactions", (m, v) => m.getUserTransactions(v)],
+    ["getUserPosition", (m, v) => m.getUserPosition(v)],
+    ["getHubAssets", (m, v) => m.getHubAssets(v)],
+    ["getMoneyMarketTokens", (m, v) => m.getMoneyMarketTokens(v)],
+    ["getAmmPoolCandles (chainId)", (m, v) => m.getAmmPoolCandles(v, "0xabc")],
+    ["getAmmPoolCandles (poolId)", (m, v) => m.getAmmPoolCandles("146", v)],
+    ["getIntent", (m, v) => m.getIntent(v)],
+    ["getSolverIntent", (m, v) => m.getSolverIntent(v)],
+    ["getMoneyMarketAsset", (m, v) => m.getMoneyMarketAsset(v)],
+    ["getMoneyMarketAssetBorrowers", (m, v) => m.getMoneyMarketAssetBorrowers(v)],
+    ["getMoneyMarketAssetSuppliers", (m, v) => m.getMoneyMarketAssetSuppliers(v)],
+    ["getPartnerSummary", (m, v) => m.getPartnerSummary(v)],
+  ];
+
+  it.each(callers)("%s rejects input that would change the request path", async (_name, call) => {
+    const { mod, requestedUrls } = await load();
+
+    for (const value of ["../config/all", "..", ".", "0xabc?limit=1", "0xabc#x", "a/b", "a\\b", "%2e%2e", "a b"]) {
+      await expect(call(mod, value), value).rejects.toThrow(/^Invalid /);
+    }
+    expect(requestedUrls()).toEqual([]);
+  });
+
+  it("accepts hashes, addresses and chain keys from every chain family", async () => {
+    const { mod, requestedUrls } = await load();
+    const values = [
+      "0x2b58be76e86c2b4e1e3a14e8c1d6d1bbc1f9e1c6f0e3a3e0c4b6e5f4a3b2c1d0", // EVM tx hash
+      "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW", // Solana
+      "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d", // Bitcoin
+      "alice.near",
+      "0.0.123456", // Hedera
+      "inj1qy352euf40x77qfrg4ncn27dauqjx3t83x4ummcpydzk0zdtehhse25p74", // bech32
+    ];
+
+    for (const value of values) await mod.getTransaction(value);
+    await mod.getSwapTokens("0x2105.base");
+    await mod.getHubAssets("injective-1");
+
+    expect(requestedUrls().sort()).toEqual(
+      [
+        ...values.map(v => `${SODAX_API_BASE_URL}/intent/tx/${v}`),
+        `${SODAX_API_BASE_URL}/config/swap/0x2105.base/tokens`,
+        `${SODAX_API_BASE_URL}/config/hub/injective-1/assets`,
+      ].sort(),
+    );
+  });
+
+  it("trims surrounding whitespace before building the path", async () => {
+    const { mod, requestedUrls } = await load();
+
+    await mod.getUserPosition("  0xAbC  ");
+
+    expect(requestedUrls()).toEqual([`${SODAX_API_BASE_URL}/moneymarket/position/0xAbC`]);
+  });
+
+  it.each<[string, (mod: Api, value: string) => Promise<unknown>]>([
+    ["getSwapTokens", (m, v) => m.getSwapTokens(v)],
+    ["getHubAssets", (m, v) => m.getHubAssets(v)],
+    ["getMoneyMarketTokens", (m, v) => m.getMoneyMarketTokens(v)],
+  ])("%s caches by the trimmed value", async (_name, call) => {
+    const { mod, requestedUrls } = await load();
+
+    await call(mod, "sonic");
+    await call(mod, "  sonic ");
+
+    expect(requestedUrls()).toHaveLength(1);
   });
 });

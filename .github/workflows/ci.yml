@@ -5,11 +5,12 @@ on:
     branches:
       - master
       - development
+  # Every base branch, so stacked PRs (based on another PR's branch) get CI too.
   pull_request:
-    branches:
-      - master
-      - development
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -32,7 +33,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: checkTS
         run: pnpm checkTs
@@ -45,6 +46,13 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Checks server.json with the live registry's validator (schema and semantic
+      # rules). Publish can still fail on namespace auth or an existing version.
+      - name: Validate server.json (MCP Registry)
+        run: |
+          .github/scripts/install-mcp-publisher.sh
+          ./bin/mcp-publisher validate
 
   docker-build:
     name: Docker build

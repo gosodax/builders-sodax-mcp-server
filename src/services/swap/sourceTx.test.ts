@@ -1,0 +1,160 @@
+import { IntentCreatedEventAbi, IntentsAbi } from "@sodax/sdk";
+import { solverConfig } from "@sodax/types";
+import { getAbiItem, toEventSelector } from "viem";
+import { describe, expect, it } from "vitest";
+import type { EvmReceipt } from "../sodax.js";
+import {
+  ASSET_MANAGER,
+  CONNECTION,
+  CREATOR,
+  DEPOSIT_MESSAGE as MESSAGE,
+  DEPOSIT_RECEIPT as RECEIPT,
+  DEPOSIT_RELAY_DATA as RELAY_DATA,
+  USER,
+  hubReceipt,
+  messageReceipt as receiptWith,
+} from "./__fixtures__/deposit.js";
+import { abiEncode, rlpList } from "./__fixtures__/encode.js";
+import {
+  INTENT_CANCELLED_TOPIC,
+  INTENT_CREATED_TOPIC,
+  SEND_MESSAGE_SELECTOR,
+  checkDeposit,
+  connectionMessages,
+  decodeMessage,
+  decodeRlpList,
+  decodeSendMessage,
+  holdsCancel,
+  hubIntentHashes,
+} from "./sourceTx.js";
+
+const WANT = {
+  assetManager: ASSET_MANAGER,
+  srcChain: "23",
+  srcAddress: USER,
+  to: RELAY_DATA.address,
+  data: RELAY_DATA.payload,
+};
+/** The receipt's messages from the Arbitrum `connection`, as an EVM spoke's evidence. */
+const messagesOf = (receipt: EvmReceipt, connection = CONNECTION) => connectionMessages(receipt, connection);
+const MESSAGES = messagesOf(RECEIPT);
+
+describe("decodeMessage", () => {
+  it("decodes the live deposit: from Arbitrum's asset manager to the hub, with an RLP payload of 5 items", () => {
+    expect(MESSAGE).toMatchObject({ srcChainId: 23n, dstChainId: 146n, srcAddress: ASSET_MANAGER.toLowerCase() });
+    expect(decodeRlpList(MESSAGE?.payload ?? "")).toHaveLength(5);
+  });
+
+  it.each([
+    ["truncated data", RECEIPT.logs[0].data.slice(0, -64)],
+    ["an odd length", `${RECEIPT.logs[0].data}0`],
+    ["not hex", `0x${"zz".repeat(32 * 6)}`],
+    ["an offset past the end", `0x${"0".repeat(64)}${10_000n.toString(16).padStart(64, "0")}${"0".repeat(64 * 4)}`],
+    ["an empty log", "0x"],
+  ])("refuses %s", (_case, data) => {
+    expect(decodeMessage(data)).toBeUndefined();
+  });
+});
+
+describe("decodeRlpList", () => {
+  it("round-trips a list of byte strings, short and long", () => {
+    const items = ["0x01", "0x", `0x${"ab".repeat(60)}`, `0x${"cd".repeat(300)}`];
+    expect(decodeRlpList(rlpList(items))).toEqual(items);
+  });
+
+  it.each([
+    ["a nested list", `0x${"c3c201"}02`],
+    ["bytes after the list", `${rlpList(["0x01"])}00`],
+    ["an item running past the list", "0xc2830102"],
+    ["a length field over 4 bytes", `0xfd${"00".repeat(4)}05`],
+    ["a byte string, not a list", "0x8401020304"],
+    ["not hex", "0xzz"],
+  ])("refuses %s", (_case, hex) => {
+    expect(decodeRlpList(hex)).toBeUndefined();
+  });
+});
+
+describe("checkDeposit", () => {
+  it("matches the quote's own deposit", () => {
+    expect(checkDeposit(MESSAGES, WANT)).toBe("match");
+  });
+
+  it("calls the sender's deposit for another intent a mismatch", () => {
+    const flipped = `${RELAY_DATA.payload.slice(0, -2)}${RELAY_DATA.payload.endsWith("00") ? "01" : "00"}`;
+    expect(checkDeposit(MESSAGES, { ...WANT, data: flipped })).toBe("mismatch");
+    expect(checkDeposit(MESSAGES, { ...WANT, to: CREATOR })).toBe("mismatch");
+  });
+
+  it("tells this intent's deposit from another address apart", () => {
+    expect(checkDeposit(MESSAGES, { ...WANT, srcAddress: CREATOR })).toBe("other_sender");
+  });
+
+  it("finds no deposit of the quote's in someone else's, or in a message from another chain or to another hub", () => {
+    const someoneElse = { ...WANT, srcAddress: CREATOR, to: CREATOR, data: "0x01" };
+    expect(checkDeposit(MESSAGES, someoneElse)).toBe("not_a_deposit");
+    expect(checkDeposit(MESSAGES, { ...WANT, srcChain: "30" })).toBe("not_a_deposit");
+    const toAnotherHub = receiptWith({ dstChainId: 147n, payload: MESSAGE?.payload ?? "0x" });
+    expect(checkDeposit(messagesOf(toAnotherHub), WANT)).toBe("not_a_deposit");
+  });
+
+  it("finds no deposit from another contract, another sender (an approve's case) or another event", () => {
+    expect(checkDeposit(messagesOf(RECEIPT, ASSET_MANAGER), WANT)).toBe("not_a_deposit");
+    expect(checkDeposit(MESSAGES, { ...WANT, assetManager: USER })).toBe("not_a_deposit");
+    const otherEvent = { reverted: false, logs: [{ ...RECEIPT.logs[0], topics: [`0x${"1".repeat(64)}`] }] };
+    expect(checkDeposit(messagesOf(otherEvent), WANT)).toBe("not_a_deposit");
+    expect(checkDeposit([], WANT)).toBe("not_a_deposit");
+  });
+});
+
+describe("holdsCancel", () => {
+  const PAYLOAD = `0x${"ef".repeat(40)}`;
+  const want = { srcAddress: USER, srcChain: "23", creator: CREATOR, payload: PAYLOAD };
+  const cancelOf = (receipt: EvmReceipt) => holdsCancel(messagesOf(receipt), want);
+
+  it("finds the user's message to their hub wallet with the cancel payload", () => {
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: PAYLOAD }))).toBe(true);
+  });
+
+  it("refuses another payload, sender, recipient or contract", () => {
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: "0x01" }))).toBe(false);
+    expect(cancelOf(receiptWith({ payload: PAYLOAD }))).toBe(false);
+    expect(cancelOf(receiptWith({ srcAddress: USER, dstAddress: USER, payload: PAYLOAD }))).toBe(false);
+    expect(cancelOf(receiptWith({ srcAddress: USER, payload: PAYLOAD }, ASSET_MANAGER))).toBe(false);
+  });
+});
+
+describe("decodeSendMessage", () => {
+  it("decodes sendMessage calldata", () => {
+    const data = `${SEND_MESSAGE_SELECTOR}${abiEncode([146n, CREATOR, "0x0102"]).slice(2)}`;
+    expect(decodeSendMessage(data)).toEqual({ dstChainId: 146n, dstAddress: CREATOR, payload: "0x0102" });
+  });
+
+  it("refuses another function or cut-off arguments", () => {
+    expect(decodeSendMessage(`0xa9059cbb${abiEncode([146n, CREATOR, "0x0102"]).slice(2)}`)).toBeUndefined();
+    expect(decodeSendMessage(SEND_MESSAGE_SELECTOR)).toBeUndefined();
+  });
+});
+
+describe("hubIntentHashes", () => {
+  const INTENTS = solverConfig.intentsContract;
+  const hash = `0x${"A".repeat(64)}`;
+
+  it("takes the topics from the SDK's intents contract ABI", () => {
+    expect(INTENT_CREATED_TOPIC).toBe(toEventSelector(IntentCreatedEventAbi));
+    expect(INTENT_CANCELLED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: IntentsAbi, name: "IntentCancelled" })));
+  });
+
+  it("reads the hash, lowercased, from the intents contract's logs under that topic only", () => {
+    const receipt = {
+      reverted: false,
+      logs: [
+        ...hubReceipt(INTENT_CREATED_TOPIC, [hash], INTENTS.toUpperCase().replace("0X", "0x")).logs,
+        ...hubReceipt(INTENT_CANCELLED_TOPIC, [hash]).logs,
+        ...hubReceipt(INTENT_CREATED_TOPIC, [hash], `0x${"1".repeat(40)}`).logs,
+        { address: INTENTS, topics: [INTENT_CREATED_TOPIC], data: "0x12" },
+      ],
+    };
+    expect(hubIntentHashes(receipt, INTENTS, INTENT_CREATED_TOPIC)).toEqual([hash.toLowerCase()]);
+    expect(hubIntentHashes(receipt, INTENTS, INTENT_CANCELLED_TOPIC)).toEqual([hash.toLowerCase()]);
+  });
+});

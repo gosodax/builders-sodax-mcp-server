@@ -11,7 +11,7 @@
  * fire-and-forget (or await the bounded promise on shutdown / crash paths).
  */
 
-import { logger } from "./logger.js";
+import { logger, redact } from "./logger.js";
 
 const DISCORD_TIMEOUT_MS = 5000;
 const DISCORD_USERNAME = "SODAX MCP Server";
@@ -20,7 +20,7 @@ const DISCORD_USERNAME = "SODAX MCP Server";
 export const DISCORD_CONTENT_LIMIT = 1800;
 
 /** Embed accent colors (decimal RGB, as Discord expects). */
-const COLOR = {
+export const COLOR = {
   green: 0x2ecc71,
   red: 0xe74c3c,
 } as const;
@@ -50,7 +50,7 @@ export function isDiscordConfigured(): boolean {
  * mid-surrogate-pair, which would otherwise leak a lone surrogate (rendered as
  * `�`) into the Discord payload.
  */
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
@@ -71,12 +71,12 @@ export async function postToDiscord(message: DiscordMessage): Promise<boolean> {
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
     });
     if (!response.ok) {
-      logger.warn({ status: response.status }, "⚠️  Discord notifier: webhook returned non-2xx");
+      logger.warn({ "http.response.status_code": response.status }, "Discord webhook returned non-2xx");
       return false;
     }
     return true;
   } catch (err) {
-    logger.warn({ err }, "⚠️  Discord notifier: POST failed (swallowed)");
+    logger.warn({ err }, "Discord webhook POST failed");
     return false;
   }
 }
@@ -86,11 +86,13 @@ export async function notifyServerStarted(info: {
   version: string;
   transport: string;
   env: string;
+  sodaxEnv: string;
   port?: number;
 }): Promise<void> {
   const fields = [
     { name: "Version", value: info.version, inline: true },
     { name: "Environment", value: info.env, inline: true },
+    { name: "SODAX_ENV", value: info.sodaxEnv, inline: true },
     { name: "Transport", value: info.transport, inline: true },
   ];
   if (info.port !== undefined) fields.push({ name: "Port", value: String(info.port), inline: true });
@@ -100,13 +102,17 @@ export async function notifyServerStarted(info: {
   });
 }
 
-/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy). */
-export async function notifyServerStopping(signal: string): Promise<void> {
+/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy), and the swap quotes that loses. */
+export async function notifyServerStopping(signal: string, openSwapQuotes = 0): Promise<void> {
+  const lost =
+    openSwapQuotes > 0
+      ? `\n${openSwapQuotes} open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".`
+      : "";
   await postToDiscord({
     embeds: [
       {
         title: "🔴 Server shutting down",
-        description: `Received \`${signal}\``,
+        description: `Received \`${signal}\`${lost}`,
         color: COLOR.red,
         timestamp: new Date().toISOString(),
       },
@@ -116,9 +122,11 @@ export async function notifyServerStopping(signal: string): Promise<void> {
 
 /** Notify a significant / unexpected error, with the stack in a fenced block. */
 export async function notifyError(context: string, error: unknown): Promise<void> {
-  const detail =
-    error instanceof Error ? `${error.name}: ${error.message}` : typeof error === "string" ? error : String(error);
-  const stack = error instanceof Error && error.stack ? error.stack : "";
+  // Errors can carry RPC URLs, and an RPC override can embed a paid key.
+  const detail = redact(
+    error instanceof Error ? `${error.name}: ${error.message}` : typeof error === "string" ? error : String(error),
+  );
+  const stack = redact(error instanceof Error && error.stack ? error.stack : "");
 
   await postToDiscord({
     content: stack ? `\`\`\`\n${truncate(stack, DISCORD_CONTENT_LIMIT - 10)}\n\`\`\`` : undefined,

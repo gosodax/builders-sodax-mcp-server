@@ -1,8 +1,8 @@
 /**
  * SODAX Intent Relay Service
  *
- * Client for the cross-chain message relayer used by SODAX intents.
- * Hosted on ICON's xCall infrastructure at xcall-relay.nw.iconblockchain.xyz.
+ * Client for the cross-chain message relayer used by SODAX intents,
+ * served by the SODAX API at /v1/relay.
  *
  * All requests are POST / with `{ action, params }` in the body; the
  * action dispatches to one of three operations:
@@ -16,7 +16,7 @@
 
 import { SODAX_RELAY_BASE_URL } from "../constants.js";
 import type { RelayGetPacketResponse, RelayPacketsResponse, RelaySubmitResponse } from "../types.js";
-import { logger } from "./logger.js";
+import { BadResponseError, HttpError, timedFetch } from "./http.js";
 
 interface SubmitParams {
   chain_id: string;
@@ -43,25 +43,46 @@ const RELAY_TIMEOUT_MS = 30_000;
 /**
  * The relay returns a JSON body for every outcome, including 404 (used for
  * "packet not found" responses on get_packet / get_transaction_packets).
- * We parse the body regardless of status — only HTTP 5xx and unparseable
- * responses are treated as errors.
+ * We parse the body regardless of status. HTTP 5xx is an error, and so is any
+ * body that isn't a relay answer (every relay answer has a boolean `success`),
+ * such as the SODAX API edge's own 429.
+ *
+ * Never send the caller's API key here: the relay takes none, and the gateway
+ * passes this route on to an origin outside the SODAX API.
  */
 async function callRelay<T>(action: string, params: unknown): Promise<T> {
-  const response = await fetch(`${SODAX_RELAY_BASE_URL}/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
+  // The relay answers "not found" with a 404 and a normal body; 5xx and non-relay bodies are the failures.
+  const { response, body } = await timedFetch(
+    `${SODAX_RELAY_BASE_URL}/`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ action, params }),
+      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
     },
-    body: JSON.stringify({ action, params }),
-    signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
-  });
+    response => response.status < 500,
+    // A body that isn't JSON is checked below; a timeout or a dropped socket while reading it stays a failure.
+    response =>
+      response.json().catch(error => {
+        if (error instanceof SyntaxError) return undefined;
+        throw error;
+      }) as Promise<{ success?: unknown } | undefined>,
+  );
 
   if (response.status >= 500) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    throw new HttpError(`HTTP ${response.status} ${response.statusText}`, response.status);
   }
 
-  return (await response.json()) as T;
+  if (typeof body?.success !== "boolean") {
+    const retryAfter = response.headers.get("Retry-After");
+    const message = `HTTP ${response.status}${retryAfter ? `, retry after ${retryAfter}s` : ""}`;
+    // A 2xx that isn't a relay answer is a bad response; anything else (the edge's 429) an HTTP failure.
+    throw response.ok ? new BadResponseError(message) : new HttpError(message, response.status);
+  }
+  return body as T;
 }
 
 /**
@@ -73,8 +94,9 @@ export async function submitRelayTx(params: SubmitParams): Promise<RelaySubmitRe
   try {
     return await callRelay<RelaySubmitResponse>("submit", params);
   } catch (error) {
-    logger.error({ err: error }, "Error submitting relay tx");
-    throw new Error(`Failed to submit relay tx: ${error instanceof Error ? error.message : "Unknown error"}`);
+    throw new Error(`Failed to submit relay tx: ${error instanceof Error ? error.message : "Unknown error"}`, {
+      cause: error,
+    });
   }
 }
 
@@ -86,9 +108,9 @@ export async function getRelayTransactionPackets(params: GetTransactionPacketsPa
   try {
     return await callRelay<RelayPacketsResponse>("get_transaction_packets", params);
   } catch (error) {
-    logger.error({ err: error }, "Error fetching relay transaction packets");
     throw new Error(
       `Failed to fetch relay transaction packets: ${error instanceof Error ? error.message : "Unknown error"}`,
+      { cause: error },
     );
   }
 }
@@ -102,7 +124,8 @@ export async function getRelayPacket(params: GetPacketParams): Promise<RelayGetP
   try {
     return await callRelay<RelayGetPacketResponse>("get_packet", params);
   } catch (error) {
-    logger.error({ err: error }, "Error fetching relay packet");
-    throw new Error(`Failed to fetch relay packet: ${error instanceof Error ? error.message : "Unknown error"}`);
+    throw new Error(`Failed to fetch relay packet: ${error instanceof Error ? error.message : "Unknown error"}`, {
+      cause: error,
+    });
   }
 }

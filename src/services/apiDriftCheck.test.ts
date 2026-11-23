@@ -7,6 +7,7 @@ vi.mock("./http.js", () => ({
 import { checkApiDrift } from "./apiDriftCheck.js";
 import { diff, resolveResponseFields } from "./apiDriftCheckUtils.js";
 import { fetchJson } from "./http.js";
+import { logger } from "./logger.js";
 
 const mockFetchJson = vi.mocked(fetchJson);
 
@@ -95,6 +96,17 @@ describe("checkApiDrift", () => {
     expect(report.summary.endpointGaps).toBe(1);
   });
 
+  it("logs the issues as one warning, not a record per line", async () => {
+    const warn = vi.spyOn(logger, "warn");
+    mockFetchJson.mockResolvedValueOnce({ paths: { "/some/unknown/endpoint": { get: {} } } });
+
+    const report = await checkApiDrift();
+
+    expect(report.details).toContain("  - GET /some/unknown/endpoint");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatchObject({ details: report.details });
+  });
+
   it("returns hasDrift: true when spec params disagree with the tool contract", async () => {
     // `/config/all` is in TOOL_CONTRACT with params: []; injecting a param triggers drift.
     mockFetchJson.mockResolvedValueOnce({
@@ -118,9 +130,22 @@ describe("checkApiDrift", () => {
 
     const report = await checkApiDrift();
 
+    expect(report.checked).toBe(false);
     expect(report.hasDrift).toBe(false);
     expect(report.summary.totalEndpoints).toBe(0);
   });
+
+  it.each([{ openapi: "3.0.0" }, { openapi: "3.0.0", paths: {} }])(
+    "returns checked: false for a spec without paths: %j",
+    async spec => {
+      mockFetchJson.mockResolvedValueOnce(spec);
+
+      const report = await checkApiDrift();
+
+      expect(report.checked).toBe(false);
+      expect(report.hasDrift).toBe(false);
+    },
+  );
 
   it("suppresses param-extra issues for params listed in allowToolExtra", async () => {
     // `/config/hub/assets` has params: ["chainId"] and allowToolExtra: ["chainId"].
@@ -135,6 +160,7 @@ describe("checkApiDrift", () => {
 
     const report = await checkApiDrift();
 
+    expect(report.checked).toBe(true);
     expect(report.hasDrift).toBe(false);
     expect(report.summary.paramGaps).toBe(0);
   });

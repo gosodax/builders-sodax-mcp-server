@@ -3,7 +3,8 @@
  *
  * Tools accept a `format` argument ('json' | 'markdown'). JSON is a raw
  * pretty-printed dump; markdown renders arrays of objects as tables and
- * single objects as **key:** value lists, with long values truncated.
+ * single objects as **key:** value lists. Table cells keep strings whole, so
+ * addresses and hashes stay exact; a nested object is shortened, marked with "…".
  */
 
 import { ResponseFormat } from "../types.js";
@@ -11,13 +12,18 @@ import { ResponseFormat } from "../types.js";
 const TABLE_MAX_COLUMNS = 6;
 const TABLE_MAX_ROWS = 20;
 const TABLE_CELL_OBJECT_MAX = 30;
-const TABLE_CELL_STRING_MAX = 40;
 
-export function formatResponse(data: unknown, format: ResponseFormat): string {
+/** JSON is the data alone, so it parses; `header` and `footer` frame the Markdown only. */
+export function formatResponse(data: unknown, format: ResponseFormat, header = "", footer = ""): string {
   if (format === ResponseFormat.MARKDOWN) {
-    return formatAsMarkdown(data);
+    return header + formatAsMarkdown(data) + footer;
   }
   return JSON.stringify(data, null, 2);
+}
+
+/** A lookup that found nothing: `null` as JSON, so it still parses, else `message`. */
+export function formatNotFound(format: ResponseFormat, message: string): string {
+  return format === ResponseFormat.JSON ? "null" : message;
 }
 
 export function formatAsMarkdown(data: unknown): string {
@@ -32,13 +38,16 @@ export function formatAsMarkdown(data: unknown): string {
         const values = keys.map(k => {
           const val = (item as Record<string, unknown>)[k];
           if (val === null || val === undefined) return "-";
-          if (typeof val === "object") return JSON.stringify(val).slice(0, TABLE_CELL_OBJECT_MAX);
-          return String(val).slice(0, TABLE_CELL_STRING_MAX);
+          if (typeof val === "object") {
+            const json = JSON.stringify(val);
+            return json.length > TABLE_CELL_OBJECT_MAX ? `${json.slice(0, TABLE_CELL_OBJECT_MAX)}…` : json;
+          }
+          return String(val);
         });
         md += `| ${values.join(" | ")} |\n`;
       }
       if (data.length > TABLE_MAX_ROWS) {
-        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items_`;
+        md += `\n_... and ${data.length - TABLE_MAX_ROWS} more items: call again with format "json" for all of them._`;
       }
       return md;
     }

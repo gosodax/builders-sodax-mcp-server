@@ -1,0 +1,73 @@
+/**
+ * The recorded Arbitrum deposit (public chain data), the addresses around it, and a builder for
+ * receipts holding one `connection` Message. Not built.
+ */
+
+import { readFileSync } from "node:fs";
+import { solverConfig } from "@sodax/types";
+import type { EvmReceipt } from "../../sodax.js";
+import { INTENT_CANCELLED_TOPIC, MESSAGE_TOPIC, decodeMessage, decodeRlpList } from "../sourceTx.js";
+import { abiEncode } from "./encode.js";
+
+export const CONNECTION = "0x4555aC13D7338D9E671584C1D118c06B2a3C88eD";
+export const ASSET_MANAGER = "0x348BE44F63A458be9C1b13D6fD8e99048F297Bc3";
+/** The user: the recorded deposit's sender. */
+export const USER = "0x67efb0c797e5586e6d5ff80714c1dd64ba84be0b";
+export const CREATOR = `0x${"c".repeat(40)}`;
+
+const raw = JSON.parse(readFileSync(new URL("./arbitrum-deposit-receipt.json", import.meta.url), "utf8")) as {
+  transactionHash: string;
+  blockNumber: number;
+  transactionIndex: number;
+  status: string;
+  logs: EvmReceipt["logs"];
+};
+export const DEPOSIT_TX = raw.transactionHash;
+/** One `Message` from Arbitrum's asset manager to the hub, and nothing else. */
+export const DEPOSIT_RECEIPT: EvmReceipt = {
+  reverted: raw.status !== "0x1",
+  blockNumber: BigInt(raw.blockNumber),
+  txIndex: raw.transactionIndex,
+  logs: raw.logs,
+};
+/** Where a receipt with nothing to order it against was mined. */
+const MINED = { blockNumber: 1n, txIndex: 0 };
+export const DEPOSIT_MESSAGE = decodeMessage(raw.logs[0].data);
+const items = decodeRlpList(DEPOSIT_MESSAGE?.payload ?? "") ?? [];
+/** What the quote cached for this deposit: the relay sends the payload to the creator's hub wallet. */
+export const DEPOSIT_RELAY_DATA = { address: items[2], payload: items[4] };
+
+/** A receipt with one Message from `address`; the defaults are a deposit from the asset manager to the hub. */
+export function messageReceipt(
+  message: { srcChainId?: bigint; srcAddress?: string; dstChainId?: bigint; dstAddress?: string; payload: string },
+  address = CONNECTION,
+): EvmReceipt {
+  const data = abiEncode([
+    message.srcChainId ?? 23n,
+    message.srcAddress ?? ASSET_MANAGER,
+    1n,
+    message.dstChainId ?? 146n,
+    message.dstAddress ?? CREATOR,
+    message.payload,
+  ]);
+  return { reverted: false, ...MINED, logs: [{ address, topics: [MESSAGE_TOPIC], data }] };
+}
+
+/**
+ * A hub receipt with one log per intent hash under `topic` (IntentCreated, IntentCancelled), from the intents contract
+ * unless `address` says otherwise: the hash is the first data word, as the contract emits it. A cancel is mined a
+ * block after the swap that created its intent unless `blockNumber` says otherwise.
+ */
+export function hubReceipt(
+  topic: string,
+  hashes: string[],
+  address = solverConfig.intentsContract,
+  blockNumber = topic === INTENT_CANCELLED_TOPIC ? 101n : 100n,
+): EvmReceipt {
+  return {
+    reverted: false,
+    blockNumber,
+    txIndex: 0,
+    logs: hashes.map(hash => ({ address, topics: [topic], data: `${hash}${"0".repeat(64)}` })),
+  };
+}

@@ -16,6 +16,7 @@ export const ACTION_ERROR_CODES = [
   "SWAP_REJECTED",
   "BRIDGE_REJECTED",
   "SWAP_MISMATCH",
+  "BRIDGE_MISMATCH",
   "PRICE_OFF_MARKET",
   "SECRET_REJECTED",
   "QUOTE_NOT_FOUND",
@@ -38,8 +39,13 @@ export const RETRYABLE_CODES: readonly ActionErrorCode[] = [
   "INTERNAL",
 ];
 
-/** Failures that point at a bug, or at the swap service building or pricing a swap wrong: someone should look. */
-export const ALERTED_CODES: readonly ActionErrorCode[] = ["INTERNAL", "SWAP_MISMATCH", "PRICE_OFF_MARKET"];
+/** Failures that point at a bug, or at the swap or bridge service building or pricing wrong: someone should look. */
+export const ALERTED_CODES: readonly ActionErrorCode[] = [
+  "INTERNAL",
+  "SWAP_MISMATCH",
+  "BRIDGE_MISMATCH",
+  "PRICE_OFF_MARKET",
+];
 
 /** Swap failures on SODAX's side, not the caller's: their "Tool call" record is a warning (toolFailure.ts). */
 export const SODAX_SIDE_CODES: readonly ActionErrorCode[] = [
@@ -68,6 +74,7 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   BRIDGE_REJECTED:
     "Tell the user the bridge service refused this bridge; check the tokens, amount and addresses with them before trying again.",
   SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
+  BRIDGE_MISMATCH: "Tell the user this bridge couldn't be prepared safely, and don't retry it.",
   PRICE_OFF_MARKET:
     "Tell the user the swap service quoted far below market prices (error.usdValue sent, error.usdOut received), so the swap wasn't prepared. On a small swap, fixed fees (to Bitcoin, for one) can cost this much: ask whether to try a larger amount; otherwise try again later.",
   SECRET_REJECTED:

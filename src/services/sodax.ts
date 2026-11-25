@@ -359,6 +359,41 @@ export function bridgeAmounts(
   return { delivered, fee };
 }
 
+/**
+ * A bridge as the SDK builds its own (`BridgeService.createBridgeIntent`, raw): the deposit tx the user's wallet sends,
+ * and the relay data it carries, the hub calls for the user's hub wallet. Reads the hub wallet and, for a non-EVM
+ * source, that chain (account, blockhash, fees); no simulation, which the Bridge API's build already ran.
+ */
+export function sdkBridge(params: {
+  srcChainKey: string;
+  srcAddress: string;
+  srcToken: string;
+  amount: bigint;
+  dstChainKey: string;
+  dstToken: string;
+  recipient: string;
+  partnerFee?: { address: string; bps: number };
+}): Promise<{ tx: unknown; relayData: { address: string; payload: string } }> {
+  const { partnerFee, ...rest } = params;
+  return bounded({ label: "bridge build", chainKey: params.srcChainKey }, async () => {
+    // Only the values are cast: a parameter the SDK renames fails the type check, not the build.
+    const result = await sdk().sodax.bridge.createBridgeIntent({
+      params: {
+        ...rest,
+        srcChainKey: rest.srcChainKey as SpokeChainKey,
+        dstChainKey: rest.dstChainKey as SpokeChainKey,
+      },
+      raw: true,
+      skipSimulation: true,
+      ...(partnerFee && {
+        extras: { partnerFee: { address: partnerFee.address as `0x${string}`, percentage: partnerFee.bps } },
+      }),
+    });
+    if (!result.ok) throw new Error("bridge build failed");
+    return result.value;
+  });
+}
+
 export interface EvmReceipt {
   reverted: boolean;
   /** Where it was mined: what orders two txs on one chain. */

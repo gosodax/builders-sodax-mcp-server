@@ -27,6 +27,7 @@ import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js"
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { CLIENT_ID_KEYED, POSTHOG_ENABLED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import { openBridges } from "./services/bridge/store.js";
 import { isDiscordConfigured, notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import {
@@ -410,6 +411,8 @@ export function createHttpApp(swapToolsEnabled: boolean, bridgeToolsEnabled = fa
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
+      // Bridge builds not yet sent: a restart loses them, and a deposit is submitted only against its build.
+      openBridges: openBridges(),
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });

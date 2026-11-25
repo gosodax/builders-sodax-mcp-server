@@ -7,23 +7,21 @@
 
 import { sameHex as same } from "../../constants.js";
 import type { PartnerFee } from "../partnerFee.js";
-import { bridgeAmounts, evmChainIdFor, isHubChain } from "../sodax.js";
+import { bridgeAmounts, isHubChain } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { checkRecipient } from "../swap/destination.js";
 import { ActionError } from "../swap/errors.js";
-import { checkAddress, resolveExactly } from "../swap/resolver.js";
+import { type AddressField, EVM_BURN_ADDRESS, addressesNeeded, resolveSide } from "../swap/quote.js";
+import { checkAddress } from "../swap/resolver.js";
 import { sourceChainFor } from "../swap/source.js";
-import { toStepTx } from "../swap/sources/evm.js";
-import type { EvmStep, SwapStep } from "../swap/sources/types.js";
-import type { EvmTx } from "../swap/swapsApi.js";
+import type { SwapStep } from "../swap/sources/types.js";
 import type { SwapsApiToken } from "../swap/tokens.js";
 import { formatUnits, parseUnits } from "../swap/units.js";
 import type { BridgeRequest } from "./bridgeApi.js";
 import { buildEvmBridge, buildNonEvmBridge } from "./build.js";
 import { getBridgeCatalog } from "./catalog.js";
-import { type BridgeSide, checkBridgeLimit, checkBridgePair } from "./pair.js";
-import { putBridge } from "./store.js";
-import { bridged } from "./wording.js";
+import { chainToken, checkBridgeLimit, checkBridgePair } from "./pair.js";
+import { checkBridgeRoom, putBridge } from "./store.js";
 
 /** A bridge as a preview takes it: what is sent and received, no addresses. */
 export interface BridgePairInput {
@@ -80,32 +78,28 @@ export interface BridgePreview {
 /** What a preview and a prepare check first, reading no chain: the sides, the source, the pair and the amounts. */
 function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
   const catalog = getBridgeCatalog();
-  const from: BridgeSide = bridged(() =>
-    resolveExactly(catalog, input.fromChain, input.fromToken, "fromToken", "from"),
-  );
-  const to: BridgeSide = bridged(() => resolveExactly(catalog, input.toChain, input.toToken, "toToken", "to"));
+  const from = resolveSide(catalog, input.fromChain, input.fromToken, "from");
+  const to = resolveSide(catalog, input.toChain, input.toToken, "to");
   // Only a chain track can prove the deposit on: nothing else would submit it.
-  const source = bridged(() => sourceChainFor(catalog, from.chain));
+  const source = { ...sourceChainFor(catalog, from.chain), chain: from.chain };
   checkBridgePair(catalog, from, to);
   const amount = parseUnits(input.amount, from.token.decimals);
   const { delivered, feeInSource } = bridgeAmounts(amount, chainToken(from), chainToken(to), partnerFee);
   if (delivered === 0n) {
     throw new ActionError("AMOUNT_TOO_LOW", "The amount is too small: the recipient would get nothing.", {
+      nextStep: "Ask the user whether to bridge a larger amount.",
       details: { field: "amount" },
     });
   }
-  const fromType = catalog.chains[from.chain.key]?.type;
-  const toType = catalog.chains[to.chain.key]?.type;
   return {
     from,
     to,
     source,
-    toType,
     amount,
     delivered,
     // An EVM sender's address is theirs on an EVM destination too; any other pair needs the recipient given.
-    defaultsToSender: fromType === "EVM" && toType === "EVM",
-    partnerFee:
+    defaultsToSender: from.config.type === "EVM" && to.config.type === "EVM",
+    fee:
       feeInSource > 0n
         ? { amount: formatUnits(feeInSource, from.token.decimals), symbol: from.token.symbol }
         : undefined,
@@ -113,23 +107,20 @@ function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
 }
 
 export async function previewBridge(input: BridgePairInput, partnerFee?: PartnerFee): Promise<BridgePreview> {
-  const { from, to, amount, delivered, defaultsToSender, ...checked } = checkedPair(input, partnerFee);
+  const { from, to, amount, delivered, defaultsToSender, fee } = checkedPair(input, partnerFee);
   const maxAmount = await checkBridgeLimit(amount, from, to);
   return {
     status: "preview",
     from: describe(from, amount),
     to: describe(to, delivered),
-    ...(checked.partnerFee && { partnerFee: checked.partnerFee }),
+    ...(fee && { partnerFee: fee }),
     maxAmount,
     prepareNeeds: defaultsToSender ? ["fromAddress"] : ["fromAddress", "toAddress"],
   };
 }
 
-// A placeholder sender would hand the recipient's share to whoever holds the burn address's keys: nobody.
-const EVM_BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD";
-
 export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee): Promise<BridgeQuote> {
-  const { from, to, source, toType, amount, delivered, defaultsToSender, ...checked } = checkedPair(input, partnerFee);
+  const { from, to, source, amount, delivered, defaultsToSender, fee } = checkedPair(input, partnerFee);
   const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
   if (fromAddress) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
@@ -137,55 +128,55 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
     : defaultsToSender
       ? fromAddress
       : undefined;
-  // A recipient that defaults to the sender isn't asked for: it comes with fromAddress.
-  const missing = [...(fromAddress ? [] : ["fromAddress"]), ...(toAddress || defaultsToSender ? [] : ["toAddress"])];
-  if (!fromAddress || !toAddress) {
-    throw new ActionError("INVALID_ADDRESS", `Preparing a bridge needs ${missing.join(" and ")}.`, {
-      nextStep: `Ask the user for ${missing.join(" and ")}, then call sodax_bridge_prepare again with them.`,
-      details: { field: missing[0], missing },
-    });
-  }
-  if (toType === "EVM" && same(toAddress, EVM_BURN_ADDRESS)) {
+  // The recipient the bridge ends with, the sender's own address included: a placeholder sender pays the burn address.
+  if (toAddress && to.config.type === "EVM" && same(toAddress, EVM_BURN_ADDRESS)) {
     throw new ActionError("INVALID_ADDRESS", `That address burns whatever it receives on ${to.chain.name}.`, {
       details: { field: input.toAddress ? "toAddress" : "fromAddress" },
     });
   }
+  // A recipient that defaults to the sender isn't asked for: it comes with fromAddress.
+  const missing: AddressField[] = [];
+  if (!fromAddress) missing.push("fromAddress");
+  if (!toAddress && !defaultsToSender) missing.push("toAddress");
+  if (!fromAddress || !toAddress) throw addressesNeeded(missing, from.chain, to.chain);
+  // Before any upstream call, so a key at its cap of open bridges costs nothing.
+  checkBridgeRoom();
 
   await Promise.all([
     checkBridgeLimit(amount, from, to),
-    bridged(() =>
-      checkRecipient({
-        chainKey: to.chain.key,
-        chainType: toType ?? "",
-        chainName: to.chain.name,
-        token: to.token,
-        address: toAddress,
-        amount: delivered,
-      }),
-    ),
+    checkRecipient({
+      chainKey: to.chain.key,
+      chainType: to.config.type,
+      chainName: to.chain.name,
+      token: to.token,
+      address: toAddress,
+      amount: delivered,
+    }),
   ]);
 
   const request: BridgeRequest = {
     srcChainKey: from.chain.key,
-    dstChainKey: to.chain.key,
-    inputToken: from.token.address,
-    outputToken: to.token.address,
-    inputAmount: amount,
     srcAddress: fromAddress,
-    dstAddress: toAddress,
+    srcToken: from.token.address,
+    amount,
+    dstChainKey: to.chain.key,
+    dstToken: to.token.address,
+    recipient: toAddress,
     partnerFee,
   };
-  const { steps, relayData, deposit } =
+  const built =
     source.adapter.family === "EVM"
-      ? await evmSteps(request, from)
-      : await buildNonEvmBridge(request, { ...source, chain: from.chain }, from.token.symbol).then(
-          ({ step, relayData }) => ({ steps: [step], relayData, deposit: undefined }),
-        );
+      ? await buildEvmBridge(request, source, from.token)
+      : await buildNonEvmBridge(request, source, from.token.symbol);
   const kept = putBridge({
     request,
-    relayData,
+    relayData: built.relayData,
     delivered,
-    ...(deposit && isHubChain(from.chain.key) && { deposit: { to: deposit.to, data: deposit.data } }),
+    // From Sonic a hub tx logs no message to check the deposit by, so the tx itself is kept.
+    ...("deposit" in built &&
+      isHubChain(from.chain.key) && {
+        deposit: { to: built.deposit.to, data: built.deposit.data, value: built.deposit.value },
+      }),
   });
   return {
     status: "ready",
@@ -194,43 +185,12 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
     expiresInSec: Math.round((kept.signBy - Date.now()) / 1000),
     from: describe(from, amount),
     to: describe(to, delivered),
-    ...(checked.partnerFee && { partnerFee: checked.partnerFee }),
+    ...(fee && { partnerFee: fee }),
     fromAddress,
     toAddress,
-    steps,
+    steps: built.steps,
   };
 }
-
-/** The approvals, if any, then the deposit, for an EVM wallet on the source chain. */
-async function evmSteps(
-  request: BridgeRequest,
-  from: BridgeSide,
-): Promise<{ steps: EvmStep[]; relayData: { address: string; payload: string }; deposit: EvmTx }> {
-  const chainId = evmChainIdFor(from.chain.key);
-  if (chainId === undefined)
-    throw new ActionError("UPSTREAM_UNAVAILABLE", "The SDK config has no chain id for that chain.");
-  const { deposit, relayData, approvals } = await buildEvmBridge(request, from.token.isNative);
-  const steps: EvmStep[] = [
-    ...approvals.map(
-      ({ kind, tx, amount }): EvmStep => ({
-        kind,
-        chainId,
-        tx: toStepTx(tx, chainId),
-        approves: {
-          token: tx.to,
-          symbol: from.token.symbol,
-          // The spender the calldata names, which the build check matched.
-          spender: `0x${tx.data.slice(34, 74)}`,
-          amount: formatUnits(amount, from.token.decimals),
-        },
-      }),
-    ),
-    { kind: "bridge", chainId, tx: toStepTx(deposit, chainId) },
-  ];
-  return { steps, relayData, deposit };
-}
-
-const chainToken = ({ chain, token }: BridgeSide) => ({ chainKey: chain.key, address: token.address });
 
 function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }, baseUnits: bigint): Side {
   return { chain, symbol: token.symbol, address: token.address, amount: formatUnits(baseUnits, token.decimals) };

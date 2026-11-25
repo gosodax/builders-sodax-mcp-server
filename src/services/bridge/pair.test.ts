@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeAmounts, bridgeLimit } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
+import { resolveSide } from "../swap/quote.js";
 import { resolveExactly } from "../swap/resolver.js";
 import { getBridgeCatalog } from "./catalog.js";
 import { type BridgeSide, checkBridgeLimit, checkBridgePair } from "./pair.js";
@@ -59,9 +60,8 @@ describe("checkBridgePair", () => {
     expect(error.details).toEqual({ reason: "same_chain", field: "toChain" });
   });
 
-  it("refuses a withdraw-only token as the one sent", () => {
-    const tbtc = side("arbitrum", "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40", "from");
-    const error = failure(() => checkBridgePair(catalog, tbtc, side("base", "cbBTC", "to")));
+  it("refuses a withdraw-only token as the one sent, as each side resolves", () => {
+    const error = failure(() => resolveSide(catalog, "arbitrum", "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40", "from"));
     expect(error.code).toBe("RESTRICTED_TOKEN");
     expect(error.details).toEqual({ side: "from", field: "fromToken" });
   });
@@ -102,6 +102,12 @@ describe("checkBridgeLimit", () => {
 
   it("says the route takes nothing right now when the limit is zero", async () => {
     limit(0n, 6);
+    const error = await asyncFailure(() => checkBridgeLimit(1n, ARB_USDC, BASE_USDC));
+    expect(error.details).toEqual({ reason: "no_capacity" });
+  });
+
+  it("says the route takes nothing when its cap fell below what's deposited", async () => {
+    limit(-12_500_000n, 6);
     const error = await asyncFailure(() => checkBridgeLimit(1n, ARB_USDC, BASE_USDC));
     expect(error.details).toEqual({ reason: "no_capacity" });
   });

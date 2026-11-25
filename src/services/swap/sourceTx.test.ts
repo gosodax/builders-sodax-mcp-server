@@ -1,6 +1,6 @@
-import { IntentCreatedEventAbi, IntentsAbi } from "@sodax/sdk";
+import { IntentCreatedEventAbi, IntentsAbi, assetManagerAbi, wrappedSonicAbi } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
-import { getAbiItem, toEventSelector } from "viem";
+import { erc20Abi, getAbiItem, toEventSelector } from "viem";
 import { describe, expect, it } from "vitest";
 import type { EvmReceipt } from "../sodax.js";
 import {
@@ -16,9 +16,12 @@ import {
 } from "./__fixtures__/deposit.js";
 import { abiEncode, rlpList } from "./__fixtures__/encode.js";
 import {
+  HOOK_FAILED_TOPIC,
   INTENT_CANCELLED_TOPIC,
   INTENT_CREATED_TOPIC,
   SEND_MESSAGE_SELECTOR,
+  TRANSFER_TOPIC,
+  WITHDRAWAL_TOPIC,
   checkDeposit,
   connectionMessages,
   decodeMessage,
@@ -142,6 +145,9 @@ describe("hubIntentHashes", () => {
   it("takes the topics from the SDK's intents contract ABI", () => {
     expect(INTENT_CREATED_TOPIC).toBe(toEventSelector(IntentCreatedEventAbi));
     expect(INTENT_CANCELLED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: IntentsAbi, name: "IntentCancelled" })));
+    expect(HOOK_FAILED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: assetManagerAbi, name: "HookFailed" })));
+    expect(TRANSFER_TOPIC).toBe(toEventSelector(getAbiItem({ abi: erc20Abi, name: "Transfer" })));
+    expect(WITHDRAWAL_TOPIC).toBe(toEventSelector(getAbiItem({ abi: wrappedSonicAbi, name: "Withdrawal" })));
   });
 
   it("reads the hash, lowercased, from the intents contract's logs under that topic only", () => {

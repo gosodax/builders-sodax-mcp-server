@@ -20,6 +20,15 @@ export const SEND_MESSAGE_SELECTOR = "0x6ea9cec9";
 export const INTENT_CREATED_TOPIC = "0x29fecd55cf4a8b6d0aaf6870fbab480f04c3caab050a1af7654278af363cd96f";
 /** keccak256("IntentCancelled(bytes32)"); the hash is the data, not indexed. */
 export const INTENT_CANCELLED_TOPIC = "0xc08eb64db16a39d2848960af04e3f16fb404d9d436a9f0e9d7d0d4854715c9dc";
+/**
+ * keccak256("HookFailed(address,bytes)"): the hub asset manager's, when a hub wallet's calls fail after a deposit
+ * reached it (wallet and reason, not indexed). The tokens stay in that wallet.
+ */
+export const HOOK_FAILED_TOPIC = "0x85c46289864ac31d39e6a0991336900736af5d3b18a64532ae12a7285c733bc4";
+/** keccak256("Transfer(address,address,uint256)"): from and to indexed, the amount the data. */
+export const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+/** keccak256("Withdrawal(address,uint256)"): wrapped Sonic's unwrap, its account indexed, the amount the data. */
+export const WITHDRAWAL_TOPIC = "0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65";
 /** The hub's relay id: every message to the hub goes there. */
 export const HUB_RELAY_ID = BigInt(getIntentRelayChainId(HUB_CHAIN_KEY));
 

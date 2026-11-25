@@ -1,17 +1,20 @@
 import { EvmHubProvider } from "@sodax/sdk";
+import { hubConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getBridge } from "../services/bridge/store.js";
 import {
+  type EvmReceipt,
   bridgeLimit,
   getEvmReceipt,
-  hubHookFailed,
+  getHubTx,
+  hubRelayPackets,
   initSodax,
   intentChainId,
   isTxKnown,
-  relayPackets,
 } from "../services/sodax.js";
 import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { rlpList } from "../services/swap/__fixtures__/encode.js";
+import { HOOK_FAILED_TOPIC, TRANSFER_TOPIC } from "../services/swap/sourceTx.js";
 import { bridgeClient } from "./__fixtures__/swapClient.js";
 
 // The chain reads are scripted; the builds and checks run on the real SDK.
@@ -19,9 +22,9 @@ vi.mock("../services/sodax.js", async importOriginal => ({
   ...(await importOriginal<typeof import("../services/sodax.js")>()),
   bridgeLimit: vi.fn(),
   getEvmReceipt: vi.fn(),
-  hubHookFailed: vi.fn(),
+  getHubTx: vi.fn(),
+  hubRelayPackets: vi.fn(),
   isTxKnown: vi.fn(),
-  relayPackets: vi.fn(),
 }));
 
 const actual = await vi.importActual<typeof import("../services/sodax.js")>("../services/sodax.js");
@@ -35,6 +38,27 @@ const HUB_TX = `0x${"cd".repeat(32)}`;
 const TO_BASE = { fromChain: "arbitrum", fromToken: "USDC", toChain: "base", toToken: "USDC", amount: "5" };
 const TO_SONIC = { ...TO_BASE, toChain: "sonic" };
 
+/** An address as a log's topic or data word. */
+const word = (address: string) => `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+const hubReceipt = (logs: EvmReceipt["logs"], reverted = false): EvmReceipt => ({
+  reverted,
+  blockNumber: 2n,
+  txIndex: 0,
+  logs,
+});
+type Kept = { request: { dstChainKey: string; dstToken: string }; delivered: bigint };
+/** The hub wallet's last call on a bridge to Sonic: the token to the recipient, the amount they get. */
+const deliveryLog = (kept: Kept, to = USER) => ({
+  address: actual.bridgeHubAsset({ chainKey: kept.request.dstChainKey, address: kept.request.dstToken }),
+  topics: [TRANSFER_TOPIC, word(HUB_WALLET), word(to)],
+  data: `0x${kept.delivered.toString(16).padStart(64, "0")}`,
+});
+const hookFailedLog = (wallet = HUB_WALLET, address: string = hubConfig.addresses.assetManager) => ({
+  address,
+  topics: [HOOK_FAILED_TOPIC],
+  data: `${word(wallet)}${"0".repeat(64)}`,
+});
+
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 /** The backend's row for TX, or none; and the submits it took. */
 let row: Record<string, unknown> | undefined;
@@ -44,8 +68,7 @@ beforeEach(() => {
   vi.spyOn(EvmHubProvider.prototype, "getUserHubWalletAddress").mockResolvedValue(HUB_WALLET);
   vi.mocked(bridgeLimit).mockResolvedValue({ amount: 10n ** 12n, decimals: 6, type: "DEPOSIT_LIMIT" });
   vi.mocked(isTxKnown).mockResolvedValue(false);
-  vi.mocked(hubHookFailed).mockResolvedValue(false);
-  vi.mocked(relayPackets).mockResolvedValue([]);
+  vi.mocked(hubRelayPackets).mockResolvedValue([]);
   row = undefined;
   submits = [];
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -141,6 +164,19 @@ describe("sodax_bridge_submit_and_track", () => {
     expect(getBridge(bridgeId)?.depositTxHash).toBeUndefined();
   });
 
+  it("from Sonic, takes as its deposit only the tx the build made, its value included", async () => {
+    const out = await call("sodax_bridge_prepare", { ...TO_BASE, fromChain: "sonic", fromAddress: USER });
+    const kept = getBridge(out.bridgeId as string);
+    if (!kept?.deposit) throw new Error("no Sonic deposit kept");
+    const { to, data, value } = kept.deposit;
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt([]));
+    vi.mocked(getHubTx).mockResolvedValue({ from: USER, to, input: data, value: BigInt(value) + 1n });
+    const track = () => call("sodax_bridge_submit_and_track", { bridgeId: kept.bridgeId, txHash: TX });
+    expect(await track()).toMatchObject({ status: "not_submitted", reason: "not_this_bridge" });
+    vi.mocked(getHubTx).mockResolvedValue({ from: USER, to, input: data, value: BigInt(value) });
+    expect(await track()).toMatchObject({ status: "relaying" });
+  });
+
   it("waits for a tx not mined yet, and ends a failed one", async () => {
     const { bridgeId } = await prepared();
     vi.mocked(getEvmReceipt).mockResolvedValueOnce(null);
@@ -148,6 +184,8 @@ describe("sodax_bridge_submit_and_track", () => {
       status: "awaiting_source",
       terminal: false,
     });
+    // With the build, the backend's row waits for the deposit check: no Bridge API call while the tx isn't mined.
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/submit-tx"))).toEqual([]);
     vi.mocked(getEvmReceipt).mockResolvedValueOnce({ reverted: true, blockNumber: 1n, txIndex: 0, logs: [] });
     expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
       status: "source_failed",
@@ -171,6 +209,9 @@ describe("sodax_bridge_submit_and_track", () => {
     vi.mocked(getEvmReceipt).mockResolvedValue(toSonic.deposit);
     await call("sodax_bridge_submit_and_track", { bridgeId: toSonic.bridgeId, txHash: TX });
     row = { status: "executed", result: { dstIntentTxHash: HUB_TX } };
+    vi.mocked(getEvmReceipt).mockImplementation(async (_, txHash) =>
+      txHash === HUB_TX ? hubReceipt([deliveryLog(toSonic.kept)]) : toSonic.deposit,
+    );
     expect(await call("sodax_bridge_submit_and_track", { bridgeId: toSonic.bridgeId, txHash: TX })).toMatchObject({
       status: "delivered",
       dstTxHash: HUB_TX,
@@ -184,12 +225,22 @@ describe("sodax_bridge_submit_and_track", () => {
     const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
     const HUB_ASSET_MANAGER = "60c5681bd1db4e50735c4ca3386005a4ba4937c0";
     /** The hub's packet to Base, as the relay reports it: hex without 0x, relay chain ids. */
-    const packet = (over: { to?: string; amount?: string; status?: string; from?: string; by?: string } = {}) => ({
+    const packet = (
+      over: {
+        to?: string;
+        amount?: string;
+        status?: string;
+        from?: string;
+        by?: string;
+        tx?: string;
+        dst?: string;
+      } = {},
+    ) => ({
       src_chain_id: 146,
-      src_tx_hash: HUB_TX.slice(2),
+      src_tx_hash: (over.tx ?? HUB_TX).slice(2),
       src_address: over.by ?? HUB_ASSET_MANAGER,
       status: over.status ?? "executed",
-      dst_chain_id: Number(intentChainId("0x2105.base")),
+      dst_chain_id: Number(intentChainId(over.dst ?? "0x2105.base")),
       dst_tx_hash: DST_TX.slice(2),
       payload: rlpList([BASE_USDC, over.from ?? HUB_WALLET, over.to ?? USER, over.amount ?? "0x4c4b40", "0x"]).slice(2),
     });
@@ -204,7 +255,7 @@ describe("sodax_bridge_submit_and_track", () => {
 
     it("is delivered once the hub's packet to the recipient ran there", async () => {
       const track = await atTheHub();
-      vi.mocked(relayPackets).mockResolvedValue([packet()]);
+      vi.mocked(hubRelayPackets).mockResolvedValue([packet()]);
       expect(await track()).toMatchObject({
         status: "delivered",
         dstTxHash: DST_TX,
@@ -212,7 +263,7 @@ describe("sodax_bridge_submit_and_track", () => {
         terminal: true,
         outcome: "succeeded",
       });
-      expect(relayPackets).toHaveBeenCalledWith("sonic", HUB_TX);
+      expect(hubRelayPackets).toHaveBeenCalledWith(HUB_TX);
     });
 
     it.each([
@@ -225,23 +276,96 @@ describe("sodax_bridge_submit_and_track", () => {
       ["when the relay has none yet", () => []],
     ])("stays in transit %s", async (_, packets) => {
       const track = await atTheHub();
-      vi.mocked(relayPackets).mockResolvedValue(packets());
+      vi.mocked(hubRelayPackets).mockResolvedValue(packets());
       expect(await track()).toMatchObject({ status: "in_transit", hubTxHash: HUB_TX, terminal: false });
     });
 
     it("stays in transit when the relay can't be read", async () => {
       const track = await atTheHub();
-      vi.mocked(relayPackets).mockRejectedValue(new Error("SDK call failed"));
+      vi.mocked(hubRelayPackets).mockRejectedValue(new Error("SDK call failed"));
       expect(await track()).toMatchObject({ status: "in_transit" });
+    });
+
+    it("waits while the hub tx the row names reverted", async () => {
+      const track = await atTheHub();
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt([], true));
+      vi.mocked(hubRelayPackets).mockResolvedValue([packet()]);
+      expect(await track()).toMatchObject({ status: "relaying", terminal: false });
+    });
+
+    it("from Sonic, follows the user's own tx's packet, never the row's word", async () => {
+      const out = await call("sodax_bridge_prepare", { ...TO_BASE, fromChain: "sonic", fromAddress: USER });
+      const kept = getBridge(out.bridgeId as string);
+      if (!kept?.deposit) throw new Error("no Sonic deposit kept");
+      const { to, data, value } = kept.deposit;
+      vi.mocked(getHubTx).mockResolvedValue({ from: USER, to, input: data, value: BigInt(value) });
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt([]));
+      const track = () => call("sodax_bridge_submit_and_track", { bridgeId: kept.bridgeId, txHash: TX });
+      expect(await track()).toMatchObject({ status: "relaying" });
+      row = { status: "executed", result: { dstIntentTxHash: DST_TX } };
+      expect(await track()).toMatchObject({ status: "in_transit", hubTxHash: TX });
+      vi.mocked(hubRelayPackets).mockResolvedValue([packet({ tx: TX })]);
+      expect(await track()).toMatchObject({ status: "delivered", dstTxHash: DST_TX, delivery: "delivered" });
+      expect(hubRelayPackets).toHaveBeenCalledWith(TX);
+    });
+
+    it("without the build, calls a packet to Bitcoin sent, not delivered", async () => {
+      row = { status: "executed", result: { dstIntentTxHash: HUB_TX } };
+      vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt([]));
+      vi.mocked(hubRelayPackets).mockResolvedValue([packet({ dst: "bitcoin" })]);
+      expect(await call("sodax_bridge_submit_and_track", { chain: "arbitrum", txHash: TX })).toMatchObject({
+        status: "delivered",
+        delivery: "sent",
+      });
+    });
+  });
+
+  describe("past the hub, to Sonic", () => {
+    async function atTheHub() {
+      const { bridgeId, kept, deposit } = await prepared(TO_SONIC);
+      vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+      await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+      row = { status: "executed", result: { dstIntentTxHash: HUB_TX } };
+      const hubLogs = (logs: EvmReceipt["logs"]) =>
+        vi
+          .mocked(getEvmReceipt)
+          .mockImplementation(async (_, txHash) => (txHash === HUB_TX ? hubReceipt(logs) : deposit));
+      return { kept, hubLogs, track: () => call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX }) };
+    }
+
+    it("is delivered once the hub tx shows the token sent to the recipient", async () => {
+      const { kept, hubLogs, track } = await atTheHub();
+      hubLogs([deliveryLog(kept)]);
+      expect(await track()).toMatchObject({ status: "delivered", dstTxHash: HUB_TX, outcome: "succeeded" });
+    });
+
+    it.each([
+      ["shows no delivery", () => []],
+      ["sends the token to another address", (kept: Kept) => [deliveryLog(kept, `0x${"9".repeat(40)}`)]],
+      ["sends another amount", (kept: Kept) => [deliveryLog({ ...kept, delivered: kept.delivered + 1n })]],
+    ])("stays in transit while the hub tx %s", async (_, logs) => {
+      const { kept, hubLogs, track } = await atTheHub();
+      hubLogs(logs(kept));
+      expect(await track()).toMatchObject({ status: "in_transit", hubTxHash: HUB_TX, terminal: false });
+    });
+
+    it("takes a HookFailed only for this bridge's hub wallet, from the hub asset manager", async () => {
+      const { kept, hubLogs, track } = await atTheHub();
+      const otherWallet = hookFailedLog(`0x${"9".repeat(40)}`);
+      const otherContract = hookFailedLog(HUB_WALLET, `0x${"9".repeat(40)}`);
+      hubLogs([otherWallet, otherContract, deliveryLog(kept)]);
+      expect(await track()).toMatchObject({ status: "delivered" });
     });
   });
 
   it("says the tokens are held in the hub wallet when its calls failed there, never delivered", async () => {
-    const { bridgeId, deposit } = await prepared(TO_SONIC);
+    const { bridgeId, kept, deposit } = await prepared(TO_SONIC);
     vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
     await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
     row = { status: "executed", result: { dstIntentTxHash: HUB_TX } };
-    vi.mocked(hubHookFailed).mockResolvedValue(true);
+    vi.mocked(getEvmReceipt).mockImplementation(async (_, txHash) =>
+      txHash === HUB_TX ? hubReceipt([hookFailedLog(), deliveryLog(kept)]) : deposit,
+    );
     const out = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
     expect(out).toMatchObject({
       status: "held_on_hub",
@@ -252,11 +376,14 @@ describe("sodax_bridge_submit_and_track", () => {
     expect(out.nextStep).toContain("withdrawHubAsset");
   });
 
-  it("hands a bridge the relay gave up on to the operator", async () => {
+  it.each([
+    ["abandoned", { status: "failed", abandonedAt: "2026-11-26T00:00:00Z" }],
+    ["failed", { status: "failed", failedAtStep: "relaying" }],
+  ])("hands a bridge the relay %s to the operator", async (_, given) => {
     const { bridgeId, deposit } = await prepared();
     vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
     await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
-    row = { status: "failed", abandonedAt: "2026-11-26T00:00:00Z" };
+    row = given;
     const out = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
     expect(out).toMatchObject({ status: "relay_failed", terminal: true, outcome: "held" });
     expect(out.nextAction).toMatchObject({ type: "external", reason: "help_desk" });

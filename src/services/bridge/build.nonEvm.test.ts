@@ -1,7 +1,7 @@
 import { spokeChainConfig } from "@sodax/types";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { base58Bytes } from "../../constants.js";
-import { initSodax, sdkBridge } from "../sodax.js";
+import { SdkRefusal, initSodax, sdkBridge } from "../sodax.js";
 // The SDK's own deposit builds, recorded live: the program a bridge deposit calls is a swap deposit's.
 import builds from "../swap/__fixtures__/non-evm-builds.json" with { type: "json" };
 import type { ActionError } from "../swap/errors.js";
@@ -26,11 +26,11 @@ const sourceOf = (chainKey: string): SwapSource => ({
 const requestFrom = (srcChainKey: string): BridgeRequest => ({
   srcChainKey,
   dstChainKey: "0xa4b1.arbitrum",
-  inputToken: "token",
-  outputToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-  inputAmount: 1000n,
+  srcToken: "token",
+  dstToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+  amount: 1000n,
   srcAddress: "user",
-  dstAddress: `0x${"4".repeat(40)}`,
+  recipient: `0x${"4".repeat(40)}`,
 });
 const RELAY = { address: `0x${"c".repeat(40)}`, payload: "0x0102" };
 
@@ -63,7 +63,10 @@ describe("buildNonEvmBridge", () => {
   it("returns the SDK's deposit as the step, once both builds name the same relay data", async () => {
     vi.mocked(sdkBridge).mockResolvedValue({ tx: builds.solana.deposit, relayData: RELAY });
     bridgeApi({ tx: { other: "build" }, relayData: RELAY });
-    const { step, relayData } = await buildNonEvmBridge(requestFrom("solana"), sourceOf("solana"), "TKN");
+    const {
+      steps: [step],
+      relayData,
+    } = await buildNonEvmBridge(requestFrom("solana"), sourceOf("solana"), "TKN");
     expect(step).toMatchObject({ kind: "bridge", chainKey: "solana", chainType: "SOLANA" });
     expect(relayData).toEqual(RELAY);
   });
@@ -93,7 +96,9 @@ describe("buildNonEvmBridge", () => {
     const sui = builds.sui.deposit;
     vi.mocked(sdkBridge).mockResolvedValue({ tx: sui, relayData: RELAY });
     bridgeApi({ tx: { to: sui.to }, relayData: RELAY });
-    const { step } = await buildNonEvmBridge(requestFrom("sui"), sourceOf("sui"), "TKN");
+    const {
+      steps: [step],
+    } = await buildNonEvmBridge(requestFrom("sui"), sourceOf("sui"), "TKN");
     // With its sender set, so no other account's wallet signs it.
     expect(JSON.parse((step.tx as { data: string }).data)).toEqual({ ...JSON.parse(sui.data), sender: sui.from });
     bridgeApi({ tx: { to: "0xbad::asset_manager::transfer" }, relayData: RELAY });
@@ -120,5 +125,16 @@ describe("buildNonEvmBridge", () => {
     const error = await refusal("sui");
     expect(error.code).toBe("CHAIN_UNAVAILABLE");
     expect(error.nextStep).toContain("sodax_bridge_prepare");
+  });
+
+  it.each([
+    ["amount", "AMOUNT_TOO_LOW"],
+    [undefined, "BRIDGE_REJECTED"],
+  ])("is the bridge's refusal, never an outage, when the SDK refuses its params (%s)", async (field, code) => {
+    vi.mocked(sdkBridge).mockRejectedValue(new SdkRefusal(field));
+    bridgeApi({ tx: {}, relayData: RELAY });
+    const error = await refusal("sui");
+    expect(error.code).toBe(code);
+    expect(error.retryable).toBe(false);
   });
 });

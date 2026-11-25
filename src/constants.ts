@@ -146,11 +146,16 @@ export const BRAND_COLORS = {
 export const GET_A_KEY =
   "An organisation's Owner or Admin creates one in the partner portal, https://portal.sodax.com (API keys, then Create key). How to use it: https://docs.sodax.com/developers/how-to/api-keys";
 
-/** Where a user gets help with a swap, named in every result that sends them there. */
+/** Where a user gets help with a swap or a bridge, named in every result that sends them there. */
 export const SODAX_HELP_DESK = "the SODAX team on Discord, https://www.sodax.com/discord";
 
+const helpWith = (what: string) =>
+  `If the user needs help with ${what}, they can ask ${SODAX_HELP_DESK}, giving the requestId from the tool result and any transaction hashes.`;
+
 /** In the swap instructions, and the advice on an INTERNAL failure. */
-export const SWAP_HELP = `If the user needs help with a swap, they can ask ${SODAX_HELP_DESK}, giving the requestId from the tool result and any transaction hashes.`;
+export const SWAP_HELP = helpWith("a swap");
+/** In the bridge instructions. */
+export const BRIDGE_HELP = helpWith("a swap or a bridge");
 
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;

@@ -118,22 +118,24 @@ function resultOutcome(toolName: string, result: unknown): Outcome {
   return {
     success: isError !== true,
     error_code: matching(out.error?.code ?? failureOf(result)?.code, ERROR_CODE_PATTERN),
-    ...(resolveToolGroup(toolName) === "swap" && {
-      status: matching(out.status, STATUS),
-      quote_id: matching(out.quoteId, UUID),
-      src_chain: matching(out.from?.chain?.key ?? out.chain?.key, CHAIN_KEY_PATTERN),
-      dst_chain: matching(out.to?.chain?.key, CHAIN_KEY_PATTERN),
-      usd_bucket: usdBucket(out.usdValue),
-    }),
-    // A bridge moves one asset 1:1, so it has no USD value of its own to bucket.
-    ...(resolveToolGroup(toolName) === "bridge" && {
-      status: matching(out.status, STATUS),
-      bridge_id: matching(out.bridgeId, UUID),
-      src_chain: matching(out.from?.chain?.key ?? out.from?.key ?? out.chain?.key, CHAIN_KEY_PATTERN),
-      dst_chain: matching(out.to?.chain?.key ?? out.to?.key, CHAIN_KEY_PATTERN),
-    }),
+    // A field the result lacks is left out: a bridge has no quote id, and moving one asset 1:1, no USD value.
+    ...(isActionGroup(resolveToolGroup(toolName)) &&
+      definedOnly({
+        status: matching(out.status, STATUS),
+        quote_id: matching(out.quoteId, UUID),
+        bridge_id: matching(out.bridgeId, UUID),
+        src_chain: matching(out.from?.chain?.key ?? out.from?.key ?? out.chain?.key, CHAIN_KEY_PATTERN),
+        dst_chain: matching(out.to?.chain?.key ?? out.to?.key, CHAIN_KEY_PATTERN),
+        usd_bucket: usdBucket(out.usdValue),
+      })),
   };
 }
+
+const definedOnly = (fields: Record<string, string | undefined>) =>
+  Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+
+/** The groups whose results carry an action's status, ids and chains. */
+const isActionGroup = (group: string | undefined): group is "swap" | "bridge" => group === "swap" || group === "bridge";
 
 function usdBucket(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -163,6 +165,7 @@ function logToolCall(
   const bug = failure !== undefined && "thrown" in failure;
   const code = str(outcome.error_code);
   const level = bug ? "error" : code && SERVER_SIDE_CODES.has(code) ? "warn" : "info";
+  const group = resolveToolGroup(toolName);
   logger[level](
     {
       err: bug ? whereThrown(failure.thrown) : undefined,
@@ -172,24 +175,17 @@ function logToolCall(
       "error.type": outcome.error_code,
       // Not `api_key.*`: the gateway's redaction masks values under any key that names an API key.
       "caller.key_hash": callerKeyTag(),
-      ...(resolveToolGroup(toolName) === "swap" && {
-        "swap.status": str(out.status),
+      ...(isActionGroup(group) && {
+        [`${group}.status`]: str(out.status),
         "quote.id": str(out.quoteId),
-        "tx.hash": str(out.txHash),
-        "hub_tx.hash": str(out.hubTxHash),
-        "intent.hash": str(out.intentHash),
-        "chain.key": outcome.src_chain,
-        "dst_chain.key": outcome.dst_chain,
-        "swap.usd_bucket": outcome.usd_bucket,
-      }),
-      ...(resolveToolGroup(toolName) === "bridge" && {
-        "bridge.status": str(out.status),
         "bridge.id": str(out.bridgeId),
         "tx.hash": str(out.txHash),
         "hub_tx.hash": str(out.hubTxHash),
+        "intent.hash": str(out.intentHash),
         "dst_tx.hash": str(out.dstTxHash),
         "chain.key": outcome.src_chain,
         "dst_chain.key": outcome.dst_chain,
+        "swap.usd_bucket": outcome.usd_bucket,
       }),
     },
     "Tool call",

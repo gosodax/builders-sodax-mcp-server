@@ -5,7 +5,8 @@
  */
 
 import { HUB_CHAIN_KEY } from "@sodax/types";
-import { type ChainToken, bridgeLimit, bridgeableTokensTo, isBridgeable } from "../sodax.js";
+import { sameHex as same } from "../../constants.js";
+import { type ChainToken, bridgeLimit, bridgeableTokensTo } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { ActionError } from "../swap/errors.js";
 import { resolveSwapChain, toChain, tokenLabel } from "../swap/resolver.js";
@@ -13,7 +14,6 @@ import { chainRead, sourceChainFor } from "../swap/source.js";
 import { type SwapCatalog, type SwapsApiToken, canUseAs, findToken } from "../swap/tokens.js";
 import { formatUnits } from "../swap/units.js";
 import { getBridgeCatalog } from "./catalog.js";
-import { bridged } from "./wording.js";
 
 /** One side of a bridge, as the resolver returns it. */
 export interface BridgeSide {
@@ -21,32 +21,33 @@ export interface BridgeSide {
   token: SwapsApiToken;
 }
 
-const chainToken = ({ chain, token }: BridgeSide): ChainToken => ({ chainKey: chain.key, address: token.address });
+export const chainToken = ({ chain, token }: BridgeSide): ChainToken => ({
+  chainKey: chain.key,
+  address: token.address,
+});
 
-/** Refuses a pair that can't be bridged, offering the tokens the source does bridge to on that chain. */
-export function checkBridgePair(catalog: SwapCatalog, from: BridgeSide, to: BridgeSide): void {
-  for (const [side, { chain, token }] of [
-    ["from", from],
-    ["to", to],
-  ] as const) {
-    if (!canUseAs(token, side)) {
-      throw new ActionError("RESTRICTED_TOKEN", `${token.symbol} on ${chain.name} can't be used on that side.`, {
-        details: { side, field: `${side}Token` },
-      });
-    }
-  }
-  if (from.chain.key === to.chain.key) {
-    throw new ActionError(
-      "BRIDGE_REJECTED",
-      `A bridge moves a token to another chain, and both sides are on ${from.chain.name}.`,
-      { nextStep: "Ask the user which other chain to bridge to.", details: { reason: "same_chain", field: "toChain" } },
-    );
-  }
-  if (isBridgeable(chainToken(from), chainToken(to))) return;
-  // What the source token does bridge to there, as the catalog lists them and usable as the token received.
-  const targets = bridgeableTokensTo(chainToken(from), to.chain.key)
-    .map(address => findToken(catalog, to.chain.key, address))
+/** What a token bridges to on another chain (the SDK's: those sharing its hub vault), as the catalog lists them. */
+function bridgeTargets(catalog: SwapCatalog, from: ChainToken, toChainKey: string): SwapsApiToken[] {
+  return bridgeableTokensTo(from, toChainKey)
+    .map(address => findToken(catalog, toChainKey, address))
     .filter((token): token is SwapsApiToken => token !== undefined && canUseAs(token, "to"));
+}
+
+function sameChain(chain: ChainInfo): ActionError {
+  return new ActionError("BRIDGE_REJECTED", `A bridge moves a token to another chain, and both are ${chain.name}.`, {
+    nextStep: "Ask the user which other chain to bridge to.",
+    details: { reason: "same_chain", field: "toChain" },
+  });
+}
+
+/**
+ * Refuses a pair that can't be bridged, offering the tokens the source does bridge to on that chain. Each side is
+ * already usable on its side (`resolveSide`).
+ */
+export function checkBridgePair(catalog: SwapCatalog, from: BridgeSide, to: BridgeSide): void {
+  if (from.chain.key === to.chain.key) throw sameChain(from.chain);
+  const targets = bridgeTargets(catalog, chainToken(from), to.chain.key);
+  if (targets.some(token => same(token.address, to.token.address))) return;
   const named = `${from.token.symbol} on ${from.chain.name}`;
   const labels = targets.map(token => tokenLabel(token, targets));
   throw new ActionError("BRIDGE_REJECTED", `${named} can't be bridged to ${to.token.symbol} on ${to.chain.name}.`, {
@@ -74,7 +75,8 @@ export async function checkBridgeLimit(amount: bigint, from: BridgeSide, to: Bri
   const most = scale(limit.amount, decimals) / 10n ** BigInt(limit.decimals);
   if (scale(amount, limit.decimals) <= scale(limit.amount, decimals)) return formatUnits(most, decimals);
   const route = `from ${from.chain.name} to ${to.chain.name}`;
-  if (most === 0n) {
+  // A cap lowered below what's deposited leaves less than nothing: no room either.
+  if (most <= 0n) {
     throw new ActionError("BRIDGE_REJECTED", `${symbol} can't be bridged ${route} right now.`, {
       nextStep: `Tell the user ${symbol} can't be bridged ${route} right now; ask whether to try later, or another token or chain.`,
       details: { reason: "no_capacity" },
@@ -103,25 +105,17 @@ export interface BridgePairs {
 /** Every token a bridge can send from one chain, with each token it arrives as on another. Config only, no read. */
 export function listBridgePairs(fromChain: string, toChain: string): BridgePairs {
   const catalog = getBridgeCatalog();
-  const from = bridged(() => resolveSwapChain(catalog, fromChain, true, "fromChain"));
-  const to = bridged(() => resolveSwapChain(catalog, toChain, false, "toChain"));
-  bridged(() => sourceChainFor(catalog, from));
-  if (from.key === to.key) {
-    throw new ActionError("BRIDGE_REJECTED", `A bridge moves a token to another chain, and both are ${from.name}.`, {
-      nextStep: "Ask the user which other chain to bridge to.",
-      details: { reason: "same_chain", field: "toChain" },
-    });
-  }
+  const from = resolveSwapChain(catalog, fromChain, true, "fromChain");
+  const to = resolveSwapChain(catalog, toChain, false, "toChain");
+  sourceChainFor(catalog, from);
+  if (from.key === to.key) throw sameChain(from);
   const pairs = (catalog.tokens[from.key] ?? [])
     .filter(token => canUseAs(token, "from"))
     .flatMap(sent =>
-      bridgeableTokensTo({ chainKey: from.key, address: sent.address }, to.key)
-        .map(address => findToken(catalog, to.key, address))
-        .filter((token): token is SwapsApiToken => token !== undefined && canUseAs(token, "to"))
-        .map(received => ({
-          from: { symbol: sent.symbol, address: sent.address },
-          to: { symbol: received.symbol, address: received.address },
-        })),
+      bridgeTargets(catalog, { chainKey: from.key, address: sent.address }, to.key).map(received => ({
+        from: { symbol: sent.symbol, address: sent.address },
+        to: { symbol: received.symbol, address: received.address },
+      })),
     );
   return { status: "ok", from, to, pairs };
 }

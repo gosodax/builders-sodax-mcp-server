@@ -8,9 +8,10 @@ import { z } from "zod";
 import { listBridgePairs } from "../services/bridge/pair.js";
 import { prepareBridge, previewBridge } from "../services/bridge/prepare.js";
 import { trackBridge } from "../services/bridge/track.js";
+import { forBridge } from "../services/bridge/wording.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { amountText } from "../services/swap/units.js";
-import { registerActionTool } from "./actionTool.js";
+import { type ActionModule, registerActionTool } from "./actionTool.js";
 import { pairsDecision, prepareDecision, previewDecision, trackDecision } from "./bridgeDecisions.js";
 import { addressArg, chainArg, screened, textArg, tokenArg, txHashArg } from "./swap.js";
 
@@ -27,6 +28,7 @@ const pairArgs = () => ({
     .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
 });
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+const BRIDGE_MODULE: ActionModule = { module: "bridge", reword: forBridge };
 
 export function registerBridgeTools(server: McpServer): void {
   registerActionTool(
@@ -42,7 +44,7 @@ export function registerBridgeTools(server: McpServer): void {
       const pairs = listBridgePairs(fromChain, toChain);
       return { ...pairs, ...pairsDecision(pairs) };
     },
-    "bridge",
+    BRIDGE_MODULE,
   );
 
   registerActionTool(
@@ -55,7 +57,7 @@ export function registerBridgeTools(server: McpServer): void {
       const preview = await previewBridge({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
       return { ...preview, ...previewDecision(preview) };
     },
-    "bridge",
+    BRIDGE_MODULE,
   );
 
   registerActionTool(
@@ -74,7 +76,7 @@ export function registerBridgeTools(server: McpServer): void {
       const quote = await prepareBridge({ ...args, amount: amountText(args.amount) }, getRequestContext().partnerFee);
       return { ...quote, ...prepareDecision(quote) };
     },
-    "bridge",
+    BRIDGE_MODULE,
   );
 
   registerActionTool(
@@ -85,7 +87,10 @@ export function registerBridgeTools(server: McpServer): void {
       txHash: txHashArg().describe(
         "Hash of the bridge step's transaction on the source chain, as the wallet shows it, not the approve's.",
       ),
-      bridgeId: screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a bridgeId" })
+      bridgeId: screened(z.string().trim().toLowerCase().uuid(), {
+        notHex64: "a bridgeId",
+        trackTool: "sodax_bridge_submit_and_track",
+      })
         .optional()
         .describe("The bridgeId from sodax_bridge_prepare."),
       chain: chainArg().optional().describe("Source chain name, key or EVM chain id; needed only without bridgeId."),
@@ -95,6 +100,6 @@ export function registerBridgeTools(server: McpServer): void {
       const result = await trackBridge(args);
       return { ...result, ...trackDecision(result) };
     },
-    "bridge",
+    BRIDGE_MODULE,
   );
 }

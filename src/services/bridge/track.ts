@@ -8,37 +8,37 @@
  * wallet broadcasts, so that's a bridge signed and never tracked in time.
  */
 
-import { HUB_CHAIN_KEY, hubConfig, isBitcoinChainKey, isInjectiveChainKey } from "@sodax/types";
+import { HUB_CHAIN_KEY, hubConfig, isBitcoinChainKey, isInjectiveChainKey, spokeChainConfig } from "@sodax/types";
 import { sameHex as same } from "../../constants.js";
 import { callerKeyHash } from "../requestContext.js";
 import {
+  type EvmReceipt,
   type RelayPacket,
+  bridgeHubAsset,
   encodeRecipient,
   getEvmReceipt,
   getHubTx,
-  hubHookFailed,
+  hubRelayPackets,
   intentChainId,
   isHubChain,
-  relayPackets,
 } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { alertOperator } from "../swap/alerts.js";
 import { ActionError } from "../swap/errors.js";
 import { resolveSwapChain, toChain } from "../swap/resolver.js";
+import { chainRead, depositTerms, readSourceTx, seenOnChain, sourceChainFor, sourceTxHash } from "../swap/source.js";
 import {
-  chainRead,
-  committedPayload,
-  readSourceTx,
-  seenOnChain,
-  sourceChainFor,
-  sourceTxHash,
-} from "../swap/source.js";
-import { HUB_RELAY_ID, checkDeposit, decodeRlpList } from "../swap/sourceTx.js";
+  HOOK_FAILED_TOPIC,
+  HUB_RELAY_ID,
+  TRANSFER_TOPIC,
+  WITHDRAWAL_TOPIC,
+  checkDeposit,
+  decodeRlpList,
+} from "../swap/sourceTx.js";
 import type { SwapSource } from "../swap/sources/types.js";
 import { type BridgeTxStatus, getBridgeTxStatus, submitBridgeTx } from "./bridgeApi.js";
 import { getBridgeCatalog } from "./catalog.js";
 import { type PreparedBridge, claimBridge, getBridge } from "./store.js";
-import { bridged } from "./wording.js";
 
 interface BridgeRef {
   txHash: string;
@@ -75,12 +75,13 @@ export async function trackBridge(input: { txHash: string; bridgeId?: string; ch
     throw new ActionError("QUOTE_KEY_MISMATCH", "That bridge was prepared with another SODAX API key.");
   }
   const source = sourceOf(bridge, input.chain);
-  const txHash = bridged(() => sourceTxHash(source, input.txHash));
+  const txHash = sourceTxHash(source, input.txHash);
   const base: BridgeRef = { txHash, chain: source.chain, ...(input.bridgeId && { bridgeId: input.bridgeId }) };
-  // A row is this build's only once the tx was checked as its deposit; until then it may be anyone's.
-  const claimed = bridge?.depositTxHash === txHash;
-  const row = await getBridgeTxStatus(txHash, source.chain.key);
-  if (row && (claimed || !bridge)) return fromRow(base, row, bridge);
+  // A row is this build's only once the tx was checked as its deposit; until then it may be anyone's, so it's read
+  // only after that check, and a deposit not mined yet costs no Bridge API call.
+  const trusted = !bridge || bridge.depositTxHash === txHash;
+  const known = trusted ? await getBridgeTxStatus(txHash, source.chain.key) : null;
+  if (known) return fromRow(base, known, bridge);
 
   const deposit = await checkSource(base, source, bridge);
   if (deposit !== "match") return deposit;
@@ -90,6 +91,7 @@ export async function trackBridge(input: { txHash: string; bridgeId?: string; ch
     const alerted = alertOperator("unknown_bridge", { chainKey: source.chain.key, txHash, reason: "bridge used" });
     return { ...base, status: "not_submitted", reason: "bridge_used", alerted };
   }
+  const row = trusted ? null : await getBridgeTxStatus(txHash, source.chain.key);
   if (row) return fromRow(base, row, bridge);
   try {
     await submitBridgeTx({
@@ -122,8 +124,8 @@ function sourceOf(bridge: PreparedBridge | undefined, chain: string | undefined)
   }
   const resolved = bridge
     ? toChain(bridge.request.srcChainKey)
-    : bridged(() => resolveSwapChain(catalog, chain as string, true, "chain"));
-  return { ...bridged(() => sourceChainFor(catalog, resolved, true)), chain: resolved };
+    : resolveSwapChain(catalog, chain as string, true, "chain");
+  return { ...sourceChainFor(catalog, resolved, true), chain: resolved };
 }
 
 /** Whether the tx is the build's deposit, or what it is instead. */
@@ -145,6 +147,7 @@ async function checkSource(
       tx !== null &&
       same(tx.from, bridge.request.srcAddress) &&
       same(tx.to ?? "", bridge.deposit.to) &&
+      tx.value === BigInt(bridge.deposit.value) &&
       same(tx.input, bridge.deposit.data);
     return own ? "match" : { ...base, status: "not_submitted", reason: "not_this_bridge", alerted: false };
   }
@@ -163,13 +166,10 @@ async function checkSource(
   const srcChain = intentChainId(chain.key);
   if (!srcAddress || !srcChain || source.kind !== "spoke")
     throw new ActionError("INTERNAL", "The build's sender can't be encoded.");
-  const deposit = checkDeposit(sourceTx.messages, {
-    assetManager: source.depositor,
-    srcChain,
-    srcAddress,
-    to: bridge.relayData.address,
-    data: committedPayload(source, bridge.relayData.payload),
-  });
+  const deposit = checkDeposit(
+    sourceTx.messages,
+    depositTerms(source, { intent: { srcChain, srcAddress }, relayData: bridge.relayData }),
+  );
   return deposit === "match"
     ? "match"
     : { ...base, status: "not_submitted", reason: "not_this_bridge", alerted: false };
@@ -182,40 +182,88 @@ function unknownBridge(base: BridgeRef): BridgeTrack {
   return { ...base, status: "not_submitted", reason: "unknown_bridge", alerted };
 }
 
-/** What the backend's row says, checked on the hub where it says the hub ran the deposit. */
+/**
+ * What the backend's row says of the bridge's progress: each step past the source is proved on the hub or by the relay,
+ * never taken from the row.
+ */
 async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
-  if (row.status === "failed" && row.abandonedAt) {
-    // It gave up before the hub: the deposit is held by the source chain's asset manager until someone relays it.
-    const alerted = alertOperator("bridge_relay_failed", { chainKey: base.chain.key, txHash: base.txHash });
-    return { ...base, status: "relay_failed", alerted };
+  // Without the build, nothing here checked the tx as a deposit: its alerts spend the budget any key can.
+  const alert = (kind: "bridge_relay_failed" | "bridge_hook_failed") =>
+    alertOperator(kind, { chainKey: base.chain.key, txHash: base.txHash }, { unchecked: !bridge });
+  // The SDK's own rule: failed or abandoned, the backend relays it no further. The source chain's asset manager holds
+  // the deposit until someone does.
+  if (row.status === "failed" || row.abandonedAt) {
+    return { ...base, status: "relay_failed", alerted: alert("bridge_relay_failed") };
   }
-  const hubTxHash = row.result?.dstIntentTxHash;
+  // From Sonic the user's own tx ran on the hub; from a spoke, the hub tx the row names, checked below.
+  const hubTxHash = isHubChain(base.chain.key) ? base.txHash : row.result?.dstIntentTxHash;
   if (row.status !== "executed" || !hubTxHash) return { ...base, status: "relaying" };
-  // From Sonic the row's packet is the hub's own, to the destination: executed there is delivered.
-  if (isHubChain(base.chain.key))
-    return { ...base, status: "delivered", dstTxHash: hubTxHash, delivery: proofOn(bridge) };
-  const failed = await chainRead(toChain(HUB_CHAIN_KEY), () => hubHookFailed(hubTxHash));
-  if (failed === null) return { ...base, status: "relaying" };
-  if (failed) {
-    const alerted = alertOperator("bridge_hook_failed", { chainKey: base.chain.key, txHash: base.txHash });
+  const toHub = bridge !== undefined && isHubChain(bridge.request.dstChainKey);
+  const [receipt, packets] = await Promise.all([
+    chainRead(toChain(HUB_CHAIN_KEY), () => getEvmReceipt(HUB_CHAIN_KEY, hubTxHash)),
+    // A relay that fails or answers anything unexpected leaves it in transit, never delivered.
+    toHub ? [] : hubRelayPackets(hubTxHash).catch((): RelayPacket[] => []),
+  ]);
+  // Not mined where the row says, or reverted there: nothing ran on the hub yet.
+  if (!receipt || receipt.reverted) return { ...base, status: "relaying" };
+  if (hookFailed(receipt, bridge)) {
     const recovery = bridge && {
       srcChainKey: bridge.request.srcChainKey,
       srcAddress: bridge.request.srcAddress,
-      token: bridge.request.inputToken,
+      token: bridge.request.srcToken,
     };
-    return { ...base, status: "held_on_hub", hubTxHash, alerted, ...(recovery && { recovery }) };
+    return {
+      ...base,
+      status: "held_on_hub",
+      hubTxHash,
+      alerted: alert("bridge_hook_failed"),
+      ...(recovery && { recovery }),
+    };
   }
-  // To Sonic the hub tx is the delivery; to a spoke it sends the tokens on, which the relay carries next.
-  if (bridge && isHubChain(bridge.request.dstChainKey)) {
+  // To Sonic the hub tx is the delivery, which its receipt shows; to a spoke it sends the tokens on, which the relay
+  // carries next. Without the build, a delivery to Sonic can't be told from one still to leave: it stays in transit.
+  if (toHub && deliveredOnHub(receipt, bridge)) {
     return { ...base, status: "delivered", dstTxHash: hubTxHash, delivery: "delivered" };
   }
-  // A relay that fails or answers anything unexpected leaves it in transit, never delivered.
-  const packets = await relayPackets(HUB_CHAIN_KEY, hubTxHash).catch(() => []);
-  const packet = deliveryPacket(packets, hubTxHash, bridge);
+  const packet = toHub ? undefined : deliveryPacket(packets, hubTxHash, bridge);
   if (packet?.status === "executed" && packet.dst_tx_hash) {
-    return { ...base, status: "delivered", dstTxHash: prefixed(packet.dst_tx_hash), delivery: proofOn(bridge) };
+    return { ...base, status: "delivered", dstTxHash: prefixed(packet.dst_tx_hash), delivery: proofOn(packet) };
   }
   return { ...base, status: "in_transit", hubTxHash };
+}
+
+/** An address as a log names it in an indexed topic or a data word: the last 20 bytes of 32. */
+const isWord = (word: string | undefined, address: string) =>
+  word !== undefined && word.length === 66 && same(`0x${word.slice(26)}`, address);
+
+/**
+ * The hub ran the deposit but not the hub wallet's calls after it: the tokens stay in that wallet, the event's first
+ * data word. With the build, only this bridge's wallet counts; without it, the hub tx ran this deposit alone.
+ */
+const hookFailed = ({ logs }: EvmReceipt, bridge?: PreparedBridge) =>
+  logs.some(
+    log =>
+      same(log.address, hubConfig.addresses.assetManager) &&
+      same(log.topics[0] ?? "", HOOK_FAILED_TOPIC) &&
+      (!bridge || isWord(log.data.slice(0, 66), bridge.relayData.address)),
+  );
+
+/**
+ * A bridge to Sonic ends with the hub wallet's last call, as the SDK builds it: the token transferred to the recipient,
+ * or wrapped S unwrapped to them (`withdrawTo`), the amount the recipient gets. Its receipt must show that.
+ */
+function deliveredOnHub({ logs }: EvmReceipt, bridge: PreparedBridge): boolean {
+  const { dstChainKey, dstToken, recipient } = bridge.request;
+  const token = bridgeHubAsset({ chainKey: dstChainKey, address: dstToken });
+  const wallet = bridge.relayData.address;
+  const amount = (data: string) => data.length === 66 && BigInt(data) === bridge.delivered;
+  const native = same(dstToken, hubConfig.nativeToken);
+  return logs.some(({ address, topics: [topic, first, second], data }) => {
+    if (!same(address, token) || !amount(data)) return false;
+    return native
+      ? same(topic ?? "", WITHDRAWAL_TOPIC) && (isWord(first, wallet) || isWord(first, recipient))
+      : same(topic ?? "", TRANSFER_TOPIC) && isWord(first, wallet) && isWord(second, recipient);
+  });
 }
 
 const prefixed = (hex: string) => (hex.startsWith("0x") ? hex : `0x${hex}`);
@@ -239,12 +287,12 @@ function deliveryPacket(packets: RelayPacket[], hubTxHash: string, bridge?: Prep
 
 /** Whether a packet's transfer (RLP: token, sender, recipient, amount, data) is this bridge's delivery. */
 function carries(packet: RelayPacket, bridge: PreparedBridge): boolean {
-  const { dstChainKey, dstAddress } = bridge.request;
+  const { dstChainKey } = bridge.request;
   if (String(packet.dst_chain_id) !== intentChainId(dstChainKey)) return false;
   const items = decodeRlpList(prefixed(packet.payload));
   if (items?.length !== 5) return false;
   const [, sender, recipient, amount] = items;
-  const encoded = encodeRecipient(dstChainKey, dstAddress);
+  const encoded = encodeRecipient(dstChainKey, bridge.request.recipient);
   return (
     same(sender, bridge.relayData.address) &&
     encoded !== undefined &&
@@ -254,7 +302,9 @@ function carries(packet: RelayPacket, bridge: PreparedBridge): boolean {
 }
 
 /** On Bitcoin and Injective the relay calls a packet executed once it sent the tx, before that chain ran it. */
-function proofOn(bridge: PreparedBridge | undefined): "delivered" | "sent" {
-  const dst = bridge?.request.dstChainKey;
-  return dst && (isBitcoinChainKey(dst as never) || isInjectiveChainKey(dst as never)) ? "sent" : "delivered";
+function proofOn(packet: RelayPacket): "delivered" | "sent" {
+  const sentOnly = Object.keys(spokeChainConfig)
+    .filter(key => isBitcoinChainKey(key as never) || isInjectiveChainKey(key as never))
+    .map(intentChainId);
+  return sentOnly.includes(String(packet.dst_chain_id)) ? "sent" : "delivered";
 }

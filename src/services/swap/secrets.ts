@@ -111,10 +111,10 @@ function secretRefusal(kind: SecretKind, field?: string): ActionError {
   );
 }
 
-function hex64Refusal(notA: string, field?: string): ActionError {
+function hex64Refusal(notA: string, field?: string, trackTool = "sodax_swap_submit_and_track"): ActionError {
   return new ActionError("SECRET_REJECTED", `That's a 64-hex value, not ${notA}.`, {
     details: { field },
-    nextStep: ifKeyElse("a transaction hash, pass it to sodax_swap_submit_and_track"),
+    nextStep: ifKeyElse(`a transaction hash, pass it to ${trackTool}`),
   });
 }
 
@@ -160,10 +160,14 @@ export function rejectHex64Account(value: string, field: string, chainName: stri
   );
 }
 
-/** `notHex64` names what a field that never holds a bare 64-hex value takes instead ("a quoteId"). */
+/**
+ * `notHex64` names what a field that never holds a bare 64-hex value takes instead ("a quoteId"), and `trackTool` the
+ * tool a tx hash passed there belongs to (the swap's by default).
+ */
 export interface SecretField {
   txHash?: boolean;
   notHex64?: string;
+  trackTool?: string;
 }
 
 /**
@@ -175,7 +179,7 @@ export function secretRefusalText(value: string, field: SecretField): string | u
   const refusal = kind
     ? secretRefusal(kind)
     : field.notHex64 && HEX_64.test(value.trim())
-      ? hex64Refusal(field.notHex64)
+      ? hex64Refusal(field.notHex64, undefined, field.trackTool)
       : undefined;
   return refusal && `${refusal.code}: ${refusal.message} ${refusal.nextStep}`;
 }

@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SWAP_HELP } from "./constants.js";
+import { BRIDGE_HELP, SWAP_HELP } from "./constants.js";
 import { withAnalytics } from "./services/analytics.js";
 import type { ToolSelection, Toolsets } from "./services/profiles.js";
 import { registerBridgeTools } from "./tools/bridge.js";
@@ -76,7 +76,7 @@ const BRIDGE_INSTRUCTIONS = [
   "After the user's wallet sends the bridge, call `sodax_bridge_submit_and_track` with the bridgeId and the bridge",
   "transaction's hash: it submits the bridge, so call it at least once, and never resend a bridge it hasn't reported failed.",
   "Every bridge tool result, errors included, carries nextAction: follow it until the result is terminal, or read its nextStep.",
-  SWAP_HELP.replace("a swap", "a swap or a bridge"),
+  BRIDGE_HELP,
 ].join(" ");
 
 const INSTRUCTIONS: Record<keyof Toolsets, string> = {
@@ -91,20 +91,21 @@ const BOTH_INSTRUCTIONS =
 const BOTH_BRIDGE_INSTRUCTIONS =
   "For a user's bridge use the `sodax_bridge_*` tools, not `sodax_relay_submit_tx` or `sodax_get_transaction`.";
 
+// The token lookup and balance tools serve both swap and bridge, counted as the bridge's only without swap.
+const registerBridgeTokenTools = (server: McpServer) => registerTokenTools(server, "bridge");
+
 // The static tools of each toolset, in registration order. createServer registers them on a real
 // server and seedToolRegistry records them for the counts, so the two can't drift.
 const STATIC_REGISTRARS: Record<keyof Toolsets, ((server: McpServer) => void)[]> = {
   builder: [registerSodaxApiTools, registerSolverRelayTools],
-  swap: [registerSwapTools],
-  bridge: [registerBridgeTools],
+  swap: [registerTokenTools, registerSwapTools],
+  bridge: [registerBridgeTokenTools, registerBridgeTools],
 };
 
-/** Every static registrar of the toolsets that are on; the token lookup and balance tools once for swap or bridge. */
+/** Every static registrar of the toolsets that are on; the token tools once, swap's when swap is on. */
 function registrarsFor(toolsets: Toolsets): ((server: McpServer) => void)[] {
-  return [
-    ...(toolsets.swap || toolsets.bridge ? [registerTokenTools] : []),
-    ...enabled(toolsets, STATIC_REGISTRARS).flat(),
-  ];
+  const registrars = enabled(toolsets, STATIC_REGISTRARS).flat();
+  return toolsets.swap ? registrars.filter(register => register !== registerBridgeTokenTools) : registrars;
 }
 
 /** The entries of a per-toolset map for the toolsets that are on, in map order. */

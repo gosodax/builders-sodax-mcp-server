@@ -132,19 +132,32 @@ async function prepareEvmSwap(
 }
 
 /** An approve tx and the amount it must set. */
-interface ApproveTx {
-  kind: Exclude<EvmStep["kind"], "swap">;
+export interface ApproveTx {
+  kind: "reset_approve" | "approve";
   tx: EvmTx;
   amount: bigint;
 }
 
 /** An approval's txs in the order they're sent: any reset, to zero, then the approve of the input amount. */
-function approveTxs(approval: Approval, inputAmount: bigint): ApproveTx[] {
+export function approveTxs(approval: Approval, inputAmount: bigint): ApproveTx[] {
   const approve: ApproveTx = { kind: "approve", tx: approval.tx, amount: inputAmount };
   return approval.resetTx ? [{ kind: "reset_approve", tx: approval.resetTx, amount: 0n }, approve] : [approve];
 }
 
-const chainIdOf = (source: SwapSource) => {
+/** Exactly `approve(spender, amount)` on the token, from the sender, carrying no value. */
+export function approvesExactly(
+  { tx, amount }: ApproveTx,
+  approval: { from: string; token: string; spender: string },
+): boolean {
+  return (
+    same(tx.from, approval.from) &&
+    same(tx.to, approval.token) &&
+    BigInt(tx.value) === 0n &&
+    same(tx.data, approveCalldata(approval.token, approval.spender, amount))
+  );
+}
+
+export const chainIdOf = (source: SwapSource) => {
   if (source.chainId === undefined) throw new Error("an EVM source without its chain id");
   return source.chainId;
 };
@@ -181,18 +194,14 @@ function findEvmTxMismatch(
   tx: EvmTx,
   approvals: ApproveTx[],
 ): string | undefined {
-  const approves = (step: EvmTx, amount: bigint) =>
-    same(step.from, request.srcAddress) &&
-    same(step.to, request.inputToken) &&
-    BigInt(step.value) === 0n &&
-    same(step.data, approveCalldata(request.inputToken, swapContract, amount));
+  const approval = { from: request.srcAddress, token: request.inputToken, spender: swapContract };
   const checks: [string, boolean][] = [
     ["tx.from", same(tx.from, request.srcAddress)],
     ["rebuild", expected !== undefined],
     ["tx.to", same(tx.to, expected?.to ?? "")],
     ["tx.value", BigInt(tx.value) === expected?.value],
     ["tx.data", same(tx.data, expected?.data ?? "")],
-    ["approval", approvals.every(({ tx: step, amount }) => approves(step, amount))],
+    ["approval", approvals.every(step => approvesExactly(step, approval))],
   ];
   return checks.find(([, ok]) => !ok)?.[0];
 }

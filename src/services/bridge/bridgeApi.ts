@@ -14,7 +14,6 @@ import type {
   BridgeSubmitTxRequestV2,
   BridgeSubmitTxResponseV2,
   BridgeSubmitTxStatusResponseV2,
-  CreateBridgeIntentParamsV2,
   CreateBridgeIntentResponseV2,
 } from "@sodax/types";
 import { z } from "zod";
@@ -22,6 +21,7 @@ import { EVM_ADDRESS_PATTERN, SODAX_BRIDGE_BASE_URL } from "../../constants.js";
 import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "../http.js";
 import { logger, redact } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
+import { type SdkBridgeRequest, bridgeWireParams } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
 import { type EvmTx, asEvmTx, withoutIds } from "../swap/swapsApi.js";
 
@@ -71,17 +71,11 @@ const statusSchema = accepting<BridgeSubmitTxStatusResponseV2>()(
 );
 export type BridgeTxStatus = z.infer<typeof statusSchema>["data"];
 
-/** A bridge as the build routes take it. The partner fee is the connection's, never a tool input. */
-export interface BridgeRequest {
-  srcChainKey: string;
-  dstChainKey: string;
-  inputToken: string;
-  outputToken: string;
-  inputAmount: bigint;
-  srcAddress: string;
-  dstAddress: string;
-  partnerFee?: PartnerFee;
-}
+/**
+ * A bridge in the SDK's own terms, which the build routes take as the SDK's client maps them. The partner fee is the
+ * connection's, never a tool input.
+ */
+export type BridgeRequest = SdkBridgeRequest & { partnerFee?: PartnerFee };
 
 /** Whether the source token is already approved for this bridge. */
 export async function checkBridgeAllowance(request: BridgeRequest): Promise<boolean> {
@@ -122,24 +116,16 @@ export async function getBridgeTxStatus(txHash: string, srcChainKey: string): Pr
   return success ? data : null;
 }
 
-function requestBody({ inputAmount, partnerFee, ...rest }: BridgeRequest): CreateBridgeIntentParamsV2 {
-  return {
-    ...rest,
-    inputAmount: inputAmount.toString(),
-    ...(partnerFee && { partnerFee: { address: partnerFee.address, percentage: partnerFee.bps } }),
-  };
-}
-
 /** A build-route call. One the backend couldn't build from this wallet points at the read of its balance. */
 async function buildCall<T>(schema: Schema<T>, path: string, request: BridgeRequest): Promise<T> {
   try {
-    return await call(schema, path, requestBody(request));
+    return await call(schema, path, bridgeWireParams(request));
   } catch (error) {
     if (!(error instanceof ActionError) || error.details?.reason !== "wallet_cannot_build") throw error;
     const balance = {
       chain: request.srcChainKey,
       address: request.srcAddress,
-      token: request.inputToken,
+      token: request.srcToken,
       for: "bridge" as const,
     };
     const { code, message, nextStep, details } = error;

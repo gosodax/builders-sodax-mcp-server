@@ -178,8 +178,11 @@ const purposeArg = () =>
 
 const catalogFor = async (purpose: TokenPurpose) => (purpose === "bridge" ? getBridgeCatalog() : getSwapCatalog());
 
-/** The token lookup and balance read, for the swap and the bridge tools alike: registered once for either. */
-export function registerTokenTools(server: McpServer): void {
+/**
+ * The token lookup and balance read, for the swap and the bridge tools alike: registered once for either, counted
+ * under `module`, the swap tools' when they're on.
+ */
+export function registerTokenTools(server: McpServer, module: "swap" | "bridge" = "swap"): void {
   registerActionTool(
     server,
     "sodax_resolve_token",
@@ -196,6 +199,7 @@ export function registerTokenTools(server: McpServer): void {
       const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
       return { ...resolution, ...resolveDecision(resolution, args.for) };
     },
+    { module },
   );
 
   registerActionTool(
@@ -214,9 +218,10 @@ export function registerTokenTools(server: McpServer): void {
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async args => {
-      const balances = await readBalances(args, args.for === "bridge" ? getBridgeCatalog() : undefined);
+      const balances = await readBalances(args, await catalogFor(args.for));
       return { ...balances, ...balanceDecision(balances) };
     },
+    { module },
   );
 }
 

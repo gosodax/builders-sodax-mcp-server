@@ -24,6 +24,14 @@ import { errorDecision } from "./swapDecisions.js";
 
 type ActionOutput = Record<string, unknown> & { status: string } & Decision;
 
+/** The toolset an action tool belongs to: where it's counted and alerted from, and its failures' wording. */
+export interface ActionModule {
+  module: "swap" | "bridge";
+  reword?: (failure: ActionError) => ActionError;
+}
+
+const SWAP_MODULE: ActionModule = { module: "swap" };
+
 /**
  * Every result's contract, errors included, and nothing more: each object passes other fields through, so a new
  * field can't fail the SDK's output check (which replaces the whole result), and the action types' shapes stay in
@@ -46,11 +54,12 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   input: Args,
   annotations: ToolAnnotations,
   run: (args: ShapeOutput<Args>) => Promise<ActionOutput>,
-  /** Where the tool is counted and alerted from. */
-  module: "swap" | "bridge" = "swap",
+  /** Where the tool is counted and alerted from, and how its failures are worded. */
+  { module, reword }: ActionModule = SWAP_MODULE,
 ): void {
   /** A failure as the tool returns it; `bug` (what was thrown) also makes its "Tool call" record the error. */
-  const failed = (failure: ActionError, args: ShapeOutput<Args>, bug?: unknown): CallToolResult => {
+  const failed = (thrown: ActionError, args: ShapeOutput<Args>, bug?: unknown): CallToolResult => {
+    const failure = reword ? reword(thrown) : thrown;
     if (ALERTED_CODES.includes(failure.code)) {
       // ActionError messages here are fixed text; an unexpected error is named by its class only.
       const reason =

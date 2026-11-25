@@ -13,12 +13,14 @@ import { createHash } from "node:crypto";
 import { HUB_CHAIN_KEY } from "@sodax/types";
 import { isRecord, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
-import { approveCalldata, isHubChain, sdkBridge } from "../sodax.js";
+import { SdkRefusal, isHubChain, sdkBridge } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
 import { toChain } from "../swap/resolver.js";
-import { chainRead } from "../swap/source.js";
-import type { NonEvmStep, SwapSource } from "../swap/sources/types.js";
+import { approveTxs, approvesExactly, chainIdOf, toStepTx } from "../swap/sources/evm.js";
+import type { EvmStep, NonEvmStep, SwapSource } from "../swap/sources/types.js";
 import { type EvmTx, asEvmTx } from "../swap/swapsApi.js";
+import type { SwapsApiToken } from "../swap/tokens.js";
+import { formatUnits } from "../swap/units.js";
 import {
   type BridgeRequest,
   type BuiltBridge,
@@ -27,58 +29,57 @@ import {
   checkBridgeAllowance,
 } from "./bridgeApi.js";
 
-/** An approve step and the allowance it sets. */
-export interface ApproveTx {
-  kind: "reset_approve" | "approve";
-  tx: EvmTx;
-  amount: bigint;
-}
-
-export interface CheckedBridge {
-  deposit: EvmTx;
-  relayData: BuiltBridge["relayData"];
-  /** In order: a reset to zero when the token needs one, then the approve, when the allowance is short. */
-  approvals: ApproveTx[];
-}
-
-/** Built by the Bridge API, checked against the SDK's own build. `native`: the source token is the chain's gas coin. */
-export async function buildEvmBridge(request: BridgeRequest, native: boolean): Promise<CheckedBridge> {
+/**
+ * From an EVM spoke or Sonic: built by the Bridge API and checked against the SDK's own build, then the steps the
+ * wallet sends, any approvals (a reset to zero first when the token needs one) before the deposit.
+ */
+export async function buildEvmBridge(
+  request: BridgeRequest,
+  source: SwapSource,
+  token: SwapsApiToken,
+): Promise<{ steps: EvmStep[]; relayData: BuiltBridge["relayData"]; deposit: EvmTx }> {
   const [built, approved, rebuilt] = await Promise.all([
     buildBridge(request),
-    native || checkBridgeAllowance(request),
+    token.isNative || checkBridgeAllowance(request),
     // The SDK's build reads the user's hub wallet on the hub.
-    chainRead(toChain(HUB_CHAIN_KEY), () => sdkBridge(sdkRequest(request))),
+    sdkBridge(request).catch(
+      refusedOr(() => new ActionError("CHAIN_UNAVAILABLE", `Couldn't read ${toChain(HUB_CHAIN_KEY).name} right now.`)),
+    ),
   ]);
   const deposit = asEvmTx(built.tx);
   const expected = asEvmTx(withDecimalValue(rebuilt.tx));
-  const depositMismatch = findMismatch([
-    ["tx", deposit !== undefined],
-    ["rebuild", expected !== undefined],
-    ["tx.from", same(deposit?.from ?? "", request.srcAddress)],
-    ["tx.to", same(deposit?.to ?? "", expected?.to ?? "")],
-    ["tx.value", deposit?.value === expected?.value],
-    ["tx.data", same(deposit?.data ?? "", expected?.data ?? "")],
-    ["relayData.address", same(built.relayData.address, rebuilt.relayData.address)],
-    ["relayData.payload", same(built.relayData.payload, rebuilt.relayData.payload)],
+  if (!deposit || !expected) throw bridgeMismatch(request, deposit ? "rebuild" : "tx", built.tx);
+  const mismatch = findMismatch([
+    ["tx.from", same(deposit.from, request.srcAddress)],
+    ["tx.to", same(deposit.to, expected.to)],
+    ["tx.value", deposit.value === expected.value],
+    ["tx.data", same(deposit.data, expected.data)],
+    ...relayChecks(built, rebuilt),
   ]);
-  if (depositMismatch || !deposit) throw bridgeMismatch(request, depositMismatch ?? "tx", built.tx);
-  if (approved) return { deposit, relayData: built.relayData, approvals: [] };
+  if (mismatch) throw bridgeMismatch(request, mismatch, built.tx);
 
   // The spender: from a spoke the asset manager the deposit calls, from Sonic the user's hub wallet, which pulls the
   // token (the SDK's `resolveEvmApprovalSpender`).
   const spender = isHubChain(request.srcChainKey) ? rebuilt.relayData.address : deposit.to;
-  const { tx, resetTx } = await buildBridgeApproval(request);
-  const approvals: ApproveTx[] = [
-    ...(resetTx ? [{ kind: "reset_approve" as const, tx: resetTx, amount: 0n }] : []),
-    { kind: "approve", tx, amount: request.inputAmount },
+  const approvals = approved ? [] : approveTxs(await buildBridgeApproval(request), request.amount);
+  const approval = { from: request.srcAddress, token: request.srcToken, spender };
+  if (!approvals.every(step => approvesExactly(step, approval))) {
+    throw bridgeMismatch(request, "approval", approvals.at(-1)?.tx);
+  }
+  const chainId = chainIdOf(source);
+  // Each approve's calldata was just matched byte for byte to `approve(spender, amount)`: what the wallet signs.
+  const steps: EvmStep[] = [
+    ...approvals.map(
+      ({ kind, tx, amount }): EvmStep => ({
+        kind,
+        chainId,
+        tx: toStepTx(tx, chainId),
+        approves: { token: tx.to, symbol: token.symbol, spender, amount: formatUnits(amount, token.decimals) },
+      }),
+    ),
+    { kind: "bridge", chainId, tx: toStepTx(deposit, chainId) },
   ];
-  const approvesExactly = ({ tx: step, amount }: ApproveTx) =>
-    same(step.from, request.srcAddress) &&
-    same(step.to, request.inputToken) &&
-    BigInt(step.value) === 0n &&
-    same(step.data, approveCalldata(request.inputToken, spender, amount));
-  if (!approvals.every(approvesExactly)) throw bridgeMismatch(request, "approval", tx);
-  return { deposit, relayData: built.relayData, approvals };
+  return { steps, relayData: built.relayData, deposit };
 }
 
 /**
@@ -89,7 +90,7 @@ export async function buildNonEvmBridge(
   request: BridgeRequest,
   source: SwapSource,
   symbol: string,
-): Promise<{ step: NonEvmStep; relayData: BuiltBridge["relayData"] }> {
+): Promise<{ steps: NonEvmStep[]; relayData: BuiltBridge["relayData"] }> {
   const { adapter, chain } = source;
   if (!adapter.depositStep) throw new ActionError("INTERNAL", "Not a non-EVM source.");
   const [built, approved, rebuilt] = await Promise.all([
@@ -97,20 +98,20 @@ export async function buildNonEvmBridge(
     checkBridgeAllowance(request),
     // The SDK reads the chain to build it (account, blockhash, coins, fees), and a wallet it can't build for fails the
     // same way as an outage: the Bridge API built it a moment ago, so a retry is more likely to help.
-    sdkBridge(sdkRequest(request)).catch(() => {
-      throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the bridge on ${chain.name} right now.`, {
-        nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then call sodax_bridge_prepare again.`,
-      });
-    }),
+    sdkBridge(request).catch(
+      refusedOr(
+        () =>
+          new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the bridge on ${chain.name} right now.`, {
+            nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then call sodax_bridge_prepare again.`,
+          }),
+      ),
+    ),
   ]);
-  const relayMismatch = findMismatch([
-    ["relayData.address", same(built.relayData.address, rebuilt.relayData.address)],
-    ["relayData.payload", same(built.relayData.payload, rebuilt.relayData.payload)],
-  ]);
+  const relayMismatch = findMismatch(relayChecks(built, rebuilt));
   if (relayMismatch) throw bridgeMismatch(request, relayMismatch, built.tx);
   if (!approved) throw notApproved(source, symbol);
   const expected = isRecord(built.tx) ? built.tx.to : undefined;
-  return { step: adapter.depositStep(source, rebuilt.tx, expected), relayData: built.relayData };
+  return { steps: [adapter.depositStep(source, rebuilt.tx, expected)], relayData: built.relayData };
 }
 
 /** An allowance short of the amount: only Stellar has one from a non-EVM spoke, its trustline's room. */
@@ -131,19 +132,33 @@ function notApproved({ adapter, chain }: SwapSource, symbol: string): ActionErro
   );
 }
 
-/** The bridge as the SDK's `createBridgeIntent` takes it. */
-function sdkRequest(request: BridgeRequest): Parameters<typeof sdkBridge>[0] {
-  return {
-    srcChainKey: request.srcChainKey,
-    srcAddress: request.srcAddress,
-    srcToken: request.inputToken,
-    amount: request.inputAmount,
-    dstChainKey: request.dstChainKey,
-    dstToken: request.outputToken,
-    recipient: request.dstAddress,
-    partnerFee: request.partnerFee,
-  };
+/** The relay data, which the hub derives the same way whatever the source, must be the SDK's. */
+function relayChecks(built: BuiltBridge, rebuilt: { relayData: BuiltBridge["relayData"] }): [string, boolean][] {
+  return [
+    ["relayData.address", same(built.relayData.address, rebuilt.relayData.address)],
+    ["relayData.payload", same(built.relayData.payload, rebuilt.relayData.payload)],
+  ];
 }
+
+/**
+ * A failed SDK build: params the SDK refuses (a Bitcoin delivery below dust, say) fail before any read and never
+ * pass, so they're the bridge's refusal, not an outage to retry; anything else is `failure`.
+ */
+const refusedOr =
+  (failure: () => ActionError) =>
+  (error: unknown): never => {
+    if (!(error instanceof SdkRefusal)) throw failure();
+    if (error.field === "amount") {
+      throw new ActionError("AMOUNT_TOO_LOW", "The amount is too small to bridge on this route.", {
+        nextStep: "Ask the user whether to bridge a larger amount.",
+        details: { field: "amount" },
+      });
+    }
+    throw new ActionError("BRIDGE_REJECTED", "This bridge can't be built as asked.", {
+      nextStep: "Tell the user this bridge isn't available as asked; ask whether to try another token or chain.",
+      details: { reason: "sdk_refused" },
+    });
+  };
 
 /** The SDK's raw EVM tx carries its value as a bigint; the API's as a decimal string. */
 function withDecimalValue(tx: unknown): unknown {

@@ -115,13 +115,7 @@ const giveUp = (what: "swap" | "bridge") =>
  * times at most, and none is a reason to send the swap again. Nothing is claimed about the tx: the
  * failure may have come before it was checked.
  */
-const afterSendAdvice = (
-  tool: string,
-  sent: string,
-  failure: ActionError,
-  seconds: number,
-  what: "swap" | "bridge" = "swap",
-) =>
+const afterSendAdvice = (tool: string, sent: string, failure: ActionError, seconds: number, what: "swap" | "bridge") =>
   failure.retryable
     ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${giveUp(what)}`
     : `${failure.nextStep} The user must not send the ${what} again.`;
@@ -258,7 +252,12 @@ function usdWarning(quote: SwapQuote): string {
 }
 
 // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
-const sendsToOwnAddressElsewhere = ({ from, to, toAddress, fromAddress }: Extract<SwapQuote, { status: "ready" }>) =>
+export const sendsToOwnAddressElsewhere = ({
+  from,
+  to,
+  toAddress,
+  fromAddress,
+}: { from: { chain: { key: string } }; to: { chain: { key: string } }; toAddress: string; fromAddress: string }) =>
   from.chain.key !== to.chain.key && toAddress.toLowerCase() === fromAddress.toLowerCase();
 
 function quoteNextStep(quote: SwapQuote): string {
@@ -294,8 +293,9 @@ function quoteNextStep(quote: SwapQuote): string {
   ].join(" ");
 }
 
-const approveOf = (quote: Extract<SwapQuote, { status: "ready" }>) =>
-  quote.steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
+/** What the approve step, if any, lets its spender take. */
+export const approveOf = ({ steps }: { steps: readonly { kind: string }[] }) =>
+  steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
 
 // How a family's wallet sends the SDK's raw tx (`steps[].tx`; bigints are decimal strings, bytes base64).
 export const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
@@ -933,12 +933,18 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       );
     }
     case "SWAP_REJECTED":
+    case "BRIDGE_REJECTED":
       switch (failure.details?.reason) {
         case "no_route":
         case "no_liquidity":
         case "amount_too_large":
           // Track and cancel take no amount: after a send there's nothing to ask for.
           return sent ? stuck() : ongoing(advice, provide(["amount", { name: "toToken", optional: true }], answer()));
+        case "not_bridgeable":
+          return pick();
+        case "same_chain":
+        case "above_limit":
+          return field && !sent ? askFor([field]) : stuck();
         case "wallet_cannot_build":
           return ongoing(
             advice,
@@ -950,27 +956,8 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
           return sent ? stuck() : final(advice, NONE);
       }
     case "SWAP_MISMATCH":
-      // Built wrong: never signed. After a send (a cancel built wrong), the swap itself still stands.
-      return sent ? stuck() : final(advice, NONE);
-    case "BRIDGE_REJECTED":
-      switch (failure.details?.reason) {
-        case "not_bridgeable":
-          return pick();
-        case "same_chain":
-        case "above_limit":
-          return sent ? stuck() : field ? askFor([field]) : stuck();
-        case "wallet_cannot_build":
-          return ongoing(
-            advice,
-            failure.hint?.balance ? callOnce("sodax_get_balance", failure.hint.balance) : stuck().nextAction,
-          );
-        case "trustline_room":
-          return ongoing(advice, external("wallet_setup", answer()));
-        default:
-          return sent ? stuck() : final(advice, NONE);
-      }
     case "BRIDGE_MISMATCH":
-      // Built wrong: never signed.
+      // Built wrong: never signed. After a send (a cancel built wrong), the swap itself still stands.
       return sent ? stuck() : final(advice, NONE);
     case "DESTINATION_NOT_READY":
       return ongoing(advice, external("destination_not_ready", answer()));

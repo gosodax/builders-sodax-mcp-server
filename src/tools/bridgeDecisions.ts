@@ -7,7 +7,7 @@
 import type { BridgePairs } from "../services/bridge/pair.js";
 import type { BridgePreview, BridgeQuote } from "../services/bridge/prepare.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
-import type { EvmStep } from "../services/swap/sources/types.js";
+import { addressAsk } from "../services/swap/quote.js";
 import {
   type ConfirmSummary,
   type Decision,
@@ -21,7 +21,7 @@ import {
   ongoing,
   provide,
 } from "./nextAction.js";
-import { SIGN_NON_EVM_TX } from "./swapDecisions.js";
+import { SIGN_NON_EVM_TX, approveOf, sendsToOwnAddressElsewhere } from "./swapDecisions.js";
 
 const TRACK = "sodax_bridge_submit_and_track";
 const PREPARE = "sodax_bridge_prepare";
@@ -42,28 +42,20 @@ export function pairsDecision({ from, to, pairs }: BridgePairs): Decision {
 export function previewDecision(preview: BridgePreview): Decision {
   const { from, to, partnerFee, maxAmount, prepareNeeds } = preview;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
-  const needed = prepareNeeds.map(field =>
-    field === "fromAddress"
-      ? `fromAddress (their wallet on ${from.chain.name})`
-      : `toAddress (their address on ${to.chain.name})`,
-  );
+  const needed = prepareNeeds.map(field => addressAsk(field, from.chain.name, to.chain.name));
   return ongoing(
     `Show the user they would send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive ${to.amount} ${to.symbol} on ${to.chain.name}; at most ${maxAmount} ${from.symbol} can be bridged on this route now. Once the user is ready to sign, call ${PREPARE} with the same arguments plus ${needed.join(" and ")}.`,
     provide(prepareNeeds, callOnce(PREPARE, "same")),
   );
 }
 
-const approveOf = (quote: BridgeQuote) =>
-  quote.steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
-
 function prepareNextStep(quote: BridgeQuote): string {
   const { from, to, partnerFee } = quote;
   const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive ${to.amount} ${to.symbol} on ${to.chain.name} at ${quote.toAddress}`;
-  const sameAddress =
-    from.chain.key !== to.chain.key && quote.toAddress.toLowerCase() === quote.fromAddress.toLowerCase()
-      ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
-      : "";
+  const sameAddress = sendsToOwnAddressElsewhere(quote)
+    ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
+    : "";
   const [first] = quote.steps;
   const allowance = approveOf(quote);
   const approve = allowance

@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SODAX_BRIDGE_BASE_URL } from "../../constants.js";
+import { initSodax } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
 import {
   type BridgeRequest,
@@ -16,14 +17,17 @@ const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const HUB_WALLET = "0x2222222222222222222222222222222222222222";
 const TX_HASH = `0x${"ab".repeat(32)}`;
 
+// The build routes take the request as the SDK's own client maps it.
+beforeAll(() => initSodax());
+
 const request: BridgeRequest = {
   srcChainKey: "0xa4b1.arbitrum",
   dstChainKey: "0x2105.base",
-  inputToken: USDC_ARB,
-  outputToken: USDC_BASE,
-  inputAmount: 5_000_000n,
+  srcToken: USDC_ARB,
+  dstToken: USDC_BASE,
+  amount: 5_000_000n,
   srcAddress: USER,
-  dstAddress: USER,
+  recipient: USER,
 };
 
 const evmTx = (data: string) => ({ from: USER, to: USDC_ARB, value: "0", data });

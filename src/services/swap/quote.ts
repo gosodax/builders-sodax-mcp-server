@@ -59,7 +59,7 @@ export interface QuoteInput {
 export const DEFAULT_DEADLINE_MINUTES = 15;
 export const DEFAULT_SLIPPAGE_BPS = 100;
 
-type AddressField = "fromAddress" | "toAddress";
+export type AddressField = "fromAddress" | "toAddress";
 
 interface Side {
   chain: ChainInfo;
@@ -109,7 +109,7 @@ const MIN_MARKET_SHARE = 0.9;
 // The swap service doesn't say how much it needs; swaps worth this much in USD are usually quoted.
 const USUAL_MIN_USD = 1.5;
 // Where EVM tokens are sent to burn them; `checkAddress` refuses the zero address already.
-const EVM_BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD";
+export const EVM_BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD";
 
 /**
  * AMOUNT_TOO_LOW names an amount of the token worth about USUAL_MIN_USD, so the agent asks once
@@ -137,7 +137,7 @@ export const addressAsk = (field: AddressField, fromChain: string, toChain: stri
   field === "fromAddress" ? `fromAddress (their wallet on ${fromChain})` : `toAddress (their address on ${toChain})`;
 
 /** A `prepare` call without an address it needs, named in `field` (the first) like any other bad address. */
-function addressesNeeded(missing: AddressField[], from: ChainInfo, to: ChainInfo): ActionError {
+export function addressesNeeded(missing: AddressField[], from: ChainInfo, to: ChainInfo): ActionError {
   const asks = missing.map(field => addressAsk(field, from.name, to.name));
   return new ActionError("INVALID_ADDRESS", `Preparing a swap needs ${missing.join(" and ")}.`, {
     nextStep: `Ask the user for ${asks.join(" and ")}, then call sodax_swap_prepare again with them.`,
@@ -330,7 +330,8 @@ function sameConfigAddress(a: string, b: string): boolean {
   return spelling(a) === spelling(b);
 }
 
-function resolveSide(
+/** One side as the user names it, usable on that side, its chain described by the catalog. */
+export function resolveSide(
   catalog: SwapCatalog,
   chain: string,
   token: string,

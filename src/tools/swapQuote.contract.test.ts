@@ -1,6 +1,6 @@
 /**
- * `sodax_swap_price` and `sodax_swap_prepare` against the live Swaps API: `pnpm test:contract` (canary by default,
- * `SODAX_ENV=production` for production). Quotes for 0x…dEaD; nothing is signed or sent.
+ * `sodax_swap_price` and `sodax_swap_prepare` against the live Swaps API: `pnpm test:contract` (production by default,
+ * `SODAX_ENV=canary` for canary). Quotes for 0x…dEaD; nothing is signed or sent.
  */
 
 import { solverConfig, spokeChainConfig } from "@sodax/types";

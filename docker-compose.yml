@@ -1,4 +1,5 @@
 services:
+  # Pre-rename name on purpose: a new name leaves the old container holding the port on redeploy.
   builders-sodax-mcp-server:
     build: .
     container_name: builders-sodax-mcp-server

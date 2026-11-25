@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * SODAX Builders MCP Server
+ * SODAX MCP Server
  *
  * Live API data for developers and integration partners.
  * Data fetched live from api.sodax.com.
@@ -153,7 +153,7 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
       "mcp.transport": "stdio",
       "partner_fee.set": !!partnerFee,
     },
-    "SODAX Builders MCP server started",
+    "SODAX MCP server started",
   );
 }
 
@@ -377,7 +377,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }
     res.json({
       status: "healthy",
-      service: "builders-sodax-mcp-server",
+      service: "sodax-mcp",
       version: SERVER_VERSION,
       uptime_seconds: Math.floor(process.uptime()),
       networks,
@@ -436,9 +436,28 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       // Before taking a slot, so a refused connection never holds one.
       const connection = resolveConnection(req, res, swapToolsEnabled);
       if (!connection) return;
+      // express.static's fs.stat can yield before this handler; a disconnect in
+      // that gap already fired the response's one-shot 'close', so a listener
+      // attached below would never run.
+      if (res.destroyed || req.socket.destroyed) return;
       const ip = req.ip || "unknown";
-      // An idle session ends its stream; the close handlers below clean up.
-      const lease = sseLimiter.open(ip, () => res.end());
+      let sessionId: string | undefined;
+      const dropSession = () => {
+        if (!sessionId) return;
+        const id = sessionId;
+        sessionId = undefined;
+        const session = sseSessions.get(id);
+        sseSessions.delete(id);
+        session?.transport.close();
+      };
+      // Idle cleanup must release the slot itself: res.end() on an already
+      // destroyed response does not emit 'close' again.
+      let lease: SseLease | null = null;
+      lease = sseLimiter.open(ip, () => {
+        dropSession();
+        lease?.release();
+        res.end();
+      });
       if (!lease) {
         noteRefusal(res, "SSE_SESSION_LIMIT");
         res.status(429).json({ error: "Too many open SSE sessions. Close one, or use /mcp." });
@@ -447,21 +466,29 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       let closed = false;
       res.on("close", () => {
         closed = true;
+        dropSession();
         lease.release();
       });
+      if (res.destroyed || req.socket.destroyed) {
+        closed = true;
+        lease.release();
+        return;
+      }
 
       const sseServer = await createServer(connection.toolsets, getRequestContext().clientId);
-      if (closed) return;
+      if (closed || res.destroyed || req.socket.destroyed) {
+        if (!closed) {
+          closed = true;
+          lease.release();
+        }
+        return;
+      }
       const transport = new SSEServerTransport("/messages", res);
+      sessionId = transport.sessionId;
       sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
       // The session's own record comes when it closes; this one says it opened, under the id its messages carry.
       res.locals.sessionTag = hashTag(transport.sessionId);
       logger.info({ "mcp.session.id_hash": res.locals.sessionTag }, "SSE session opened");
-
-      res.on("close", () => {
-        sseSessions.delete(transport.sessionId);
-        transport.close();
-      });
 
       // connect() starts the transport; a second start() throws.
       await sseServer.connect(transport);
@@ -506,7 +533,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     }
 
     res.json({
-      name: "SODAX Builders MCP Server",
+      name: "SODAX MCP Server",
       version: SERVER_VERSION,
       description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
@@ -542,7 +569,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
 function listen(app: Express, boot: ReturnType<typeof bootConfig>): void {
   const port = Number.parseInt(process.env.PORT || "3000");
   app.listen(port, "0.0.0.0", () => {
-    logger.info({ ...boot, "mcp.transport": "http", "server.port": port }, "SODAX Builders MCP server started");
+    logger.info({ ...boot, "mcp.transport": "http", "server.port": port }, "SODAX MCP server started");
     // #38: announce the server is online to Discord (silent when no webhook set).
     void notifyServerStarted({
       version: SERVER_VERSION,

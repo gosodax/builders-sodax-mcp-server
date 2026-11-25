@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { type MockInstance, afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -363,7 +363,7 @@ describe("HTTP routes", () => {
 
     const res = await post("/mcp", JSON.stringify(initialize(2)), "198.51.100.5");
     expect(res.status).toBe(200);
-    expect((await res.json()).result.serverInfo.name).toBe("builders-sodax-mcp-server");
+    expect((await res.json()).result.serverInfo.name).toBe("sodax-mcp");
   });
 
   it("keeps an SSE session open and answers its messages over the stream", async () => {
@@ -497,6 +497,44 @@ describe("HTTP routes", () => {
     expect(refused.status).toBe(429);
     expect((await refused.json()).error).toContain("Too many open SSE sessions");
     await httpRequestRecord(info, { "http.route": "/sse", "error.type": "SSE_SESSION_LIMIT" });
+  });
+
+  it("disconnect before SSE route", async () => {
+    const fs = (await import("node:fs")).default;
+    const stat = fs.stat;
+    const timeout = globalThis.setTimeout;
+    const gauges = serverGauges();
+    let response: ServerResponse | undefined;
+    let abort = true;
+    const capture = (_req: IncomingMessage, res: ServerResponse) => {
+      response = res;
+    };
+    server.prependListener("request", capture);
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: unknown[]) =>
+      timeout(fn, ms === 3_600_000 ? 10 : ms, ...args)) as typeof setTimeout);
+    vi.spyOn(fs, "stat").mockImplementation(((
+      path: Parameters<typeof stat>[0],
+      callback: (err: NodeJS.ErrnoException | null, stats: import("node:fs").Stats) => void,
+    ) => {
+      if (!abort || !String(path).endsWith("/public/sse")) return stat(path, callback);
+      const res = response;
+      if (!res) return stat(path, callback);
+      const closed = once(res, "close");
+      res.destroy();
+      return stat(path, async (...cbArgs: Parameters<typeof callback>) => {
+        await closed;
+        callback(...cbArgs);
+      });
+    }) as typeof fs.stat);
+    try {
+      for (let i = 0; i < 10; i++) await expect(openSse("198.51.100.80")).rejects.toThrow();
+      await new Promise(resolve => timeout(resolve, 50));
+      expect(gauges()["sse.sessions"]).toBe(0);
+      abort = false;
+      expect((await openSse("198.51.100.80")).status).toBe(200);
+    } finally {
+      server.removeListener("request", capture);
+    }
   });
 });
 

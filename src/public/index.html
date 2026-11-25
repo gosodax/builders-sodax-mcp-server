@@ -11,22 +11,22 @@
   <meta name="keywords" content="MCP server, Model Context Protocol, SODAX, cross-chain swap, cross-network swap, multi chain swap, cross-chain SDK, cross-chain liquidity, cross-chain bridge aggregator, swap across chains, DeFi API, cross-chain developer tools, intent based swap, solver network, cross-chain execution, money market, blockchain SDK, AI coding assistant">
   <meta name="author" content="ICON Foundation">
   <meta name="robots" content="index, follow">
-  <link rel="canonical" href="https://builders.sodax.com/">
+  <link rel="canonical" href="https://mcp.sodax.com/">
   
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://builders.sodax.com/">
+  <meta property="og:url" content="https://mcp.sodax.com/">
   <meta property="og:title" content="SODAX MCP Server | Cross-Network DeFi API & SDK Docs">
   <meta property="og:description" content="SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for {{NETWORK_COUNT}} networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.">
-  <meta property="og:image" content="https://builders.sodax.com/images/link-preview.png">
+  <meta property="og:image" content="https://mcp.sodax.com/images/link-preview.png">
   <meta property="og:site_name" content="SODAX">
 
   <!-- Twitter -->
   <meta property="twitter:card" content="summary_large_image">
-  <meta property="twitter:url" content="https://builders.sodax.com/">
+  <meta property="twitter:url" content="https://mcp.sodax.com/">
   <meta property="twitter:title" content="SODAX MCP Server | Cross-Network DeFi API & SDK Docs">
   <meta property="twitter:description" content="SODAX MCP server: live cross-network DeFi API data and auto-updating SDK docs for {{NETWORK_COUNT}} networks. Query swaps, lending, solver volume, and intent history from your AI coding assistant.">
-  <meta property="twitter:image" content="https://builders.sodax.com/images/link-preview.png">
+  <meta property="twitter:image" content="https://mcp.sodax.com/images/link-preview.png">
   
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
@@ -53,11 +53,11 @@
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "name": "SODAX Builders MCP Server",
+    "name": "SODAX MCP Server",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
     "description": "SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across {{NETWORK_COUNT}} networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs.",
-    "url": "https://builders.sodax.com/",
+    "url": "https://mcp.sodax.com/",
     "author": {
       "@type": "Organization",
       "name": "ICON Foundation",
@@ -118,7 +118,7 @@
         "name": "How do I connect the SODAX MCP server to my AI coding assistant?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Add the SODAX MCP server URL (https://builders.sodax.com/mcp) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation."
+          "text": "Add the SODAX MCP server URL (https://mcp.sodax.com/mcp) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation."
         }
       }
     ]
@@ -1103,7 +1103,7 @@
   <!-- Hero Section -->
   <header class="hero" role="banner">
     <div class="hero-content">
-      <p class="hero-eyebrow">SODAX Builders MCP Server</p>
+      <p class="hero-eyebrow">SODAX MCP Server</p>
       <h1>Cross-network DeFi data. <span class="accent"><span class="js-network-count">{{NETWORK_COUNT}}</span> networks.</span></h1>
       <p class="hero-subtitle">Access live cross-network API data from your AI coding assistant: swap tokens across chains, query money market rates, look up solver volume, and search intent history. Includes auto-syncing SDK docs.</p>
       
@@ -1113,7 +1113,7 @@
           MCP Server URL
         </div>
         <div class="hero-url-wrapper">
-          <code class="hero-url-code" id="mcp-url">https://builders.sodax.com/mcp</code>
+          <code class="hero-url-code" id="mcp-url">https://mcp.sodax.com/mcp</code>
           <button class="copy-btn" id="copy-btn" aria-label="Copy URL to clipboard" title="Copy to clipboard">
             <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
             <svg id="check-icon" class="hidden" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
@@ -1548,8 +1548,8 @@
       <div class="code-block">
         <pre>{
   <span class="key">"mcpServers"</span>: {
-    <span class="key">"sodax-builders"</span>: {
-      <span class="key">"url"</span>: <span class="string">"https://builders.sodax.com/mcp"</span>
+    <span class="key">"sodax"</span>: {
+      <span class="key">"url"</span>: <span class="string">"https://mcp.sodax.com/mcp"</span>
     }
   }
 }</pre>
@@ -1559,7 +1559,7 @@
         SDK docs from <a href="https://docs.sodax.com">docs.sodax.com</a> are included automatically via the docs MCP proxy
       </p>
       <p class="contact-info" style="font-size: 0.8125rem; opacity: 0.7;">
-        Using a client that doesn't support streamable HTTP (e.g. Gemini CLI)? Use the SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">https://builders.sodax.com/sse</code>
+        Using a client that doesn't support streamable HTTP (e.g. Gemini CLI)? Use the SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">https://mcp.sodax.com/sse</code>
       </p>
     </div>
   </section>
@@ -1582,7 +1582,7 @@
             <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
           </summary>
           <div class="tool-detail">
-            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">The SODAX Builders MCP server gives AI coding assistants live access to cross-network DeFi API data across {{NETWORK_COUNT}} blockchain networks. Query swap tokens, money market rates, solver volume, intent history, and auto-updating SDK documentation directly from tools like Claude, Cursor, VS Code, and ChatGPT.</p>
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">The SODAX MCP server gives AI coding assistants live access to cross-network DeFi API data across {{NETWORK_COUNT}} blockchain networks. Query swap tokens, money market rates, solver volume, intent history, and auto-updating SDK documentation directly from tools like Claude, Cursor, VS Code, and ChatGPT.</p>
           </div>
         </details>
 
@@ -1624,7 +1624,7 @@
             <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
           </summary>
           <div class="tool-detail">
-            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">Add the SODAX MCP server URL (<code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/mcp</code>) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation. If your client doesn't support streamable HTTP (e.g. Gemini CLI), use the legacy SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://builders.sodax.com/sse</code></p>
+            <p style="padding-top: 1rem; font-size: 0.875rem; color: var(--clay-dark); line-height: 1.6;">Add the SODAX MCP server URL (<code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://mcp.sodax.com/mcp</code>) to your AI coding assistant's MCP configuration. It works with Claude, Cursor, VS Code, Windsurf, ChatGPT, and other MCP-compatible agents. One connection gives you access to all cross-network API tools and SDK documentation. If your client doesn't support streamable HTTP (e.g. Gemini CLI), use the legacy SSE endpoint instead: <code style="background: var(--espresso); color: var(--yellow-accent); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8125rem;">https://mcp.sodax.com/sse</code></p>
           </div>
         </details>
 

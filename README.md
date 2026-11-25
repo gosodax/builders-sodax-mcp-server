@@ -1,13 +1,24 @@
-# SODAX Builders MCP Server
+# SODAX MCP Server
 
 <p align="center">
   <b>Install from your preferred MCP directory</b><br><br>
-  <a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp"><img src="https://img.shields.io/badge/Glama-SODAX_Builders_MCP-4285F4?style=for-the-badge" alt="Glama" /></a>
+  <a href="https://glama.ai/mcp/servers/@gosodax/sodax-builders-mcp"><img src="https://img.shields.io/badge/Glama-SODAX_MCP-4285F4?style=for-the-badge" alt="Glama" /></a>
   &nbsp;
   <a href="https://registry.modelcontextprotocol.io/?q=sodax"><img src="https://img.shields.io/badge/MCP_Registry-SODAX-10B981?style=for-the-badge" alt="MCP Registry" /></a>
   &nbsp;
-  <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_Builders_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
+  <a href="https://mcp.so/server/sodax-builders-mcp/gosodax"><img src="https://img.shields.io/badge/mcp.so-SODAX_MCP-8B5CF6?style=for-the-badge" alt="mcp.so" /></a>
 </p>
+
+<p align="center">
+  <b>One-click install</b><br><br>
+  <a href="https://cursor.com/en/install-mcp?name=sodax&amp;config=eyJ1cmwiOiJodHRwczovL21jcC5zb2RheC5jb20vbWNwIn0="><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add to Cursor" height="32" /></a>
+  &nbsp;
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D"><img src="https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge" alt="Install in VS Code" /></a>
+  &nbsp;
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=sodax&amp;config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.sodax.com%2Fmcp%22%7D&amp;quality=insiders"><img src="https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=for-the-badge" alt="Install in VS Code Insiders" /></a>
+</p>
+
+> The default one-click config connects without an API key — the builder and documentation tools work immediately. To use the swap tools, add an `x-api-key` header with your [SODAX API key](https://docs.sodax.com/developers/how-to/api-keys). See [API Key](#api-key) below. A `.mcp.json` at the repo root lets Cursor Directory and Claude Code project config pick up the server entry automatically.
 
 SODAX MCP server for AI coding assistants. Access live cross-network (cross-chain) API data: swap tokens across 20+ networks, query money market rates, look up solver volume, and search intent history. Includes full cross-chain SDK documentation that auto-syncs from SODAX developer docs. Build cross-network DeFi integrations with real-time protocol data directly in your development workflow. With a SODAX API key, it also quotes and tracks swaps that the user's own wallet signs.
 
@@ -20,9 +31,9 @@ Add the MCP server URL to your AI coding assistant's configuration:
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "http",
-      "url": "https://builders.sodax.com/mcp"
+      "url": "https://mcp.sodax.com/mcp"
     }
   }
 }
@@ -37,9 +48,9 @@ For clients that don't support streamable HTTP (e.g. Gemini CLI), use the SSE en
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "sse",
-      "url": "https://builders.sodax.com/sse"
+      "url": "https://mcp.sodax.com/sse"
     }
   }
 }
@@ -60,16 +71,16 @@ already send their headers on both.
 ```json
 {
   "mcpServers": {
-    "sodax-builders": {
+    "sodax": {
       "type": "http",
-      "url": "https://builders.sodax.com/mcp",
+      "url": "https://mcp.sodax.com/mcp",
       "headers": { "x-api-key": "<your key>" }
     }
   }
 }
 ```
 
-In Claude Code: `claude mcp add --transport http sodax-builders https://builders.sodax.com/mcp --header "x-api-key: <your key>"`.
+In Claude Code: `claude mcp add --transport http sodax https://mcp.sodax.com/mcp --header "x-api-key: <your key>"`.
 
 ### Profiles
 
@@ -507,12 +518,12 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 | `pnpm lint` | Runs Biome (`biome check .`) over the repo. Add `:fix` to auto-apply safe fixes. |
 | `pnpm build` | Compiles TypeScript and copies `src/public` into `dist/`. |
 | `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
-| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (canary; `SODAX_ENV=production` for production). Quotes only: nothing is signed or sent. The Drift Check runs them against production; its scheduled and push runs go red when they fail. |
+| `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (production; `SODAX_ENV=canary` for canary). Quotes only: nothing is signed or sent. The Drift Check runs them against production; its scheduled and push runs go red when they fail. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
 
 ### Canary swap E2E
 
-`.github/workflows/e2e-canary.yml` runs `pnpm e2e:canary` every day, and on demand, against a server it starts in the runner with `SODAX_ENV=canary`. Canary runs on mainnet chains, so it moves real funds: 5 USDC from whichever of Arbitrum and Base holds more to the other, so runs alternate. It never runs on pull requests. A failure posts the failing stage to Discord: `setup` means the swap never started (install, build or the server start failed, or an env value is missing or malformed); `read_wallet` means the balance reads failed; `balance_floor` means the wallet needs a top-up (USDC, or ETH for gas); `quote` means no ready quote came back, its steps weren't the USDC approve and swap this route needs, or its minimum output was under 97% of the amount. Nothing was signed in any of these. `send` means the swap wasn't sent, or the node refused it and no node had it (an approve may have been mined): check the logged swap hash, if there is one; `track` means a swap may be on chain and needs a look; `arrival` means it was solved but the funds haven't reached the destination yet. The script's output is printed after the run, and the server log after a failure, unless a secret (the API key, the wallet key with or without `0x`, an RPC URL's host or path) shows up in either: that fails the run on its own, Discord gets the stage `a secret in the logs`, and neither is printed.
+`.github/workflows/e2e-canary.yml` runs `pnpm e2e:canary` on demand only (manual dispatch), against a server it starts in the runner with `SODAX_ENV=canary`. Canary runs on mainnet chains, so it moves real funds: 5 USDC from whichever of Arbitrum and Base holds more to the other, so runs alternate. It never runs on pull requests. A failure posts the failing stage to Discord: `setup` means the swap never started (install, build or the server start failed, or an env value is missing or malformed); `read_wallet` means the balance reads failed; `balance_floor` means the wallet needs a top-up (USDC, or ETH for gas); `quote` means no ready quote came back, its steps weren't the USDC approve and swap this route needs, or its minimum output was under 97% of the amount. Nothing was signed in any of these. `send` means the swap wasn't sent, or the node refused it and no node had it (an approve may have been mined): check the logged swap hash, if there is one; `track` means a swap may be on chain and needs a look; `arrival` means it was solved but the funds haven't reached the destination yet. The script's output is printed after the run, and the server log after a failure, unless a secret (the API key, the wallet key with or without `0x`, an RPC URL's host or path) shows up in either: that fails the run on its own, Discord gets the stage `a secret in the logs`, and neither is printed.
 
 The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`, which the workflow passes to the server and the script as their `RPC_CONFIG`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
@@ -567,7 +578,7 @@ Coolify injects these directly into the process environment.
 
 The server is deployed via Coolify with a branch-based promotion flow:
 
-- **Production** — tracks `master`, serves https://builders.sodax.com
+- **Production** — tracks `master`, serves https://mcp.sodax.com
 - **Staging** — tracks `development` (internal-only)
 
 Promotion flow:
@@ -580,8 +591,8 @@ Hotfixes can branch off `master` and PR directly into `master`, then be merged b
 ### Docker
 
 ```bash
-docker build -t builders-sodax-mcp-server .
-docker run -p 3000:3000 builders-sodax-mcp-server
+docker build -t sodax-mcp .
+docker run -p 3000:3000 sodax-mcp
 ```
 
 ### Docker Compose
@@ -619,7 +630,7 @@ Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `O
 | `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
 | `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
 | `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
-| `SODAX Builders MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
+| `SODAX MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
 | `RPC_CONFIG entries this server can't apply` | warn | boot, when `RPC_CONFIG` has an entry this server skips (those chains use their public RPC) | `rpc_config.skipped` (chain keys and field names only, never a value) |
 | `SODAX_RPC_URL_* is no longer read: set RPC_CONFIG` | warn | boot, when an old RPC variable is still set (it has no effect) | `rpc_config.legacy` (the variable names) |
 | `SODAX SDK warning`, `SODAX SDK error` | warn, error | the SDK's own log lines | `sdk.message` (URLs stripped) |

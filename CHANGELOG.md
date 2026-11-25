@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.0.0](https://github.com/gosodax/sodax-mcp/compare/sodax-mcp-v1.6.0...sodax-mcp-v2.0.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **swap:** split the quote tool into sodax_swap_price and sodax_swap_prepare ([#134](https://github.com/gosodax/sodax-mcp/issues/134))
+
+### Features
+
+* add sodax_get_balance to the swap profile ([#96](https://github.com/gosodax/sodax-mcp/issues/96)) ([e66cd71](https://github.com/gosodax/sodax-mcp/commit/e66cd71b154f6d1546f7f3be3d62821fcc02584d))
+* add sodax_resolve_token to the swap profile ([#93](https://github.com/gosodax/sodax-mcp/issues/93)) ([85fef4d](https://github.com/gosodax/sodax-mcp/commit/85fef4d65c4b688389633fa360b7a68cf6bdbe8e))
+* add sodax_swap_quote to the swap profile ([#94](https://github.com/gosodax/sodax-mcp/issues/94)) ([3f6b9fd](https://github.com/gosodax/sodax-mcp/commit/3f6b9fdb871f21acf231be31f13c11a9ce2ec45a))
+* add sodax_swap_track and sodax_swap_cancel to the swap profile ([#95](https://github.com/gosodax/sodax-mcp/issues/95)) ([b3d671a](https://github.com/gosodax/sodax-mcp/commit/b3d671afd4b20d6a089838e751a8beb423bcc9f1))
+* add tool profiles (builder, swap, all) ([#92](https://github.com/gosodax/sodax-mcp/issues/92)) ([c27c4ca](https://github.com/gosodax/sodax-mcp/commit/c27c4ca4eccfcc91ec6dc69bfdd934067a5af291))
+* forward the caller's API key and add SODAX_ENV ([#91](https://github.com/gosodax/sodax-mcp/issues/91)) ([f535062](https://github.com/gosodax/sodax-mcp/commit/f5350625859c00bef9ba23c3dc33045751ef70a5))
+* read the swap tools' RPC overrides from RPC_CONFIG ([#121](https://github.com/gosodax/sodax-mcp/issues/121)) ([614d564](https://github.com/gosodax/sodax-mcp/commit/614d5641f6017c2421f578fe6f3bee9438190926))
+* rename sodax_swap_track to sodax_swap_submit_and_track and clarify swap advice ([#123](https://github.com/gosodax/sodax-mcp/issues/123)) ([596aa0e](https://github.com/gosodax/sodax-mcp/commit/596aa0e9dc3ea81c5c1d273d96f8f30e0e3762d2))
+* rename the server to SODAX MCP and move it to mcp.sodax.com ([#148](https://github.com/gosodax/sodax-mcp/issues/148)) ([d95012e](https://github.com/gosodax/sodax-mcp/commit/d95012ecba5ca647cbc36e6c8bf1f1213ba89a23))
+* safety rules and analytics for the swap tools ([#97](https://github.com/gosodax/sodax-mcp/issues/97)) ([4a61a2d](https://github.com/gosodax/sodax-mcp/commit/4a61a2d07b0dd172132a2be48119effc7682f764))
+* serve the swap tools by default and document them ([#102](https://github.com/gosodax/sodax-mcp/issues/102)) ([46f65a2](https://github.com/gosodax/sodax-mcp/commit/46f65a247791fed611649fe7821f109be8fa7ea0))
+* ship the logs to unified logging over OTLP ([#111](https://github.com/gosodax/sodax-mcp/issues/111)) ([6788b0f](https://github.com/gosodax/sodax-mcp/commit/6788b0f610790f38f711ea0b96ef3864c713d5a4))
+* **swap:** approve summaries, a request id to quote, and a burn-recipient check ([#133](https://github.com/gosodax/sodax-mcp/issues/133)) ([e5c2450](https://github.com/gosodax/sodax-mcp/commit/e5c2450f57bfb04f876824f710f6ce3ab0bec76f))
+* **swap:** split the quote tool into sodax_swap_price and sodax_swap_prepare ([#134](https://github.com/gosodax/sodax-mcp/issues/134)) ([725ae0d](https://github.com/gosodax/sodax-mcp/commit/725ae0dda15a97270309daa819d274abaa65998d))
+* **swap:** start a swap from Sonic, the hub ([#117](https://github.com/gosodax/sodax-mcp/issues/117)) ([36ab701](https://github.com/gosodax/sodax-mcp/commit/36ab7015ea19245f5e92ee1fb88dc30cc18c9799))
+* **swap:** start swaps from NEAR, Stellar, Sui, Solana and Injective ([#124](https://github.com/gosodax/sodax-mcp/issues/124)) ([b6cb29d](https://github.com/gosodax/sodax-mcp/commit/b6cb29d1b4b5c5ac535e96715480e37eaab40f21))
+
+
+### Bug Fixes
+
+* answer rate limits on /mcp with a JSON-RPC error body, like the other /mcp errors ([d734aed](https://github.com/gosodax/sodax-mcp/commit/d734aed25048be4e2f0c000ded8e9f852f611478))
+* builder tools take chain names and ids and answer plain JSON ([#128](https://github.com/gosodax/sodax-mcp/issues/128)) ([8df8a7d](https://github.com/gosodax/sodax-mcp/commit/8df8a7d60bd4d1cbad27d107b6269a138fa8c157))
+* **docs:** repoint dead SDK docs proxy to Mintlify; make chain support answerable ([#74](https://github.com/gosodax/sodax-mcp/issues/74)) ([a26ffc8](https://github.com/gosodax/sodax-mcp/commit/a26ffc841e0ed491a78f573a6057d07d5ff2d149))
+* **drift:** fail closed on an unreadable spec and stop swap contract tests aging out ([#140](https://github.com/gosodax/sodax-mcp/issues/140)) ([12ae924](https://github.com/gosodax/sodax-mcp/commit/12ae924c9c2580c1844be2f6251a8a803529ba6d))
+* **sse:** release the slot if a client drops before the /sse handler ([#143](https://github.com/gosodax/sodax-mcp/issues/143)) ([0759452](https://github.com/gosodax/sodax-mcp/commit/0759452243b0a5194471d4865c81c9ee46b438df))
+* start the SSE transport once ([#100](https://github.com/gosodax/sodax-mcp/issues/100)) ([98226dd](https://github.com/gosodax/sodax-mcp/commit/98226dd904510f45230c82ba338a0142f6e9d1a5))
+* tighten request limits and input checks on the HTTP endpoints ([d734aed](https://github.com/gosodax/sodax-mcp/commit/d734aed25048be4e2f0c000ded8e9f852f611478))
+
+
+### Continuous Integration
+
+* publish server.json to the MCP Registry on release and keep it in sync ([#101](https://github.com/gosodax/sodax-mcp/issues/101)) ([80b8ad0](https://github.com/gosodax/sodax-mcp/commit/80b8ad0518e8cdaf4d4a89938d4e882637c2c243))
+* run a real swap on canary every day ([#98](https://github.com/gosodax/sodax-mcp/issues/98)) ([13d34c5](https://github.com/gosodax/sodax-mcp/commit/13d34c5055fbcdf97b44bb7aa9abb6534c027537))
+
+
+### Miscellaneous
+
+* declare service dependencies in sodax-deps.yaml ([#78](https://github.com/gosodax/sodax-mcp/issues/78)) ([02ba5df](https://github.com/gosodax/sodax-mcp/commit/02ba5dfc571d448d34de3a848af6b4989fbab9e8)), closes [#77](https://github.com/gosodax/sodax-mcp/issues/77)
+* **deps:** bump @sodax/sdk and @sodax/types to 2.3.0-rc.3 ([#136](https://github.com/gosodax/sodax-mcp/issues/136)) ([e10f928](https://github.com/gosodax/sodax-mcp/commit/e10f928b33b28111003e3ab94fcb3170639845e7))
+* **deps:** bump @sodax/sdk and @sodax/types to 2.3.0-rc.4 ([#142](https://github.com/gosodax/sodax-mcp/issues/142)) ([2479433](https://github.com/gosodax/sodax-mcp/commit/2479433346a0fe7bff284190c417ed5347801ef4))
+* **deps:** clear the open Dependabot alerts ([#114](https://github.com/gosodax/sodax-mcp/issues/114)) ([97dc62f](https://github.com/gosodax/sodax-mcp/commit/97dc62f0bf106cab12699cb90568f680d4330565))
+* make canary swap e2e manual only ([#113](https://github.com/gosodax/sodax-mcp/issues/113)) ([144b3bc](https://github.com/gosodax/sodax-mcp/commit/144b3bc758ec10d4a338d06e4e36f253e197d7f3))
+* release development to master ([8eb34da](https://github.com/gosodax/sodax-mcp/commit/8eb34da90e08b0dd592cbe16fb3d6966fd5fd250))
+
 ## [1.6.0](https://github.com/gosodax/builders-sodax-mcp-server/compare/builders-sodax-mcp-server-v1.5.0...builders-sodax-mcp-server-v1.6.0) (2026-07-17)
 
 

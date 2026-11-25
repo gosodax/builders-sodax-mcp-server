@@ -1,4 +1,4 @@
-import { IntentCreatedEventAbi, IntentsAbi, assetManagerAbi, wrappedSonicAbi } from "@sodax/sdk";
+import { IntentCreatedEventAbi, IntentsAbi, wrappedSonicAbi } from "@sodax/sdk";
 import { solverConfig } from "@sodax/types";
 import { erc20Abi, getAbiItem, toEventSelector } from "viem";
 import { describe, expect, it } from "vitest";
@@ -142,10 +142,11 @@ describe("hubIntentHashes", () => {
   const INTENTS = solverConfig.intentsContract;
   const hash = `0x${"A".repeat(64)}`;
 
-  it("takes the topics from the SDK's intents contract ABI", () => {
+  it("takes the topics from the SDK's ABIs, and HookFailed's from the deployed contract", () => {
     expect(INTENT_CREATED_TOPIC).toBe(toEventSelector(IntentCreatedEventAbi));
     expect(INTENT_CANCELLED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: IntentsAbi, name: "IntentCancelled" })));
-    expect(HOOK_FAILED_TOPIC).toBe(toEventSelector(getAbiItem({ abi: assetManagerAbi, name: "HookFailed" })));
+    // The deployed asset manager's event, not the SDK ABI's `HookFailed(address,bytes)`.
+    expect(HOOK_FAILED_TOPIC).toBe(toEventSelector("HookFailed(address,string)"));
     expect(TRANSFER_TOPIC).toBe(toEventSelector(getAbiItem({ abi: erc20Abi, name: "Transfer" })));
     expect(WITHDRAWAL_TOPIC).toBe(toEventSelector(getAbiItem({ abi: wrappedSonicAbi, name: "Withdrawal" })));
   });

@@ -53,10 +53,11 @@ const deliveryLog = (kept: Kept, to = USER) => ({
   topics: [TRANSFER_TOPIC, word(HUB_WALLET), word(to)],
   data: `0x${kept.delivered.toString(16).padStart(64, "0")}`,
 });
+/** As the hub logs it: the wallet, then the reason string (offset, length, here empty). */
 const hookFailedLog = (wallet = HUB_WALLET, address: string = hubConfig.addresses.assetManager) => ({
   address,
   topics: [HOOK_FAILED_TOPIC],
-  data: `${word(wallet)}${"0".repeat(64)}`,
+  data: `${word(wallet)}${"40".padStart(64, "0")}${"0".repeat(64)}`,
 });
 
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;

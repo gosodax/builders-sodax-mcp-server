@@ -21,10 +21,11 @@ export const INTENT_CREATED_TOPIC = "0x29fecd55cf4a8b6d0aaf6870fbab480f04c3caab0
 /** keccak256("IntentCancelled(bytes32)"); the hash is the data, not indexed. */
 export const INTENT_CANCELLED_TOPIC = "0xc08eb64db16a39d2848960af04e3f16fb404d9d436a9f0e9d7d0d4854715c9dc";
 /**
- * keccak256("HookFailed(address,bytes)"): the hub asset manager's, when a hub wallet's calls fail after a deposit
- * reached it (wallet and reason, not indexed). The tokens stay in that wallet.
+ * keccak256("HookFailed(address,string)"): the hub asset manager's, when a hub wallet's calls fail after a deposit
+ * reached it (wallet and reason, not indexed). The tokens stay in that wallet. The deployed contract emits the
+ * string form; the SDK's ABI declares `bytes`, a topic it never logs.
  */
-export const HOOK_FAILED_TOPIC = "0x85c46289864ac31d39e6a0991336900736af5d3b18a64532ae12a7285c733bc4";
+export const HOOK_FAILED_TOPIC = "0xfc062a14be4303d562bf8415af1444dc4bba4de2470abec80b31a0e55255a6d8";
 /** keccak256("Transfer(address,address,uint256)"): from and to indexed, the amount the data. */
 export const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 /** keccak256("Withdrawal(address,uint256)"): wrapped Sonic's unwrap, its account indexed, the amount the data. */

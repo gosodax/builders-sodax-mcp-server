@@ -2,7 +2,7 @@
  * SODAX Docs MCP Proxy Service
  *
  * Connects to the SODAX developer-docs MCP server at docs.sodax.com and proxies
- * its documentation tools through our builders server, so conceptual questions
+ * its documentation tools through this server, so conceptual questions
  * ("is chain X supported?", "how does the bridge module work?") land on live
  * docs search instead of the model's stale training priors.
  *
@@ -177,7 +177,7 @@ async function initializeConnection(): Promise<void> {
       protocolVersion: DOCS_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: {
-        name: "builders-sodax-mcp-server",
+        name: "sodax-mcp",
         version: "1.0.0",
       },
     });

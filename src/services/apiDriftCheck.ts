@@ -12,7 +12,7 @@
  *                             frozen contract (only for endpoints whose
  *                             service returns a typed shape)
  *
- * The CLI entrypoint (`src/scripts/checkDrift.ts`) exits non-zero on drift;
+ * The CLI entrypoint (`src/scripts/checkDrift.ts`) exits non-zero on drift or when the spec can't be read;
  * the startup call in `src/index.ts` is fire-and-forget and never throws.
  *
  * When called with `{ notify: true }` (prod server startup only) and drift is
@@ -354,6 +354,8 @@ interface DriftIssue {
 }
 
 export interface DriftReport {
+  /** False when the OpenAPI spec couldn't be fetched or parsed: nothing was compared. */
+  checked: boolean;
   hasDrift: boolean;
   summary: {
     totalEndpoints: number;
@@ -387,6 +389,7 @@ function normalizePath(path: string): string {
  */
 export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<DriftReport> {
   const emptyReport: DriftReport = {
+    checked: false,
     hasDrift: false,
     summary: { totalEndpoints: 0, endpointGaps: 0, paramGaps: 0, requiredGaps: 0, fieldGaps: 0, uncovered: 0 },
     details: "",
@@ -400,7 +403,8 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
     return emptyReport;
   }
 
-  if (!spec?.paths) {
+  // A spec without paths has nothing to compare: a stub, not a clean bill.
+  if (!spec?.paths || Object.keys(spec.paths).length === 0) {
     logger.warn("API drift check could not parse the OpenAPI spec");
     return emptyReport;
   }
@@ -560,7 +564,7 @@ export async function checkApiDrift(options: DriftCheckOptions = {}): Promise<Dr
     if (delivered) logger.info("Posted the API drift summary to Discord");
   }
 
-  return { hasDrift, summary, details };
+  return { checked: true, hasDrift, summary, details };
 }
 
 /**

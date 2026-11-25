@@ -6,6 +6,11 @@
 - `development` — integration / staging. Protected. All feature/fix branches land here via PR.
 - `feat/*`, `fix/*`, `chore/*`, `docs/*` — short-lived working branches, branched off `development`.
 
+## Local MCP config
+
+The root `.mcp.json` is for Cursor Directory and points at the production server. Claude Code and Cursor offer it
+as project config when you open the repo: decline it, or point it at your local server, while you work on a local build.
+
 ## Commit messages
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/). The commit *type* drives the version bump and the CHANGELOG section:
@@ -57,7 +62,7 @@ The release workflows authenticate as a **GitHub App** rather than a personal ac
 
 The App must be:
 - **Owned by the `gosodax` org.**
-- **Installed on this repository** (`gosodax/builders-sodax-mcp-server`).
+- **Installed on this repository** (`gosodax/sodax-mcp`).
 - Granted these repository permissions:
   - `Contents`: Read and write
   - `Pull requests`: Read and write

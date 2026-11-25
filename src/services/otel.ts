@@ -87,6 +87,7 @@ export interface OtelLogsOptions {
   instanceId?: string;
 }
 
+// Pre-rename values on purpose: the sodax-observability liveness alert and dashboards match them.
 export const SERVICE_NAME = "builders-mcp";
 export const SERVICE_NAMESPACE = "builders-sodax-mcp-server";
 /** On the logger records that carry the SDK's own diagnostics, which the OTLP stream skips. */

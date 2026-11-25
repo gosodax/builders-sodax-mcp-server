@@ -42,7 +42,7 @@ jobs:
 
       # Advisory on PRs: upstream API drift shouldn't red-X (or block) an
       # otherwise-unrelated PR. The push (development/master), scheduled, and
-      # manual runs stay authoritative and fail on drift.
+      # manual runs stay authoritative and fail on drift, or when the spec can't be read.
       - name: Check API drift
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: pnpm check:drift

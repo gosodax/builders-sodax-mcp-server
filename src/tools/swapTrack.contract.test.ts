@@ -1,14 +1,14 @@
 /**
  * `sodax_swap_submit_and_track` and its deposit checks against live chains and the live Swaps API:
- * `pnpm test:contract` (canary by default, `SODAX_ENV=production` for production). Reads only:
+ * `pnpm test:contract` (production by default, `SODAX_ENV=canary` for canary). Reads only:
  * every POST to the Swaps API is refused here, so nothing is submitted or relayed, and nothing is signed.
  */
 
 import { IntentsAbi } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
-import { http, createPublicClient, decodeFunctionData } from "viem";
+import { http, type Hex, createPublicClient, decodeFunctionData } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { SODAX_SWAPS_BASE_URL } from "../constants.js";
+import { SODAX_ENV, SODAX_SWAPS_BASE_URL } from "../constants.js";
 import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isHubChain } from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { DEPOSIT_TX } from "../services/swap/__fixtures__/deposit.js";
@@ -21,14 +21,14 @@ import {
   hubIntentHashes,
 } from "../services/swap/sourceTx.js";
 import { pinnedSourceOf } from "../services/swap/sources/index.js";
-import { getHubIntent } from "../services/swap/swapsApi.js";
+import { getHubIntent, getSubmitTxStatus } from "../services/swap/swapsApi.js";
 import { getSwapCatalog } from "../services/swap/tokens.js";
 import { cacheQuote } from "./__fixtures__/swapBackend.js";
 import { callTool } from "./__fixtures__/swapClient.js";
 
 const ARBITRUM = "0xa4b1.arbitrum";
 const BASE = "0x2105.base";
-const CANARY = process.env.SODAX_ENV !== "production";
+const CANARY = SODAX_ENV === "canary";
 
 /** Swaps tracked on canary: their deposit, hub and fill txs. */
 const CANARY_SWAPS = [
@@ -52,9 +52,79 @@ const PRODUCTION_SWAP = {
   hubTxHash: "0x561e78fe41cf684b29c7dc3b41fd441af253ccac616d89a7e3d366ee748b70a7",
   fillTxHash: "0xe4330ffda4485f6f7c7b10ed72a8090f406872ecceb28ef7110d0f633ada1480",
 };
-// Each host knows only its own swaps: the other host's deposit is a mined one it has no record of.
+// Each host knows only its own swaps, and answers for them from its records.
 const TRACKED = CANARY ? CANARY_SWAPS : [PRODUCTION_SWAP];
-const UNKNOWN = CANARY ? PRODUCTION_SWAP : CANARY_SWAPS[0];
+
+// The tests that read a tx's receipt or its intent take a recent one: a fixed tx ages out of what upstream serves.
+const ARBITRUM_BLOCKS = 1_000_000n; // about three days
+// Not the last minutes: the app behind a deposit that new may still be handing it to a Swaps API.
+const ARBITRUM_SETTLED_BLOCKS = 4_000n;
+const SONIC_BLOCKS = 50_000n; // about a day
+
+const sonic = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
+
+const arbitrumAddresses = async () =>
+  ((await getAllChainsConfigs()) as Record<string, { addresses: Record<string, string> }>)[ARBITRUM].addresses;
+
+/** Loads once for every test that asks; a failed load is tried again by the next. */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let loaded: Promise<T> | undefined;
+  return () => {
+    loaded ??= load().catch(error => {
+      loaded = undefined;
+      throw error;
+    });
+    return loaded;
+  };
+}
+
+/** The logs of each tx, in block order. */
+function byTx<T extends { transactionHash: Hex }>(logs: T[]): Map<Hex, T[]> {
+  const groups = new Map<Hex, T[]>();
+  for (const log of logs) groups.set(log.transactionHash, [...(groups.get(log.transactionHash) ?? []), log]);
+  return groups;
+}
+
+/** Arbitrum txs of the last days whose one deposit (a `Message` from the asset manager) went to the hub, newest first. */
+const recentDeposits = once(async () => {
+  const { connection, assetManager } = await arbitrumAddresses();
+  const client = createPublicClient({ transport: http(spokeChainConfig[ARBITRUM].rpcUrl) });
+  const toBlock = (await client.getBlockNumber()) - ARBITRUM_SETTLED_BLOCKS;
+  const logs = await client.getLogs({ address: connection as Hex, fromBlock: toBlock - ARBITRUM_BLOCKS, toBlock });
+  const found = [...byTx(logs)].flatMap(([txHash, txLogs]) => {
+    const receipt = { reverted: false, blockNumber: 0n, txIndex: 0, logs: txLogs };
+    const deposits = depositMessages(connectionMessages(receipt, connection), assetManager);
+    return deposits.length === 1 && deposits[0].dstChainId === HUB_RELAY_ID ? [txHash] : [];
+  });
+  if (found.length === 0) throw new Error(`No deposit from Arbitrum to the hub in ${ARBITRUM_BLOCKS} blocks`);
+  return found.reverse();
+});
+
+/**
+ * A hub tx of the last hours that created one intent, filled in full in a later block. Read through the SDK's ABI,
+ * not this server's log parsing, so a solved intent is known without the hub's state.
+ */
+const recentFilledHubTx = once(async () => {
+  const toBlock = await sonic.getBlockNumber();
+  const address = solverConfig.intentsContract as Hex;
+  const range = { address, abi: IntentsAbi, fromBlock: toBlock - SONIC_BLOCKS, toBlock };
+  const [created, filled] = await Promise.all([
+    sonic.getContractEvents({ ...range, eventName: "IntentCreated" }),
+    sonic.getContractEvents({ ...range, eventName: "IntentFilled" }),
+  ]);
+  // The event carries the state before the contract deletes it: a full fill leaves nothing to fill or pay.
+  const goneIn = new Map(
+    filled
+      .filter(({ args }) => args.intentState?.remainingInput === 0n && !args.intentState.pendingPayment)
+      .map(log => [log.args.intentHash, log.blockNumber]),
+  );
+  const log = [...byTx(created).values()]
+    .flatMap(txLogs => (txLogs.length === 1 ? txLogs : []))
+    .reverse()
+    .find(log => (goneIn.get(log.args.intentHash) ?? 0n) > log.blockNumber);
+  if (!log) throw new Error(`No intent created and filled in full on the hub in ${SONIC_BLOCKS} blocks`);
+  return { hubTxHash: log.transactionHash, blockNumber: log.blockNumber };
+});
 
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
 
@@ -92,15 +162,24 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
   });
 
   it("reports a mined deposit it has no record of, without a quote, as unknown: no submit, no alert", async () => {
-    const { out } = await track({ txHash: UNKNOWN.txHash, chain: UNKNOWN.chain });
+    // Another app's deposit, or a swap this host never saw.
+    let txHash: Hex | undefined;
+    for (const candidate of await recentDeposits()) {
+      if ((await getSubmitTxStatus(candidate, ARBITRUM)) === null) {
+        txHash = candidate;
+        break;
+      }
+    }
+    expect(txHash, "a recent deposit this host has no record of").toBeDefined();
+    const { out } = await track({ txHash, chain: ARBITRUM });
     expect(out).toMatchObject({ status: "not_submitted_unknown_quote", isDeposit: true, alerted: false });
     expect(swapsPosts()).toEqual([]);
   });
 
-  it("decodes the Arbitrum deposit against the live connection and asset manager", async () => {
-    const configs = (await getAllChainsConfigs()) as Record<string, { addresses: Record<string, string> }>;
-    const { connection, assetManager } = configs[ARBITRUM].addresses;
-    const receipt = await getEvmReceipt(ARBITRUM, CANARY_SWAPS[0].txHash);
+  it("decodes an Arbitrum deposit against the live connection and asset manager", async () => {
+    const { connection, assetManager } = await arbitrumAddresses();
+    const [txHash] = await recentDeposits();
+    const receipt = await getEvmReceipt(ARBITRUM, txHash);
     expect(receipt?.reverted).toBe(false);
     if (!receipt) return;
     // One `Message` log (MESSAGE_TOPIC) from the asset manager, to the hub.
@@ -114,14 +193,15 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
     // The sender's deposit, under a quote that carries another intent: never this quote's to submit.
     const deadline = String(Math.floor(Date.now() / 1000) + 15 * 60);
     const { quoteId } = await cacheQuote({ srcAddress: items?.[1], deadline });
-    const { out } = await track({ txHash: CANARY_SWAPS[0].txHash, quoteId });
+    const { out } = await track({ txHash, quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch" });
     expect(swapsPosts()).toEqual([]);
   });
 
   // A swap from Sonic is proven by this log, so its layout is checked on real hub txs: the topic, the contract, and
   // the hash as its first data word, equal to the SDK's hash of the intent the Swaps API reads from the same tx.
-  it.each(TRACKED)("finds the intent's hash in the IntentCreated log of hub tx $hubTxHash", async ({ hubTxHash }) => {
+  it("finds the intent's hash in the IntentCreated log of a recent hub tx", async () => {
+    const { hubTxHash } = await recentFilledHubTx();
     const receipt = await getEvmReceipt("sonic", hubTxHash);
     const intent = await getHubIntent(hubTxHash);
     const logged = hubIntentHashes(
@@ -133,30 +213,25 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
   });
 
   // Track and cancel ask the hub whether it still holds an intent; a solved one is gone from intentStates.
-  it.each(TRACKED)(
-    "reads the intent of hub tx $hubTxHash under its hash: held once created, gone once solved",
-    async ({ hubTxHash }) => {
-      const hash = intentHash(await getHubIntent(hubTxHash)) as `0x${string}`;
-      expect(await hubIntentClosed(hash, hubTxHash)).toBe(true);
-      // Any unknown key reads as gone too: at its own block the intent is there, so the key and the decoding are right.
-      const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
-      const { blockNumber } = await client.getTransactionReceipt({ hash: hubTxHash as `0x${string}` });
-      const [exists] = await client.readContract({
-        address: solverConfig.intentsContract as `0x${string}`,
-        abi: IntentsAbi,
-        functionName: "intentStates",
-        args: [hash],
-        blockNumber,
-      });
-      expect(exists).toBe(true);
-    },
-  );
+  it("reads the intent of a recent hub tx under its hash: held once created, gone once solved", async () => {
+    const { hubTxHash, blockNumber } = await recentFilledHubTx();
+    const hash = intentHash(await getHubIntent(hubTxHash)) as Hex;
+    expect(await hubIntentClosed(hash, hubTxHash)).toBe(true);
+    // Any unknown key reads as gone too: at its own block the intent is there, so the key and the decoding are right.
+    const [exists] = await sonic.readContract({
+      address: solverConfig.intentsContract as Hex,
+      abi: IntentsAbi,
+      functionName: "intentStates",
+      args: [hash],
+      blockNumber,
+    });
+    expect(exists).toBe(true);
+  });
 
   // A wallet's own swap from Sonic: the hash logged is of the intent in its createIntent calldata, as sent.
   it("finds the hash of the intent a wallet sent from Sonic in its IntentCreated log", async () => {
     const hash = "0x01ff71f704e9d91a76b787c36d10a466e071224be547dd295b36b7db267ba002";
-    const client = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
-    const tx = await client.getTransaction({ hash });
+    const tx = await sonic.getTransaction({ hash });
     expect(tx.to?.toLowerCase()).toBe(solverConfig.intentsContract.toLowerCase());
     const { functionName, args } = decodeFunctionData({ abi: IntentsAbi, data: tx.input });
     expect(functionName).toBe("createIntent");

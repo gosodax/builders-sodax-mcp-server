@@ -158,22 +158,27 @@ function erc20Destination(dstChain: bigint, hubAsset: string): { chainKey: strin
 }
 
 /**
- * A settled, full hub fill of the last day whose intent pays an ERC-20 on an EVM spoke: its fill tx, the intent as
- * the hub logged it when created, and that token as the packaged config lists it, never as the relay packet does.
+ * The last few settled, full hub fills of the last day whose intent pays an ERC-20 on an EVM spoke with a packaged
+ * RPC, newest first: each fill tx, the intent as the hub logged it when created, and that token as the packaged
+ * config lists it, never as the relay packet does. Several, so one the relay is slow on doesn't fail the test.
  */
-const recentSpokeFill = once(async () => {
+const recentSpokeFills = once(async () => {
   const { toBlock, created, filledInFull } = await recentHubIntents();
   const intents = new Map(created.map(log => [log.args.intentHash, log.args.intent]));
   const settled = filledInFull.filter(log => log.blockNumber <= toBlock - SONIC_SETTLED_BLOCKS);
+  const fills: { fillTxHash: Hex; intent: { dstChain: string; dstAddress: Hex }; chainKey: string; token: string }[] =
+    [];
   for (const log of settled.reverse()) {
     const intent = intents.get(log.args.intentHash);
     if (!intent) continue;
     const destination = erc20Destination(intent.dstChain, intent.outputToken);
-    if (!destination) continue;
+    if (!destination || !packagedChains[destination.chainKey]?.rpcUrl) continue;
     const { dstChain, dstAddress } = intent;
-    return { fillTxHash: log.transactionHash, intent: { dstChain: String(dstChain), dstAddress }, ...destination };
+    fills.push({ fillTxHash: log.transactionHash, intent: { dstChain: String(dstChain), dstAddress }, ...destination });
+    if (fills.length === 5) break;
   }
-  throw new Error(`No settled fill to an ERC-20 on an EVM spoke in ${SONIC_BLOCKS} blocks`);
+  if (fills.length === 0) throw new Error(`No settled fill to an ERC-20 on an EVM spoke in ${SONIC_BLOCKS} blocks`);
+  return fills;
 });
 
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
@@ -212,11 +217,20 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
   });
 
   it("reads a recent fill's delivery from the live relay: its tx paid the intent's recipient on the destination", async () => {
-    const { fillTxHash, intent, chainKey, token } = await recentSpokeFill();
-    // The fill is settled: a relay slower than track's budget reads as undelivered, so it's asked again.
-    let dstTxHash: string | undefined;
-    for (let attempt = 0; attempt < 3 && !dstTxHash; attempt++) dstTxHash = await readDelivery(fillTxHash, intent);
-    expect(dstTxHash, "the fill's delivery, executed").toBeDefined();
+    // Settled fills: a relay slower than track's budget reads as undelivered, so each is asked twice.
+    let found: { fill: Awaited<ReturnType<typeof recentSpokeFills>>[number]; dstTxHash: string } | undefined;
+    for (const fill of await recentSpokeFills()) {
+      for (let attempt = 0; attempt < 2 && !found; attempt++) {
+        const dstTxHash = await readDelivery(fill.fillTxHash, fill.intent);
+        if (dstTxHash) found = { fill, dstTxHash };
+      }
+      if (found) break;
+    }
+    if (!found) throw new Error("None of the recent fills reads as delivered on the live relay");
+    const {
+      fill: { intent, chainKey, token },
+      dstTxHash,
+    } = found;
     const destination = createPublicClient({ transport: http(packagedChains[chainKey]?.rpcUrl) });
     const receipt = await destination.getTransactionReceipt({ hash: dstTxHash as Hex });
     expect(receipt.status).toBe("success");

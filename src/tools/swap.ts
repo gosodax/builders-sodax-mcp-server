@@ -517,6 +517,7 @@ export function trackNextStep(result: TrackResult): string {
     case "solved": {
       // Solved is the fill on the hub; another destination gets the tokens one cross-chain hop later.
       const fill = result.fillTxHash ? ` (fill tx ${result.fillTxHash})` : "";
+      const fillAnd = result.fillTxHash ? `fill tx ${result.fillTxHash}, ` : "";
       const promised = result.minimumReceived;
       if (!promised) {
         return `The swap is filled on the SODAX hub${fill}; to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.`;
@@ -526,9 +527,9 @@ export function trackNextStep(result: TrackResult): string {
         case "complete":
           return `The swap is complete on ${promised.chainName}: the user received ${atLeast}${fill}.`;
         case "delivered":
-          return `The swap is complete: the user received ${atLeast} on ${promised.chainName} (delivery tx ${result.dstTxHash}).`;
+          return `The swap is complete: the user received ${atLeast} on ${promised.chainName} (${fillAnd}delivery tx ${result.dstTxHash}).`;
         case "sent":
-          return `The swap is filled and SODAX sent ${atLeast} to the user on ${promised.chainName} (delivery tx ${result.dstTxHash}), which may not be confirmed there yet: tell the user it was sent in that tx, and that they must not send the swap again.`;
+          return `The swap is filled and SODAX sent ${atLeast} to the user on ${promised.chainName} (${fillAnd}delivery tx ${result.dstTxHash}), which may not be confirmed there yet: tell the user it was sent in that tx, which a ${promised.chainName} explorer shows, and that they must not send the swap again.`;
         default: {
           const onItsWay = `The swap is filled${fill}: ${atLeast} is on its way to ${promised.chainName}, one more cross-chain hop`;
           // Only a delivered result is evidence tied to this swap: a balance can't tell one swap's funds from another's.

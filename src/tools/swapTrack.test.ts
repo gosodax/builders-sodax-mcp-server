@@ -8,6 +8,7 @@ import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
 import fillPackets from "../services/swap/__fixtures__/fill-packets.json" with { type: "json" };
 import { clearAlerts } from "../services/swap/alerts.js";
+import { clearDeliveryWarnings } from "../services/swap/delivery.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
@@ -49,6 +50,7 @@ beforeEach(() => {
   clearQuoteCache();
   clearAlerts();
   clearUnseenMemo();
+  clearDeliveryWarnings();
   vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT_RECEIPT);
   vi.mocked(isTxKnown).mockResolvedValue(true);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -631,7 +633,7 @@ describe("sodax_swap_submit_and_track", () => {
       expect(result).toMatchObject({ status: "solved", delivery: "delivered", dstTxHash: packet?.dst_tx_hash });
       expect(result).not.toHaveProperty("retryAfterSec");
       expect(result.nextStep).toBe(
-        `The swap is complete: the user received at least 1.5 TOKEN on ${delivery.chainName} (delivery tx ${packet?.dst_tx_hash}).`,
+        `The swap is complete: the user received at least 1.5 TOKEN on ${delivery.chainName} (fill tx ${delivery.fill.fillTxHash}, delivery tx ${packet?.dst_tx_hash}).`,
       );
       expect(relayReads(calls)).toEqual([
         {
@@ -651,7 +653,7 @@ describe("sodax_swap_submit_and_track", () => {
       expect(result).toMatchObject({ status: "solved", delivery: "sent", dstTxHash: dst_tx_hash });
       expect(result).not.toHaveProperty("retryAfterSec");
       expect(result.nextStep).toBe(
-        `The swap is filled and SODAX sent at least 1.5 TOKEN to the user on ${chainName} (delivery tx ${dst_tx_hash}), which may not be confirmed there yet: tell the user it was sent in that tx, and that they must not send the swap again.`,
+        `The swap is filled and SODAX sent at least 1.5 TOKEN to the user on ${chainName} (fill tx ${SOLANA.fill.fillTxHash}, delivery tx ${dst_tx_hash}), which may not be confirmed there yet: tell the user it was sent in that tx, which a ${chainName} explorer shows, and that they must not send the swap again.`,
       );
     });
 
@@ -675,6 +677,62 @@ describe("sodax_swap_submit_and_track", () => {
       expect(result).toMatchObject({ status: "solved", delivery: "in_transit", retryAfterSec: 15 });
       // The failed read ends the wait: the swap service isn't asked again within the call.
       expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(2);
+    });
+
+    it("keeps its solved answer when a later pass fails in a way a retry can't fix, such as its quote dropped", async () => {
+      Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+      const packets = () => {
+        // Dropped while the first pass reads the delivery: the next pass can't resolve the quote.
+        clearQuoteCache();
+        return answer(SOLANA.fill, inFlight);
+      };
+      const { out: result } = await trackFill(SOLANA, packets);
+      expect(result).toMatchObject({ status: "solved", delivery: "in_transit", retryAfterSec: 15 });
+    });
+
+    it("asks to be called again no sooner than a rate limit met while the delivery is awaited says", async () => {
+      Object.assign(trackWait, { stepMs: 1, maxMs: 60_000 });
+      vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      let reads = 0;
+      const status = () =>
+        reads++ === 0
+          ? Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, ...solvedRow(SOLANA.fill) } })
+          : Response.json({ message: "slow down" }, { status: 429 });
+      const { out: result } = await trackFill(SOLANA, () => answer(SOLANA.fill, inFlight), status);
+      expect(result).toMatchObject({ status: "solved", delivery: "in_transit", retryAfterSec: 60 });
+    });
+
+    it("still waits when the first pass was slow: the next ones only read the status", async () => {
+      Object.assign(trackWait, {
+        stepMs: 5_000,
+        maxMs: 20_000,
+        sleep: async (ms: number) => vi.advanceTimersByTime(ms),
+      });
+      const edits = [inFlight];
+      let reads = 0;
+      const status = () => {
+        // The first pass reads the chain and submits: 8 s here.
+        if (reads++ === 0) vi.advanceTimersByTime(8_000);
+        return Response.json({ success: true, data: { txHash: TX, srcChainKey: ARBITRUM, ...solvedRow(SOLANA.fill) } });
+      };
+      const { out } = await trackFill(SOLANA, () => answer(SOLANA.fill, edits.shift()), status);
+      expect(out).toMatchObject({ delivery: "delivered" });
+    });
+
+    it("finds its delivery among the fill's packets though another isn't in the relay's shape", async () => {
+      vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      const odd = (packets: Packet[]) => [...packets, { ...packets[0], payload: null, src_address: null }];
+      const { out: result } = await trackFill(SOLANA, () =>
+        Response.json({ ...SOLANA.fill.relay.body, data: odd(structuredClone(SOLANA.fill.relay.body.data)) }),
+      );
+      expect(result).toMatchObject({ status: "solved", delivery: "delivered" });
+    });
+
+    it("keeps a delivered swap's quote a day, its only record of the delivery once the quote expires", async () => {
+      const { quoteId } = await trackFill(SOLANA, () => answer(SOLANA.fill));
+      vi.setSystemTime(NOW + 23 * 60 * 60 * 1000);
+      const { out } = await track({ txHash: TX, quoteId });
+      expect(out).toMatchObject({ status: "solved", delivery: "delivered" });
     });
 
     it("keeps a swap in transit while its packet runs, whatever the fill's other packets did", async () => {
@@ -730,11 +788,19 @@ describe("sodax_swap_submit_and_track", () => {
       expect(result).not.toHaveProperty("dstTxHash");
     });
 
-    it("logs what failed when the relay can't be read", async () => {
+    it("logs what failed when the relay can't be read, once however many passes fail", async () => {
+      Object.assign(trackWait, {
+        stepMs: 5_000,
+        maxMs: 20_000,
+        sleep: async (ms: number) => vi.advanceTimersByTime(ms),
+      });
       const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-      await trackFill(SOLANA, () => {
+      const { calls } = await trackFill(SOLANA, () => {
         throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
       });
+      expect(relayReads(calls).length).toBeGreaterThan(1);
+      const unread = warn.mock.calls.filter(([, message]) => message === "Relay packets of a swap fill unread");
+      expect(unread).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
         { "tx.hash": SOLANA.fill.fillTxHash, "error.type": "TimeoutError" },
         "Relay packets of a swap fill unread",

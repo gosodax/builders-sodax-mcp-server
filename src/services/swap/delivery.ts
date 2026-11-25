@@ -9,6 +9,7 @@ import { sameHex as same } from "../../constants.js";
 import type { RelayPacketsResponse } from "../../types.js";
 import { errorName, logger } from "../logger.js";
 import { getRelayTransactionPackets } from "../relay.js";
+import { TtlCache } from "../ttlCache.js";
 import type { Delivered } from "./quoteCache.js";
 import { HUB_RELAY_ID, decodeTransfer } from "./sourceTx.js";
 import { isAnyTxHash } from "./sources/index.js";
@@ -21,18 +22,30 @@ const HUB_CHAIN_ID = HUB_RELAY_ID.toString();
 const HUB_ASSET_MANAGER = hubConfig.addresses.assetManager.slice(2);
 
 // Only what the check reads; an in-flight packet may have no destination hash yet.
-const packetsSchema = z.array(
-  z.object({
-    src_chain_id: z.number(),
-    src_tx_hash: z.string(),
-    src_address: z.string(),
-    status: z.string(),
-    dst_chain_id: z.number(),
-    dst_tx_hash: z.string().nullish(),
-    payload: z.string(),
-  }),
-);
-type Packet = z.infer<typeof packetsSchema>[number];
+const packetSchema = z.object({
+  src_chain_id: z.number(),
+  src_tx_hash: z.string(),
+  src_address: z.string(),
+  status: z.string(),
+  dst_chain_id: z.number(),
+  dst_tx_hash: z.string().nullish(),
+  payload: z.string(),
+});
+type Packet = z.infer<typeof packetSchema>;
+
+// A fill is read on every track pass, a few a call: one warning per fill and failure a while, not one per pass.
+const warned = new TtlCache(10 * 60 * 1000, 1_000);
+/** Test only. */
+export function clearDeliveryWarnings(): void {
+  warned.clear();
+}
+
+function warnOnce(fillTxHash: string, fields: Record<string, unknown>, message: string): void {
+  const key = `${fillTxHash}:${message}`;
+  if (warned.get(key)) return;
+  warned.set(key, true);
+  logger.warn({ "tx.hash": fillTxHash, ...fields }, message);
+}
 
 /**
  * The destination tx of this swap's one packet, once executed and spelled as some chain family spells a hash.
@@ -51,17 +64,21 @@ export async function readDelivery(
   } catch (error) {
     // The relay client wraps every failure in a plain Error: its cause says what failed.
     const failure = error instanceof Error ? (error.cause ?? error) : error;
-    logger.warn({ "tx.hash": fillTxHash, "error.type": errorName(failure) }, "Relay packets of a swap fill unread");
+    warnOnce(fillTxHash, { "error.type": errorName(failure) }, "Relay packets of a swap fill unread");
     return undefined;
   }
   // The relay answers a tx it hasn't indexed yet with `success: false`.
   if (!response.success) return undefined;
-  const packets = packetsSchema.safeParse(response.data);
-  if (!packets.success) {
-    logger.warn({ "tx.hash": fillTxHash }, "Unexpected relay packets of a swap fill");
-    return undefined;
+  const raw: unknown[] = Array.isArray(response.data) ? response.data : [];
+  // Each on its own: another transfer of the fill in a shape not read here doesn't hide this swap's.
+  const packets = raw.flatMap(item => {
+    const packet = packetSchema.safeParse(item);
+    return packet.success ? [packet.data] : [];
+  });
+  if (packets.length < raw.length || !Array.isArray(response.data)) {
+    warnOnce(fillTxHash, {}, "Unexpected relay packets of a swap fill");
   }
-  const ours = packets.data.filter(packet => isDelivery(packet, fillTxHash, intent));
+  const ours = packets.filter(packet => isDelivery(packet, fillTxHash, intent));
   // None is a fill the relay hasn't seen whole; two can't tell which one is the user's.
   if (ours.length !== 1) return undefined;
   const [packet] = ours;

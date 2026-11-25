@@ -18,6 +18,7 @@ import {
   type CachedQuote,
   type Delivered,
   claimDeposit,
+  keepForDelivery,
   markDelivered,
   markHubOutcome,
   markRelayedForRefund,
@@ -147,7 +148,8 @@ export async function trackSwapWaiting(input: {
   const started = Date.now();
   const stateOf = (result: TrackResult) => `${result.status}:${"stage" in result ? result.stage : ""}`;
   let result = await trackSwap(input);
-  let passMs = Date.now() - started;
+  // The first pass reads the chain and may submit; the next ones mostly read the status, guessed at a step at most.
+  let passMs = Math.min(Date.now() - started, trackWait.stepMs);
   const first = stateOf(result);
   // A pass may take as long as the last one: one that would end past `maxMs` doesn't start.
   while (waits(result) && Date.now() - started + trackWait.stepMs + passMs <= trackWait.maxMs) {
@@ -157,9 +159,13 @@ export async function trackSwapWaiting(input: {
       result = await trackSwap(input);
       passMs = Date.now() - passStarted;
     } catch (error) {
-      // Already filled: a retryable failure while the delivery is awaited leaves the last answer standing.
-      const retryableFailure = error instanceof ActionError && RETRYABLE_CODES.includes(error.code);
-      if (result.status !== "solved" || !retryableFailure) throw error;
+      // Already filled: any failure while the delivery is awaited (a rate limit, a quote dropped meanwhile) leaves the
+      // last answer standing, called again no sooner than the failure asks.
+      if (result.status !== "solved") throw error;
+      const asked = error instanceof ActionError ? Number(error.details?.retryAfterSec ?? 0) : 0;
+      if (result.retryAfterSec !== undefined && asked > result.retryAfterSec) {
+        result = { ...result, retryAfterSec: asked };
+      }
       break;
     }
     if (stateOf(result) !== first) break;
@@ -519,6 +525,7 @@ async function fromRow(row: SubmitTxStatus, quote?: CachedQuote): Promise<TrackS
   if (state.status !== "solved" || state.delivery !== "in_transit" || !quote) return state;
   if (quote.delivered) return { ...state, ...quote.delivered };
   if (!state.fillTxHash) return state;
+  keepForDelivery(quote);
   const dstTxHash = await readDelivery(state.fillTxHash, quote.intent);
   if (!dstTxHash) return { ...state, retryAfterSec: RETRY_AFTER_SEC };
   const delivered = { delivery: deliveryProof(quote.dstChainKey), dstTxHash };

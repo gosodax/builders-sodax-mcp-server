@@ -6,12 +6,22 @@
 
 import { IntentsAbi } from "@sodax/sdk";
 import { solverConfig, spokeChainConfig } from "@sodax/types";
-import { http, type Hex, createPublicClient, decodeFunctionData } from "viem";
+import { http, type Hex, createPublicClient, decodeFunctionData, erc20Abi, parseEventLogs } from "viem";
 import { type MockInstance, afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { SODAX_ENV, SODAX_SWAPS_BASE_URL } from "../constants.js";
-import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isHubChain } from "../services/sodax.js";
+import { SODAX_ENV, SODAX_SWAPS_BASE_URL, ZERO_ADDRESS_PATTERN, sameHex } from "../constants.js";
+import {
+  evmChainIdFor,
+  getEvmReceipt,
+  hubIntentClosed,
+  initSodax,
+  intentChainId,
+  intentHash,
+  isHubChain,
+  sdkChainKeys,
+} from "../services/sodax.js";
 import { getAllChainsConfigs } from "../services/sodaxApi.js";
 import { DEPOSIT_TX } from "../services/swap/__fixtures__/deposit.js";
+import { readDelivery } from "../services/swap/delivery.js";
 import {
   HUB_RELAY_ID,
   INTENT_CREATED_TOPIC,
@@ -60,6 +70,8 @@ const ARBITRUM_BLOCKS = 1_000_000n; // about three days
 // Not the last minutes: the app behind a deposit that new may still be handing it to a Swaps API.
 const ARBITRUM_SETTLED_BLOCKS = 4_000n;
 const SONIC_BLOCKS = 50_000n; // about a day
+// A fill this old has had time to reach its destination: about half an hour.
+const SONIC_SETTLED_BLOCKS = 1_000n;
 
 const sonic = createPublicClient({ transport: http(spokeChainConfig.sonic.rpcUrl) });
 
@@ -101,10 +113,10 @@ const recentDeposits = once(async () => {
 });
 
 /**
- * A hub tx of the last hours that created one intent, filled in full in a later block. Read through the SDK's ABI,
- * not this server's log parsing, so a solved intent is known without the hub's state.
+ * The hub's `IntentCreated` and `IntentFilled` logs of the last day, only the fills in full. Read through the SDK's
+ * ABI, not this server's log parsing, so a solved intent is known without the hub's state.
  */
-const recentFilledHubTx = once(async () => {
+const recentHubIntents = once(async () => {
   const toBlock = await sonic.getBlockNumber();
   const address = solverConfig.intentsContract as Hex;
   const range = { address, abi: IntentsAbi, fromBlock: toBlock - SONIC_BLOCKS, toBlock };
@@ -113,17 +125,60 @@ const recentFilledHubTx = once(async () => {
     sonic.getContractEvents({ ...range, eventName: "IntentFilled" }),
   ]);
   // The event carries the state before the contract deletes it: a full fill leaves nothing to fill or pay.
-  const goneIn = new Map(
-    filled
-      .filter(({ args }) => args.intentState?.remainingInput === 0n && !args.intentState.pendingPayment)
-      .map(log => [log.args.intentHash, log.blockNumber]),
+  const filledInFull = filled.filter(
+    ({ args }) => args.intentState?.remainingInput === 0n && !args.intentState.pendingPayment,
   );
+  return { toBlock, created, filledInFull };
+});
+
+/** A hub tx of the last hours that created one intent, filled in full in a later block. */
+const recentFilledHubTx = once(async () => {
+  const { created, filledInFull } = await recentHubIntents();
+  const goneIn = new Map(filledInFull.map(log => [log.args.intentHash, log.blockNumber]));
   const log = [...byTx(created).values()]
     .flatMap(txLogs => (txLogs.length === 1 ? txLogs : []))
     .reverse()
     .find(log => (goneIn.get(log.args.intentHash) ?? 0n) > log.blockNumber);
   if (!log) throw new Error(`No intent created and filled in full on the hub in ${SONIC_BLOCKS} blocks`);
   return { hubTxHash: log.transactionHash, blockNumber: log.blockNumber };
+});
+
+type PackagedChain = { rpcUrl?: string; supportedTokens?: Record<string, PackagedToken> };
+type PackagedToken = { address: string; hubAsset: string };
+const packagedChains = spokeChainConfig as Record<string, PackagedChain | undefined>;
+
+/** The EVM spoke an intent's `dstChain` names, and the ERC-20 there whose hub asset it pays out, if both exist. */
+function erc20Destination(dstChain: bigint, hubAsset: string): { chainKey: string; token: string } | undefined {
+  const chainKey = sdkChainKeys.find(
+    key => !isHubChain(key) && evmChainIdFor(key) !== undefined && intentChainId(key) === String(dstChain),
+  );
+  const tokens = Object.values((chainKey && packagedChains[chainKey]?.supportedTokens) || {});
+  const token = tokens.find(each => sameHex(each.hubAsset, hubAsset) && !ZERO_ADDRESS_PATTERN.test(each.address));
+  return chainKey && token ? { chainKey, token: token.address } : undefined;
+}
+
+/**
+ * The last few settled, full hub fills of the last day whose intent pays an ERC-20 on an EVM spoke with a packaged
+ * RPC, newest first: each fill tx, the intent as the hub logged it when created, and that token as the packaged
+ * config lists it, never as the relay packet does. Several, so one the relay is slow on doesn't fail the test.
+ */
+const recentSpokeFills = once(async () => {
+  const { toBlock, created, filledInFull } = await recentHubIntents();
+  const intents = new Map(created.map(log => [log.args.intentHash, log.args.intent]));
+  const settled = filledInFull.filter(log => log.blockNumber <= toBlock - SONIC_SETTLED_BLOCKS);
+  const fills: { fillTxHash: Hex; intent: { dstChain: string; dstAddress: Hex }; chainKey: string; token: string }[] =
+    [];
+  for (const log of settled.reverse()) {
+    const intent = intents.get(log.args.intentHash);
+    if (!intent) continue;
+    const destination = erc20Destination(intent.dstChain, intent.outputToken);
+    if (!destination || !packagedChains[destination.chainKey]?.rpcUrl) continue;
+    const { dstChain, dstAddress } = intent;
+    fills.push({ fillTxHash: log.transactionHash, intent: { dstChain: String(dstChain), dstAddress }, ...destination });
+    if (fills.length === 5) break;
+  }
+  if (fills.length === 0) throw new Error(`No settled fill to an ERC-20 on an EVM spoke in ${SONIC_BLOCKS} blocks`);
+  return fills;
 });
 
 const track = (args: Record<string, unknown>) => callTool("sodax_swap_submit_and_track", args);
@@ -159,6 +214,29 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
       expect(out.retryAfterSec).toBeUndefined();
     }
     expect(swapsPosts()).toEqual([]);
+  });
+
+  it("reads a recent fill's delivery from the live relay: its tx paid the intent's recipient on the destination", async () => {
+    // Settled fills: a relay slower than track's budget reads as undelivered, so each is asked twice.
+    let found: { fill: Awaited<ReturnType<typeof recentSpokeFills>>[number]; dstTxHash: string } | undefined;
+    for (const fill of await recentSpokeFills()) {
+      for (let attempt = 0; attempt < 2 && !found; attempt++) {
+        const dstTxHash = await readDelivery(fill.fillTxHash, fill.intent);
+        if (dstTxHash) found = { fill, dstTxHash };
+      }
+      if (found) break;
+    }
+    if (!found) throw new Error("None of the recent fills reads as delivered on the live relay");
+    const {
+      fill: { intent, chainKey, token },
+      dstTxHash,
+    } = found;
+    const destination = createPublicClient({ transport: http(packagedChains[chainKey]?.rpcUrl) });
+    const receipt = await destination.getTransactionReceipt({ hash: dstTxHash as Hex });
+    expect(receipt.status).toBe("success");
+    const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs });
+    const paid = transfers.filter(log => sameHex(log.address, token) && sameHex(log.args.to, intent.dstAddress));
+    expect(paid, `a ${token} transfer to ${intent.dstAddress} in ${dstTxHash}`).not.toEqual([]);
   });
 
   it("reports a mined deposit it has no record of, without a quote, as unknown: no submit, no alert", async () => {

@@ -146,7 +146,13 @@ every transaction; the server never signs.
    the quote's sender to their hub wallet with the quote's relay payload (from Solana, its keccak). A NEAR tx that
    failed after its deposit ran isn't submitted: it's reported as held, and alerts the operators. Nor is a tx whose
    events can't all be read: it's reported as unverified, which alerts with its quote. A non-EVM tx's hash goes as the
-   wallet shows it.
+   wallet shows it. With its quote, a `solved` swap (filled on the hub) to Sonic is `delivery: "complete"`. To any
+   other chain it's `in_transit`, with `retryAfterSec`, until the relay has executed this swap's packet from its fill
+   transaction on that chain. It's then `delivered`, with the destination's `dstTxHash`. Only `delivered` means the
+   funds arrived: a balance can't tell one swap's funds from another's. To Bitcoin and Injective it's `sent` instead:
+   there the relay marks a packet executed once it has sent the destination transaction, before that chain has
+   confirmed it. A filled swap's quote is kept a day, so a later track still reads its delivery. A fill the swap
+   service reports without its transaction can't be followed, so it stays `in_transit` without `retryAfterSec`.
 5. To cancel a swap that hasn't been filled, `sodax_swap_cancel` returns the cancel transaction for the wallet to send;
    then call it again with `cancelTxHash`. From Sonic the cancel goes through the user's wallet router and needs no
    relay: the second call confirms it on the hub (`cancel_confirmed`). A quoted swap from Sonic can be cancelled as

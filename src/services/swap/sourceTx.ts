@@ -76,14 +76,18 @@ interface Transfer {
   data: string;
 }
 
+/** A relay transfer payload (RLP: token, sender, recipient, amount, data), if it is one. */
+export function decodeTransfer(payload: string): Transfer | undefined {
+  const items = decodeRlpList(payload);
+  return items?.length === 5 ? { from: items[1], to: items[2], data: items[4] } : undefined;
+}
+
 /** The RLP transfers the asset manager sent the hub from `srcChain`; an undecodable one is skipped. */
 function hubTransfers(messages: ConnectionMessage[], want: { assetManager: string; srcChain: string }): Transfer[] {
   return depositMessages(messages, want.assetManager).flatMap(message => {
-    const items = decodeRlpList(message.payload);
-    if (message.srcChainId !== BigInt(want.srcChain) || message.dstChainId !== HUB_RELAY_ID || items?.length !== 5) {
-      return [];
-    }
-    return [{ from: items[1], to: items[2], data: items[4] }];
+    const transfer = decodeTransfer(message.payload);
+    if (message.srcChainId !== BigInt(want.srcChain) || message.dstChainId !== HUB_RELAY_ID || !transfer) return [];
+    return [transfer];
   });
 }
 

@@ -4,7 +4,7 @@
  */
 
 import { vi } from "vitest";
-import { SODAX_SWAPS_BASE_URL } from "../../constants.js";
+import { SODAX_RELAY_BASE_URL, SODAX_SWAPS_BASE_URL } from "../../constants.js";
 import { callerKeyHash } from "../../services/requestContext.js";
 import type { EvmReceipt } from "../../services/sodax.js";
 import { catalogFetch } from "../../services/swap/__fixtures__/catalog.js";
@@ -15,6 +15,7 @@ import {
   USER,
   messageReceipt,
 } from "../../services/swap/__fixtures__/deposit.js";
+import fillPackets from "../../services/swap/__fixtures__/fill-packets.json" with { type: "json" };
 import { type CachedQuote, putQuote } from "../../services/swap/quoteCache.js";
 
 export const NOW = Date.parse("2026-10-26T12:00:00Z");
@@ -77,17 +78,27 @@ export interface Backend {
   status?: () => Response;
   submit?: () => Response;
   relay?: () => Response;
+  /** The SODAX relay's answer to `get_transaction_packets`; by default its real "not found". */
+  packets?: () => Response;
   hubIntent?: Record<string, unknown>;
   cancelTx?: Record<string, unknown>;
 }
 
-/** Serves the catalog and the Swaps API routes track and cancel use; records each Swaps API call. */
+/**
+ * Serves the catalog, the Swaps API routes track and cancel use, and the relay's packet reads; records each call to
+ * the Swaps API, and each relay read as `/relay`.
+ */
 export function stubBackend(backend: Backend = {}) {
   const calls: { path: string; body?: Record<string, unknown> }[] = [];
   let submitted = false;
   const serveCatalog = catalogFetch(undefined, backend.configs);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.startsWith(`${SODAX_RELAY_BASE_URL}/`)) {
+      calls.push({ path: "/relay", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      const { status, body } = fillPackets.notFound;
+      return backend.packets?.() ?? Response.json(body, { status });
+    }
     if (!url.startsWith(`${SODAX_SWAPS_BASE_URL}/`) || url.endsWith("/tokens")) return serveCatalog(input, init);
     const path = url.slice(SODAX_SWAPS_BASE_URL.length);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;

@@ -36,7 +36,11 @@ export type CachedQuote = IntentRequest & {
   submitRetryAt?: number;
   /** When track was first called for a tx not yet this quote's deposit: an unseen tx is waited for from then. */
   trackedSince?: { txHash: string; at: number };
+  /** Its delivery once the relay executed it: a later relay read that fails can't take it back. */
+  delivered?: Delivered;
 };
+
+export type Delivered = { delivery: "delivered" | "sent"; dstTxHash: string };
 
 /** A hub swap's end, known from the hub. */
 type HubOutcome = "left_to_refund" | "cancelled" | "closed";
@@ -235,6 +239,21 @@ function markHandedOver(quote: CachedQuote, how: NonNullable<CachedQuote["handed
   // Put back if it was dropped while a read or the relay ran, and swept again from then on.
   quotes.set(quote.quoteId, quote);
   startSweeping();
+}
+
+/**
+ * A filled swap's quote, kept a day as a hand-over is: past its expiry it's the only record of where the delivery
+ * stands, and a track without it could no longer follow the last hop.
+ */
+export function keepForDelivery(quote: CachedQuote): void {
+  quote.expiresAt = Math.max(quote.expiresAt, Date.now() + HANDED_OVER_RETENTION_MS);
+  quotes.set(quote.quoteId, quote);
+  startSweeping();
+}
+
+export function markDelivered(quote: CachedQuote, delivered: Delivered): void {
+  quote.delivered = delivered;
+  keepForDelivery(quote);
 }
 
 /** Since when track has been called for this quote with `txHash`: now, the first time. */

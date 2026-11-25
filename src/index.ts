@@ -186,8 +186,11 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
   }
   // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
-  if (swapToolsEnabled) await openQuoteStore(process.env.REDIS_URL);
-  await Promise.all([swapToolsEnabled ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
+  await Promise.all([
+    swapToolsEnabled ? openQuoteStore(process.env.REDIS_URL) : undefined,
+    swapToolsEnabled ? initSodax(rpcOverrides) : undefined,
+    warmDocsCache(),
+  ]);
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
@@ -648,12 +651,17 @@ export function serverGauges(): () => Record<string, unknown> {
   };
 }
 
-/** Redis when `REDIS_URL` is set, its client loaded only then; never memory instead (#125). */
+/**
+ * Redis when `REDIS_URL` is set, its client loaded only then; never memory instead (#125). Waits a little for it to
+ * connect, so a deploy's first swap calls don't fail, but starts without it.
+ */
 async function openQuoteStore(redisUrl: string | undefined): Promise<void> {
   const url = parseRedisUrl(redisUrl);
   if (!url) return;
   const { connectRedisQuoteStore } = await import("./services/swap/redisQuoteStore.js");
-  useQuoteStore(connectRedisQuoteStore(url));
+  const store = connectRedisQuoteStore(url);
+  useQuoteStore(store);
+  await store.ready(5_000);
 }
 
 /**
@@ -713,7 +721,7 @@ function fatalExit(context: string, error: unknown): void {
   if (exiting) return;
   exiting = true;
   const lost = quotesLostOnRestart();
-  const alert = lost > 0 ? `${context} (${lost} open swap quote(s) lost)` : context;
+  const alert = lost ? `${context} (${lost})` : context;
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {

@@ -1,6 +1,6 @@
 /**
- * Where quotes are kept: in memory by default, in Redis when `REDIS_URL` is set (#125). Both apply the same rules;
- * `quoteCache.ts` is what the swap tools call.
+ * Where quotes are kept: in memory by default, in Redis when `REDIS_URL` is set (#125). Both apply the same rules, but
+ * for which quote past its deadline a full store drops first; `quoteCache.ts` is what the swap tools call.
  */
 
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
@@ -54,6 +54,8 @@ export type Room = { unused: UnusedQuote[] } & (
   | { full: "store" }
 );
 
+export type RelayClaim = "go" | { busyUntil: number } | HandedOver;
+
 /** The quotes whose deposit hasn't reached the backend yet: how many, and when the last of them expires (epoch ms). */
 export type OpenQuotes = { open: number; until: number };
 
@@ -64,14 +66,16 @@ export type OpenQuotes = { open: number; until: number };
 export interface QuoteStore {
   readonly kind: "memory" | "redis";
   /**
-   * Room for one more quote of `keyHash`: drops expired quotes, then, if still full, one past its deadline. In that
-   * order: an unused quote; then a swap that ended or that the backend has (`submitted`); then a hub swap waiting for
+   * Room for one more quote of `keyHash`: drops expired quotes, then, if still full, one past its deadline (memory:
+   * the oldest put; Redis: the earliest deadline). In that order: an unused quote; then a swap that ended or that the backend has (`submitted`); then a hub swap waiting for
    * the canceller's refund, which loses only its early cancel here. Never a live quote, which may be signed already,
    * nor a deposit claimed but not handed over or relayed for refund: its quote is its only record. With `quote`,
    * stores it in the same step, so two at once can't both take the last place.
    */
   reserve(keyHash: string, now: number, quote?: CachedQuote): Promise<Room>;
   get(quoteId: string): Promise<CachedQuote | undefined>;
+  /** Drops a quote whose `reserve` failed: a Redis that answered too late may have stored it all the same. */
+  discard(quoteId: string): Promise<void>;
   /** Atomic: of two txs claiming one quote at once, one gets `claimed` and the other `taken`. */
   claim(quoteId: string, txHash: string): Promise<"claimed" | "taken" | "gone">;
   set(quoteId: string, fields: Pick<CachedQuote, "submitRetryAt" | "submitRefused">): Promise<void>;
@@ -79,6 +83,14 @@ export interface QuoteStore {
   setSubmitted(quoteId: string): Promise<void>;
   /** Sets how it was handed over and keeps it until `quote.expiresAt`; puts it back if it was dropped meanwhile. */
   handOver(quote: CachedQuote & { handedOver: HandedOver }, now: number): Promise<void>;
+  /**
+   * Atomic: takes the relay for refund of the quote's deposit until `until` (epoch ms), so two calls at once don't both
+   * relay it. `go` (also for a quote that's gone), how it was handed over meanwhile, or when another call's relay
+   * ends.
+   */
+  claimRelay(quoteId: string, now: number, until: number): Promise<RelayClaim>;
+  /** Ends a relay that failed, so the next call tries it again. */
+  releaseRelay(quoteId: string): Promise<void>;
   /** When `txHash` was first tracked for the quote: `now` the first time, `undefined` if the quote is gone. */
   trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined>;
   open(now: number): Promise<OpenQuotes>;

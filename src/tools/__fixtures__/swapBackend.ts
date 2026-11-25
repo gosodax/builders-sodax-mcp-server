@@ -94,7 +94,7 @@ export interface Backend {
   row?: Record<string, unknown> | null;
   status?: () => Response;
   submit?: () => Response;
-  relay?: () => Response;
+  relay?: () => Response | Promise<Response>;
   hubIntent?: Record<string, unknown>;
   cancelTx?: Record<string, unknown>;
 }

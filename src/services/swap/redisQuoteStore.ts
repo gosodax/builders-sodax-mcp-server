@@ -9,6 +9,7 @@
  * outlives a server that stopped using it.
  */
 
+import { setTimeout as sleep } from "node:timers/promises";
 import { ErrorReply, createClient } from "@redis/client";
 import { SODAX_ENV } from "../../constants.js";
 import { logger } from "../logger.js";
@@ -21,6 +22,7 @@ import {
   MAX_QUOTES_PER_KEY,
   type OpenQuotes,
   type QuoteStore,
+  type RelayClaim,
   type Room,
   type UnusedQuote,
   deadlineMs,
@@ -135,6 +137,12 @@ end
 return out
 `;
 
+// ARGV[5]: quoteId.
+const DISCARD = `${LUA_COMMON}
+drop(ARGV[5])
+return 1
+`;
+
 // ARGV[5..6]: quoteId, txHash.
 const CLAIM = `${LUA_COMMON}
 local id, tx = ARGV[5], ARGV[6]
@@ -180,6 +188,18 @@ expireAt(id, expiresAt)
 index('all', expiresAt, id)
 setRank(id, how)
 return 1
+`;
+
+// ARGV[5..6]: quoteId, until. Returns "go", how it was handed over, or until when another call's relay runs.
+const CLAIM_RELAY = `${LUA_COMMON}
+local q = k('q:' .. ARGV[5])
+if redis.call('EXISTS', q) == 0 then return 'go' end
+local how = redis.call('HGET', q, 'handedOver')
+if how then return how end
+local busyUntil = redis.call('HGET', q, 'relayingUntil')
+if busyUntil and tonumber(busyUntil) > now then return {busyUntil} end
+redis.call('HSET', q, 'relayingUntil', ARGV[6])
+return 'go'
 `;
 
 // ARGV[5..6]: quoteId, txHash. Returns when that tx was first tracked, or nil if the quote is gone.
@@ -359,6 +379,10 @@ export class RedisQuoteStore implements QuoteStore {
     return fromFields(await this.call(() => this.client.hGetAll(`${this.prefix}q:${quoteId}`)));
   }
 
+  async discard(quoteId: string): Promise<void> {
+    await this.run(DISCARD, Date.now(), [quoteId]);
+  }
+
   async claim(quoteId: string, txHash: string): Promise<"claimed" | "taken" | "gone"> {
     return (await this.run(CLAIM, Date.now(), [quoteId, txHash])) as "claimed" | "taken" | "gone";
   }
@@ -377,6 +401,15 @@ export class RedisQuoteStore implements QuoteStore {
 
   async handOver(quote: CachedQuote & { handedOver: HandedOver }, now: number): Promise<void> {
     await this.run(HAND_OVER, now, [quote.quoteId, quote.handedOver, quote.expiresAt, ...toFields(quote)]);
+  }
+
+  async claimRelay(quoteId: string, now: number, until: number): Promise<RelayClaim> {
+    const reply = (await this.run(CLAIM_RELAY, now, [quoteId, until])) as string | string[];
+    return Array.isArray(reply) ? { busyUntil: Number(reply[0]) } : (reply as RelayClaim);
+  }
+
+  async releaseRelay(quoteId: string): Promise<void> {
+    await this.call(() => this.client.hDel(`${this.prefix}q:${quoteId}`, "relayingUntil"));
   }
 
   async trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined> {
@@ -418,10 +451,30 @@ export class RedisQuoteStore implements QuoteStore {
     }
   }
 
-  /** Waits for the calls in flight; one that's still connecting stops trying. */
+  /** Once Redis first answers, or after `ms` without it: a server still starts with Redis down. */
+  ready(ms: number): Promise<void> {
+    if (this.client.isReady) return Promise.resolve();
+    return new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        this.client.off("ready", done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.client.once("ready", done);
+    });
+  }
+
+  /** Waits for the calls in flight, as long as one may take; one that's still connecting stops trying. */
   async close(): Promise<void> {
-    if (this.client.isReady) await this.client.close();
-    else if (this.client.isOpen) this.client.destroy();
+    if (this.client.isReady) {
+      const closed = this.client.close().then(
+        () => true,
+        () => true,
+      );
+      // A Redis that stopped answering would hold the close, and the process, open.
+      if (!(await Promise.race([closed, sleep(CALL_TIMEOUT_MS, false, { ref: false })]))) this.client.destroy();
+    } else if (this.client.isOpen) this.client.destroy();
   }
 }
 

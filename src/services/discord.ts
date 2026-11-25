@@ -103,11 +103,9 @@ export async function notifyServerStarted(info: {
 }
 
 /** Notify that the server is shutting down (e.g. SIGTERM on a redeploy), and the swap quotes that loses. */
-export async function notifyServerStopping(signal: string, openSwapQuotes = 0): Promise<void> {
-  const lost =
-    openSwapQuotes > 0
-      ? `\n${openSwapQuotes} open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".`
-      : "";
+/** `lostQuotes`: what the stop loses of the swap quotes, if anything. */
+export async function notifyServerStopping(signal: string, lostQuotes?: string): Promise<void> {
+  const lost = lostQuotes ? `\n${lostQuotes}.` : "";
   await postToDiscord({
     embeds: [
       {

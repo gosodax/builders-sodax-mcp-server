@@ -16,13 +16,14 @@ import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
+  claimRefundRelay,
   deadlineMs,
-  getCachedQuote,
   markHubOutcome,
   markRelayedForRefund,
   markSubmitFailed,
   markSubmitRefused,
   markSubmitted,
+  releaseRefundRelay,
   trackedSince,
 } from "./quoteCache.js";
 import {
@@ -54,6 +55,8 @@ export const DEPOSIT_SAFE_UNALERTED = `tell the user the deposit is on chain and
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
+// Longer than a relay call can take (swapsApi's 15 s timeout), so a claim never lapses while its relay runs.
+const RELAY_CLAIM_MS = 30_000;
 // The backend takes a new row until 120 s past the deadline, so a refusal before it isn't the
 // deadline; but refused in its last minute, no fix by hand lands in time. Its clock may be off ours
 // by as much as a quote's deadline may be.
@@ -444,11 +447,14 @@ type ExpiredState = SwapRef &
 export async function refundExpired(base: SwapRef, quote: CachedQuote, source: SwapSource): Promise<ExpiredState> {
   const { txHash, chain } = base;
   if (isHubSource(source)) return hubExpired(base, quote);
-  // Read again: track or cancel may have relayed it since this call read the quote.
-  const latest = await getCachedQuote(quote.quoteId, quote.keyHash);
-  if (latest !== "key_mismatch" && latest?.handedOver === "relayed_for_refund") {
-    quote.handedOver = latest.handedOver;
-    return { ...base, status: "expired_refunding" };
+  // Track or cancel, here or on another server, may be relaying it, or have handed it over since this call read it.
+  const claim = await claimRefundRelay(quote, RELAY_CLAIM_MS);
+  if (claim === "relayed_for_refund") return { ...base, status: "expired_refunding" };
+  if (claim !== "go") {
+    const waitMs = typeof claim === "string" ? RETRY_AFTER_SEC * 1000 : claim.busyUntil - Date.now();
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "Another call is handing this deposit over right now.", {
+      details: { retryAfterSec: Math.max(1, Math.ceil(waitMs / 1000)) },
+    });
   }
   let relayed: boolean;
   try {
@@ -456,7 +462,10 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
     relayed = await relaySpokeTx(quote.intent.srcChain, txHash, data);
   } catch (error) {
     // Refused is a relay failure; anything that may pass (a rate limit, an outage, a WAF) is retried.
-    if (!isRefusal(error)) throw retryable(error);
+    if (!isRefusal(error)) {
+      await releaseRefundRelay(quote);
+      throw retryable(error);
+    }
     relayed = false;
   }
   if (relayed) {
@@ -464,7 +473,8 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
     logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Relayed an expired swap deposit for refund");
     return { ...base, status: "expired_refunding" };
   }
-  // The claim stays, so the next call tries the relay again.
+  // The deposit's claim stays, so the next call tries the relay again.
+  await releaseRefundRelay(quote);
   const alerted = alertOperator("refund_relay_failed", {
     chainKey: chain.key,
     txHash,

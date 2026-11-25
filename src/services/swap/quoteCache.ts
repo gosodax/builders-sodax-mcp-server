@@ -18,6 +18,7 @@ import {
   type HandedOver,
   type HubOutcome,
   type QuoteStore,
+  type RelayClaim,
   type Room,
   type UnusedQuote,
   deadlineMs,
@@ -37,7 +38,7 @@ let lastSweep: Promise<void> = Promise.resolve();
 export function useQuoteStore(next: QuoteStore): void {
   stopSweeping();
   store = next;
-  leftOver.clear();
+  unwritten.clear();
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
   startSweeping();
 }
@@ -61,7 +62,17 @@ export async function checkQuoteRoom(keyHash: string): Promise<void> {
 
 export async function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): Promise<CachedQuote> {
   const entry = { ...quote, quoteId: randomUUID(), expiresAt: deadlineMs(quote) + GRACE_MS };
-  refuseIfFull(await store.reserve(entry.keyHash, Date.now(), entry));
+  let room: Room;
+  try {
+    room = await store.reserve(entry.keyHash, Date.now(), entry);
+  } catch (error) {
+    // A call that timed out may store it all the same, and it would count toward the caps until it expires.
+    if (error instanceof ActionError && error.code === "UPSTREAM_UNAVAILABLE") {
+      void store.discard(entry.quoteId).catch(() => {});
+    }
+    throw error;
+  }
+  refuseIfFull(room);
   startSweeping();
   return entry;
 }
@@ -124,6 +135,8 @@ function startSweeping(): void {
 
 async function sweep(): Promise<void> {
   const now = Date.now();
+  // Writes the store failed, for quotes no call reads again: retried here, as before a read.
+  await Promise.all([...unwritten.keys()].map(quoteId => flush(quoteId).catch(() => {})));
   try {
     logUnused(await store.sweep(now));
   } catch {
@@ -146,7 +159,7 @@ export async function getCachedQuote(
   quoteId: string,
   keyHash: string,
 ): Promise<CachedQuote | "key_mismatch" | undefined> {
-  await recordLeftOver(quoteId);
+  await flush(quoteId);
   const quote = await store.get(quoteId);
   if (!quote || quote.expiresAt <= Date.now()) return undefined;
   return quote.keyHash === keyHash ? quote : "key_mismatch";
@@ -162,8 +175,10 @@ export async function claimDeposit(quote: CachedQuote, txHash: string): Promise<
   return claim;
 }
 
-// Writes the store failed, by quoteId, in order: made before the quote is next read. Lost only with this process.
-const leftOver = new Map<string, (() => Promise<void>)[]>();
+type Writes = { queue: (() => Promise<void>)[]; running?: Promise<void> };
+// Per quote, the writes not in the store yet, in order. One runs at a time, so a later write never lands before an
+// earlier one; one that fails stays first. Lost only with this process.
+const unwritten = new Map<string, Writes>();
 
 /**
  * Records what a step outside this server did (a submit, a relay, the hub's answer). That step stands whatever the
@@ -172,29 +187,38 @@ const leftOver = new Map<string, (() => Promise<void>)[]>();
  * refund has no backend row, and its quote is the only record of the relay.
  */
 async function record(quoteId: string, write: (quoteId: string) => Promise<void>): Promise<void> {
-  // Keeps only the id, not the caller's quote, while the write waits.
-  const retry = () => write(quoteId);
-  const waiting = leftOver.get(quoteId);
-  if (waiting) {
-    waiting.push(retry);
-    return;
+  let writes = unwritten.get(quoteId);
+  if (!writes) {
+    writes = { queue: [] };
+    unwritten.set(quoteId, writes);
   }
+  writes.queue.push(() => write(quoteId));
   try {
-    await retry();
+    await flush(quoteId);
   } catch (error) {
-    leftOver.set(quoteId, [retry]);
     logger.error({ err: error, "quote.id": quoteId }, "Couldn't record a swap's progress in the quote store");
   }
 }
 
-/** The writes left over for this quote, in order; throws while the store still fails them. */
-async function recordLeftOver(quoteId: string): Promise<void> {
-  const waiting = leftOver.get(quoteId);
-  while (waiting?.length) {
-    await waiting[0]();
-    waiting.shift();
+/** Makes the quote's writes not in the store yet, in order; throws while the store still fails one. */
+function flush(quoteId: string): Promise<void> {
+  const writes = unwritten.get(quoteId);
+  if (!writes) return Promise.resolve();
+  if (!writes.running) {
+    const running = drain(quoteId, writes).finally(() => {
+      writes.running = undefined;
+    });
+    writes.running = running;
   }
-  leftOver.delete(quoteId);
+  return writes.running;
+}
+
+async function drain(quoteId: string, writes: Writes): Promise<void> {
+  while (writes.queue.length > 0) {
+    await writes.queue[0]();
+    writes.queue.shift();
+  }
+  unwritten.delete(quoteId);
 }
 
 export async function markSubmitFailed(quote: CachedQuote, waitSec: number): Promise<void> {
@@ -235,6 +259,23 @@ async function markHandedOver(quote: CachedQuote, how: HandedOver): Promise<void
   await record(quote.quoteId, () => store.handOver(handedOver, now));
 }
 
+/**
+ * Takes the relay for refund of the quote's deposit for `forMs`, so track and cancel, or two servers, don't both relay
+ * it: `go`, how it was handed over since the caller read it, or when another call's relay ends.
+ */
+export async function claimRefundRelay(quote: CachedQuote, forMs: number): Promise<RelayClaim> {
+  await flush(quote.quoteId);
+  const now = Date.now();
+  const claim = await store.claimRelay(quote.quoteId, now, now + forMs);
+  if (typeof claim === "string" && claim !== "go") quote.handedOver = claim;
+  return claim;
+}
+
+/** A relay that failed: the next call tries again. Best-effort, as the claim lapses by itself. */
+export async function releaseRefundRelay(quote: CachedQuote): Promise<void> {
+  await store.releaseRelay(quote.quoteId).catch(() => {});
+}
+
 /** Since when track has been called for this quote with `txHash`: now, the first time. */
 export async function trackedSince(quote: CachedQuote, txHash: string): Promise<number> {
   if (quote.trackedSince?.txHash === txHash) return quote.trackedSince.at;
@@ -262,14 +303,24 @@ export function openQuoteCount(): number | undefined {
   return store.openNow(Date.now())?.open;
 }
 
-/** What a restart would lose now: the open quotes in memory, none in Redis. For the stop and crash alerts. */
-export function quotesLostOnRestart(): number {
-  return store.kind === "redis" ? 0 : (openQuoteCount() ?? 0);
+/**
+ * What a restart would lose now, for the stop and crash alerts: in memory, the open quotes; in Redis, the writes it
+ * never received, which may get a relay for refund repeated. `undefined` if nothing.
+ */
+export function quotesLostOnRestart(): string | undefined {
+  if (store.kind === "redis") {
+    const n = unwritten.size;
+    return n > 0 ? `${n} swap quote update(s) Redis never received; a relay for refund may be repeated` : undefined;
+  }
+  const open = openQuoteCount() ?? 0;
+  return open > 0
+    ? `${open} open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote"`
+    : undefined;
 }
 
 /** Test only. */
 export async function clearQuoteCache(): Promise<void> {
-  leftOver.clear();
+  unwritten.clear();
   await store.clear();
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
 }

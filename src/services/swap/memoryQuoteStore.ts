@@ -9,6 +9,7 @@ import {
   MAX_QUOTES_PER_KEY,
   type OpenQuotes,
   type QuoteStore,
+  type RelayClaim,
   type Room,
   type UnusedQuote,
   deadlineMs,
@@ -35,6 +36,8 @@ export class MemoryQuoteStore implements QuoteStore {
   private readonly quotes = new Map<string, CachedQuote>();
   // Per key, its unclaimed quotes' expiry in epoch ms, by quoteId.
   private readonly openByKey = new Map<string, Map<string, number>>();
+  // Until when a call's relay for refund runs, in epoch ms, by quoteId.
+  private readonly relaying = new Map<string, number>();
 
   async reserve(keyHash: string, now: number, quote?: CachedQuote): Promise<Room> {
     const open = this.openByKey.get(keyHash);
@@ -80,6 +83,7 @@ export class MemoryQuoteStore implements QuoteStore {
 
   private drop(quote: CachedQuote): void {
     this.quotes.delete(quote.quoteId);
+    this.relaying.delete(quote.quoteId);
     this.release(quote);
   }
 
@@ -93,6 +97,11 @@ export class MemoryQuoteStore implements QuoteStore {
   async get(quoteId: string): Promise<CachedQuote | undefined> {
     const quote = this.quotes.get(quoteId);
     return quote && structuredClone(quote);
+  }
+
+  async discard(quoteId: string): Promise<void> {
+    const quote = this.quotes.get(quoteId);
+    if (quote) this.drop(quote);
   }
 
   async claim(quoteId: string, txHash: string): Promise<"claimed" | "taken" | "gone"> {
@@ -125,6 +134,20 @@ export class MemoryQuoteStore implements QuoteStore {
     stored.expiresAt = Math.max(stored.expiresAt, quote.expiresAt);
   }
 
+  async claimRelay(quoteId: string, now: number, until: number): Promise<RelayClaim> {
+    const quote = this.quotes.get(quoteId);
+    if (!quote) return "go";
+    if (quote.handedOver) return quote.handedOver;
+    const busyUntil = this.relaying.get(quoteId) ?? 0;
+    if (busyUntil > now) return { busyUntil };
+    this.relaying.set(quoteId, until);
+    return "go";
+  }
+
+  async releaseRelay(quoteId: string): Promise<void> {
+    this.relaying.delete(quoteId);
+  }
+
   async trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined> {
     const quote = this.quotes.get(quoteId);
     if (!quote) return undefined;
@@ -154,6 +177,7 @@ export class MemoryQuoteStore implements QuoteStore {
   async clear(): Promise<void> {
     this.quotes.clear();
     this.openByKey.clear();
+    this.relaying.clear();
   }
 
   async close(): Promise<void> {}

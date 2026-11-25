@@ -374,6 +374,30 @@ describe("sodax_swap_submit_and_track", () => {
     expect(submits(calls)).toEqual([]);
   });
 
+  it("relays an expired deposit once when track and cancel reach it at once", async () => {
+    let answer = () => {};
+    const answered = new Promise<void>(resolve => {
+      answer = resolve;
+    });
+    const calls = stubBackend({
+      relay: async () => {
+        await answered;
+        return Response.json({ result: { success: true, message: "" } });
+      },
+    });
+    const relays = () => calls.filter(call => call.path === "/intents/submit");
+    const { quoteId } = await cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    const tracked = track({ txHash: TX, quoteId });
+    await vi.waitFor(() => expect(relays()).toHaveLength(1));
+    const cancelled = await cancel({ txHash: TX, quoteId });
+    expect(cancelled.out).toMatchObject({ error: { code: "UPSTREAM_UNAVAILABLE" } });
+    answer();
+    expect((await tracked).out).toMatchObject({ status: "expired_refunding" });
+    expect(relays()).toHaveLength(1);
+    expect((await cancel({ txHash: TX, quoteId })).out).toMatchObject({ reason: "refunding" });
+  });
+
   it("alerts when an expired deposit can't be relayed, and tries again on the next call", async () => {
     const calls = stubBackend({ relay: () => Response.json({ result: { success: false, message: "" } }) });
     const { quoteId } = await cacheQuote();

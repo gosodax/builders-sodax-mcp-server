@@ -1,4 +1,4 @@
-/** Failures the swap tools return as `{ status: "error", error: { code, message }, nextStep }` with `isError`. */
+/** Failures the swap and bridge tools return as `{ status: "error", error: { code, message }, nextStep }` with `isError`. */
 
 import { GET_A_KEY, SWAP_HELP } from "../../constants.js";
 
@@ -14,6 +14,7 @@ export const ACTION_ERROR_CODES = [
   "DEADLINE_TOO_SHORT",
   "DESTINATION_NOT_READY",
   "SWAP_REJECTED",
+  "BRIDGE_REJECTED",
   "SWAP_MISMATCH",
   "PRICE_OFF_MARKET",
   "SECRET_REJECTED",
@@ -64,6 +65,8 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   DESTINATION_NOT_READY: "Tell the user what the recipient must set up before it can receive this token.",
   SWAP_REJECTED:
     "Tell the user the swap service refused this swap; check the tokens, amount and addresses with them before trying again.",
+  BRIDGE_REJECTED:
+    "Tell the user the bridge service refused this bridge; check the tokens, amount and addresses with them before trying again.",
   SWAP_MISMATCH: "Tell the user this swap couldn't be prepared safely, and don't retry it.",
   PRICE_OFF_MARKET:
     "Tell the user the swap service quoted far below market prices (error.usdValue sent, error.usdOut received), so the swap wasn't prepared. On a small swap, fixed fees (to Bitcoin, for one) can cost this much: ask whether to try a larger amount; otherwise try again later.",

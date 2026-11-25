@@ -936,6 +936,9 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
     case "SWAP_MISMATCH":
       // Built wrong: never signed. After a send (a cancel built wrong), the swap itself still stands.
       return sent ? stuck() : final(advice, NONE);
+    case "BRIDGE_REJECTED":
+      // Only the bridge tools raise it.
+      return sent ? stuck() : final(advice, NONE);
     case "DESTINATION_NOT_READY":
       return ongoing(advice, external("destination_not_ready", answer()));
     case "API_KEY_REQUIRED":

@@ -198,7 +198,7 @@ says the same in a sentence: both come from one decision, so they don't disagree
 | `provide` | the user | gives `fields`, by name, for `next`; declining follows `onDecline` where there is one |
 | `confirm` | the user, or the wallet when `by: "wallet"` | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: that cancel can never land), then `next` |
 | `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash. A bounded `afterSend` is counted before anything is signed, and past its bound nothing is |
-| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it |
+| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it; if they don't, `onDecline` where there is one |
 | `none` | nobody | the workflow is over |
 
 What a runtime keeps to:
@@ -310,6 +310,7 @@ async function follow(
       // person says they did what it asks.
       const done = await host.ask(action, result);
       if (action.next && done === true) return go(action.next);
+      if (done !== true && action.onDecline) return exhaust(action.onDecline);
       return result.terminal ? { stop: "terminal", result, outcome: result.outcome } : { stop: "handoff", result };
     }
     default:

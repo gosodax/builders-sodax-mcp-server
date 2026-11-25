@@ -158,7 +158,7 @@ describe("registerActionTool", () => {
   it("points the user to the SODAX team on Discord on an INTERNAL failure only", async () => {
     for (const error of [new Error("bug"), new ActionError("INTERNAL", "Built something unrecognized.")]) {
       const { nextStep } = (await callFailingTool(error)).structuredContent as { nextStep: string };
-      expect(nextStep).toMatch(/^Retry in a minute/);
+      expect(nextStep).toMatch(/^Call test_action_tool again in 30 seconds/);
       expect(nextStep.endsWith(SWAP_HELP)).toBe(true);
       expect(nextStep).toContain("https://www.sodax.com/discord");
     }
@@ -172,9 +172,16 @@ describe("registerActionTool", () => {
     expect(result.structuredContent).toMatchObject({ error: { code: "UNSUPPORTED_CHAIN", message: "No." } });
   });
 
-  it("gives each code a default next step", async () => {
-    const result = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
-    expect(result.structuredContent).toMatchObject({ nextStep: expect.stringContaining("Retry in a minute") });
+  it("gives each code a default next step, and a retry its bound", async () => {
+    const amount = await callFailingTool(new ActionError("INVALID_AMOUNT", "No."));
+    expect(amount.structuredContent).toMatchObject({
+      nextStep: expect.stringContaining("Ask the user for the amount"),
+    });
+    const down = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
+    expect(down.structuredContent).toMatchObject({
+      nextStep:
+        "Call test_action_tool again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user the SODAX swap service is unavailable right now.",
+    });
   });
 
   it("turns anything else into INTERNAL without leaking its message", async () => {

@@ -161,8 +161,11 @@ describe("resolveToken", () => {
     expect(resolveToken(parseCatalog(tokens, configs), "42161", "USDC").chain.key).toBe("0xa4b1.arbitrum");
   });
 
-  // A balance read's address belongs to the chain it asked about: no option moves it to another.
-  it("offers a balance read only tokens on its own chain", () => {
+  // A balance read's address, and a quote's fromAddress, belong to the chain asked about: no option moves it to another.
+  it.each([
+    ["a balance read", "token", undefined, "chain"],
+    ["a quote's sending side", "fromToken", "from", "fromChain"],
+  ] as const)("offers %s only tokens on its own chain", (_case, field, side, chainField) => {
     const catalog = fixtureCatalog();
     const listedElsewhere = Object.values(catalog.tokens)
       .flat()
@@ -174,11 +177,11 @@ describe("resolveToken", () => {
     expect(listedElsewhere).toBeDefined();
     let options: { args: Record<string, string> }[] | undefined;
     try {
-      resolveExactly(catalog, "Arbitrum", listedElsewhere?.symbol ?? "", "token");
+      resolveExactly(catalog, "Arbitrum", listedElsewhere?.symbol ?? "", field, side);
     } catch (error) {
       options = (error as { hint?: { options?: { args: Record<string, string> }[] } }).hint?.options;
     }
-    expect(options?.every(option => option.args.chain === "0xa4b1.arbitrum")).toBe(true);
+    expect(options?.every(option => option.args[chainField] === "0xa4b1.arbitrum")).toBe(true);
   });
 
   it("offers a quote side only the tokens it can use", () => {

@@ -289,6 +289,17 @@ describe("the reference runtime", () => {
     expect(swap.now()).toBeLessThan(pollUntil + 60_000);
   });
 
+  it("makes the one call after stopAfter when the user says the tx wasn't sent", async () => {
+    const swap = harness({
+      respond: (_, __, ___, now) => (now > stopAfter ? tracked({ status: "source_not_found" }) : unseenUntil(now)),
+      answers: { external: () => false },
+    });
+    await run(swap.host, { tool: TRACK, args: TRACK_ARGS });
+    expect(swap.asked[0]).toBe("external:check_wallet");
+    expect(swap.of(TRACK).at(-1)?.args).toEqual(TRACK_ARGS);
+    expect(swap.now()).toBeGreaterThan(stopAfter);
+  });
+
   it("stops a runtime that keeps saying the tx was sent while no node sees it", async () => {
     const swap = harness({ respond: (_, __, ___, now) => unseenUntil(now) });
     const ending = await run(swap.host, { tool: TRACK, args: TRACK_ARGS });
@@ -557,11 +568,19 @@ describe("the reference runtime", () => {
     expect(swap.sends()).toBe(1);
   });
 
-  it("never tracks a cancel's swap that has no record: it hands off instead of submitting it", async () => {
-    const swap = harness({ respond: () => cancelled({ status: "not_cancellable", reason: "not_submitted" }) });
-    expect(await run(swap.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
-    expect(swap.of(TRACK)).toEqual([]);
-    expect(swap.asked).toEqual(["external:help_desk"]);
+  it("tracks a cancel's swap that still has no record after its retries, with the same arguments", async () => {
+    const swap = harness({
+      respond: tool =>
+        tool === CANCEL
+          ? cancelled({ status: "not_cancellable", reason: "not_submitted" })
+          : tracked({ status: "not_submitted", reason: "quote_used", alerted: true }),
+    });
+    expect(await run(swap.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({
+      stop: "terminal",
+      outcome: "held",
+    });
+    expect(swap.of(CANCEL)).toHaveLength(11);
+    expect(swap.of(TRACK).map(made => made.args)).toEqual([TRACK_ARGS]);
   });
 
   it("is the loop the README quotes, word for word", () => {

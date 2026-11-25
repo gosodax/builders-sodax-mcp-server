@@ -136,6 +136,7 @@ async function follow(
       // person says they did what it asks.
       const done = await host.ask(action, result);
       if (action.next && done === true) return go(action.next);
+      if (done !== true && action.onDecline) return exhaust(action.onDecline);
       return result.terminal ? { stop: "terminal", result, outcome: result.outcome } : { stop: "handoff", result };
     }
     default:

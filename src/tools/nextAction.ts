@@ -124,11 +124,12 @@ export interface Execute {
   afterSend: CallTool & { on: "broadcast"; needs: ["txHash"] | ["cancelTxHash"] };
 }
 
-/** A person acts outside these tools, then `next`. */
+/** A person acts outside these tools, then `next`; if they don't, `onDecline`. */
 export interface External {
   type: "external";
   reason: ExternalReason;
   next?: NextAction;
+  onDecline?: Exhausted;
 }
 
 export interface None {
@@ -190,10 +191,11 @@ export const provide = (
 export const choose = (field: string, options: Choose["options"], next?: NextAction): Choose | Provide =>
   options.length > 0 ? { type: "choose", field, options, ...(next && { next }) } : provide([field], next);
 
-export const external = (reason: ExternalReason, next?: NextAction): External => ({
+export const external = (reason: ExternalReason, next?: NextAction, onDecline?: Exhausted): External => ({
   type: "external",
   reason,
   ...(next && { next }),
+  ...(onDecline && { onDecline }),
 });
 
 export const exhausted = (nextAction: NextAction, terminal: boolean, outcome?: Outcome): Exhausted => ({

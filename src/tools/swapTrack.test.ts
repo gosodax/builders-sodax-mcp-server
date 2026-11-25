@@ -550,7 +550,7 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
     expect(out.delivery).toBeUndefined();
     expect(out.nextStep).toBe(
-      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again; call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step), at most 30 times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.",
+      "The swap is filled on the SODAX hub (fill tx 0xfill); to a chain other than Sonic the tokens arrive after one more cross-chain hop. Don't send it again.",
     );
   });
 
@@ -562,7 +562,7 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash: TX, quoteId });
     expect(out.delivery).toBe("in_transit");
     expect(out.nextStep).toBe(
-      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop. Don't send it again; call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step), at most 30 times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.",
+      "The swap is filled: at least 4.9 USDC is on its way to Base, arriving after one more cross-chain hop; sodax_get_balance on the recipient shows it arrive. Don't send it again.",
     );
   });
 

@@ -84,6 +84,9 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INTERNAL: `${RETRY_LATER} ${SWAP_HELP}`,
 };
 
+/** Whether the throw site left the code's own advice, which says nothing about this failure in particular. */
+export const hasDefaultNextStep = (error: ActionError): boolean => error.nextStep === DEFAULT_NEXT_STEP[error.code];
+
 /** A value the user can pick to fix a failure: what it's called, and the arguments it sets. */
 export interface ErrorOption {
   label: string;

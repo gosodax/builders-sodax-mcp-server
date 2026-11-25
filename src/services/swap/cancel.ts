@@ -140,7 +140,8 @@ export async function cancelSwap(input: {
   if (receipt.kind === "hub") return hubCancelled(base, source, intent, hubTxHash, receipt, cancelTxHash, quote);
   // The payload the sent cancel must carry, built here: a Swaps API outage can't hold up a mined cancel.
   const payload = cancelPayload(intent);
-  if (!payload) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
+  if (!payload)
+    throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.", { retryable: false });
   // The user's own message to their hub wallet, as the relay will read it: only that cancels the intent.
   const cancel = {
     srcAddress: intent.srcAddress,

@@ -1,18 +1,23 @@
 /**
- * A bridge from an EVM spoke or Sonic, as the user's wallet will send it. The Bridge API builds it (ADR 0001 D3; its
- * build runs the hub simulation, and its allowance check says whether an approve is needed, D5). This server rebuilds
- * it with the SDK and refuses any difference before anyone signs. The relay carries an EVM deposit by its hash alone,
- * so the deposit tx, not the relay data, is what runs on the hub: both are checked.
+ * A bridge as the user's wallet will send it. The Bridge API builds it (ADR 0001 D3; its build runs the hub
+ * simulation, and its allowance check says whether an approve is needed, D5), and the SDK builds it here too
+ * (`sdkBridge`): any difference is refused before anyone signs.
+ *
+ * From an EVM spoke or Sonic, the Bridge API's tx is the one signed, checked byte for byte against the SDK's. From a
+ * non-EVM spoke, blockhash, sequence and fees make any two builds differ, so the SDK's tx is the one signed, as for
+ * the swap tools, checked by its family (`depositStep`). Either way the relay data, which the hub derives the same way
+ * whatever the chain, must equal the SDK's.
  */
 
 import { createHash } from "node:crypto";
 import { HUB_CHAIN_KEY } from "@sodax/types";
-import { sameHex as same } from "../../constants.js";
+import { isRecord, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import { approveCalldata, isHubChain, sdkBridge } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
 import { toChain } from "../swap/resolver.js";
 import { chainRead } from "../swap/source.js";
+import type { NonEvmStep, SwapSource } from "../swap/sources/types.js";
 import { type EvmTx, asEvmTx } from "../swap/swapsApi.js";
 import {
   type BridgeRequest,
@@ -42,18 +47,7 @@ export async function buildEvmBridge(request: BridgeRequest, native: boolean): P
     buildBridge(request),
     native || checkBridgeAllowance(request),
     // The SDK's build reads the user's hub wallet on the hub.
-    chainRead(toChain(HUB_CHAIN_KEY), () =>
-      sdkBridge({
-        srcChainKey: request.srcChainKey,
-        srcAddress: request.srcAddress,
-        srcToken: request.inputToken,
-        amount: request.inputAmount,
-        dstChainKey: request.dstChainKey,
-        dstToken: request.outputToken,
-        recipient: request.dstAddress,
-        partnerFee: request.partnerFee,
-      }),
-    ),
+    chainRead(toChain(HUB_CHAIN_KEY), () => sdkBridge(sdkRequest(request))),
   ]);
   const deposit = asEvmTx(built.tx);
   const expected = asEvmTx(withDecimalValue(rebuilt.tx));
@@ -85,6 +79,70 @@ export async function buildEvmBridge(request: BridgeRequest, native: boolean): P
     same(step.data, approveCalldata(request.inputToken, spender, amount));
   if (!approvals.every(approvesExactly)) throw bridgeMismatch(request, "approval", tx);
   return { deposit, relayData: built.relayData, approvals };
+}
+
+/**
+ * From a non-EVM spoke: the deposit step the SDK built, checked by its family against the program the Bridge API's
+ * own build calls, and the relay data both agree on.
+ */
+export async function buildNonEvmBridge(
+  request: BridgeRequest,
+  source: SwapSource,
+  symbol: string,
+): Promise<{ step: NonEvmStep; relayData: BuiltBridge["relayData"] }> {
+  const { adapter, chain } = source;
+  if (!adapter.depositStep) throw new ActionError("INTERNAL", "Not a non-EVM source.");
+  const [built, approved, rebuilt] = await Promise.all([
+    buildBridge(request),
+    checkBridgeAllowance(request),
+    // The SDK reads the chain to build it (account, blockhash, coins, fees), and a wallet it can't build for fails the
+    // same way as an outage: the Bridge API built it a moment ago, so a retry is more likely to help.
+    sdkBridge(sdkRequest(request)).catch(() => {
+      throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the bridge on ${chain.name} right now.`, {
+        nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then call sodax_bridge_prepare again.`,
+      });
+    }),
+  ]);
+  const relayMismatch = findMismatch([
+    ["relayData.address", same(built.relayData.address, rebuilt.relayData.address)],
+    ["relayData.payload", same(built.relayData.payload, rebuilt.relayData.payload)],
+  ]);
+  if (relayMismatch) throw bridgeMismatch(request, relayMismatch, built.tx);
+  if (!approved) throw notApproved(source, symbol);
+  const expected = isRecord(built.tx) ? built.tx.to : undefined;
+  return { step: adapter.depositStep(source, rebuilt.tx, expected), relayData: built.relayData };
+}
+
+/** An allowance short of the amount: only Stellar has one from a non-EVM spoke, its trustline's room. */
+function notApproved({ adapter, chain }: SwapSource, symbol: string): ActionError {
+  if (adapter.family === "STELLAR") {
+    return new ActionError("BRIDGE_REJECTED", `The wallet's ${symbol} trustline has too little room for this amount.`, {
+      nextStep: `Tell the user their Stellar wallet must raise its ${symbol} trustline limit by the amount sent, then call sodax_bridge_prepare again.`,
+      details: { reason: "trustline_room" },
+    });
+  }
+  return new ActionError(
+    "BRIDGE_REJECTED",
+    `The bridge service says ${symbol} on ${chain.name} needs an approval this server can't build.`,
+    {
+      nextStep: `Tell the user a bridge of ${symbol} from ${chain.name} isn't available here for now.`,
+      details: { reason: "approval_unbuildable" },
+    },
+  );
+}
+
+/** The bridge as the SDK's `createBridgeIntent` takes it. */
+function sdkRequest(request: BridgeRequest): Parameters<typeof sdkBridge>[0] {
+  return {
+    srcChainKey: request.srcChainKey,
+    srcAddress: request.srcAddress,
+    srcToken: request.inputToken,
+    amount: request.inputAmount,
+    dstChainKey: request.dstChainKey,
+    dstToken: request.outputToken,
+    recipient: request.dstAddress,
+    partnerFee: request.partnerFee,
+  };
 }
 
 /** The SDK's raw EVM tx carries its value as a bigint; the API's as a decimal string. */

@@ -6,7 +6,7 @@ import { TtlCache } from "../ttlCache.js";
 import { ActionError } from "./errors.js";
 import { checkAddress, resolveExactly, resolveSwapChain } from "./resolver.js";
 import { chainRead } from "./source.js";
-import { type SwapsApiToken, getSwapCatalog, nativeToken } from "./tokens.js";
+import { type SwapCatalog, type SwapsApiToken, getSwapCatalog, nativeToken } from "./tokens.js";
 import { formatUnits } from "./units.js";
 
 export interface Holding {
@@ -43,8 +43,12 @@ export function clearBalanceCache(): void {
   balances.clear();
 }
 
-export async function readBalances(input: { chain: string; address: string; token?: string }): Promise<BalanceResult> {
-  const catalog = await getSwapCatalog();
+/** Tokens are looked up in the swap catalog, unless another (the bridge's) is given. */
+export async function readBalances(
+  input: { chain: string; address: string; token?: string },
+  given?: SwapCatalog,
+): Promise<BalanceResult> {
+  const catalog = given ?? (await getSwapCatalog());
   const chain = resolveSwapChain(catalog, input.chain);
   const chainType = catalog.chains[chain.key]?.type;
   const native = nativeToken(catalog, chain.key);

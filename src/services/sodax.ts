@@ -282,6 +282,83 @@ export function userHubWallet(chainKey: string, address: string): Promise<string
   );
 }
 
+/** A token on a chain, by its address there. */
+export interface ChainToken {
+  chainKey: string;
+  address: string;
+}
+
+/** The SDK's own entry for a token, as its bridge reads it; throws for one its config doesn't list. */
+function bridgeToken({ chainKey, address }: ChainToken) {
+  const token = sdk().sodax.config.getSpokeTokenFromOriginalAssetAddress(chainKey as SpokeChainKey, address);
+  if (!token) throw new Error("token not in the SDK config");
+  return token;
+}
+
+/** Whether the SDK bridges `from` to `to`: both listed and sharing one hub vault. Config only, no read. */
+export function isBridgeable(from: ChainToken, to: ChainToken): boolean {
+  try {
+    return sdk().sodax.bridge.isBridgeable({ from: bridgeToken(from), to: bridgeToken(to) });
+  } catch {
+    return false;
+  }
+}
+
+/** The addresses of the tokens on `toChainKey` that `from` bridges to (same hub vault). Config only, no read. */
+export function bridgeableTokensTo(from: ChainToken, toChainKey: string): string[] {
+  const result = sdk().sodax.bridge.getBridgeableTokens(
+    from.chainKey as SpokeChainKey,
+    toChainKey as SpokeChainKey,
+    from.address,
+  );
+  return result.ok ? result.value.map(token => token.address) : [];
+}
+
+/**
+ * How much a bridge can move now, in base units of `decimals`: from a spoke, what the source vault still accepts
+ * (`DEPOSIT_LIMIT`); to a spoke, what the destination's asset manager holds (`WITHDRAWAL_LIMIT`); spoke to spoke, the
+ * smaller. `decimals` are the binding side's vault token's, not necessarily either token's. Reads the hub.
+ */
+export function bridgeLimit(
+  from: ChainToken,
+  to: ChainToken,
+): Promise<{ amount: bigint; decimals: number; type: "DEPOSIT_LIMIT" | "WITHDRAWAL_LIMIT" }> {
+  return bounded({ label: "bridge limit", chainKey: HUB_CHAIN_KEY }, async () => {
+    const result = await sdk().sodax.bridge.getBridgeableAmount(bridgeToken(from), bridgeToken(to));
+    if (!result.ok) throw new Error("bridge limit read failed");
+    return result.value;
+  });
+}
+
+/**
+ * What a bridge of `amount` (source base units) delivers, in destination base units, and the partner fee it takes, in
+ * the hub's 18-decimal vault units: the SDK's own pipeline (`BridgeService.computeBridgeAmounts`, private), from its
+ * public parts. Into the vault's units unless the source is a vault token, the fee off there, then out into the
+ * destination's units unless that is one. Config only, no read.
+ */
+export function bridgeAmounts(
+  amount: bigint,
+  from: ChainToken,
+  to: ChainToken,
+  partnerFee?: { address: string; bps: number },
+): { delivered: bigint; fee: bigint } {
+  const { sdk: lib, sodax } = sdk();
+  const src = bridgeToken(from);
+  const dst = bridgeToken(to);
+  const inVault = sodax.config.isSodaVaultHubAsset(src.hubAsset)
+    ? amount
+    : lib.EvmVaultTokenService.translateIncomingDecimals(src.decimals, amount);
+  const fee = lib.calculateFeeAmount(
+    inVault,
+    partnerFee && { address: partnerFee.address as `0x${string}`, percentage: partnerFee.bps },
+  );
+  const out = inVault - fee;
+  const delivered = sodax.config.isSodaVaultHubAsset(dst.hubAsset)
+    ? out
+    : lib.EvmVaultTokenService.translateOutgoingDecimals(dst.decimals, out);
+  return { delivered, fee };
+}
+
 export interface EvmReceipt {
   reverted: boolean;
   /** Where it was mined: what orders two txs on one chain. */

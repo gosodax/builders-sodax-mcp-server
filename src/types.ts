@@ -1,5 +1,5 @@
 /**
- * TypeScript types for the Builders SODAX MCP Server
+ * TypeScript types for the SODAX MCP Server
  */
 
 export enum ResponseFormat {

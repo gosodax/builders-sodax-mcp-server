@@ -15,16 +15,16 @@
       "headers": [
         {
           "name": "x-api-key",
-          "description": "SODAX API key. Optional for the builder tools; required for the swap tools. Forwarded on the server's data API, solver and Swaps API calls",
+          "description": "SODAX API key. Optional for the builder tools; required for the swap and bridge tools. Forwarded on the server's data API, solver, Swaps API and Bridge API calls",
           "isRequired": false,
           "isSecret": true
         },
         {
           "name": "x-sodax-profile",
-          "description": "Tools to serve: all (default: builder tools, plus swap tools with an API key), builder, or swap (needs x-api-key)",
+          "description": "Tools to serve: all (default: builder tools, plus swap and bridge tools with an API key), builder, swap or bridge (each needs x-api-key)",
           "isRequired": false,
           "isSecret": false,
-          "choices": ["all", "builder", "swap"]
+          "choices": ["all", "builder", "swap", "bridge"]
         },
         {
           "name": "x-sodax-partner-address",

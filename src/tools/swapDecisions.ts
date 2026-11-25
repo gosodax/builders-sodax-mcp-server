@@ -107,17 +107,24 @@ const confirmCancel = (swap: Ref): Confirm => ({
 const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref) =>
   provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK));
 
-const GIVE_UP = `tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
+const giveUp = (what: "swap" | "bridge") =>
+  `tell the user this server can't follow the ${what} right now, that they must not send it again, and to give the ${what}'s transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
 
 /**
  * Any failure after the user's wallet sent something: one that may pass is the same call again, a few
  * times at most, and none is a reason to send the swap again. Nothing is claimed about the tx: the
  * failure may have come before it was checked.
  */
-const afterSendAdvice = (tool: string, sent: string, failure: ActionError, seconds: number) =>
+const afterSendAdvice = (
+  tool: string,
+  sent: string,
+  failure: ActionError,
+  seconds: number,
+  what: "swap" | "bridge" = "swap",
+) =>
   failure.retryable
-    ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${GIVE_UP}`
-    : `${failure.nextStep} The user must not send the swap again.`;
+    ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${giveUp(what)}`
+    : `${failure.nextStep} The user must not send the ${what} again.`;
 
 // A swap deposits the token the user sends into its hub vault and withdraws the one they receive.
 const RESTRICTED = {
@@ -125,9 +132,14 @@ const RESTRICTED = {
   depositOnly: "is deposit-only: use it only as the token the user sends",
 } as const;
 
-// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
-const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_price if there was none)";
-const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL}; a quote's amount stays in token units.`;
+/** Which tokens a lookup is for: the swap tools' list, or the bridge tools', which differs. */
+export type TokenPurpose = "swap" | "bridge";
+
+// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote, or a bridge.
+const unknownTokenCall = (purpose: TokenPurpose) =>
+  `the call that returned UNKNOWN_TOKEN (${purpose === "bridge" ? "sodax_bridge_prepare" : "sodax_swap_price"} if there was none)`;
+const useResolved = (purpose: TokenPurpose) =>
+  `Pass chain.key and token.address to ${unknownTokenCall(purpose)}; ${purpose === "bridge" ? "an" : "a quote's"} amount stays in token units.`;
 
 // ── Balance and token lookups ───────────────────────────────────────────
 
@@ -165,8 +177,9 @@ export const balanceDecision = (balances: BalanceResult): Decision => final(bala
  * Built from catalog symbols, addresses and chain names only, never from the caller's
  * query or a token's free-text name.
  */
-export function resolveNextStep(resolution: Resolution): string {
+export function resolveNextStep(resolution: Resolution, purpose: TokenPurpose = "swap"): string {
   const chain = resolution.chain.name;
+  const listed = `${purpose} token`;
   switch (resolution.status) {
     case "resolved": {
       const { token } = resolution;
@@ -174,7 +187,7 @@ export function resolveNextStep(resolution: Resolution): string {
       // The same address can be a different token on each chain.
       const found = resolution.matchedBy === "address" ? `That address is ${named}. ` : "";
       const restricted = token.access ? `${named} ${RESTRICTED[token.access]}. ` : "";
-      return `${found}${restricted}${USE_RESOLVED}`;
+      return `${found}${restricted}${useResolved(purpose)}`;
     }
     case "ambiguous": {
       // Two candidates can share a symbol in any case (bridged and native USDC); the address tells them apart.
@@ -184,7 +197,7 @@ export function resolveNextStep(resolution: Resolution): string {
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
           : `which of ${labels.join(", ")} on ${chain} they mean`;
-      return `Ask the user ${ask}, then pass its address to ${UNKNOWN_TOKEN_CALL}.`;
+      return `Ask the user ${ask}, then pass its address to ${unknownTokenCall(purpose)}.`;
     }
     case "not_found": {
       const [first] = resolution.suggestions;
@@ -193,18 +206,18 @@ export function resolveNextStep(resolution: Resolution): string {
         const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
         // A symbol listed elsewhere may still be a near miss here: WETH on Arbitrum is most likely its ETH.
         if (nearest) {
-          return `No swap token on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
+          return `No ${listed} on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
         }
-        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
+        return `No ${listed} on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
       }
-      if (!nearest) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
-      return `No swap token matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
+      if (!nearest) return `No ${listed} matches on ${chain}; confirm the chain and token with the user.`;
+      return `No ${listed} matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
     }
   }
 }
 
-export function resolveDecision(resolution: Resolution): Decision {
-  const nextStep = resolveNextStep(resolution);
+export function resolveDecision(resolution: Resolution, purpose: TokenPurpose = "swap"): Decision {
+  const nextStep = resolveNextStep(resolution, purpose);
   if (resolution.status === "resolved") return final(nextStep, NONE);
   // A pick is looked up again and resolves; a value the user names may not, so that loop is bounded.
   const again = answered(callOnce("sodax_resolve_token", "same"), resolution.status, ENDED);
@@ -285,7 +298,7 @@ const approveOf = (quote: Extract<SwapQuote, { status: "ready" }>) =>
   quote.steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
 
 // How a family's wallet sends the SDK's raw tx (`steps[].tx`; bigints are decimal strings, bytes base64).
-const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
+export const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
   NEAR: "one transaction from signerId to params.contractId calling params.method with params.args, attaching params.deposit (yoctoNEAR) and params.gas",
   SOLANA:
     "data is an unsigned v0 transaction (base64) with the user as fee payer, which the wallet signs and sends at once: its blockhash expires in about a minute, and if it expires unsent, call this tool again with the same arguments for a new one",
@@ -825,12 +838,15 @@ export interface FailureContext {
 }
 
 /** Track and cancel are called once the user's wallet sent something. */
-const AFTER_SEND: readonly SwapToolName[] = [TRACK, CANCEL];
+const AFTER_SEND: readonly SwapToolName[] = [TRACK, CANCEL, "sodax_bridge_submit_and_track"];
 
 export function errorDecision(failure: ActionError, { tool, args }: FailureContext): Decision {
   const sent = AFTER_SEND.includes(tool);
   const seconds = Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC);
-  const advice = sent ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : "swap", failure, seconds) : failure.nextStep;
+  const what = tool.startsWith("sodax_bridge_") ? "bridge" : "swap";
+  const advice = sent
+    ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : what, failure, seconds, what)
+    : failure.nextStep;
   // The field the throw site named, which the user is asked again; a failure that names none is handed off.
   const named = failure.details?.field;
   const field = typeof named === "string" ? named : undefined;
@@ -937,8 +953,24 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       // Built wrong: never signed. After a send (a cancel built wrong), the swap itself still stands.
       return sent ? stuck() : final(advice, NONE);
     case "BRIDGE_REJECTED":
+      switch (failure.details?.reason) {
+        case "not_bridgeable":
+          return pick();
+        case "same_chain":
+        case "above_limit":
+          return sent ? stuck() : field ? askFor([field]) : stuck();
+        case "wallet_cannot_build":
+          return ongoing(
+            advice,
+            failure.hint?.balance ? callOnce("sodax_get_balance", failure.hint.balance) : stuck().nextAction,
+          );
+        case "trustline_room":
+          return ongoing(advice, external("wallet_setup", answer()));
+        default:
+          return sent ? stuck() : final(advice, NONE);
+      }
     case "BRIDGE_MISMATCH":
-      // Only the bridge tools raise them.
+      // Built wrong: never signed.
       return sent ? stuck() : final(advice, NONE);
     case "DESTINATION_NOT_READY":
       return ongoing(advice, external("destination_not_ready", answer()));

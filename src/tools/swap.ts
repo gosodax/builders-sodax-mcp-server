@@ -1,10 +1,12 @@
 /**
  * Swap tools: the `swap` profile. Registered only while the kill switch is on
  * (the default) and the connection sent an API key (see services/profiles.ts).
+ * The token lookup and balance tools (`registerTokenTools`) serve the bridge tools too.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { getBridgeCatalog } from "../services/bridge/catalog.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { readBalances } from "../services/swap/balance.js";
 import { cancelSwap } from "../services/swap/cancel.js";
@@ -16,14 +18,21 @@ import { getSwapCatalog } from "../services/swap/tokens.js";
 import { trackSwapWaiting } from "../services/swap/track.js";
 import { amountText } from "../services/swap/units.js";
 import { registerActionTool } from "./actionTool.js";
-import { balanceDecision, cancelDecision, quoteDecision, resolveDecision, trackDecision } from "./swapDecisions.js";
+import {
+  type TokenPurpose,
+  balanceDecision,
+  cancelDecision,
+  quoteDecision,
+  resolveDecision,
+  trackDecision,
+} from "./swapDecisions.js";
 
 /**
  * `schema`, plus the SECRET_REJECTED refusal for a value that fails it and looks like a secret: the
  * handler's own screening never sees a value zod rejects. A tx-hash field takes every source family's
  * format, which some key shapes fit too, so it's screened even when it passes.
  */
-function screened(schema: z.ZodType<string>, field: SecretField = {}) {
+export function screened(schema: z.ZodType<string>, field: SecretField = {}) {
   return schema.superRefine((value, ctx) => {
     const screen = field.txHash || !schema.safeParse(value).success;
     const refusal = screen ? secretRefusalText(value, field) : undefined;
@@ -32,11 +41,11 @@ function screened(schema: z.ZodType<string>, field: SecretField = {}) {
 }
 
 // Functions, so each field gets its own schema: one reused within a tool becomes a `$ref` in its JSON schema.
-const textArg = (max: number, min = 0) => screened(z.string().trim().min(min).max(max));
-const chainArg = () => textArg(64, 1);
-const tokenArg = () => textArg(128, 1);
-const addressArg = () => textArg(128).optional();
-const txHashArg = () =>
+export const textArg = (max: number, min = 0) => screened(z.string().trim().min(min).max(max));
+export const chainArg = () => textArg(64, 1);
+export const tokenArg = () => textArg(128, 1);
+export const addressArg = () => textArg(128).optional();
+export const txHashArg = () =>
   screened(z.string().trim().refine(isAnyTxHash, "Must be a transaction hash as the wallet shows it."), {
     txHash: true,
   });
@@ -68,43 +77,6 @@ const swapArgs = {
 const swapActionHints = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
 export function registerSwapTools(server: McpServer): void {
-  registerActionTool(
-    server,
-    "sodax_resolve_token",
-    "Look up a token on a chain: its address, decimals and hub asset. The other swap tools take symbols themselves; use this when one returns UNKNOWN_TOKEN. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
-    {
-      chain: chainArg().describe(
-        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
-      ),
-      query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
-    },
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async ({ chain, query }) => {
-      const resolution = resolveToken(await getSwapCatalog(), chain, query);
-      return { ...resolution, ...resolveDecision(resolution) };
-    },
-  );
-
-  registerActionTool(
-    server,
-    "sodax_get_balance",
-    "Read a wallet's native balance on a chain and, optionally, one token's. Neither sodax_swap_price nor sodax_swap_prepare checks balances; use this when the user isn't sure they hold enough. Figures can be up to 5 seconds old; after sending a swap, follow it with sodax_swap_submit_and_track rather than re-reading balances.",
-    {
-      chain: chainArg().describe(
-        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
-      ),
-      address: textArg(128, 1).describe("The wallet's address on that chain."),
-      token: tokenArg()
-        .optional()
-        .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
-    },
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async args => {
-      const balances = await readBalances(args);
-      return { ...balances, ...balanceDecision(balances) };
-    },
-  );
-
   registerActionTool(
     server,
     "sodax_swap_price",
@@ -193,6 +165,57 @@ export function registerSwapTools(server: McpServer): void {
     async args => {
       const result = await cancelSwap(args);
       return { ...result, ...cancelDecision(result) };
+    },
+  );
+}
+
+// Which list a token is looked up in: the bridge's differs from the swap's.
+const purposeArg = () =>
+  z
+    .enum(["swap", "bridge"])
+    .default("swap")
+    .describe('"swap" (the default) or "bridge": which tool the token is for. Some tokens bridge but don\'t swap.');
+
+const catalogFor = async (purpose: TokenPurpose) => (purpose === "bridge" ? getBridgeCatalog() : getSwapCatalog());
+
+/** The token lookup and balance read, for the swap and the bridge tools alike: registered once for either. */
+export function registerTokenTools(server: McpServer): void {
+  registerActionTool(
+    server,
+    "sodax_resolve_token",
+    "Look up a token on a chain: its address, decimals and hub asset. The swap and bridge tools take symbols themselves; use this when one returns UNKNOWN_TOKEN, with for: bridge for a bridge. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
+    {
+      chain: chainArg().describe(
+        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
+      query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
+      for: purposeArg(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async args => {
+      const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
+      return { ...resolution, ...resolveDecision(resolution, args.for) };
+    },
+  );
+
+  registerActionTool(
+    server,
+    "sodax_get_balance",
+    "Read a wallet's native balance on a chain and, optionally, one token's. The swap and bridge tools don't check balances; use this when the user isn't sure they hold enough, with for: bridge for a bridge's token. Figures can be up to 5 seconds old; after sending a swap or a bridge, follow it with its submit_and_track tool rather than re-reading balances.",
+    {
+      chain: chainArg().describe(
+        'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
+      ),
+      address: textArg(128, 1).describe("The wallet's address on that chain."),
+      token: tokenArg()
+        .optional()
+        .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
+      for: purposeArg(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async args => {
+      const balances = await readBalances(args, args.for === "bridge" ? getBridgeCatalog() : undefined);
+      return { ...balances, ...balanceDecision(balances) };
     },
   );
 }

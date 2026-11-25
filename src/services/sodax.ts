@@ -332,7 +332,7 @@ export function bridgeLimit(
 
 /**
  * What a bridge of `amount` (source base units) delivers, in destination base units, and the partner fee it takes, in
- * the hub's 18-decimal vault units: the SDK's own pipeline (`BridgeService.computeBridgeAmounts`, private), from its
+ * the hub's 18-decimal vault units and in the source token's base units (what the user sees it cost): the SDK's own pipeline (`BridgeService.computeBridgeAmounts`, private), from its
  * public parts. Into the vault's units unless the source is a vault token, the fee off there, then out into the
  * destination's units unless that is one. Config only, no read.
  */
@@ -341,7 +341,7 @@ export function bridgeAmounts(
   from: ChainToken,
   to: ChainToken,
   partnerFee?: { address: string; bps: number },
-): { delivered: bigint; fee: bigint } {
+): { delivered: bigint; fee: bigint; feeInSource: bigint } {
   const { sdk: lib, sodax } = sdk();
   const src = bridgeToken(from);
   const dst = bridgeToken(to);
@@ -356,7 +356,10 @@ export function bridgeAmounts(
   const delivered = sodax.config.isSodaVaultHubAsset(dst.hubAsset)
     ? out
     : lib.EvmVaultTokenService.translateOutgoingDecimals(dst.decimals, out);
-  return { delivered, fee };
+  const feeInSource = sodax.config.isSodaVaultHubAsset(src.hubAsset)
+    ? fee
+    : lib.EvmVaultTokenService.translateOutgoingDecimals(src.decimals, fee);
+  return { delivered, fee, feeInSource };
 }
 
 /**
@@ -420,6 +423,76 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
         txIndex: transactionIndex,
         logs: logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data })),
       };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  });
+}
+
+/** A tx on the hub as a wallet sent it (sender, target, calldata, value), or `null` while no node has it. */
+export function getHubTx(
+  txHash: string,
+): Promise<{ from: string; to: string | null; input: string; value: bigint } | null> {
+  return bounded({ label: "hub tx", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    try {
+      const { from, to, input, value } = await sdk().sodax.hubProvider.publicClient.getTransaction({
+        hash: txHash as `0x${string}`,
+      });
+      return { from, to, input, value };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  });
+}
+
+/** A relay packet as the relay reports it: hex without `0x`, the relay's chain ids. */
+export interface RelayPacket {
+  src_chain_id: number;
+  src_tx_hash: string;
+  src_address: string;
+  status: string;
+  dst_chain_id: number;
+  dst_tx_hash: string;
+  payload: string;
+}
+
+/**
+ * The relay's packets for a tx on `chainKey`, through the SDK's own relay client (no SODAX key goes to the relay):
+ * what the tx sent, where, and whether it ran there. None known yet is `[]`. Fails as a bare error.
+ */
+export function relayPackets(chainKey: string, txHash: string): Promise<RelayPacket[]> {
+  return bounded({ label: "relay packets", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const { sdk: lib, sodax } = sdk();
+    const chainId = String(getIntentRelayChainId(chainKey as SpokeChainKey));
+    const result = await lib.getTransactionPackets(
+      { action: "get_transaction_packets", params: { chain_id: chainId, tx_hash: txHash } },
+      sodax.config.relay.relayerApiEndpoint,
+      RPC_CALL_TIMEOUT_MS,
+    );
+    if (result.ok) return result.value.data;
+    // The relay answers 404 for a tx it holds no packet of yet; only the status is read, never the text.
+    if (result.error instanceof Error && /\bHTTP 404\b/.test(result.error.message)) return [];
+    throw new Error("relay read failed");
+  });
+}
+
+// keccak256("HookFailed(address,bytes)"): the hub asset manager's, when a hub wallet's calls fail after a deposit.
+const HOOK_FAILED_TOPIC = "0x85c46289864ac31d39e6a0991336900736af5d3b18a64532ae12a7285c733bc4";
+
+/**
+ * Whether a hub tx the relay executed logged `HookFailed` from the hub asset manager: the deposit reached the user's
+ * hub wallet but its calls failed there, so the tokens stay in that wallet. `null` while the tx isn't mined.
+ */
+export function hubHookFailed(hubTxHash: string): Promise<boolean | null> {
+  return bounded({ label: "hub receipt", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const assetManager = sdk().sodax.hubProvider.chainConfig.addresses.assetManager;
+    try {
+      const { logs } = await sdk().sodax.hubProvider.publicClient.getTransactionReceipt({
+        hash: hubTxHash as `0x${string}`,
+      });
+      return logs.some(log => sameHex(log.address, assetManager) && sameHex(log.topics[0] ?? "", HOOK_FAILED_TOPIC));
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;

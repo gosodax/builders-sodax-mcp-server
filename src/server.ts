@@ -10,10 +10,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SWAP_HELP } from "./constants.js";
 import { withAnalytics } from "./services/analytics.js";
 import type { ToolSelection, Toolsets } from "./services/profiles.js";
+import { registerBridgeTools } from "./tools/bridge.js";
 import { registerDocsProxyTools } from "./tools/docsProxy.js";
 import { registerSodaxApiTools } from "./tools/sodaxApi.js";
 import { registerSolverRelayTools } from "./tools/solverRelay.js";
-import { registerSwapTools } from "./tools/swap.js";
+import { registerSwapTools, registerTokenTools } from "./tools/swap.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -61,18 +62,50 @@ const SWAP_INSTRUCTIONS = [
   SWAP_HELP,
 ].join(" ");
 
-const INSTRUCTIONS: Record<keyof Toolsets, string> = { builder: BUILDER_INSTRUCTIONS, swap: SWAP_INSTRUCTIONS };
+const BRIDGE_INSTRUCTIONS = [
+  "To move a token to the same asset on another chain, 1:1 less any partner fee: `sodax_bridge_tokens` lists what",
+  "bridges between two chains, and `sodax_bridge_preview` shows what a bridge would deliver and the most its route",
+  "takes now, building nothing. Once the user is ready to sign, call `sodax_bridge_prepare` with each side as the user",
+  'names it (a chain plus a symbol, an address or "native") and their wallet as fromAddress (and the recipient as',
+  "toAddress unless both chains are EVM): it returns the transactions to sign and the bridgeId. If a pair can't be",
+  "bridged, it names the tokens that can. If it returns UNKNOWN_TOKEN, resolve that side with",
+  "`sodax_resolve_token` with for: bridge and ask the user; never guess a token or an address. It doesn't check",
+  "balances; `sodax_get_balance` with for: bridge reads them.",
+  "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
+  "Never pass private keys, seed phrases or API keys as tool inputs.",
+  "After the user's wallet sends the bridge, call `sodax_bridge_submit_and_track` with the bridgeId and the bridge",
+  "transaction's hash: it submits the bridge, so call it at least once, and never resend a bridge it hasn't reported failed.",
+  "Every bridge tool result, errors included, carries nextAction: follow it until the result is terminal, or read its nextStep.",
+  SWAP_HELP.replace("a swap", "a swap or a bridge"),
+].join(" ");
+
+const INSTRUCTIONS: Record<keyof Toolsets, string> = {
+  builder: BUILDER_INSTRUCTIONS,
+  swap: SWAP_INSTRUCTIONS,
+  bridge: BRIDGE_INSTRUCTIONS,
+};
 
 // With both toolsets, builder tools that relay, quote and look up intents compete with the swap tools.
 const BOTH_INSTRUCTIONS =
   "For a user's swap use the `sodax_swap_*` tools, not `sodax_relay_submit_tx`, `sodax_get_transaction` or `sodax_get_solver_quote`.";
+const BOTH_BRIDGE_INSTRUCTIONS =
+  "For a user's bridge use the `sodax_bridge_*` tools, not `sodax_relay_submit_tx` or `sodax_get_transaction`.";
 
 // The static tools of each toolset, in registration order. createServer registers them on a real
 // server and seedToolRegistry records them for the counts, so the two can't drift.
 const STATIC_REGISTRARS: Record<keyof Toolsets, ((server: McpServer) => void)[]> = {
   builder: [registerSodaxApiTools, registerSolverRelayTools],
   swap: [registerSwapTools],
+  bridge: [registerBridgeTools],
 };
+
+/** Every static registrar of the toolsets that are on; the token lookup and balance tools once for swap or bridge. */
+function registrarsFor(toolsets: Toolsets): ((server: McpServer) => void)[] {
+  return [
+    ...(toolsets.swap || toolsets.bridge ? [registerTokenTools] : []),
+    ...enabled(toolsets, STATIC_REGISTRARS).flat(),
+  ];
+}
 
 /** The entries of a per-toolset map for the toolsets that are on, in map order. */
 function enabled<T>(toolsets: Toolsets, perToolset: Record<keyof Toolsets, T>): T[] {
@@ -94,6 +127,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
       instructions: [
         ...enabled(toolsets, INSTRUCTIONS),
         toolsets.builder && toolsets.swap ? BOTH_INSTRUCTIONS : undefined,
+        toolsets.builder && toolsets.bridge ? BOTH_BRIDGE_INSTRUCTIONS : undefined,
         toolsets.keyHint,
       ]
         .filter(Boolean)
@@ -105,7 +139,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
   // ⚠️  Must be called BEFORE registering any tools
   withAnalytics(server, clientId);
 
-  for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(server);
+  for (const register of registrarsFor(toolsets)) register(server);
   // The SDK docs proxy tools are dynamic (fetched from the docs MCP), so they're never seeded.
   if (toolsets.builder) await registerDocsProxyTools(server);
 
@@ -128,5 +162,5 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
 export function seedToolRegistry(toolsets: Toolsets): void {
   // Both overloads registerAppTool uses: one with an output schema goes through registerTool.
   const recordingServer = { tool: () => ({}), registerTool: () => ({}) } as unknown as McpServer;
-  for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(recordingServer);
+  for (const register of registrarsFor(toolsets)) register(recordingServer);
 }

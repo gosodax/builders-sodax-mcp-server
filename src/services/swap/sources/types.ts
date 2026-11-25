@@ -89,7 +89,7 @@ export interface Allowance {
 
 /** A step an EVM wallet sends. */
 export interface EvmStep {
-  kind: "reset_approve" | "approve" | "swap";
+  kind: "reset_approve" | "approve" | "swap" | "bridge";
   chainId: number;
   tx: StepTx;
   /** On an approve or a reset. */

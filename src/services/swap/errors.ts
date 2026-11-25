@@ -106,7 +106,7 @@ export interface ErrorOption {
  */
 export interface ErrorHint {
   options?: ErrorOption[];
-  balance?: { chain: string; address: string; token: string };
+  balance?: { chain: string; address: string; token: string; for?: "bridge" };
 }
 
 export class ActionError extends Error {

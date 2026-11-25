@@ -45,6 +45,9 @@ export function renderLandingPage(template: string, data: LandingPageData): stri
     SWAP_TOOLS: String(moduleCounts.swap),
     // No swap tools registered (the kill switch is off): no card.
     SWAP_CARD_HIDDEN: moduleCounts.swap > 0 ? "" : "hidden",
+    BRIDGE_TOOLS: String(moduleCounts.bridge),
+    // Likewise for the bridge tools, off by default.
+    BRIDGE_CARD_HIDDEN: moduleCounts.bridge > 0 ? "" : "hidden",
     SDK_DOCS_TOOLS: String(data.sdkDocsToolCount),
   };
 

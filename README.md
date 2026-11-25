@@ -429,6 +429,18 @@ The swap tools never sign or move funds. They also:
 
 See [Swapping](#swapping) for the order they're called in.
 
+### Bridges (need an API key; off unless `SODAX_BRIDGE_TOOLS_ENABLED=true`)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_bridge_tokens` | The tokens that bridge from one chain to another, each with the token it arrives as; reads no chain |
+| `sodax_bridge_preview` | What a bridge would deliver and the most its route takes now; builds and holds nothing |
+| `sodax_bridge_submit_and_track` | Submit and track a bridge once the user's wallet has sent it: checked against its build, submitted once, followed to the hub and on |
+| `sodax_bridge_prepare` | Prepare a bridge: the same asset on another chain, 1:1 less any partner fee; the transactions for the user's wallet to sign, checked against the SDK's own build, and its bridgeId |
+
+`sodax_get_balance` and `sodax_resolve_token` serve the bridge tools too, with `for: "bridge"`: some tokens bridge but
+don't swap.
+
 ### Cross-Chain SDK Documentation (dynamic)
 
 Tools prefixed with `docs_` are automatically proxied from the SODAX docs MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
@@ -520,6 +532,7 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 | `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
 | `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (production; `SODAX_ENV=canary` for canary). Quotes only: nothing is signed or sent. The Drift Check runs them against production; its scheduled and push runs go red when they fail. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
+| `pnpm e2e:bridge` | A bridge dry run through a running server's bridge tools: tokens, preview, and prepare from Arbitrum and from Solana. Signs nothing, needs no wallet. |
 
 ### Canary swap E2E
 
@@ -528,6 +541,8 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`, which the workflow passes to the server and the script as their `RPC_CONFIG`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
 To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
+
+The workflow then runs `pnpm e2e:bridge` against the same server, started with `SODAX_BRIDGE_TOOLS_ENABLED=true`, whatever the swap did: it checks the bridge tools up to the transactions a wallet would sign, and that the Bridge API's builds still match the server's SDK. A failure there posts the stage `bridge dry run`. Locally: `SODAX_BRIDGE_TOOLS_ENABLED=true SODAX_ENV=canary node dist/index.js`, then `MCP_URL=http://127.0.0.1:3000/mcp?profile=bridge SODAX_API_KEY=… pnpm e2e:bridge`.
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -558,6 +573,7 @@ Coolify injects these directly into the process environment.
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API, solver and Swaps API calls; the swap tools need it. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
+| `SODAX_BRIDGE_TOOLS_ENABLED` | `false` | Kill switch for the bridge tools, off until they're released: `true` serves the `bridge` profile (and the bridge tools in `all`). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, the quote's NEAR storage and Stellar trustline checks, and the swap tx it builds on a non-EVM chain), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Public nodes keep only recent txs, so a swap from a non-EVM chain tracked late may read as not found; an archival endpoint avoids that. Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |

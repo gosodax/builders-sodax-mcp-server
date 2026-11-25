@@ -27,7 +27,8 @@ export type ToolModule =
   | "moneyMarket"
   | "partnersAndToken"
   | "sdkDocs"
-  | "swap";
+  | "swap"
+  | "bridge";
 
 export interface RegisteredToolInfo {
   name: string;
@@ -92,6 +93,7 @@ export function getToolNamesByModule(): Record<Exclude<ToolModule, "sdkDocs">, s
     moneyMarket: [],
     partnersAndToken: [],
     swap: [],
+    bridge: [],
   };
   for (const tool of registry) {
     if (tool.module === "sdkDocs") continue;
@@ -112,6 +114,7 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
     moneyMarket: 0,
     partnersAndToken: 0,
     swap: 0,
+    bridge: 0,
   };
   for (const tool of registry) {
     if (tool.module === "sdkDocs") continue;
@@ -122,12 +125,12 @@ export function getToolCountsByModule(): Record<Exclude<ToolModule, "sdkDocs">, 
 
 /**
  * The group a module reports under, in `/health` and in analytics: `relay`,
- * `swap` and `sdkDocs` stand alone; every other module is `api`. Deriving `api`
+ * `swap`, `bridge` and `sdkDocs` stand alone; every other module is `api`. Deriving `api`
  * as "everything else" means a newly added module is counted automatically
  * rather than silently dropped by an allowlist.
  */
-export function toolGroup(module: ToolModule): "api" | "relay" | "swap" | "sdkDocs" {
-  return module === "relay" || module === "swap" || module === "sdkDocs" ? module : "api";
+export function toolGroup(module: ToolModule): "api" | "relay" | "swap" | "bridge" | "sdkDocs" {
+  return module === "relay" || module === "swap" || module === "bridge" || module === "sdkDocs" ? module : "api";
 }
 
 /**
@@ -135,11 +138,11 @@ export function toolGroup(module: ToolModule): "api" | "relay" | "swap" | "sdkDo
  * (module "sdkDocs") are excluded — the sdkDocs total is counted at runtime from
  * the live SDK docs tool list, so callers add it to `total`.
  */
-export function getStaticToolCounts(): { api: number; relay: number; swap: number; total: number } {
-  const counts = { api: 0, relay: 0, swap: 0 };
+export function getStaticToolCounts(): { api: number; relay: number; swap: number; bridge: number; total: number } {
+  const counts = { api: 0, relay: 0, swap: 0, bridge: 0 };
   for (const tool of registry) {
     const group = toolGroup(tool.module);
     if (group !== "sdkDocs") counts[group]++;
   }
-  return { ...counts, total: counts.api + counts.relay + counts.swap };
+  return { ...counts, total: counts.api + counts.relay + counts.swap + counts.bridge };
 }

@@ -77,7 +77,7 @@ describe("checkBridgeLimit", () => {
 
   it("asks the hub for this pair and passes an amount up to the limit", async () => {
     limit(5_000_000n, 6);
-    await expect(checkBridgeLimit(5_000_000n, ARB_USDC, BASE_USDC)).resolves.toBeUndefined();
+    await expect(checkBridgeLimit(5_000_000n, ARB_USDC, BASE_USDC)).resolves.toBe("5");
     expect(bridgeLimit).toHaveBeenCalledWith(
       { chainKey: "0xa4b1.arbitrum", address: ARB_USDC.token.address },
       { chainKey: "0x2105.base", address: BASE_USDC.token.address },
@@ -93,7 +93,7 @@ describe("checkBridgeLimit", () => {
 
   it("compares across precisions exactly: a limit in 18 decimals against 6", async () => {
     limit(5n * 10n ** 18n, 18, "WITHDRAWAL_LIMIT");
-    await expect(checkBridgeLimit(5_000_000n, ARB_USDC, BSC_USDC)).resolves.toBeUndefined();
+    await expect(checkBridgeLimit(5_000_000n, ARB_USDC, BSC_USDC)).resolves.toBe("5");
     limit(5n * 10n ** 18n - 1n, 18, "WITHDRAWAL_LIMIT");
     const error = await asyncFailure(() => checkBridgeLimit(5_000_000n, ARB_USDC, BSC_USDC));
     // Rounded down to what the source can send: 4.999999, never more than the limit.
@@ -121,14 +121,22 @@ describe("bridgeAmounts", () => {
     expect(bridgeAmounts(5_000_000n, chainToken(ARB_USDC), chainToken(BASE_USDC))).toEqual({
       delivered: 5_000_000n,
       fee: 0n,
+      feeInSource: 0n,
     });
     expect(bridgeAmounts(5_000_000n, chainToken(ARB_USDC), chainToken(BSC_USDC)).delivered).toBe(5n * 10n ** 18n);
   });
 
   it("takes the partner fee in vault units, as the SDK's own build encodes it", async () => {
     const partnerFee = { address: `0x${"a".repeat(40)}`, bps: 25 };
-    const { delivered, fee } = bridgeAmounts(5_000_000n, chainToken(ARB_USDC), chainToken(BASE_USDC), partnerFee);
+    const { delivered, fee, feeInSource } = bridgeAmounts(
+      5_000_000n,
+      chainToken(ARB_USDC),
+      chainToken(BASE_USDC),
+      partnerFee,
+    );
     expect(fee).toBe((5n * 10n ** 18n * 25n) / 10_000n);
+    // 0.0125 USDC: what the user sees the fee cost, in the token sent.
+    expect(feeInSource).toBe(12_500n);
     expect(delivered).toBe(5_000_000n - (5_000_000n * 25n) / 10_000n);
     // The SDK's own payload for this bridge carries both amounts.
     const { Sodax } = await import("@sodax/sdk");

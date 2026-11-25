@@ -1,5 +1,5 @@
 /**
- * The machine-readable half of every swap tool result: `nextAction` says what happens next and who does it,
+ * The machine-readable half of every swap and bridge tool result: `nextAction` says what happens next and who does it,
  * `terminal` whether any tool call can still move the result on, and `outcome` where a sent swap ended up. A
  * runtime needs three branches: run a `call_tool`, stop on `none`, hand anything else to a person (or the wallet,
  * for `execute`), then follow its `next`. Each result's `nextStep` comes from the same decision, so the two can't
@@ -14,7 +14,11 @@ export type SwapToolName =
   | "sodax_swap_price"
   | "sodax_swap_prepare"
   | "sodax_swap_submit_and_track"
-  | "sodax_swap_cancel";
+  | "sodax_swap_cancel"
+  | "sodax_bridge_tokens"
+  | "sodax_bridge_preview"
+  | "sodax_bridge_prepare"
+  | "sodax_bridge_submit_and_track";
 
 /** Where a sent swap's funds ended up, once nothing more can change it. */
 export const OUTCOMES = ["succeeded", "cancelled", "refunding", "failed", "held", "unknown"] as const;
@@ -91,6 +95,17 @@ export type ConfirmSummary =
       usdOut: string | null;
       approve?: { spender: string; amount: string; symbol: string };
       warnings: ("usd_unchecked" | "above_warn_level" | "rate_unchecked" | "own_address_other_chain")[];
+    }
+  | {
+      kind: "bridge";
+      bridgeId: string;
+      expiresAt: string;
+      send: Amount;
+      /** What the recipient gets: the amount sent, less the partner fee, in the token received. */
+      receive: Amount;
+      recipient: string;
+      partnerFee?: { amount: string; symbol: string };
+      approve?: { spender: string; amount: string; symbol: string };
     }
   | { kind: "cancel"; chain: string; txHash: string }
   /** The wallet shows this cancel can never land, before a new one replaces it. */

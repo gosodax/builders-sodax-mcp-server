@@ -1,5 +1,5 @@
 /**
- * The template every swap tool shares: zod input (the SDK validates it before
+ * The template every swap and bridge tool shares: zod input (the SDK validates it before
  * the handler runs), structured output with a `status` and its decision (`nextAction`,
  * `terminal`, `outcome`, and the `nextStep` sentence that says the same), and failures
  * returned as `{ status: "error", error: { code, message }, ...decision }` with `isError`.
@@ -46,6 +46,8 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   input: Args,
   annotations: ToolAnnotations,
   run: (args: ShapeOutput<Args>) => Promise<ActionOutput>,
+  /** Where the tool is counted and alerted from. */
+  module: "swap" | "bridge" = "swap",
 ): void {
   /** A failure as the tool returns it; `bug` (what was thrown) also makes its "Tool call" record the error. */
   const failed = (failure: ActionError, args: ShapeOutput<Args>, bug?: unknown): CallToolResult => {
@@ -59,7 +61,7 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
             : typeof bug;
       // Per chain too: one chain's config or builds going wrong doesn't silence another's.
       const chainKey = failure.details?.chainKey;
-      alertOperator("swap_error", {
+      alertOperator(`${module}_error`, {
         tool: name,
         code: failure.code,
         reason,
@@ -106,7 +108,7 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   // for a zod shape it is exactly (args: ShapeOutput<Args>, extra) => CallToolResult.
   registerAppTool(
     server,
-    "swap",
+    module,
     name,
     description,
     input,

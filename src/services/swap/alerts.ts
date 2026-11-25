@@ -20,7 +20,14 @@ export type AlertKind =
   | "unverified_tx"
   | "refund_relay_failed"
   | "submit_rejected"
-  | "swap_error";
+  | "swap_error"
+  | "bridge_error"
+  | "unknown_bridge"
+  | "bridge_relay_failed"
+  | "bridge_hook_failed";
+
+/** A tool's own failure, alerted per tool, code, reason and chain from the tools' budget. */
+const isToolError = (kind: AlertKind) => kind === "swap_error" || kind === "bridge_error";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
@@ -33,6 +40,10 @@ const TITLES: Record<AlertKind, string> = {
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
   swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
+  bridge_error: "Bridge tool error: a bug, or the bridge service built something other than asked",
+  unknown_bridge: "Bridge deposit without its build: find it and submit it by hand",
+  bridge_relay_failed: "Bridge the backend gave up relaying before the hub: relay it by hand",
+  bridge_hook_failed: "Bridge deposit held in a user's hub wallet: its calls failed there",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +62,7 @@ const HELD_TEXT_MAX = 4096;
 // A failed tx's held deposit, or a tx whose events can't be read, may not be the quote named with it.
 const PUBLIC_KINDS: readonly AlertKind[] = [
   "unknown_quote",
+  "unknown_bridge",
   "other_quote_deposit",
   "failed_tx_deposit",
   "unverified_tx",
@@ -96,7 +108,7 @@ const LOG_NAMES: Record<keyof AlertFields, string> = {
 export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
   // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
-    kind === "swap_error"
+    isToolError(kind)
       ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
       : [kind, fields.chainKey, fields.txHash],
   );
@@ -109,17 +121,16 @@ export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   const named = Object.entries(fields).map(([name, value]) => [LOG_NAMES[name as keyof AlertFields], value]);
   logger.error({ alert: kind, ...Object.fromEntries(named), "caller.key_hash": callerKeyTag() }, TITLES[kind]);
-  const budget: Budget = kind === "swap_error" ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
+  const budget: Budget = isToolError(kind) ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
   const verdict = spend(budget, now);
   sent.delete(key);
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
   sent.set(key, { at: now, reached: verdict !== "drop" });
   if (verdict === "drop") return false;
   if (verdict === "hold") {
-    const parts =
-      kind === "swap_error"
-        ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
-        : [kind, fields.chainKey, fields.txHash, fields.quoteId, fields.deadline && `deadline ${fields.deadline}`];
+    const parts = isToolError(kind)
+      ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
+      : [kind, fields.chainKey, fields.txHash, fields.quoteId, fields.deadline && `deadline ${fields.deadline}`];
     // As the embed fields: a slip can't put a URL or a wall of text in the post.
     held[budget].push(truncate(redact(parts.filter(Boolean).join(" · ")), FIELD_VALUE_MAX));
     return true;

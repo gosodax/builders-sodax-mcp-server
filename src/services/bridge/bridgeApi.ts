@@ -136,7 +136,12 @@ async function buildCall<T>(schema: Schema<T>, path: string, request: BridgeRequ
     return await call(schema, path, requestBody(request));
   } catch (error) {
     if (!(error instanceof ActionError) || error.details?.reason !== "wallet_cannot_build") throw error;
-    const balance = { chain: request.srcChainKey, address: request.srcAddress, token: request.inputToken };
+    const balance = {
+      chain: request.srcChainKey,
+      address: request.srcAddress,
+      token: request.inputToken,
+      for: "bridge" as const,
+    };
     const { code, message, nextStep, details } = error;
     throw new ActionError(code, message, { nextStep, details, hint: { balance } });
   }

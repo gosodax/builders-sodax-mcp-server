@@ -93,14 +93,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const matching = (value: unknown, pattern: RegExp) =>
   typeof value === "string" && pattern.test(value) ? value : undefined;
 
-/** The fields of a swap tool's output analytics may read; anything else is never looked at. */
+/** The fields of a swap or bridge tool's output analytics may read; anything else is never looked at. */
 interface SwapOutput {
   status?: unknown;
   quoteId?: unknown;
+  bridgeId?: unknown;
   usdValue?: unknown;
   chain?: { key?: unknown };
-  from?: { chain?: { key?: unknown } };
-  to?: { chain?: { key?: unknown } };
+  /** A side, with its chain; or, in a bridge pairs result, the chain itself. */
+  from?: { chain?: { key?: unknown }; key?: unknown };
+  to?: { chain?: { key?: unknown }; key?: unknown };
   error?: { code?: unknown };
 }
 
@@ -123,6 +125,13 @@ function resultOutcome(toolName: string, result: unknown): Outcome {
       dst_chain: matching(out.to?.chain?.key, CHAIN_KEY_PATTERN),
       usd_bucket: usdBucket(out.usdValue),
     }),
+    // A bridge moves one asset 1:1, so it has no USD value of its own to bucket.
+    ...(resolveToolGroup(toolName) === "bridge" && {
+      status: matching(out.status, STATUS),
+      bridge_id: matching(out.bridgeId, UUID),
+      src_chain: matching(out.from?.chain?.key ?? out.from?.key ?? out.chain?.key, CHAIN_KEY_PATTERN),
+      dst_chain: matching(out.to?.chain?.key ?? out.to?.key, CHAIN_KEY_PATTERN),
+    }),
   };
 }
 
@@ -138,7 +147,7 @@ function usdBucket(value: unknown): string | undefined {
 
 /**
  * One log record per tool call (#110): the outcome, who called (a key hash, never the key) and, for a swap
- * tool, the ids its records are followed by. Nothing from the arguments. The level says whose failure it is:
+ * or bridge tool, the ids its records are followed by. Nothing from the arguments. The level says whose failure it is:
  * error for a bug (with where it broke), warn for SODAX's side, info for the caller's.
  */
 function logToolCall(
@@ -172,6 +181,15 @@ function logToolCall(
         "chain.key": outcome.src_chain,
         "dst_chain.key": outcome.dst_chain,
         "swap.usd_bucket": outcome.usd_bucket,
+      }),
+      ...(resolveToolGroup(toolName) === "bridge" && {
+        "bridge.status": str(out.status),
+        "bridge.id": str(out.bridgeId),
+        "tx.hash": str(out.txHash),
+        "hub_tx.hash": str(out.hubTxHash),
+        "dst_tx.hash": str(out.dstTxHash),
+        "chain.key": outcome.src_chain,
+        "dst_chain.key": outcome.dst_chain,
       }),
     },
     "Tool call",

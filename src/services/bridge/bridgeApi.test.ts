@@ -206,7 +206,9 @@ describe("failures", () => {
     const error = await failure(buildBridge(request));
     expect(error.code).toBe("BRIDGE_REJECTED");
     expect(error.details).toEqual({ reason: "wallet_cannot_build" });
-    expect(error.hint).toEqual({ balance: { chain: "0xa4b1.arbitrum", address: USER, token: USDC_ARB } });
+    expect(error.hint).toEqual({
+      balance: { chain: "0xa4b1.arbitrum", address: USER, token: USDC_ARB, for: "bridge" },
+    });
   });
 
   it("is unavailable when the service can't be reached", async () => {

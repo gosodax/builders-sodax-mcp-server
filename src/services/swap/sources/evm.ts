@@ -201,7 +201,7 @@ function findEvmTxMismatch(
  * Hex quantities, as `eth_sendTransaction` takes them. The chain id is in the tx: several chains share the
  * contracts a step calls, so a wallet on another network must refuse it rather than send it there.
  */
-function toStepTx(tx: EvmTx, chainId: number): StepTx {
+export function toStepTx(tx: EvmTx, chainId: number): StepTx {
   return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
 }
 

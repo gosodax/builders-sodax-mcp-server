@@ -1429,6 +1429,31 @@
             </div>
           </div>
         </details>
+        <details class="tool-module" {{BRIDGE_CARD_HIDDEN}}>
+          <summary>
+            <div class="tool-summary-left">
+              <div class="tool-icon"><i data-lucide="route"></i></div>
+              <div class="tool-summary-text">
+                <h3>Bridges</h3>
+                <p>Move a token to the same asset on another chain, 1:1; your wallet signs</p>
+              </div>
+            </div>
+            <div class="tool-summary-right">
+              <span class="badge">{{BRIDGE_TOOLS}} tools</span>
+              <span class="tool-source-tag">SODAX API</span>
+              <svg class="tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </summary>
+          <div class="tool-detail">
+            <div class="tool-list">
+              <div class="tool-item"><code>sodax_bridge_tokens</code><span>What bridges from one chain to another</span></div>
+              <div class="tool-item"><code>sodax_bridge_preview</code><span>What a bridge delivers, and the most it takes now; builds nothing</span></div>
+              <div class="tool-item"><code>sodax_bridge_prepare</code><span>The transactions for your wallet to sign, checked against the SDK's own build</span></div>
+              <div class="tool-item"><code>sodax_bridge_submit_and_track</code><span>Submits a sent bridge once, then follows it to the hub and on</span></div>
+              <div class="tool-item"><code>/mcp?profile=bridge</code><span>Connect with an <code>x-api-key</code> header</span></div>
+            </div>
+          </div>
+        </details>
 
         <details class="tool-module">
           <summary>

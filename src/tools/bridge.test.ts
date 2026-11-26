@@ -256,8 +256,25 @@ describe("sodax_bridge_tokens", () => {
     });
     // tBTC is withdraw-only on Arbitrum: it arrives there, it doesn't leave.
     expect(pairs.map(pair => pair.from.symbol)).not.toContain("tBTC");
-    expect(out.terminal).toBe(true);
-    expect(out.nextStep).toContain("sodax_bridge_prepare");
+    expect(out).toMatchObject({
+      terminal: false,
+      nextAction: {
+        type: "choose",
+        field: "pair",
+        options: expect.arrayContaining([
+          {
+            label: "USDC to USDC",
+            args: { fromChain: "0xa4b1.arbitrum", fromToken: ARB_USDC, toChain: "0x2105.base", toToken: BASE_USDC },
+          },
+        ]),
+        next: {
+          type: "provide",
+          fields: [{ name: "amount" }],
+          next: { type: "call_tool", tool: "sodax_bridge_preview", sameArgs: true },
+        },
+      },
+    });
+    expect(out.nextStep).toContain("sodax_bridge_preview");
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(bridgeLimit).not.toHaveBeenCalled();
   });

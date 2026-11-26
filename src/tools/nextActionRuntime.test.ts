@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { type Host, type Saved, type ToolResult, run } from "./__fixtures__/nextActionRuntime.js";
+import { type Script, harness as sharedHarness } from "./__fixtures__/nextActionHarness.js";
+import { type Saved, run } from "./__fixtures__/nextActionRuntime.js";
 import {
   ARBITRUM,
   CANCEL_TX,
@@ -16,23 +17,8 @@ import {
   ref,
   tracked,
 } from "./__fixtures__/swapResults.js";
-import type { NextAction } from "./nextAction.js";
 
 type Args = Record<string, unknown>;
-type Asked = Extract<NextAction, { type: "choose" | "provide" | "confirm" | "external" }>;
-
-interface Script {
-  respond: (tool: string, args: Args, nth: number, now: number) => ToolResult;
-  answers?: { [Type in Asked["type"]]?: (action: Extract<Asked, { type: Type }>) => Args | boolean | undefined };
-  wallet?: () => { hash: string } | { batchId: string };
-  batch?: (batchId: string) => string | undefined;
-  /** Whether the wallet's record shows what a `by: "wallet"` confirm asks. */
-  walletShows?: () => boolean;
-  saved?: Saved;
-}
-
-// Far past any bound: a runtime that gets here never stops on its own.
-const RUNAWAY = 200;
 
 const PRICE_ARGS = { fromChain: "arb", fromToken: "USDC", toChain: "sonic", toToken: "S", amount: "5" };
 const TRACK_ARGS = { txHash: TX, chain: ARBITRUM.key, quoteId: QUOTE_ID };
@@ -42,51 +28,7 @@ const SOLVED = {
   delivery: "complete",
 };
 
-/** Fails the test if the runtime reads the sentence instead of the action. */
-const actionOnly = (result: ToolResult) =>
-  new Proxy(result, {
-    get(target, field) {
-      if (field === "nextStep") throw new Error("the runtime read nextStep");
-      return Reflect.get(target, field);
-    },
-  });
-
-function harness(script: Script) {
-  const calls: { tool: string; args: Args }[] = [];
-  const asked: string[] = [];
-  let sends = 0;
-  let now = NOW;
-  const host: Host = {
-    async call(tool, args) {
-      calls.push({ tool, args });
-      if (calls.length > RUNAWAY) throw new Error("the runtime never stopped");
-      return actionOnly(script.respond(tool, args, calls.filter(made => made.tool === tool).length, now));
-    },
-    async sleep(seconds) {
-      now += seconds * 1000;
-    },
-    now: () => now,
-    async ask(action) {
-      asked.push(action.type === "external" ? `external:${action.reason}` : action.type);
-      const answer = script.answers?.[action.type] as ((asked: Asked) => Args | boolean | undefined) | undefined;
-      return answer ? answer(action) : action.type === "external";
-    },
-    async send() {
-      sends++;
-      return script.wallet?.() ?? { hash: TX };
-    },
-    async batchHash(batchId) {
-      return script.batch?.(batchId);
-    },
-    async walletShows() {
-      asked.push("wallet");
-      return script.walletShows?.() ?? false;
-    },
-    saved: script.saved ?? {},
-  };
-  const of = (tool: string) => calls.filter(made => made.tool === tool);
-  return { host, calls, asked, of, sends: () => sends, now: () => now };
-}
+const harness = (script: Script) => sharedHarness(script, NOW, TX);
 
 const TRACK = "sodax_swap_submit_and_track";
 const CANCEL = "sodax_swap_cancel";

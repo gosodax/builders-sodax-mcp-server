@@ -1,6 +1,6 @@
 /**
- * A reference runtime for the swap tools: what a client does with each result's `nextAction`, reading nothing else
- * (never `nextStep`). The tests drive it through whole swaps; the README quotes its loop.
+ * A reference runtime for the swap and bridge tools: what a client does with each result's `nextAction`, reading
+ * nothing else (never `nextStep`). The tests drive it through whole workflows; the README quotes its loop.
  */
 
 import type { CallTool, Exhausted, NextAction } from "../nextAction.js";
@@ -11,7 +11,7 @@ type PersonAction = Extract<NextAction, { type: "choose" | "provide" | "confirm"
 type Confirm = Extract<NextAction, { type: "confirm" }>;
 
 export interface Host {
-  /** Calls a swap tool; returns its `structuredContent`. */
+  /** Calls an action tool; returns its `structuredContent`. */
   call(tool: string, args: Args): Promise<ToolResult>;
   sleep(seconds: number): Promise<void>;
   now(): number;
@@ -34,7 +34,7 @@ export interface Host {
 }
 
 export interface Saved {
-  /** The swap's track call, saved the moment its tx was broadcast (or its batch id returned). */
+  /** A sent swap or bridge's track call, saved the moment its tx was broadcast (or its batch id returned). */
   swap?: { tool: string; args: Args; needs: string; hash?: string; batchId?: string };
   /** A cancel sent and not yet failed; once relayed, the bounded track that follows it. */
   cancel?: { args: Args; cancelTxHash: string; follow?: CallTool };
@@ -57,8 +57,8 @@ const BATCH_POLLS = 60;
 
 // #region loop
 export async function run(host: Host, start: { tool: string; args: Args }): Promise<Ending> {
-  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap with its
-  // hash. Nothing is priced, signed or sent again; a batch with no hash yet is handed back until the wallet has one.
+  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap or bridge
+  // with its hash. Nothing is prepared, signed or sent again; a batch with no hash yet waits for the wallet's hash.
   const pending = host.saved.cancel;
   let call: Next | undefined;
   if (pending?.follow) call = await follow(host, {}, pending.follow, {});
@@ -173,7 +173,7 @@ async function send(host: Host, result: ToolResult, action: Extract<NextAction, 
   return { tool, args: { ...args, [needs[0]]: hash } };
 }
 
-/** A sent swap's track call from what was saved; a batch interrupted before its hash reads the wallet again. */
+/** A sent swap or bridge's track call; a batch interrupted before its hash reads the wallet again. */
 async function resume(host: Host): Promise<{ tool: string; args: Args } | undefined> {
   const swap = host.saved.swap;
   if (!swap) return undefined;
@@ -193,12 +193,15 @@ async function batchHash(host: Host, batchId: string): Promise<string | undefine
 }
 
 /**
- * What a call says was sent, whoever gave the hash (the wallet, the user, the start): a track call is the swap's
+ * What a call says was sent, whoever gave the hash (the wallet, the user, the start): a track call is the transaction's
  * latest arguments to resume with, a cancel call carrying a hash makes that cancel pending.
  */
 function keepSent(saved: Saved, call: { tool: string; args: Args }): void {
   const { txHash, cancelTxHash, ...rest } = call.args;
-  if (call.tool === "sodax_swap_submit_and_track" && typeof txHash === "string") {
+  if (
+    (call.tool === "sodax_swap_submit_and_track" || call.tool === "sodax_bridge_submit_and_track") &&
+    typeof txHash === "string"
+  ) {
     saved.swap = { tool: call.tool, args: rest, needs: "txHash", hash: txHash };
   }
   if (call.tool !== "sodax_swap_cancel" || typeof cancelTxHash !== "string") return;

@@ -1,4 +1,4 @@
-/** The contract every swap tool decision keeps, as a list of what breaks it, for tests to assert empty. */
+/** The contract every swap and bridge tool decision keeps, as violations for tests to assert empty. */
 
 import type { CallTool, Decision, NextAction } from "../nextAction.js";
 

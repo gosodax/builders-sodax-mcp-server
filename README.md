@@ -234,12 +234,12 @@ What a runtime keeps to:
   its output after: fix the arguments only when the message says the input was invalid, otherwise hand off, keeping
   any hash already sent.
 
-The loop of the reference runtime the tests drive whole swaps with, `src/tools/__fixtures__/nextActionRuntime.ts`:
+The loop of the reference runtime the tests drive whole swaps and bridges with, `src/tools/__fixtures__/nextActionRuntime.ts`:
 
 ```ts
 export async function run(host: Host, start: { tool: string; args: Args }): Promise<Ending> {
-  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap with its
-  // hash. Nothing is priced, signed or sent again; a batch with no hash yet is handed back until the wallet has one.
+  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap or bridge
+  // with its hash. Nothing is prepared, signed or sent again; a batch with no hash yet waits for the wallet's hash.
   const pending = host.saved.cancel;
   let call: Next | undefined;
   if (pending?.follow) call = await follow(host, {}, pending.follow, {});

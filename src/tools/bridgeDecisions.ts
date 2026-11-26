@@ -16,15 +16,17 @@ import {
   NONE,
   callOnce,
   callRepeated,
+  choose,
   exhausted,
   external,
   final,
   ongoing,
   provide,
 } from "./nextAction.js";
-import { SEND_BATCH, SIGN_NON_EVM_TX, approveOf, sendsToOwnAddressElsewhere } from "./swapDecisions.js";
+import { SEND_BATCH, SIGN_NON_EVM_TX, approveOf, askTxHash, sendsToOwnAddressElsewhere } from "./swapDecisions.js";
 
 const TRACK = "sodax_bridge_submit_and_track";
+const PREVIEW = "sodax_bridge_preview";
 const PREPARE = "sodax_bridge_prepare";
 
 /** What bridges between two chains answers on its own; the user picks a pair to preview or prepare. */
@@ -32,10 +34,22 @@ export function pairsDecision({ from, to, pairs }: BridgePairs): Decision {
   if (pairs.length === 0) {
     return final(`Nothing on ${from.name} bridges to ${to.name}: ask the user which other chain to bridge to.`, NONE);
   }
-  const listed = pairs.map(pair => `${pair.from.symbol} to ${pair.to.symbol}`).join(", ");
-  return final(
-    `From ${from.name} to ${to.name}, these bridge: ${listed}. Pass the pair the user picks, by its addresses, as fromToken and toToken to sodax_bridge_preview or sodax_bridge_prepare.`,
-    NONE,
+  const labels = pairs.map(pair => `${pair.from.symbol} to ${pair.to.symbol}`);
+  const options = pairs.map((pair, i) => ({
+    label:
+      labels.filter(label => label === labels[i]).length > 1
+        ? `${labels[i]} (${pair.from.address} to ${pair.to.address})`
+        : labels[i],
+    args: {
+      fromChain: from.key,
+      fromToken: pair.from.address,
+      toChain: to.key,
+      toToken: pair.to.address,
+    },
+  }));
+  return ongoing(
+    `From ${from.name} to ${to.name}, these bridge: ${labels.join(", ")}. Ask the user to choose a pair and the amount to send, then call ${PREVIEW} with the pair's addresses and that amount in token units.`,
+    choose("pair", options, provide(["amount"], callOnce(PREVIEW, "same"))),
   );
 }
 
@@ -138,8 +152,8 @@ export function trackDecision(result: BridgeTrack): Decision {
     case "not_submitted":
       if (result.reason === "not_this_bridge") {
         return ongoing(
-          `That transaction on ${chain.name} isn't this bridge's deposit. Ask the user for the hash of the bridge step their wallet sent (not the approve's), then call again with it.`,
-          provide(["txHash"], callOnce(TRACK, "same")),
+          `That transaction on ${chain.name} isn't this bridge's deposit. Ask the user for the hash of the bridge step their wallet sent (not the approve's), then call again with it. If repeated corrections fail, stop and ${helpDesk}; the user must not send the bridge again.`,
+          askTxHash(TRACK, { chain: chain.key, ...(result.bridgeId && { bridgeId: result.bridgeId }) }),
         );
       }
       return final(

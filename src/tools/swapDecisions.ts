@@ -103,9 +103,11 @@ const confirmCancel = (swap: Ref): Confirm => ({
   summary: { kind: "cancel", chain: swap.chain.key, txHash: swap.txHash },
   next: cancelAgain(swapArgs(swap)),
 });
-/** The swap transaction's hash, asked of the user, for the same call. */
-const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref) =>
-  provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK));
+/** Retries a corrected transaction hash at most three times, keeping the other canonical arguments. */
+export const askTxHash = (
+  tool: typeof TRACK | typeof CANCEL | "sodax_bridge_submit_and_track",
+  args: Record<string, unknown>,
+) => provide(["txHash"], answered(callOnce(tool, args), "txHash", HELP_DESK));
 
 const giveUp = (what: "swap" | "bridge") =>
   `tell the user this server can't follow the ${what} right now, that they must not send it again, and to give the ${what}'s transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
@@ -433,7 +435,7 @@ function notSubmittedDecision(result: Extract<TrackResult, { status: "not_submit
   if (result.reason === "not_a_deposit") {
     return ongoing(
       "That transaction isn't this quote's swap (on an EVM chain it may be the approve, or a swap call that failed inside a batch); ask for the swap transaction's hash.",
-      askTxHash(TRACK, result),
+      askTxHash(TRACK, withoutTxHash(result)),
     );
   }
   const deposit = safe(result);
@@ -496,7 +498,7 @@ function failedNextStep({ canCancel, failure }: Extract<TrackResult, { status: "
 export function trackDecision(result: TrackResult): Decision {
   const chain = result.chain.name;
   const args = swapArgs(result);
-  const askHash = askTxHash(TRACK, result);
+  const askHash = askTxHash(TRACK, withoutTxHash(result));
   switch (result.status) {
     case "awaiting_source_confirmation": {
       if (result.seenOnChain) {
@@ -717,7 +719,7 @@ function notCancellableDecision(result: Extract<CancelResult, { status: "not_can
     case "not_sent":
       return ongoing(nextStep, retryCancel(exhausted(external("check_wallet"), false)));
     case "not_this_swap":
-      return ongoing(nextStep, askTxHash(CANCEL, result));
+      return ongoing(nextStep, askTxHash(CANCEL, withoutTxHash(result)));
     case "unverified":
       return final(nextStep, external("help_desk"), "unknown");
   }

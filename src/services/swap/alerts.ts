@@ -24,6 +24,7 @@ export type AlertKind =
   | "bridge_error"
   | "unknown_bridge"
   | "bridge_submit_rejected"
+  | "bridge_multiple_messages"
   | "bridge_relay_failed"
   | "bridge_hook_failed";
 
@@ -35,7 +36,7 @@ const TITLES: Record<AlertKind, string> = {
   other_quote_deposit: "Swap deposit tracked under another quote: relay it by hand if its own isn't tracked",
   other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
-  multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
+  multiple_deposits: "Swap deposit in a transaction with other relay messages: relay it by hand",
   failed_tx_deposit: "Swap deposit in a transaction that failed after it ran: not submitted, recover it by hand",
   unverified_tx: "Swap transaction whose events this server can't read: not submitted, check it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
@@ -44,6 +45,7 @@ const TITLES: Record<AlertKind, string> = {
   bridge_error: "Bridge tool error: a bug, or the bridge service built something other than asked",
   unknown_bridge: "Bridge deposit without its build: find it and submit it by hand",
   bridge_submit_rejected: "Checked bridge deposit refused by submit-tx: submit or relay it by hand",
+  bridge_multiple_messages: "Bridge deposit in a transaction with other relay messages: relay it by hand",
   bridge_relay_failed: "Bridge the backend gave up on and the relay hasn't delivered: relay it by hand",
   bridge_hook_failed: "Bridge deposit held in a user's hub wallet: its calls failed there",
 };

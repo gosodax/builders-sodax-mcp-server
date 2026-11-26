@@ -273,9 +273,7 @@ function quoteNextStep(quote: SwapQuote): string {
   const sameAddress = sendsToOwnAddressElsewhere(quote)
     ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
     : "";
-  const batch = quote.batch
-    ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)"
-    : "";
+  const batch = quote.batch ? SEND_BATCH : "";
   const [first] = quote.steps;
   const allowance = approveOf(quote);
   const approve = allowance
@@ -292,6 +290,10 @@ function quoteNextStep(quote: SwapQuote): string {
     `Then call sodax_swap_submit_and_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: that call is what submits the swap${isHubChain(from.chain.key) ? "" : ", or starts its refund"}.`,
   ].join(" ");
 }
+
+/** How a wallet that batches sends a result's `batch` in place of the steps it replaces. */
+export const SEND_BATCH =
+  " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)";
 
 /** What the approve step, if any, lets its spender take. */
 export const approveOf = ({ steps }: { steps: readonly { kind: string }[] }) =>
@@ -468,7 +470,7 @@ function notSubmittedDecision(result: Extract<TrackResult, { status: "not_submit
       );
     case "multiple_deposits":
       return held(
-        `That transaction holds other SODAX deposits besides this swap, so this server can't submit it: ${deposit}. Next time, send each swap as its own transaction.`,
+        `That transaction carries other SODAX messages besides this swap (another deposit or a cancel), so this server can't submit it: ${deposit}. Next time, send each swap as its own transaction.`,
         result.alerted,
         result.chain,
       );

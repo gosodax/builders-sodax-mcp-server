@@ -185,6 +185,12 @@ The server only returns transactions, so the agent also needs a wallet tool (or 
 - tell when a transaction is mined, since each step must be mined before the next;
 - optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
 
+An EVM step's `tx` is what `eth_sendTransaction` takes (`value` and `chainId` in hex) and carries no nonce, gas or
+fees: the wallet fills those and broadcasts. A wallet tool that takes a chain and `{to, value, data}` sends it as is.
+A signer that only signs needs its own RPC to fill those fields and broadcast the signed transaction: the server
+neither signs nor broadcasts. The bridge tools' steps and `batch` (`sodax_bridge_prepare`) are the same and need the
+same.
+
 ### Next actions
 
 Every swap tool result, errors included, carries a machine-readable `nextAction`, `terminal` (no tool call can move

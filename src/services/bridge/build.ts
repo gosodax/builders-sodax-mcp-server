@@ -16,8 +16,8 @@ import { logger } from "../logger.js";
 import { SdkRefusal, isHubChain, sdkBridge } from "../sodax.js";
 import { ActionError } from "../swap/errors.js";
 import { toChain } from "../swap/resolver.js";
-import { approveTxs, approvesExactly, chainIdOf, toStepTx } from "../swap/sources/evm.js";
-import type { EvmStep, NonEvmStep, SwapSource } from "../swap/sources/types.js";
+import { approveBatch, approveTxs, approvesExactly, chainIdOf, toStepTx } from "../swap/sources/evm.js";
+import type { EvmStep, NonEvmStep, SwapBatch, SwapSource } from "../swap/sources/types.js";
 import { type EvmTx, asEvmTx } from "../swap/swapsApi.js";
 import type { SwapsApiToken } from "../swap/tokens.js";
 import { formatUnits } from "../swap/units.js";
@@ -37,7 +37,7 @@ export async function buildEvmBridge(
   request: BridgeRequest,
   source: SwapSource,
   token: SwapsApiToken,
-): Promise<{ steps: EvmStep[]; relayData: BuiltBridge["relayData"]; deposit: EvmTx }> {
+): Promise<{ steps: EvmStep[]; batch?: SwapBatch; relayData: BuiltBridge["relayData"]; deposit: EvmTx }> {
   const [built, approved, rebuilt] = await Promise.all([
     buildBridge(request),
     token.isNative || checkBridgeAllowance(request),
@@ -79,7 +79,14 @@ export async function buildEvmBridge(
     ),
     { kind: "bridge", chainId, tx: toStepTx(deposit, chainId) },
   ];
-  return { steps, relayData: built.relayData, deposit };
+  // A batch sends the deposit from the wallet's own code, in a tx a relayer or bundler may send. From a spoke its message
+  // still proves it (track refuses a tx with other relay messages); from Sonic track checks the deposit as the tx itself,
+  // which a batch's tx isn't, so there it's sent alone.
+  const batch =
+    approvals.length > 0 && !isHubChain(request.srcChainKey)
+      ? approveBatch(chainId, request.srcAddress, "bridge")
+      : undefined;
+  return { steps, ...(batch && { batch }), relayData: built.relayData, deposit };
 }
 
 /**

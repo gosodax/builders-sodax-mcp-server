@@ -14,7 +14,7 @@ import { ActionError } from "../swap/errors.js";
 import { type AddressField, EVM_BURN_ADDRESS, addressesNeeded, resolveSide } from "../swap/quote.js";
 import { checkAddress } from "../swap/resolver.js";
 import { sourceChainFor } from "../swap/source.js";
-import type { SwapStep } from "../swap/sources/types.js";
+import type { SwapBatch, SwapStep } from "../swap/sources/types.js";
 import type { SwapsApiToken } from "../swap/tokens.js";
 import { formatUnits, parseUnits } from "../swap/units.js";
 import type { BridgeRequest } from "./bridgeApi.js";
@@ -60,6 +60,8 @@ export interface BridgeQuote {
   fromAddress: string;
   toAddress: string;
   steps: SwapStep[];
+  /** From an EVM spoke with an approve: the approve and the bridge as one EIP-5792 batch, for a wallet that batches. */
+  batch?: SwapBatch;
 }
 
 /** What a bridge would do, building and holding nothing: for showing it before the user is ready to sign. */
@@ -189,6 +191,7 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
     fromAddress,
     toAddress,
     steps: built.steps,
+    ...("batch" in built && built.batch && { batch: built.batch }),
   };
 }
 

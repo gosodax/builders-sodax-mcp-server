@@ -5,6 +5,7 @@ import { setFallbackRequestContext } from "../services/requestContext.js";
 import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -284,6 +285,17 @@ describe("sodax_swap_submit_and_track", () => {
     expect(out).toMatchObject({ status: "not_submitted", reason: "not_a_deposit" });
     expect(out.nextStep).toContain("isn't this quote's swap");
     expect(logger.error).not.toHaveBeenCalled();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("won't submit a tx with a cancel or direct message besides this swap's, as the backend follows its first packet", async () => {
+    const calls = stubBackend();
+    const other = messageReceipt({ srcAddress: `0x${"9".repeat(40)}`, payload: "0xc0" });
+    vi.mocked(getEvmReceipt).mockResolvedValue({ ...DEPOSIT_RECEIPT, logs: [...other.logs, ...DEPOSIT_RECEIPT.logs] });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits" });
+    expect(out.nextStep).toContain("another deposit or a cancel");
     expect(submits(calls)).toEqual([]);
   });
 

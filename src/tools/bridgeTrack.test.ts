@@ -15,6 +15,7 @@ import {
 } from "../services/sodax.js";
 import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { rlpList } from "../services/swap/__fixtures__/encode.js";
+import { clearAlerts } from "../services/swap/alerts.js";
 import { HOOK_FAILED_TOPIC, TRANSFER_TOPIC } from "../services/swap/sourceTx.js";
 import { bridgeClient } from "./__fixtures__/swapClient.js";
 
@@ -148,6 +149,40 @@ describe("sodax_bridge_submit_and_track", () => {
     await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
     expect(submits).toHaveLength(1);
   });
+
+  it.each([
+    [
+      "another user's deposit",
+      { payload: rlpList([ARB_USDC, `0x${"9".repeat(40)}`, `0x${"d".repeat(40)}`, "0x01", "0x"]) },
+    ],
+    ["a cancel or direct message", { srcAddress: `0x${"9".repeat(40)}`, payload: "0xc0" }],
+  ])(
+    "leaves to the operator a deposit in a tx with %s, as the backend follows the tx's first packet",
+    async (_, message) => {
+      vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      // Each case alerts on the same tx, which a day's dedupe would otherwise hold back.
+      clearAlerts();
+      const { bridgeId, deposit, transfer } = await prepared();
+      // An ERC-4337 bundle: another message first, then this bridge's deposit.
+      vi.mocked(getEvmReceipt).mockResolvedValue({
+        ...deposit,
+        logs: [...messageReceipt(message).logs, ...deposit.logs],
+      });
+      const out = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+      expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_messages", terminal: true });
+      expect(submits).toEqual([]);
+      expect(getBridge(bridgeId)?.depositTxHash).toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ alert: "bridge_multiple_messages", "tx.hash": TX }),
+        expect.any(String),
+      );
+      // Its deposit alone goes through.
+      vi.mocked(getEvmReceipt).mockResolvedValue(messageReceipt({ payload: transfer(HUB_WALLET) }));
+      expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+        status: "relaying",
+      });
+    },
+  );
 
   it("refuses a tx that deposits to another hub wallet, asking for the right hash", async () => {
     const { bridgeId, transfer } = await prepared();

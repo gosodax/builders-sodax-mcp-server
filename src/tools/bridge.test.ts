@@ -51,7 +51,8 @@ function bridgeApi({ allowance = true }: { allowance?: boolean } = {}) {
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
     if (url.endsWith("/allowance/check")) return Response.json({ valid: allowance });
     if (url.endsWith("/approve")) {
-      const spender = swapContractFor(body.srcChainKey) as string;
+      // From Sonic the user's hub wallet pulls the token; from a spoke, the asset manager the deposit calls.
+      const spender = body.srcChainKey === "sonic" ? HUB_WALLET : (swapContractFor(body.srcChainKey) as string);
       const tx = { from: body.srcAddress, to: body.inputToken, value: "0" };
       return Response.json({
         tx: { ...tx, data: approveCalldata(body.inputToken, spender, BigInt(body.inputAmount)) },
@@ -149,6 +150,7 @@ describe("sodax_bridge_prepare", () => {
         type: "execute",
         chain: "0xa4b1.arbitrum",
         stepsAt: "steps",
+        batchAt: "batch",
         waitFor: "receipt_success",
         afterSend: {
           type: "call_tool",
@@ -159,8 +161,29 @@ describe("sodax_bridge_prepare", () => {
         },
       },
     });
+    // A wallet that batches sends the approve and the bridge as one atomic wallet_sendCalls.
+    expect(out.batch).toEqual({
+      replaces: ["approve", "bridge"],
+      method: "wallet_sendCalls",
+      params: [{ version: "2.0.0", chainId: "0xa4b1", from: USER, atomicRequired: true }],
+    });
+    expect(out.nextStep).toContain("wallet_sendCalls with the batch's params");
     // Kept for track: the relay data checked, and what the recipient gets.
     expect(getBridge(out.bridgeId)).toMatchObject({ delivered: 5_000_000n, relayData: { address: HUB_WALLET } });
+  });
+
+  it("offers no batch without an approve, nor from Sonic, where track checks the deposit as the tx itself", async () => {
+    bridgeApi();
+    const approved = await call("sodax_bridge_prepare", { ...ARB_TO_BASE, fromAddress: USER });
+    expect(approved.out.steps.map(step => step.kind)).toEqual(["bridge"]);
+    expect(approved.out.batch).toBeUndefined();
+    expect(approved.out.nextAction).not.toHaveProperty("next.batchAt");
+    bridgeApi({ allowance: false });
+    const fromSonic = await call("sodax_bridge_prepare", { ...ARB_TO_BASE, fromChain: "sonic", fromAddress: USER });
+    expect(fromSonic.isError).toBeFalsy();
+    expect(fromSonic.out.steps.map(step => step.kind)).toEqual(["approve", "bridge"]);
+    expect(fromSonic.out.batch).toBeUndefined();
+    expect(fromSonic.out.nextStep).not.toContain("wallet_sendCalls");
   });
 
   it("asks for the sender's wallet before building anything", async () => {

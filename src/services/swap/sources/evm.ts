@@ -214,7 +214,19 @@ export function toStepTx(tx: EvmTx, chainId: number): StepTx {
   return { ...tx, value: `0x${BigInt(tx.value).toString(16)}`, chainId: `0x${chainId.toString(16)}` };
 }
 
-/** The steps in order and, with an approval, the approve and swap as one batch. A reset stays out: it must land first. */
+/**
+ * The approve and the step it's for as one atomic EIP-5792 batch, for a wallet that batches. A reset stays out: it must
+ * land first.
+ */
+export function approveBatch(chainId: number, from: string, step: "swap" | "bridge"): SwapBatch {
+  return {
+    replaces: ["approve", step],
+    method: "wallet_sendCalls",
+    params: [{ version: "2.0.0", chainId: `0x${chainId.toString(16)}`, from, atomicRequired: true }],
+  };
+}
+
+/** The steps in order and, with an approval, the approve and swap as one batch. */
 function toSteps(
   swapTx: EvmTx,
   approveSteps: EvmStep[],
@@ -223,21 +235,7 @@ function toSteps(
 ): { steps: SwapStep[]; batch?: SwapBatch } {
   const swap: SwapStep = { kind: "swap", chainId, tx: toStepTx(swapTx, chainId) };
   if (approveSteps.length === 0) return { steps: [swap] };
-  return {
-    steps: [...approveSteps, swap],
-    batch: {
-      replaces: ["approve", "swap"],
-      method: "wallet_sendCalls",
-      params: [
-        {
-          version: "2.0.0",
-          chainId: `0x${chainId.toString(16)}`,
-          from,
-          atomicRequired: true,
-        },
-      ],
-    },
-  };
+  return { steps: [...approveSteps, swap], batch: approveBatch(chainId, from, "swap") };
 }
 
 const cancelOf = (source: SwapSource, tx: EvmTx): CancelStep => {

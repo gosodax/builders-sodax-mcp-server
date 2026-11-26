@@ -65,7 +65,8 @@ export type BridgeTrack = BridgeRef &
           | "unknown_bridge"
           | "bridge_used"
           | "submitted_differently"
-          | "submit_refused";
+          | "submit_refused"
+          | "multiple_messages";
         alerted: boolean;
       }
     | { status: "relaying" }
@@ -207,9 +208,15 @@ async function checkSource(
     sourceTx.messages,
     depositTerms(source, { intent: { srcChain, srcAddress }, relayData: bridge.relayData }),
   );
-  return deposit === "match"
-    ? "match"
-    : { ...base, status: "not_submitted", reason: "not_this_bridge", alerted: false };
+  if (deposit !== "match") return { ...base, status: "not_submitted", reason: "not_this_bridge", alerted: false };
+  // The backend keys a bridge on its tx and follows the tx's first packet, whoever sent it: any other message in the tx
+  // (another deposit, a cancel, a direct message; an ERC-4337 bundle can carry other users') may be the one it follows.
+  // An operator relays this deposit by hand.
+  if (sourceTx.messages.length > 1) {
+    const alerted = alertOperator("bridge_multiple_messages", { chainKey: chain.key, txHash });
+    return { ...base, status: "not_submitted", reason: "multiple_messages", alerted };
+  }
+  return "match";
 }
 
 /** A mined tx with no build here: the operator finds and submits it if it's a bridge. Only a named build alerts. */

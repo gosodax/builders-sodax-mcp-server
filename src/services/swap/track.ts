@@ -337,8 +337,9 @@ export function clearUnseenMemo(): void {
 }
 
 /**
- * Whether the tx holds this quote's swap, and no other: the backend keys a swap on its tx and takes its first,
- * so it can't tell one from another. From the hub the intents contract must have logged the quoted intent's hash;
+ * Whether the tx holds this quote's swap, and no other: the backend keys a swap on its tx and follows the tx's first
+ * relay packet, whoever sent it, so any other message in the tx (another deposit, a cancel) may be the one it follows.
+ * From the hub the intents contract must have logged the quoted intent's hash;
  * from a spoke, of any family, a deposit message must bind the quote's sender, hub wallet and relay payload
  * (`checkDeposit`), as the relay will read it.
  */
@@ -355,7 +356,7 @@ export function checkQuoteDeposit(
   }
   const deposit = checkDeposit(sourceTx.messages, depositTerms(source, quote));
   if (deposit !== "match") return deposit;
-  return swapsIn(source, sourceTx) > 1 ? "multiple_deposits" : "match";
+  return sourceTx.messages.length > 1 ? "multiple_deposits" : "match";
 }
 
 /**

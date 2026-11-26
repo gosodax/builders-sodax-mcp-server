@@ -85,7 +85,7 @@ export function registerBridgeTools(server: McpServer): void {
     "Submit and track a bridge once the user's wallet has sent its bridge transaction. Call it right after sending, then follow each result's nextAction until terminal is true, or its nextStep. Repeated calls never resubmit. It checks the transaction on chain against the bridge's build before submitting. This server never signs or moves funds.",
     {
       txHash: txHashArg().describe(
-        "Hash of the bridge step's transaction on the source chain, as the wallet shows it, not the approve's.",
+        "Hash of the bridge step's transaction on the source chain, as the wallet shows it, not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
       ),
       bridgeId: screened(z.string().trim().toLowerCase().uuid(), {
         notHex64: "a bridgeId",

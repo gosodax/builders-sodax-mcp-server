@@ -22,7 +22,7 @@ import {
   ongoing,
   provide,
 } from "./nextAction.js";
-import { SIGN_NON_EVM_TX, approveOf, sendsToOwnAddressElsewhere } from "./swapDecisions.js";
+import { SEND_BATCH, SIGN_NON_EVM_TX, approveOf, sendsToOwnAddressElsewhere } from "./swapDecisions.js";
 
 const TRACK = "sodax_bridge_submit_and_track";
 const PREPARE = "sodax_bridge_prepare";
@@ -65,7 +65,7 @@ function prepareNextStep(quote: BridgeQuote): string {
   const send =
     "chainType" in first
       ? `Once they confirm, have their ${from.chain.name} wallet send the bridge step before it expires: ${SIGN_NON_EVM_TX[first.chainType]}.`
-      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't.${approve} Once they confirm, have their wallet send the steps in order before they expire, each mined before the next (a bridge sent before its approve is mined fails).`;
+      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't.${approve} Once they confirm, have their wallet send the steps in order before they expire, each mined before the next (a bridge sent before its approve is mined fails)${quote.batch ? SEND_BATCH : ""}.`;
   return [
     `${show}${sameAddress}; the steps expire at ${quote.expiresAt}.`,
     "Balances aren't checked here; sodax_get_balance with for: bridge reads them.",
@@ -101,6 +101,7 @@ export function prepareDecision(quote: BridgeQuote): Decision {
       type: "execute",
       chain: from.chain.key,
       stepsAt: "steps",
+      ...(quote.batch && { batchAt: "batch" as const }),
       waitFor: "receipt_success",
       expiresAt: quote.expiresAt,
       afterSend,

@@ -9,7 +9,7 @@
  */
 
 import { HUB_CHAIN_KEY, hubConfig, isBitcoinChainKey, isInjectiveChainKey, spokeChainConfig } from "@sodax/types";
-import { sameHex as same } from "../../constants.js";
+import { EVM_TX_HASH_PATTERN, sameHex as same } from "../../constants.js";
 import { callerKeyHash } from "../requestContext.js";
 import {
   type EvmReceipt,
@@ -18,9 +18,9 @@ import {
   encodeRecipient,
   getEvmReceipt,
   getHubTx,
-  hubRelayPackets,
   intentChainId,
   isHubChain,
+  relayPackets,
 } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { alertOperator } from "../swap/alerts.js";
@@ -59,7 +59,13 @@ export type BridgeTrack = BridgeRef &
     | { status: "source_failed" }
     | {
         status: "not_submitted";
-        reason: "not_this_bridge" | "unverified" | "unknown_bridge" | "bridge_used" | "submitted_differently";
+        reason:
+          | "not_this_bridge"
+          | "unverified"
+          | "unknown_bridge"
+          | "bridge_used"
+          | "submitted_differently"
+          | "submit_refused";
         alerted: boolean;
       }
     | { status: "relaying" }
@@ -69,11 +75,27 @@ export type BridgeTrack = BridgeRef &
     | { status: "held_on_hub"; hubTxHash: string; recovery?: Recovery; alerted: boolean }
   );
 
-export async function trackBridge(input: { txHash: string; bridgeId?: string; chain?: string }): Promise<BridgeTrack> {
+type TrackInput = { txHash: string; bridgeId?: string; chain?: string };
+
+export async function trackBridge(input: TrackInput): Promise<BridgeTrack> {
   const bridge = input.bridgeId ? getBridge(input.bridgeId) : undefined;
   if (bridge && bridge.keyHash !== callerKeyHash()) {
     throw new ActionError("QUOTE_KEY_MISMATCH", "That bridge was prepared with another SODAX API key.");
   }
+  try {
+    return await follow(input, bridge);
+  } catch (error) {
+    // Once a deposit is bound to the build, never "get a new key": only this key can track it, so a new one would
+    // leave it unsubmitted for a person to find. As in the swap tools' track, it's retried.
+    throw bridge?.depositTxHash && error instanceof ActionError && error.code === "API_KEY_REQUIRED"
+      ? new ActionError("UPSTREAM_UNAVAILABLE", "The bridge service refused this server's request for now.", {
+          details: { retryAfterSec: 60 },
+        })
+      : error;
+  }
+}
+
+async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
   const source = sourceOf(bridge, input.chain);
   const txHash = sourceTxHash(source, input.txHash);
   const base: BridgeRef = { txHash, chain: source.chain, ...(input.bridgeId && { bridgeId: input.bridgeId }) };
@@ -101,16 +123,30 @@ export async function trackBridge(input: { txHash: string; bridgeId?: string; ch
       relayData: bridge.relayData,
     });
   } catch (error) {
-    if (!(error instanceof ActionError) || error.details?.reason !== "submitted_differently") throw error;
-    const alerted = alertOperator("unknown_bridge", {
-      chainKey: source.chain.key,
-      txHash,
-      reason: "submitted differently",
-    });
-    return { ...base, status: "not_submitted", reason: "submitted_differently", alerted };
+    // One that may pass on a repeat is the agent's to retry: the claim stays, so the next call submits again.
+    if (!isRefusal(error)) throw error;
+    if (error.details?.reason === "submitted_differently") {
+      const alerted = alertOperator("unknown_bridge", {
+        chainKey: source.chain.key,
+        txHash,
+        reason: "submitted differently",
+      });
+      return { ...base, status: "not_submitted", reason: "submitted_differently", alerted };
+    }
+    // The deposit is checked and on chain, and no repeat gets it submitted: only an operator can, as the swap
+    // tools' `submit_rejected`.
+    const alerted = alertOperator("bridge_submit_rejected", { chainKey: source.chain.key, txHash });
+    return { ...base, status: "not_submitted", reason: "submit_refused", alerted };
   }
   return { ...base, status: "relaying" };
 }
+
+/**
+ * A failure that calling again won't fix. A key refusal (401/403) is of the request, not the bridge, so it isn't one:
+ * as in the swap tools' track.
+ */
+const isRefusal = (error: unknown): error is ActionError =>
+  error instanceof ActionError && !error.retryable && error.code !== "API_KEY_REQUIRED";
 
 /** The source chain: the build's, or the one the caller names, either a chain a bridge can start from. */
 function sourceOf(bridge: PreparedBridge | undefined, chain: string | undefined): SwapSource {
@@ -143,8 +179,9 @@ async function checkSource(
     if (!receipt) return { ...base, status: "awaiting_source", seenOnChain: tx !== null };
     if (receipt.reverted) return { ...base, status: "source_failed" };
     if (!bridge?.deposit) return unknownBridge(base);
+    // A node behind a load balancer can serve the receipt before the tx: it's mined, so the tx comes next.
+    if (tx === null) return { ...base, status: "awaiting_source", seenOnChain: true };
     const own =
-      tx !== null &&
       same(tx.from, bridge.request.srcAddress) &&
       same(tx.to ?? "", bridge.deposit.to) &&
       tx.value === BigInt(bridge.deposit.value) &&
@@ -190,22 +227,26 @@ async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBri
   // Without the build, nothing here checked the tx as a deposit: its alerts spend the budget any key can.
   const alert = (kind: "bridge_relay_failed" | "bridge_hook_failed") =>
     alertOperator(kind, { chainKey: base.chain.key, txHash: base.txHash }, { unchecked: !bridge });
-  // The SDK's own rule: failed or abandoned, the backend relays it no further. The source chain's asset manager holds
-  // the deposit until someone does.
-  if (row.status === "failed" || row.abandonedAt) {
-    return { ...base, status: "relay_failed", alerted: alert("bridge_relay_failed") };
-  }
-  // From Sonic the user's own tx ran on the hub; from a spoke, the hub tx the row names, checked below.
-  const hubTxHash = isHubChain(base.chain.key) ? base.txHash : row.result?.dstIntentTxHash;
-  if (row.status !== "executed" || !hubTxHash) return { ...base, status: "relaying" };
+  // The SDK's rule (`BridgeService.getDetailedStatus`): a row the backend failed or gave up on is stale, not a verdict.
+  // The relay may have carried the bridge anyway, relayed by hand or landing after the give-up, so it's asked; one it
+  // hasn't carried either is held until someone relays it.
+  const stale = row.status === "failed" || Boolean(row.abandonedAt);
+  const fromHub = isHubChain(base.chain.key);
+  const held = (): BridgeTrack => ({ ...base, status: "relay_failed", alerted: alert("bridge_relay_failed") });
+  const notYet = (): BridgeTrack => (stale ? held() : { ...base, status: "relaying" });
+  if (!stale && row.status !== "executed") return notYet();
+  // From Sonic the user's own tx ran on the hub; from a spoke, the hub tx the row names, or for a stale row the one the
+  // relay delivered the deposit in, checked below.
+  const hubTxHash = fromHub ? base.txHash : stale ? await relayedToHub(base) : row.result?.dstIntentTxHash;
+  if (!hubTxHash) return notYet();
   const toHub = bridge !== undefined && isHubChain(bridge.request.dstChainKey);
   const [receipt, packets] = await Promise.all([
     chainRead(toChain(HUB_CHAIN_KEY), () => getEvmReceipt(HUB_CHAIN_KEY, hubTxHash)),
     // A relay that fails or answers anything unexpected leaves it in transit, never delivered.
-    toHub ? [] : hubRelayPackets(hubTxHash).catch((): RelayPacket[] => []),
+    toHub ? [] : relayPackets(HUB_CHAIN_KEY, hubTxHash).catch((): RelayPacket[] => []),
   ]);
   // Not mined where the row says, or reverted there: nothing ran on the hub yet.
-  if (!receipt || receipt.reverted) return { ...base, status: "relaying" };
+  if (!receipt || receipt.reverted) return notYet();
   if (hookFailed(receipt, bridge)) {
     const recovery = bridge && {
       srcChainKey: bridge.request.srcChainKey,
@@ -226,10 +267,30 @@ async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBri
     return { ...base, status: "delivered", dstTxHash: hubTxHash, delivery: "delivered" };
   }
   const packet = toHub ? undefined : deliveryPacket(packets, hubTxHash, bridge);
+  // The destination chain's own hash, as the relay reports it: base58 on Solana, a txid without 0x on Bitcoin.
   if (packet?.status === "executed" && packet.dst_tx_hash) {
-    return { ...base, status: "delivered", dstTxHash: prefixed(packet.dst_tx_hash), delivery: proofOn(packet) };
+    return { ...base, status: "delivered", dstTxHash: packet.dst_tx_hash, delivery: proofOn(packet) };
   }
-  return { ...base, status: "in_transit", hubTxHash };
+  // From a spoke, the relay carries it on from the hub by itself. From Sonic, the backend's row was watching for just
+  // that packet: given up on, it's held.
+  return stale && fromHub ? held() : { ...base, status: "in_transit", hubTxHash };
+}
+
+/**
+ * The hub tx the relay delivered a spoke deposit in, as the SDK and the backend find it: the source tx's one packet,
+ * executed on the hub. None when the relay hasn't, or can't be read.
+ */
+async function relayedToHub({ chain, txHash }: BridgeRef): Promise<string | undefined> {
+  const packets = await relayPackets(chain.key, txHash).catch((): RelayPacket[] => []);
+  const landed = packets.filter(
+    packet =>
+      String(packet.src_chain_id) === intentChainId(chain.key) &&
+      same(prefixed(packet.src_tx_hash), prefixed(txHash)) &&
+      BigInt(packet.dst_chain_id) === HUB_RELAY_ID &&
+      packet.status === "executed" &&
+      EVM_TX_HASH_PATTERN.test(packet.dst_tx_hash ?? ""),
+  );
+  return landed.length === 1 ? landed[0]?.dst_tx_hash : undefined;
 }
 
 /** An address as a log names it in an indexed topic or a data word: the last 20 bytes of 32. */

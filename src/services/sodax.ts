@@ -23,6 +23,7 @@ import {
 } from "@sodax/types";
 import { z } from "zod";
 import {
+  ANY_TX_HASH_PATTERN,
   CHAIN_KEY_PATTERN,
   EVM_ADDRESS_PATTERN,
   SODAX_API_ORIGIN,
@@ -468,28 +469,32 @@ export function getHubTx(
   });
 }
 
-/** A relay packet as the relay reports it (`PacketData`): hex without `0x`, the relay's chain ids. */
+/**
+ * A relay packet as the relay reports it (`PacketData`): addresses and payload in hex without `0x`, the relay's chain
+ * ids, and each tx hash in its own chain's format (an EVM one with `0x`, a Solana signature in base58).
+ */
 const relayPacketSchema = z.object({
   src_chain_id: z.union([z.number().int(), z.string().regex(/^\d+$/)]),
   src_tx_hash: z.string(),
   src_address: z.string(),
   status: z.string(),
   dst_chain_id: z.union([z.number().int(), z.string().regex(/^\d+$/)]),
-  dst_tx_hash: z.string().optional().catch(undefined),
+  // Passed on to the agent: upstream text that doesn't look like a hash isn't.
+  dst_tx_hash: z.string().regex(ANY_TX_HASH_PATTERN).optional().catch(undefined),
   payload: z.string(),
 });
 export type RelayPacket = z.infer<typeof relayPacketSchema>;
 
 /**
- * The relay's packets for a hub tx, through the SDK's own relay client (no SODAX key goes to the relay): what the tx
- * sent, where, and whether it ran there. None known yet is `[]`; a packet the relay sends malformed is left out, so it
- * can never pass for a delivery. Fails as a bare error.
+ * The relay's packets for a tx on a chain, through the SDK's own relay client (no SODAX key goes to the relay): what
+ * the tx sent, where, and whether it ran there. None known yet is `[]`; a packet the relay sends malformed is left out,
+ * so it can never pass for a delivery. Fails as a bare error.
  */
-export function hubRelayPackets(txHash: string): Promise<RelayPacket[]> {
-  return bounded({ label: "relay packets", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+export function relayPackets(chainKey: string, txHash: string): Promise<RelayPacket[]> {
+  return bounded({ label: "relay packets", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
     const { sdk: lib, sodax } = sdk();
     const result = await lib.getTransactionPackets(
-      { action: "get_transaction_packets", params: { chain_id: intentChainId(HUB_CHAIN_KEY) ?? "", tx_hash: txHash } },
+      { action: "get_transaction_packets", params: { chain_id: intentChainId(chainKey) ?? "", tx_hash: txHash } },
       sodax.config.relay.relayerApiEndpoint,
       RPC_CALL_TIMEOUT_MS,
     );

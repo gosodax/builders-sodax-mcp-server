@@ -7,9 +7,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getBridgeCatalog } from "../services/bridge/catalog.js";
+import { forBridge } from "../services/bridge/wording.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { readBalances } from "../services/swap/balance.js";
 import { cancelSwap } from "../services/swap/cancel.js";
+import { ActionError } from "../services/swap/errors.js";
 import { DEFAULT_DEADLINE_MINUTES, DEFAULT_SLIPPAGE_BPS, quoteSwap } from "../services/swap/quote.js";
 import { resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
@@ -169,14 +171,25 @@ export function registerSwapTools(server: McpServer): void {
   );
 }
 
-// Which list a token is looked up in: the bridge's differs from the swap's.
-const purposeArg = () =>
+// Which list a token is looked up in: the bridge's differs from the swap's. Without the swap tools, it's the bridge's.
+const purposeArg = (byDefault: TokenPurpose) =>
   z
     .enum(["swap", "bridge"])
-    .default("swap")
-    .describe('"swap" (the default) or "bridge": which tool the token is for. Some tokens bridge but don\'t swap.');
+    .default(byDefault)
+    .describe(
+      `${byDefault === "swap" ? '"swap" (the default) or "bridge"' : '"bridge" (the default) or "swap"'}: which tool the token is for. Some tokens bridge but don't swap.`,
+    );
 
 const catalogFor = async (purpose: TokenPurpose) => (purpose === "bridge" ? getBridgeCatalog() : getSwapCatalog());
+
+/** A lookup for a bridge fails in a bridge's words: the shared resolver's name the swap. */
+async function worded<T>(purpose: TokenPurpose, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw purpose === "bridge" && error instanceof ActionError ? forBridge(error) : error;
+  }
+}
 
 /**
  * The token lookup and balance read, for the swap and the bridge tools alike: registered once for either, counted
@@ -192,13 +205,14 @@ export function registerTokenTools(server: McpServer, module: "swap" | "bridge" 
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
       ),
       query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
-      for: purposeArg(),
+      for: purposeArg(module),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async args => {
-      const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
-      return { ...resolution, ...resolveDecision(resolution, args.for) };
-    },
+    async args =>
+      worded(args.for, async () => {
+        const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
+        return { ...resolution, ...resolveDecision(resolution, args.for) };
+      }),
     { module },
   );
 
@@ -214,13 +228,14 @@ export function registerTokenTools(server: McpServer, module: "swap" | "bridge" 
       token: tokenArg()
         .optional()
         .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
-      for: purposeArg(),
+      for: purposeArg(module),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async args => {
-      const balances = await readBalances(args, await catalogFor(args.for));
-      return { ...balances, ...balanceDecision(balances) };
-    },
+    async args =>
+      worded(args.for, async () => {
+        const balances = await readBalances(args, await catalogFor(args.for));
+        return { ...balances, ...balanceDecision(balances) };
+      }),
     { module },
   );
 }

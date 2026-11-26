@@ -17,7 +17,7 @@ import type {
   CreateBridgeIntentResponseV2,
 } from "@sodax/types";
 import { z } from "zod";
-import { EVM_ADDRESS_PATTERN, SODAX_BRIDGE_BASE_URL } from "../../constants.js";
+import { ANY_TX_HASH_PATTERN, EVM_ADDRESS_PATTERN, SODAX_BRIDGE_BASE_URL } from "../../constants.js";
 import { HttpError, fetchJson, fetchJsonOrNull, routeOf } from "../http.js";
 import { logger, redact } from "../logger.js";
 import type { PartnerFee } from "../partnerFee.js";
@@ -28,8 +28,6 @@ import { type EvmTx, asEvmTx, withoutIds } from "../swap/swapsApi.js";
 // Above bridge-api's own 15 s deadline on a build's chain reads, so its 504 arrives before our timeout.
 const TIMEOUT_MS = 20_000;
 const HEX_DATA = /^0x[0-9a-fA-F]*$/;
-// `dstIntentTxHash` is the hub tx from a spoke, the destination chain's own tx from Sonic: any chain's hash format.
-const TX_HASH = /^[A-Za-z0-9:_-]{1,128}$/;
 
 /** The schema, typed so that the call fails to compile when it stops accepting the SDK's wire type `Wire`. */
 const accepting =
@@ -65,7 +63,10 @@ const statusSchema = accepting<BridgeSubmitTxStatusResponseV2>()(
       status: z.string().max(64),
       failedAtStep: z.string().max(64).optional(),
       abandonedAt: z.string().max(64).optional(),
-      result: z.object({ dstIntentTxHash: z.string().regex(TX_HASH).optional().catch(undefined) }).optional(),
+      // The hub tx from a spoke, the destination chain's own tx from Sonic: any chain's hash format.
+      result: z
+        .object({ dstIntentTxHash: z.string().regex(ANY_TX_HASH_PATTERN).optional().catch(undefined) })
+        .optional(),
     }),
   }),
 );

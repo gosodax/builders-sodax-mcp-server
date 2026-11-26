@@ -35,6 +35,8 @@ describe("prepared bridges", () => {
     })();
     expect(refused).toBeInstanceOf(ActionError);
     expect((refused as ActionError).code).toBe("RATE_LIMITED");
+    // Room comes back when the oldest open build goes, 40 minutes after it was kept, not when it can't be signed.
+    expect((refused as ActionError).details?.retryAfterSec).toBe(40 * 60);
     // Another key still has room.
     expect(() => asKey("other", () => checkBridgeRoom())).not.toThrow();
     expect(claimBridge(kept[0]?.bridgeId as string, `0x${"a".repeat(64)}`)).toBe("claimed");

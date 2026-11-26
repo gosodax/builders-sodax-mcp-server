@@ -7,6 +7,7 @@
 import type { BridgePairs } from "../services/bridge/pair.js";
 import type { BridgePreview, BridgeQuote } from "../services/bridge/prepare.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
+import { isHubChain } from "../services/sodax.js";
 import { addressAsk } from "../services/swap/quote.js";
 import {
   type ConfirmSummary,
@@ -152,7 +153,11 @@ export function trackDecision(result: BridgeTrack): Decision {
       );
     case "relay_failed":
       return final(
-        `The relay gave up before the SODAX hub: the tokens are held by the SODAX asset manager on ${chain.name}, not lost, until the SODAX team relays them. Tell the user not to send it again, and to ${helpDesk}.`,
+        `${
+          isHubChain(chain.key)
+            ? `The bridge left ${chain.name}, but the relay gave up before the destination chain: the tokens aren't lost, and wait for the SODAX team to relay them.`
+            : `The relay gave up before the SODAX hub: the tokens are held by the SODAX asset manager on ${chain.name}, not lost, until the SODAX team relays them.`
+        } Tell the user not to send it again, and to ${helpDesk}.`,
         external("help_desk"),
         "held",
       );

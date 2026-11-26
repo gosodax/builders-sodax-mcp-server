@@ -160,6 +160,8 @@ export const BRIDGE_HELP = helpWith("a swap or a bridge");
 export const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 export const ZERO_ADDRESS_PATTERN = /^0x0{40}$/i;
 export const EVM_TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+// Any chain's tx hash as an upstream reports it (EVM hex, base58, a Bitcoin txid): one that doesn't match isn't passed on.
+export const ANY_TX_HASH_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
 // 64 hex characters, 0x or not: a Stellar or Injective tx hash, or as well a private key.
 export const HEX_64 = /^(?:0x)?([0-9a-fA-F]{64})$/;
 // Base58's characters, for a character class: no 0, O, I or l.

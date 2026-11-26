@@ -46,12 +46,17 @@ let sweepTimer: NodeJS.Timeout | undefined;
  */
 export function checkBridgeRoom(keyHash = callerKeyHash()): void {
   sweep();
-  const full = (openByKey.get(keyHash)?.size ?? 0) >= MAX_OPEN_PER_KEY;
+  const open = openByKey.get(keyHash);
+  const full = (open?.size ?? 0) >= MAX_OPEN_PER_KEY;
   if (!full && bridges.size < MAX_BRIDGES) return;
+  // Room comes back when the oldest build holding it goes: one not sent yet can still be claimed until then. All live
+  // as long, so the first kept is the first to go.
+  const [oldestId] = full && open ? open : bridges.keys();
+  const goesAt = (oldestId && bridges.get(oldestId)?.expiresAt) || Date.now();
   throw new ActionError(
     "RATE_LIMITED",
     full ? "This API key has too many open bridges." : "This server holds too many open bridges right now.",
-    { details: { retryAfterSec: SIGN_WINDOW_MS / 1000 } },
+    { details: { retryAfterSec: Math.max(1, Math.ceil((goesAt - Date.now()) / 1000)) } },
   );
 }
 

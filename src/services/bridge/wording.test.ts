@@ -17,6 +17,12 @@ describe("forBridge", () => {
     expect(worded).toMatchObject({ code: "UNKNOWN_TOKEN", details: { field: "fromToken" } });
   });
 
+  it("has a token looked up in the bridge's list", () => {
+    const shared = new ActionError("UNKNOWN_TOKEN", "No.", { nextStep: "sodax_resolve_token lists candidates." });
+    expect(forBridge(shared).nextStep).toBe("sodax_resolve_token with for: bridge lists candidates.");
+    expect(forBridge(forBridge(shared)).nextStep).toBe("sodax_resolve_token with for: bridge lists candidates.");
+  });
+
   it("leaves other tool names whole", () => {
     const worded = forBridge(new ActionError("UNKNOWN_TOKEN", "No.", { nextStep: "Call sodax_get_swap_tokens." }));
     expect(worded.nextStep).toBe("Call sodax_get_swap_tokens.");

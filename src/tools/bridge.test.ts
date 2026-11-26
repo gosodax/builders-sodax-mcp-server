@@ -296,4 +296,23 @@ describe("the token tools, for a bridge", () => {
     const { out } = await call("sodax_get_balance", { chain: "base", address: USER, token: "USDT", for: "bridge" });
     expect(out).toMatchObject({ status: "ok", token: { symbol: "USDT", amount: "1.5" } });
   });
+
+  it("look in the bridge's list by default when the swap tools aren't served", async () => {
+    const { out } = await call("sodax_resolve_token", { chain: "base", query: "USDT" });
+    expect(out).toMatchObject({ status: "resolved", token: { symbol: "USDT" } });
+  });
+
+  it("fail in a bridge's words, next to the swap tools too", async () => {
+    const client = await mcpClient({ builder: false, swap: true, bridge: true });
+    const lookup = (purpose: string) =>
+      client.callTool({ name: "sodax_resolve_token", arguments: { chain: "nowhere", query: "USDC", for: purpose } });
+    const forBridge = (await lookup("bridge")).structuredContent as ToolResult;
+    const forSwap = (await lookup("swap")).structuredContent as ToolResult;
+    await client.close();
+    expect(forBridge.error).toMatchObject({
+      code: "UNSUPPORTED_CHAIN",
+      message: expect.stringContaining("bridge chain"),
+    });
+    expect(forSwap.error).toMatchObject({ code: "UNSUPPORTED_CHAIN", message: expect.stringContaining("swap chain") });
+  });
 });

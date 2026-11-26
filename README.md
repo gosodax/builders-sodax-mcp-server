@@ -92,6 +92,7 @@ A connection picks which tools it gets with `?profile=<name>` on the URL or the 
 | `all` (default) | The builder tools, plus the swap tools when you send an API key |
 | `builder` | The data, relay and SDK docs tools |
 | `swap` | The swap tools only. Needs an API key |
+| `bridge` | The bridge tools only. Needs an API key; off unless `SODAX_BRIDGE_TOOLS_ENABLED=true` |
 
 An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403.
 
@@ -572,7 +573,7 @@ Coolify injects these directly into the process environment.
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API, solver and Swaps API calls; the swap tools need it. Ignored over HTTP, where each client sends its own `x-api-key`. |
-| `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
+| `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap`, `bridge` or `all`); `--profile` wins. `bridge` stops the server at startup unless `SODAX_BRIDGE_TOOLS_ENABLED=true`. |
 | `SODAX_BRIDGE_TOOLS_ENABLED` | `false` | Kill switch for the bridge tools, off until they're released: `true` serves the `bridge` profile (and the bridge tools in `all`). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |

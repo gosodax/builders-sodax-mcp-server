@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SODAX_HELP_DESK } from "../constants.js";
 import type { BalanceResult } from "../services/swap/balance.js";
 import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode, RETRYABLE_CODES } from "../services/swap/errors.js";
 import type { SwapQuote } from "../services/swap/quote.js";
@@ -141,13 +142,19 @@ const PRE_SEND: SwapToolName[] = ["sodax_swap_price", "sodax_swap_prepare", "sod
 const AFTER_SEND: SwapToolName[] = ["sodax_swap_submit_and_track", "sodax_swap_cancel"];
 const failed = (code: ActionErrorCode, tool: SwapToolName, details?: Record<string, unknown>, retryable?: boolean) =>
   decided(failure(code, tool, { amount: "5", deadlineMinutes: 15 }, details, retryable));
-// Every code from every tool, naming a field as its throw sites do; and each that usually passes, with the code's own
-// advice, from a throw site that says it won't.
+const REJECTIONS = ["no_route", "no_liquidity", "amount_too_large", "wallet_cannot_build", "trustline_room"];
+// Every code from every tool, naming a field as its throw sites do, and naming none; each that usually passes, with
+// the code's own advice, from a throw site that says it won't; and each of SWAP_REJECTED's refusals.
 const ERRORS: [string, Decision][] = [...PRE_SEND, ...AFTER_SEND].flatMap(tool => [
   ...ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}`, failed(code, tool, { field: "amount" })]),
+  ...ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}, no field`, failed(code, tool)]),
   ...RETRYABLE_CODES.map((code): [string, Decision] => [
     `${tool} ${code}, won't pass`,
     failed(code, tool, { field: "amount" }, false),
+  ]),
+  ...REJECTIONS.map((reason): [string, Decision] => [
+    `${tool} SWAP_REJECTED ${reason}`,
+    failed("SWAP_REJECTED", tool, { reason }),
   ]),
 ]);
 
@@ -238,10 +245,28 @@ describe("every decision", () => {
     },
   );
 
-  // A hand-off ends the calls: its sentence can't ask for another.
-  it.each(ALL.filter(([, decision]) => isHandOff(decision.nextAction)))("%s says not to call again", (_, decision) => {
-    expect(decision.nextStep).not.toMatch(/\bRetry\b|again in (about )?\d+ seconds/);
+  // After a send, a user who can't answer is sent to whoever can recover the swap, never just dropped.
+  it.each(
+    ERRORS.filter(
+      ([name, decision]) => AFTER_SEND.some(tool => name.startsWith(tool)) && decision.nextAction.type === "provide",
+    ),
+  )("%s sends a user who can't answer to the help desk", (_, decision) => {
+    expect(decision.nextAction).toMatchObject({ onDecline: { nextAction: { type: "external", reason: "help_desk" } } });
   });
+
+  // A hand-off ends the calls: its sentence can't ask for another, and says who takes over.
+  it.each(ALL.filter(([, decision]) => isHandOff(decision.nextAction)))(
+    "%s hands off, never says to call again",
+    (_, decision) => {
+      const { nextStep, nextAction } = decision;
+      expect(nextStep).not.toMatch(/\b(retry|try again|trying again|call \w+ again)\b|again in (about )?\d+ seconds/i);
+      if ((nextAction as Extract<NextAction, { type: "external" }>).reason === "help_desk") {
+        expect(nextStep).toContain(SODAX_HELP_DESK);
+      } else {
+        expect(nextStep).toMatch(/right now|for now/);
+      }
+    },
+  );
 
   it.each(ERRORS.filter(([name]) => AFTER_SEND.some(tool => name.startsWith(tool))))(
     "%s keeps a sent swap going: never none, never says to send again",
@@ -348,8 +373,12 @@ describe("trackDecision", () => {
     });
   });
 
-  it("never calls a tx it couldn't read held", () => {
-    expect(find("track not_submitted unverified")).toMatchObject({ terminal: true, outcome: "unknown" });
+  it("never calls a tx it couldn't read held, and asks for the swap's own hash first", () => {
+    expect(find("track not_submitted unverified").nextAction).toMatchObject({
+      type: "provide",
+      fields: [{ name: "txHash" }],
+      onDecline: { nextAction: { type: "none" }, terminal: true, outcome: "unknown" },
+    });
     expect(find("cancel not_cancellable unverified")).toMatchObject({ terminal: true, outcome: "unknown" });
   });
 

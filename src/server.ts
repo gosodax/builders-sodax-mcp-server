@@ -56,7 +56,7 @@ const SWAP_INSTRUCTIONS = [
   "Never pass private keys, seed phrases or API keys as tool inputs.",
   "After the user's wallet sends the swap, call `sodax_swap_submit_and_track` with the quoteId and the swap's tx hash: it submits",
   "the swap, so call it at least once. Every swap tool result, errors included, carries nextAction: follow it until the",
-  "result is terminal (retryAfterSec, where a result has one, is only when its next call is due), or read its nextStep.",
+  "result is terminal (its afterSec says when the next call is due), or read its nextStep.",
   "Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted swap, use `sodax_swap_cancel`.",
   SWAP_HELP,
 ].join(" ");

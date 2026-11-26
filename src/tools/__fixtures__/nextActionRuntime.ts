@@ -11,8 +11,11 @@ type PersonAction = Extract<NextAction, { type: "choose" | "provide" | "confirm"
 type Confirm = Extract<NextAction, { type: "confirm" }>;
 
 export interface Host {
-  /** Calls a swap tool; returns its `structuredContent`. */
-  call(tool: string, args: Args): Promise<ToolResult>;
+  /**
+   * Calls a swap tool; returns its `structuredContent`, which an SDK refusal of the arguments doesn't have: a text
+   * error, before the tool ran.
+   */
+  call(tool: string, args: Args): Promise<ToolResult | undefined>;
   sleep(seconds: number): Promise<void>;
   now(): number;
   /**
@@ -36,8 +39,11 @@ export interface Host {
 export interface Saved {
   /** The swap's track call, saved the moment its tx was broadcast (or its batch id returned). */
   swap?: { tool: string; args: Args; needs: string; hash?: string; batchId?: string };
-  /** A cancel sent and not yet failed; once relayed, the bounded track that follows it. */
-  cancel?: { args: Args; cancelTxHash: string; follow?: CallTool };
+  /**
+   * A cancel sent and not yet failed, by its hash (or its batch id, until the wallet has the hash); once relayed, the
+   * bounded track that follows it.
+   */
+  cancel?: { args: Args; cancelTxHash?: string; batchId?: string; follow?: CallTool };
   /** Calls made per `retryKey`: a bound holds across sessions, so a restart never grants a fresh budget. */
   attempts?: Record<string, number>;
   /** The `retryKey` of the last call made, for a `consecutive` bound. */
@@ -59,19 +65,27 @@ const BATCH_POLLS = 60;
 export async function run(host: Host, start: { tool: string; args: Args }): Promise<Ending> {
   // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap with its
   // hash. Nothing is priced, signed or sent again; a batch with no hash yet is handed back until the wallet has one.
+  // A cancel the user says they sent goes before a saved swap's track: it's pending before anything offers another.
   const pending = host.saved.cancel;
   let call: Next | undefined;
   if (pending?.follow) call = await follow(host, {}, pending.follow, {});
-  else if (pending) call = { tool: "sodax_swap_cancel", args: { ...pending.args, cancelTxHash: pending.cancelTxHash } };
+  else if (pending) call = await resumeCancel(host);
+  else if (start.tool === "sodax_swap_cancel" && typeof start.args.cancelTxHash === "string") call = start;
   else call = host.saved.swap ? await resume(host) : start;
   if (!call) return { stop: "handoff", result: {} };
   if ("stop" in call) return call;
   for (;;) {
     // Saved before the call: a corrected hash or chain is what a resumed session uses.
+    const before = { swap: host.saved.swap, cancel: host.saved.cancel };
     keepSent(host.saved, call);
     const result = await host.call(call.tool, call.args);
+    // The SDK refused the arguments: the tool never saw them, so they aren't what was sent.
+    if (!result) {
+      Object.assign(host.saved, before);
+      return { stop: "no_contract", result: {} };
+    }
     keepCancel(host.saved, result);
-    // No nextAction: an SDK refusal or an older server. Hand it off, keeping what was sent.
+    // No nextAction: an older server. Hand it off, keeping what was sent.
     if (!result.nextAction) return { stop: "no_contract", result };
     const next = await follow(host, result, result.nextAction, call.args);
     if ("stop" in next) return next;
@@ -95,6 +109,11 @@ async function follow(
     case "none":
       return { stop: "terminal", result, outcome: result.outcome };
     case "call_tool": {
+      // A bound with nothing to follow once it runs out can't be kept: a person takes over, never an endless loop.
+      const bounded = action.until !== undefined || action.maxAttempts !== undefined;
+      if (bounded && (!action.onExhausted || (action.maxAttempts !== undefined && !action.retryKey))) {
+        return { stop: "handoff", result };
+      }
       // Bounded calls stop at `until`, or count per retryKey across the whole workflow.
       if (action.until && host.now() >= Date.parse(action.until) && action.onExhausted) {
         return exhaust(action.onExhausted);
@@ -114,10 +133,10 @@ async function follow(
       return send(host, result, action);
     }
     case "confirm": {
-      // A cancel already sent is followed, never sent twice.
+      // A cancel already sent is followed, never sent twice: one sent as a batch waits for its hash.
       const pending = action.summary.kind === "cancel" ? host.saved.cancel : undefined;
       if (pending?.follow) return go(pending.follow, {});
-      if (pending) return { tool: "sodax_swap_cancel", args: { ...pending.args, cancelTxHash: pending.cancelTxHash } };
+      if (pending) return (await resumeCancel(host)) ?? { stop: "handoff", result };
       // Only the wallet knows a tx it signed can't land any more: a yes from whoever answers isn't proof.
       const agreed = action.by === "wallet" ? await host.walletShows(action) : await host.ask(action, result);
       if (agreed !== true) return { stop: "declined", result };
@@ -164,8 +183,9 @@ async function send(host: Host, result: ToolResult, action: Extract<NextAction, 
   const { tool, args, needs } = action.afterSend;
   const sent = await host.send(action, result);
   if (needs[0] === "cancelTxHash") {
-    if (!("hash" in sent)) return { stop: "handoff", result };
-    return { tool, args: { ...args, cancelTxHash: sent.hash } };
+    const by = "hash" in sent ? { cancelTxHash: sent.hash } : { batchId: sent.batchId };
+    host.saved.cancel = { args: args ?? {}, ...by };
+    return (await resumeCancel(host)) ?? { stop: "handoff", result };
   }
   host.saved.swap = { tool, args: args ?? {}, needs: needs[0], ...sent };
   const hash = "hash" in sent ? sent.hash : await batchHash(host, sent.batchId);
@@ -182,6 +202,15 @@ async function resume(host: Host): Promise<{ tool: string; args: Args } | undefi
   if (!hash) return undefined;
   swap.hash = hash;
   return { tool: swap.tool, args: { ...swap.args, [swap.needs]: hash } };
+}
+
+/** The pending cancel's call with its hash; one sent as a batch reads the wallet for it first. */
+async function resumeCancel(host: Host): Promise<{ tool: string; args: Args } | undefined> {
+  const cancel = host.saved.cancel;
+  if (!cancel) return undefined;
+  cancel.cancelTxHash ??= cancel.batchId ? await batchHash(host, cancel.batchId) : undefined;
+  if (!cancel.cancelTxHash) return undefined;
+  return { tool: "sodax_swap_cancel", args: { ...cancel.args, cancelTxHash: cancel.cancelTxHash } };
 }
 
 async function batchHash(host: Host, batchId: string): Promise<string | undefined> {

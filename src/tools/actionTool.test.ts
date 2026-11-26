@@ -173,7 +173,8 @@ describe("registerActionTool", () => {
   });
 
   it("gives each code a default next step, and a retry its bound", async () => {
-    const amount = await callFailingTool(new ActionError("INVALID_AMOUNT", "No."));
+    // Named as its throw sites name it: with no field to ask for, a failure is handed off.
+    const amount = await callFailingTool(new ActionError("INVALID_AMOUNT", "No.", { details: { field: "amount" } }));
     expect(amount.structuredContent).toMatchObject({
       nextStep: expect.stringContaining("Ask the user for the amount"),
     });

@@ -120,7 +120,7 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
         payload: built.relayData.payload,
       }).catch(() => {
         throw new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the swap on ${chain.name} right now.`, {
-          nextStep: `Retry in a minute. If it still fails, stop: tell the user the swap can't be prepared on ${chain.name} right now, and that their wallet must hold the amount plus fees and have sent a transaction before.`,
+          nextStep: `A retry in a minute often works. If none of the retries does, tell the user the swap can't be prepared on ${chain.name} right now, and that their wallet must hold the amount plus fees and have sent a transaction before.`,
           details: { retryAfterSec: 60 },
         });
       });

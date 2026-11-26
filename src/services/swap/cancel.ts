@@ -75,10 +75,8 @@ export async function cancelSwap(input: {
     ...(input.quoteId && { quoteId: input.quoteId }),
     ...(quote && { intentHash: intentHash(quote.intent) }),
   };
-  // The caller mixed up two swaps: this quote's deposit is another tx.
-  if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) {
-    throw quoteMismatch("That quote was used by another transaction.");
-  }
+  // The caller mixed up two swaps: this quote's deposit is another tx, which the user can pick.
+  if (quote?.depositTxHash !== undefined && quote.depositTxHash !== txHash) throw usedByAnotherTx(quote.depositTxHash);
   // Its cancel was confirmed here already. One found closed is read again: it may be the user's own cancel.
   if (quote?.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
 
@@ -111,7 +109,10 @@ export async function cancelSwap(input: {
   }
   // Only a deposit track checked is the quote's: any other tx's intent says nothing about it.
   if (quote && quote.depositTxHash !== txHash) {
-    throw quoteMismatch("That quote has no checked deposit in this transaction.");
+    throw new ActionError("QUOTE_MISMATCH", "That quote has no checked deposit in this transaction.", {
+      nextStep: `Ask the user for the quoteId this transaction was made from, and call again with it. If they don't have it, tell them to give the swap's transaction hash to ${SODAX_HELP_DESK}.`,
+      details: { field: "quoteId" },
+    });
   }
 
   const receipt = cancelTxHash ? await sentCancel(base, source, cancelTxHash, quote?.srcAddress) : undefined;
@@ -205,7 +206,7 @@ async function hubCancel(
     const swap = await checkSwapTx(base, source, quote, cancelTxHash);
     if (swap !== "match") return swap;
     if (claimDeposit(quote.quoteId, base.txHash) === "taken") {
-      throw quoteMismatch("That quote was used by another transaction.");
+      throw usedByAnotherTx();
     }
   }
   // A swap from the hub created its intent itself.
@@ -317,11 +318,20 @@ const minedAfter = (later: Mined, earlier: Mined) =>
   later.blockNumber > earlier.blockNumber ||
   (later.blockNumber === earlier.blockNumber && later.txIndex > earlier.txIndex);
 
-const quoteMismatch = (message: string) =>
-  new ActionError("QUOTE_MISMATCH", message, {
-    nextStep: "Call again with the quoteId this transaction was made from, or with chain instead of quoteId.",
-    details: { field: "quoteId" },
-  });
+/** The caller mixed up two swaps: the quote's swap is another tx, offered when known (not after a race to claim it). */
+const usedByAnotherTx = (depositTxHash?: string) =>
+  depositTxHash
+    ? new ActionError("QUOTE_MISMATCH", "That quote was used by another transaction.", {
+        nextStep:
+          "That quote's swap is another transaction (error.depositTxHash): ask the user whether it's the swap to cancel, and call again with it as txHash.",
+        details: { field: "txHash", depositTxHash },
+        hint: { options: [{ label: "The swap this quote was used for", args: { txHash: depositTxHash } }] },
+      })
+    : new ActionError("QUOTE_MISMATCH", "That quote was used by another transaction.", {
+        nextStep:
+          "That quote's swap is another transaction: ask the user for its hash, and call again with it as txHash.",
+        details: { field: "txHash" },
+      });
 
 /**
  * Without a quote, the hub intent must be the tracked swap's: from this chain, and alone in that tx, either a

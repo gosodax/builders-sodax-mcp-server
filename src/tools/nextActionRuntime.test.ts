@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { type Host, type Saved, type ToolResult, run } from "./__fixtures__/nextActionRuntime.js";
+import { callTool } from "./__fixtures__/swapClient.js";
 import {
   ARBITRUM,
   CANCEL_TX,
@@ -22,7 +23,13 @@ type Args = Record<string, unknown>;
 type Asked = Extract<NextAction, { type: "choose" | "provide" | "confirm" | "external" }>;
 
 interface Script {
-  respond: (tool: string, args: Args, nth: number, now: number) => ToolResult;
+  /** A result, or undefined for an SDK refusal of the arguments (no structuredContent). */
+  respond: (
+    tool: string,
+    args: Args,
+    nth: number,
+    now: number,
+  ) => ToolResult | undefined | Promise<ToolResult | undefined>;
   answers?: { [Type in Asked["type"]]?: (action: Extract<Asked, { type: Type }>) => Args | boolean | undefined };
   wallet?: () => { hash: string } | { batchId: string };
   batch?: (batchId: string) => string | undefined;
@@ -60,7 +67,8 @@ function harness(script: Script) {
     async call(tool, args) {
       calls.push({ tool, args });
       if (calls.length > RUNAWAY) throw new Error("the runtime never stopped");
-      return actionOnly(script.respond(tool, args, calls.filter(made => made.tool === tool).length, now));
+      const result = await script.respond(tool, args, calls.filter(made => made.tool === tool).length, now);
+      return result && actionOnly(result);
     },
     async sleep(seconds) {
       now += seconds * 1000;
@@ -90,6 +98,10 @@ function harness(script: Script) {
 
 const TRACK = "sodax_swap_submit_and_track";
 const CANCEL = "sodax_swap_cancel";
+const READY_CANCEL = () => cancelled({ status: "ready", steps: [{ kind: "cancel", chainId: 42161, tx: {} }] });
+
+/** The server's own answer: an argument it refuses comes back as the SDK's text error, with no structuredContent. */
+const server = async (tool: string, args: Args) => (await callTool(tool, args)).out as ToolResult | undefined;
 
 describe("the reference runtime", () => {
   it("prices, asks for the wallet, prepares, confirms, signs and tracks a swap to its end", async () => {
@@ -591,12 +603,74 @@ describe("the reference runtime", () => {
     expect(readme).toContain(`\`\`\`ts\n${loop}\`\`\``);
   });
 
-  // An SDK refusal, or an older server: handed off, and a prepare is never retried (each holds a quote).
+  // An older server: handed off, and a prepare is never retried (each holds a quote).
   it("hands a result with no contract off, never calling again", async () => {
     const swap = harness({ respond: () => ({ status: "error" }) });
     expect(await run(swap.host, { tool: "sodax_swap_prepare", args: PRICE_ARGS })).toMatchObject({
       stop: "no_contract",
     });
     expect(swap.calls).toHaveLength(1);
+  });
+  it("keeps nothing from a call the SDK refuses, so the corrected one is what a later session resumes", async () => {
+    const saved: Saved = {};
+    const refused = harness({ saved, respond: server });
+    expect(await run(refused.host, { tool: TRACK, args: { ...TRACK_ARGS, txHash: "nope" } })).toMatchObject({
+      stop: "no_contract",
+    });
+    expect(saved.swap).toBeUndefined();
+    const corrected = harness({ saved, respond: () => tracked(SOLVED) });
+    await run(corrected.host, { tool: TRACK, args: TRACK_ARGS });
+    expect(corrected.calls[0]).toEqual({ tool: TRACK, args: TRACK_ARGS });
+  });
+
+  it("stops at an SDK refusal while a cancel is pending, keeping the cancel as it was", async () => {
+    const pending = { args: TRACK_ARGS, cancelTxHash: CANCEL_TX };
+    const swap = harness({
+      saved: { cancel: pending },
+      respond: (tool, args) =>
+        args.txHash === "nope"
+          ? server(tool, args)
+          : cancelled({ status: "not_cancellable", reason: "not_this_swap", cancelTxHash: CANCEL_TX }),
+      answers: { provide: () => ({ txHash: "nope" }) },
+    });
+    expect(await run(swap.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({ stop: "no_contract" });
+    expect(swap.host.saved.cancel).toEqual(pending);
+  });
+
+  it("follows a cancel the user says they sent even with the swap saved, never signing a second on a yes", async () => {
+    const { txHash, ...rest } = TRACK_ARGS;
+    const swap = harness({
+      saved: { swap: { tool: TRACK, args: rest, needs: "txHash", hash: txHash } },
+      respond: (tool, args, nth) => {
+        if (tool === TRACK) return tracked({ status: "failed", failure: "cancel_to_recover", canCancel: true });
+        if (!args.cancelTxHash) return READY_CANCEL();
+        return nth < 3
+          ? cancelled({ status: "not_cancellable", reason: "not_on_hub_yet", cancelTxHash: args.cancelTxHash })
+          : cancelled({ status: "cancel_confirmed" });
+      },
+      answers: { confirm: () => true },
+    });
+    const sent = { ...TRACK_ARGS, cancelTxHash: CANCEL_TX };
+    expect(await run(swap.host, { tool: CANCEL, args: sent })).toMatchObject({ outcome: "cancelled" });
+    expect(swap.calls[0]).toEqual({ tool: CANCEL, args: sent });
+    expect(swap.sends()).toBe(0);
+  });
+
+  it("keeps a cancel sent as a batch pending until the wallet has its hash, never building a second", async () => {
+    const saved: Saved = {};
+    const respond = (tool: string, args: Args) => {
+      if (tool === TRACK) return tracked({ status: "failed", failure: "cancel_to_recover", canCancel: true });
+      return args.cancelTxHash ? cancelled({ status: "cancel_confirmed" }) : READY_CANCEL();
+    };
+    const first = harness({ saved, respond, wallet: () => ({ batchId: "cancel-batch" }) });
+    expect(await run(first.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
+    expect(saved.cancel).toMatchObject({ batchId: "cancel-batch" });
+    // The wallet still has no hash: a yes at track's confirm doesn't build another.
+    const waiting = harness({ saved, respond, answers: { confirm: () => true } });
+    expect(await run(waiting.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
+    const second = harness({ saved, respond, batch: id => (id === "cancel-batch" ? CANCEL_TX : undefined) });
+    expect(await run(second.host, { tool: CANCEL, args: TRACK_ARGS })).toMatchObject({ outcome: "cancelled" });
+    expect(second.calls).toEqual([{ tool: CANCEL, args: { ...TRACK_ARGS, cancelTxHash: CANCEL_TX } }]);
+    expect(first.sends() + waiting.sends() + second.sends()).toBe(1);
   });
 });

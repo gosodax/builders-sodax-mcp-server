@@ -108,8 +108,8 @@ const confirmCancel = (swap: Ref): Confirm => ({
   next: cancelAgain(swapArgs(swap)),
 });
 /** The swap transaction's hash, asked of the user, for the same call. */
-const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref & { cancelTxHash?: string }) =>
-  provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK));
+const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref & { cancelTxHash?: string }, onDecline?: Exhausted) =>
+  provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK), onDecline);
 
 const GIVE_UP = `tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
 
@@ -123,11 +123,14 @@ const afterSendAdvice = (tool: string, sent: string, failure: ActionError, secon
     ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${GIVE_UP}`
     : `${failure.nextStep} The user must not send the swap again.`;
 
-/** A failure of a code that usually passes, which its throw site says won't: handed off, never retried. */
+/**
+ * A hand-off's sentence for a failure that still carries its code's default advice: that advice is written for the
+ * code's usual way on (a retry, an answer from the user), never for a hand-off.
+ */
 const wontPass = (sent: boolean) =>
   sent
     ? `Calling again won't help: ${GIVE_UP}`
-    : `Calling again won't help: tell the user the SODAX swap service can't do this right now, and not to retry it. ${SWAP_HELP}`;
+    : `Calling again won't help: tell the user the SODAX swap service can't do this right now. ${SWAP_HELP}`;
 
 /**
  * A failure that may pass, before anything was sent: the same call again, as often as the action makes it. A throw
@@ -476,11 +479,11 @@ function notSubmittedDecision(result: Extract<TrackResult, { status: "not_submit
         result.chain,
       );
     case "unverified":
-      // Nothing proves the funds are held: the events that would show it couldn't be read.
-      return final(
-        `This server can't read all of that transaction's events, so it can't tell whether it holds this swap, and won't submit it. If it is this swap's deposit, ${deposit}. If it isn't, ask for the swap transaction's hash.`,
-        external("help_desk"),
-        "unknown",
+      // Nothing proves the funds are held: the events that would show it couldn't be read. It may not even be the
+      // swap's transaction, so the user is asked for that one; if it is, the workflow ends there.
+      return ongoing(
+        `This server can't read all of that transaction's events, so it can't tell whether it holds this swap, and won't submit it. If it isn't the swap's transaction, ask the user for that one's hash. If it is, ${deposit}.`,
+        askTxHash(TRACK, result, exhausted(result.alerted ? NONE : external("help_desk"), true, "unknown")),
       );
     case "multiple_deposits":
       return held(
@@ -536,7 +539,7 @@ export function trackDecision(result: TrackResult): Decision {
       }
       if (result.stopAfter) {
         return ongoing(
-          `${head}stop calling on a timer: ask the user to check their wallet, and call sodax_swap_submit_and_track again once it shows the swap sent, or once after ${result.stopAfter} and follow that answer.`,
+          `${head}stop calling on a timer: ask the user to check their wallet, and call sodax_swap_submit_and_track again once it shows the swap sent (at most 3 times, ${RETRY_AFTER_SEC} seconds apart), or once after ${result.stopAfter} and follow that answer.`,
           // Tracked soon once the user says it was sent: waiting for stopAfter would pass the deadline. Bounded, so a
           // runtime that keeps saying yes while the node still hasn't seen it stops. Otherwise the one call after
           // stopAfter, which settles it or catches a late broadcast.
@@ -689,8 +692,7 @@ const NOT_CANCELLABLE: Record<Extract<CancelResult, { status: "not_cancellable" 
   cancelled: "The swap is already cancelled.",
   refunding: "The swap is already being refunded to the user.",
   not_on_hub_yet: `The swap service hasn't put this swap on the hub yet, so it can't be cancelled yet: call sodax_swap_cancel again with the same arguments in about ${RETRY_AFTER_SEC} seconds, at most ${MAX_CALLS} times.`,
-  not_sent:
-    "The swap transaction isn't confirmed, or it failed, so nothing was sent and there's nothing to cancel yet. If it's still pending, call sodax_swap_cancel again once it's confirmed; on an EVM chain the user can also cancel or replace it in their wallet.",
+  not_sent: `The swap transaction isn't confirmed, or it failed, so nothing was sent and there's nothing to cancel yet. If it's still pending, call sodax_swap_cancel again with the same arguments in about ${RETRY_AFTER_SEC} seconds, at most ${MAX_CALLS} times; if it still isn't confirmed, ask the user to check their wallet. On an EVM chain the user can also cancel or replace it in their wallet.`,
   closed: `There's nothing to cancel. ${INTENT_CLOSED}`,
   not_this_swap:
     "That transaction didn't create this quote's swap: ask for the swap transaction's hash (not an approval's) and call sodax_swap_cancel again with it.",
@@ -784,7 +786,7 @@ export function cancelDecision(result: CancelResult): Decision {
     }
     case "cancel_awaiting_confirmation":
       return ongoing(
-        `The cancel isn't confirmed on ${chain} yet; call sodax_swap_cancel again in about ${result.retryAfterSec} seconds, and don't resend it. Only if the wallet shows it was never sent (a Solana one expires in about a minute), call sodax_swap_cancel without cancelTxHash for a new one.`,
+        `The cancel isn't confirmed on ${chain} yet; call sodax_swap_cancel again in about ${result.retryAfterSec} seconds, at most ${MAX_CALLS} times, and don't resend it. If it's still unconfirmed then, and only if the wallet shows it was never sent (a Solana one expires in about a minute), call sodax_swap_cancel without cancelTxHash for a new one.`,
         retrying(
           CANCEL,
           result,
@@ -833,12 +835,12 @@ export function cancelDecision(result: CancelResult): Decision {
       );
       if (result.unverified) {
         return ongoing(
-          `This server can't read all of that ${chain} transaction's events, so it couldn't confirm it's this swap's cancel; it was passed to the SODAX relay, which checks it. Call sodax_swap_submit_and_track (it won't submit the swap again) in a few minutes: if the swap isn't reported cancelled, check with the user that this hash is the cancel their wallet sent, and if it isn't, call sodax_swap_cancel again with the right one.`,
+          `This server can't read all of that ${chain} transaction's events, so it couldn't confirm it's this swap's cancel; it was passed to the SODAX relay, which checks it. Call sodax_swap_submit_and_track (it won't submit the swap again) every 3 minutes, at most ${MAX_CANCEL_POLLS} times, to see it reported cancelled. If it still isn't, tell the user to give the swap's and the cancel's transaction hashes to ${SODAX_HELP_DESK}.`,
           follow,
         );
       }
       return ongoing(
-        "The cancel is on its way to the hub; call sodax_swap_submit_and_track (it won't submit the swap again) to see it reported as cancelled.",
+        `The cancel is on its way to the hub; call sodax_swap_submit_and_track (it won't submit the swap again) every ${RETRY_AFTER_SEC} seconds, at most ${MAX_CANCEL_POLLS} times, to see it reported as cancelled. If it still isn't, tell the user to give the swap's and the cancel's transaction hashes to ${SODAX_HELP_DESK}.`,
         follow,
       );
     }
@@ -878,9 +880,16 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
   const answer = (overrides?: Record<string, unknown>) =>
     answered(same(overrides), failure.code, sent ? HELP_DESK : ENDED);
   // After a send, a failure nothing here can fix keeps the hash and goes to whoever can recover it.
-  const stuck = (nextStep = advice) => ongoing(nextStep, external(sent ? "help_desk" : "service_unavailable"));
-  const askFor = (fields: string[]) => ongoing(advice, provide(fields, answer()));
-  const pick = () => (field ? ongoing(advice, choose(field, failure.hint?.options ?? [], answer())) : stuck());
+  const stuck = (nextStep = hasDefaultNextStep(failure) ? wontPass(sent) : advice) =>
+    ongoing(nextStep, external(sent ? "help_desk" : "service_unavailable"));
+  // After a send, a user who can't answer is sent to whoever can recover the swap.
+  const declined = sent ? HELP_DESK : undefined;
+  const askFor = (fields: string[]) => ongoing(advice, provide(fields, answer(), declined));
+  const pick = () => {
+    if (!field) return stuck();
+    const options = failure.hint?.options ?? [];
+    return options.length > 0 ? ongoing(advice, choose(field, options, answer())) : askFor([field]);
+  };
   // This call's own failures, whatever their codes: a flaky upstream alternating 503 and 429 still runs out.
   const key = retryKey(tool, argsDigest(args));
   switch (failure.code) {
@@ -888,9 +897,8 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
     case "RATE_LIMITED":
     case "CHAIN_UNAVAILABLE":
     case "UPSTREAM_UNAVAILABLE":
-      // Its throw site says it won't pass (the same build fails the same way): the code's own advice, to retry, doesn't
-      // fit the hand-off.
-      if (!failure.retryable) return stuck(hasDefaultNextStep(failure) ? wontPass(sent) : advice);
+      // Its throw site says it won't pass: the same build fails the same way.
+      if (!failure.retryable) return stuck();
       // The same call again, counted while it keeps failing in a row.
       return ongoing(
         sent ? advice : beforeSendAdvice(tool, failure, seconds),
@@ -911,7 +919,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
     case "INVALID_TX_HASH": {
       const format = failure.details?.format;
       return field
-        ? ongoing(advice, provide([{ name: field, ...(typeof format === "string" && { format }) }], answer()))
+        ? ongoing(advice, provide([{ name: field, ...(typeof format === "string" && { format }) }], answer(), declined))
         : stuck();
     }
     case "INVALID_ADDRESS": {
@@ -919,8 +927,10 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       if (Array.isArray(missing)) return askFor(missing.map(String));
       return field ? askFor([field]) : stuck();
     }
-    case "INVALID_AMOUNT":
     case "QUOTE_MISMATCH":
+      // A cancel offers the tx its quote was used for.
+      return failure.hint?.options ? pick() : field ? askFor([field]) : stuck();
+    case "INVALID_AMOUNT":
     case "QUOTE_NOT_FOUND":
     case "PRICE_OFF_MARKET":
       return field ? askFor([field]) : stuck();
@@ -933,7 +943,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
           next: answer({ amount: suggestedAmount }),
         });
       }
-      return ongoing(advice, provide(["amount"], answer()));
+      return ongoing(advice, provide(["amount"], answer(), declined));
     }
     case "DEADLINE_TOO_SHORT": {
       const minutes = Number(args.deadlineMinutes);
@@ -950,7 +960,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       }
       if (sent) return stuck();
       return ongoing(
-        "Preparing the swap took too long to leave time to send it: tell the user the swap service is slow right now and to try again later.",
+        "Preparing the swap took too long to leave time to send it: tell the user the swap service is slow right now, and to come back later.",
         external("service_unavailable"),
       );
     }
@@ -962,10 +972,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
           // Track and cancel take no amount: after a send there's nothing to ask for.
           return sent ? stuck() : ongoing(advice, provide(["amount", { name: "toToken", optional: true }], answer()));
         case "wallet_cannot_build":
-          return ongoing(
-            advice,
-            failure.hint?.balance ? callOnce("sodax_get_balance", failure.hint.balance) : stuck().nextAction,
-          );
+          return failure.hint?.balance ? ongoing(advice, callOnce("sodax_get_balance", failure.hint.balance)) : stuck();
         case "trustline_room":
           return ongoing(advice, external("wallet_setup", answer()));
         default:

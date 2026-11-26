@@ -24,11 +24,11 @@ async function callTool(
   const server = new McpServer({ name: "test", version: "0.0.0" });
   if (analytics) withAnalytics(server);
   // Non-empty annotations: the SDK reads an empty object here as a second input schema.
-  registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
+  registerActionTool(server, "sodax_swap_price", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
   const client = await connect(server);
   // Listing first makes the client check each result against the tool's output schema, as an SDK client does.
   await client.listTools();
-  const result = await client.callTool({ name: "test_action_tool", arguments: { value } });
+  const result = await client.callTool({ name: "sodax_swap_price", arguments: { value } });
   await client.close();
   return result;
 }
@@ -144,7 +144,7 @@ describe("registerActionTool", () => {
 
   it("declares the contract, loose beyond it, as the tool's output schema", async () => {
     const server = new McpServer({ name: "test", version: "0.0.0" });
-    registerActionTool(server, "test_action_tool", "A test tool.", {}, { readOnlyHint: true }, async () => DONE);
+    registerActionTool(server, "sodax_swap_price", "A test tool.", {}, { readOnlyHint: true }, async () => DONE);
     const client = await connect(server);
     const { tools } = await client.listTools();
     await client.close();
@@ -158,7 +158,7 @@ describe("registerActionTool", () => {
   it("points the user to the SODAX team on Discord on an INTERNAL failure only", async () => {
     for (const error of [new Error("bug"), new ActionError("INTERNAL", "Built something unrecognized.")]) {
       const { nextStep } = (await callFailingTool(error)).structuredContent as { nextStep: string };
-      expect(nextStep).toMatch(/^Call test_action_tool again in 30 seconds/);
+      expect(nextStep).toMatch(/^Call sodax_swap_price again in 30 seconds/);
       expect(nextStep.endsWith(SWAP_HELP)).toBe(true);
       expect(nextStep).toContain("https://www.sodax.com/discord");
     }
@@ -180,7 +180,7 @@ describe("registerActionTool", () => {
     const down = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
     expect(down.structuredContent).toMatchObject({
       nextStep:
-        "Call test_action_tool again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user the SODAX swap service is unavailable right now.",
+        "Call sodax_swap_price again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user the SODAX swap service is unavailable right now.",
     });
   });
 
@@ -207,7 +207,7 @@ describe("registerActionTool", () => {
     const records = errors.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
     expect(records).toHaveLength(2);
     expect(records[0]).toMatchObject({
-      "gen_ai.tool.name": "test_action_tool",
+      "gen_ai.tool.name": "sodax_swap_price",
       "tool.outcome": "error",
       "error.type": "INTERNAL",
       err: { type: "Error", stack: expect.stringMatching(/^ {4}at /) },
@@ -220,7 +220,7 @@ describe("registerActionTool", () => {
     expect(JSON.stringify(errors.mock.calls)).not.toContain("rpc.example");
     const alerts = errors.mock.calls.filter(([fields]) => (fields as { alert?: string }).alert === "swap_error");
     expect(alerts).toHaveLength(1);
-    expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "test_action_tool", "error.type": "INTERNAL" });
+    expect(alerts[0][0]).toMatchObject({ "gen_ai.tool.name": "sodax_swap_price", "error.type": "INTERNAL" });
   });
 
   it("posts an unexpected error to Discord by its class only, never its message", async () => {

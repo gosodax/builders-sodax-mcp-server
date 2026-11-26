@@ -1,16 +1,17 @@
 /**
  * `sodax_bridge_submit_and_track`: a sent bridge checked on its source chain against its build, submitted once, then
- * followed to the hub and on. Track trusts only the build kept here and the chains (ADR 0001): a backend row is read
- * for its progress, never as proof that a tx is this bridge's deposit.
+ * followed to the hub and on. Track trusts only the build kept here and the chains: a backend row is read for its
+ * progress, never as proof that a tx is this bridge's deposit.
  *
- * Without the build (a restart, or 40 minutes past prepare), a bridge the backend already has is still followed; one it
- * hasn't is left to the operator, as the swap tools do with a deposit whose quote is gone. Track runs right after the
- * wallet broadcasts, so that's a bridge signed and never tracked in time.
+ * Without the build (a restart, or 35 minutes past a prepare never tracked), a bridge the backend already has is still
+ * followed; one it hasn't is left to the operator, as the swap tools do with a deposit whose quote is gone. Track runs
+ * right after the wallet broadcasts, so that's a bridge signed and never tracked in time.
  */
 
 import { HUB_CHAIN_KEY, hubConfig, isBitcoinChainKey, isInjectiveChainKey, spokeChainConfig } from "@sodax/types";
 import { EVM_TX_HASH_PATTERN, sameHex as same } from "../../constants.js";
 import { callerKeyHash } from "../requestContext.js";
+import { holdForTrack } from "../signWindow.js";
 import {
   type EvmReceipt,
   type RelayPacket,
@@ -38,7 +39,7 @@ import {
 import type { SwapSource } from "../swap/sources/types.js";
 import { type BridgeTxStatus, getBridgeTxStatus, submitBridgeTx } from "./bridgeApi.js";
 import { getBridgeCatalog } from "./catalog.js";
-import { type PreparedBridge, claimBridge, getBridge } from "./store.js";
+import { type PreparedBridge, claimBridge, getBridge, markHandedOver } from "./store.js";
 
 interface BridgeRef {
   txHash: string;
@@ -54,8 +55,9 @@ interface Recovery {
 }
 
 export type BridgeTrack = BridgeRef &
+  /** Not mined. `seenOnChain`: the node has it pending (true), doesn't know it at all (false), or can't say (null). */
   (
-    | { status: "awaiting_source"; seenOnChain: boolean }
+    | { status: "awaiting_source"; seenOnChain: boolean | null }
     | { status: "source_failed" }
     | {
         status: "not_submitted";
@@ -99,6 +101,8 @@ export async function trackBridge(input: TrackInput): Promise<BridgeTrack> {
 async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
   const source = sourceOf(bridge, input.chain);
   const txHash = sourceTxHash(source, input.txHash);
+  // Only once the hash is one the chain can have: a malformed one holds nothing.
+  if (bridge) holdForTrack(bridge);
   const base: BridgeRef = { txHash, chain: source.chain, ...(input.bridgeId && { bridgeId: input.bridgeId }) };
   // A row is this build's only once the tx was checked as its deposit; until then it may be anyone's, so it's read
   // only after that check, and a deposit not mined yet costs no Bridge API call.
@@ -111,7 +115,7 @@ async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Pr
   if (!bridge) throw new ActionError("INTERNAL", "A deposit was checked without its build.");
   const claim = claimBridge(bridge.bridgeId, txHash);
   if (claim === "taken") {
-    const alerted = alertOperator("unknown_bridge", { chainKey: source.chain.key, txHash, reason: "bridge used" });
+    const alerted = alertOperator("bridge_used", { chainKey: source.chain.key, txHash });
     return { ...base, status: "not_submitted", reason: "bridge_used", alerted };
   }
   const row = trusted ? null : await getBridgeTxStatus(txHash, source.chain.key);
@@ -126,12 +130,10 @@ async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Pr
   } catch (error) {
     // One that may pass on a repeat is the agent's to retry: the claim stays, so the next call submits again.
     if (!isRefusal(error)) throw error;
+    // Either way it's the operator's now.
+    markHandedOver(bridge);
     if (error.details?.reason === "submitted_differently") {
-      const alerted = alertOperator("unknown_bridge", {
-        chainKey: source.chain.key,
-        txHash,
-        reason: "submitted differently",
-      });
+      const alerted = alertOperator("bridge_submitted_differently", { chainKey: source.chain.key, txHash });
       return { ...base, status: "not_submitted", reason: "submitted_differently", alerted };
     }
     // The deposit is checked and on chain, and no repeat gets it submitted: only an operator can, as the swap
@@ -139,6 +141,7 @@ async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Pr
     const alerted = alertOperator("bridge_submit_rejected", { chainKey: source.chain.key, txHash });
     return { ...base, status: "not_submitted", reason: "submit_refused", alerted };
   }
+  markHandedOver(bridge);
   return { ...base, status: "relaying" };
 }
 
@@ -191,7 +194,7 @@ async function checkSource(
   }
   const sourceTx = await readSourceTx(source, txHash, sender);
   if (!sourceTx)
-    return { ...base, status: "awaiting_source", seenOnChain: (await seenOnChain(source, txHash, sender)) === true };
+    return { ...base, status: "awaiting_source", seenOnChain: (await seenOnChain(source, txHash, sender)) ?? null };
   if (sourceTx.failed) return { ...base, status: "source_failed" };
   if (sourceTx.kind !== "spoke") throw new ActionError("INTERNAL", "A spoke read returned a hub tx.");
   if (sourceTx.unreadable) {
@@ -231,6 +234,8 @@ function unknownBridge(base: BridgeRef): BridgeTrack {
  * never taken from the row.
  */
 async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
+  // Only a build whose deposit this is comes here: the backend has it.
+  if (bridge) markHandedOver(bridge);
   // Without the build, nothing here checked the tx as a deposit: its alerts spend the budget any key can.
   const alert = (kind: "bridge_relay_failed" | "bridge_hook_failed") =>
     alertOperator(kind, { chainKey: base.chain.key, txHash: base.txHash }, { unchecked: !bridge });
@@ -285,10 +290,13 @@ async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBri
 
 /**
  * The hub tx the relay delivered a spoke deposit in, as the SDK and the backend find it: the source tx's one packet,
- * executed on the hub. None when the relay hasn't, or can't be read.
+ * executed on the hub. None when the relay hasn't. A relay that can't be read says nothing, so it's retried: taken for
+ * "not relayed", a row the backend gave up on would end the bridge as held.
  */
 async function relayedToHub({ chain, txHash }: BridgeRef): Promise<string | undefined> {
-  const packets = await relayPackets(chain.key, txHash).catch((): RelayPacket[] => []);
+  const packets = await relayPackets(chain.key, txHash).catch(() => {
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX relay can't be read right now.");
+  });
   const landed = packets.filter(
     packet =>
       String(packet.src_chain_id) === intentChainId(chain.key) &&

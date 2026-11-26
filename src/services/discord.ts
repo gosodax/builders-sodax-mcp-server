@@ -102,12 +102,16 @@ export async function notifyServerStarted(info: {
   });
 }
 
-/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy), and the swap quotes that loses. */
-export async function notifyServerStopping(signal: string, openSwapQuotes = 0): Promise<void> {
-  const lost =
-    openSwapQuotes > 0
-      ? `\n${openSwapQuotes} open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".`
-      : "";
+/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy), and the swap quotes and bridges that loses. */
+export async function notifyServerStopping(signal: string, openSwapQuotes = 0, openBridges = 0): Promise<void> {
+  const lost = [
+    openSwapQuotes > 0 &&
+      `\n${openSwapQuotes} open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".`,
+    openBridges > 0 &&
+      `\n${openBridges} open bridge(s) lost. A deposit made from one alerts as "Bridge deposit without its build".`,
+  ]
+    .filter(Boolean)
+    .join("");
   await postToDiscord({
     embeds: [
       {

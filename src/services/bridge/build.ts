@@ -1,6 +1,6 @@
 /**
- * A bridge as the user's wallet will send it. The Bridge API builds it (ADR 0001 D3; its build runs the hub
- * simulation, and its allowance check says whether an approve is needed, D5), and the SDK builds it here too
+ * A bridge as the user's wallet will send it. The Bridge API builds it (its build runs the hub simulation, and its
+ * allowance check says whether an approve is needed), and the SDK builds it here too
  * (`sdkBridge`): any difference is refused before anyone signs.
  *
  * From an EVM spoke or Sonic, the Bridge API's tx is the one signed, checked byte for byte against the SDK's. From a
@@ -109,7 +109,8 @@ export async function buildNonEvmBridge(
       refusedOr(
         () =>
           new ActionError("CHAIN_UNAVAILABLE", `Couldn't prepare the bridge on ${chain.name} right now.`, {
-            nextStep: `Retry in a minute. If it still fails, ask the user to check their ${chain.name} wallet holds the amount plus fees and has sent a transaction before, then call sodax_bridge_prepare again.`,
+            nextStep: `Retry in a minute. If it still fails, stop: tell the user the bridge can't be prepared on ${chain.name} right now, and that their wallet must hold the amount plus fees and have sent a transaction before.`,
+            details: { retryAfterSec: 60 },
           }),
       ),
     ),

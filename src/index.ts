@@ -411,7 +411,7 @@ export function createHttpApp(swapToolsEnabled: boolean, bridgeToolsEnabled = fa
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
-      // Bridge builds not yet sent: a restart loses them, and a deposit is submitted only against its build.
+      // Bridge builds a restart would strand: not yet sent, or sent and not yet handed over (openBridges).
       openBridges: openBridges(),
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
@@ -695,8 +695,11 @@ function fatalExit(context: string, error: unknown): void {
   logger.fatal({ err: error }, context);
   if (exiting) return;
   exiting = true;
-  const open = openQuotes().open;
-  const alert = open > 0 ? `${context} (${open} open swap quote(s) lost)` : context;
+  const lost = [
+    [openQuotes().open, "open swap quote(s)"],
+    [openBridges(), "open bridge(s)"],
+  ].flatMap(([count, what]) => (Number(count) > 0 ? [`${count} ${what}`] : []));
+  const alert = lost.length > 0 ? `${context} (${lost.join(", ")} lost)` : context;
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
@@ -716,15 +719,16 @@ function fatalExit(context: string, error: unknown): void {
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  // The open quotes are in memory: a restart drops them.
+  // The open quotes and bridges are in memory: a restart drops them.
   const open = openQuotes().open;
-  logger.info({ signal, "swap_quotes.open": open }, "Shutting down");
+  const bridges = openBridges();
+  logger.info({ signal, "swap_quotes.open": open, "bridges.open": bridges }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal, open);
+  await notifyServerStopping(signal, open, bridges);
   await shutdownAnalytics();
   // A failing export rejects the shutdown; the exit must still happen.
   await Promise.race([otel?.shutdown().catch(() => {}), sleep(2000, undefined, { ref: false })]);

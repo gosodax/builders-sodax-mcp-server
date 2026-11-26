@@ -1,6 +1,7 @@
 /** A scripted host shared by swap and bridge runtime tests. It refuses to read nextStep. */
 
 import type { NextAction } from "../nextAction.js";
+import { nextActionSchema } from "../nextActionSchema.js";
 import type { Host, Saved, ToolResult } from "./nextActionRuntime.js";
 
 type Args = Record<string, unknown>;
@@ -40,7 +41,11 @@ export function harness(script: Script, startTime: number, defaultHash: string) 
     async call(tool, args) {
       calls.push({ tool, args });
       if (calls.length > RUNAWAY) throw new Error("the runtime never stopped");
-      return actionOnly(await script.respond(tool, args, calls.filter(made => made.tool === tool).length, now));
+      const result = await script.respond(tool, args, calls.filter(made => made.tool === tool).length, now);
+      // Every action a flow meets, errors from real throws included, is one the published schema types.
+      const issues = result.nextAction && nextActionSchema.safeParse(result.nextAction).error?.issues;
+      if (issues) throw new Error(`${tool} returned a nextAction off the schema: ${JSON.stringify(issues)}`);
+      return actionOnly(result);
     },
     async sleep(seconds) {
       now += seconds * 1000;

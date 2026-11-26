@@ -168,7 +168,10 @@ const useResolved = (purpose: TokenPurpose) =>
 // ── Balance and token lookups ───────────────────────────────────────────
 
 /** Built from catalog symbols, chain names and formatted amounts only. */
-function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
+function balanceNextStep(
+  { chain, native, token, accountExists, trustline }: BalanceResult,
+  purpose: TokenPurpose,
+): string {
   if (accountExists === false) {
     if (token && token.baseUnits !== "0") {
       return `The wallet has no account on ${chain.name} yet (0 ${native.symbol}) but holds ${token.amount} ${token.symbol}; it needs ${native.symbol} sent to it to pay gas there.`;
@@ -189,13 +192,15 @@ function balanceNextStep({ chain, native, token, accountExists, trustline }: Bal
   if (native.baseUnits === "0") {
     sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
   } else if (isNative) {
-    sentences.push(`Swapping ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
+    const sending = purpose === "bridge" ? "Bridging" : "Swapping";
+    sentences.push(`${sending} ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
   }
   return sentences.join(" ");
 }
 
 /** A balance read answers on its own: nothing follows from it. */
-export const balanceDecision = (balances: BalanceResult): Decision => final(balanceNextStep(balances), NONE);
+export const balanceDecision = (balances: BalanceResult, purpose: TokenPurpose = "swap"): Decision =>
+  final(balanceNextStep(balances, purpose), NONE);
 
 /**
  * Built from catalog symbols, addresses and chain names only, never from the caller's
@@ -297,7 +302,7 @@ function quoteNextStep(quote: SwapQuote): string {
   const warning = usdWarning(quote);
   if (quote.status === "price") {
     const needed = quote.prepareNeeds.map(field => addressAsk(field, from.chain.name, to.chain.name));
-    return `Show the user they would send ${sendAndReceive}.${warning} Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus ${needed.join(" and ")}.`;
+    return `Show the user they would send ${sendAndReceive}.${warning} Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus ${needed.join(" and ")}. ${walletFirst(from.chain.name)}`;
   }
   const show = `Show the user they send ${sendAndReceive} (at least ${quote.to.minimumAmount})`;
   const sameAddress = sendsToOwnAddressElsewhere(quote)
@@ -320,6 +325,10 @@ function quoteNextStep(quote: SwapQuote): string {
     `Then call sodax_swap_submit_and_track with the quoteId and the swap transaction's hash, even if the quote has expired by then: that call is what submits the swap${isHubChain(from.chain.key) ? "" : ", or starts its refund"}.`,
   ].join(" ");
 }
+
+/** Before preparing: what has to send the prepared steps, which this server can't see or check. */
+export const walletFirst = (chain: string) =>
+  `Preparing needs a wallet tool that can send transactions on ${chain} and report each one mined; if there's none, ask the user to connect their wallet first.`;
 
 /** How a wallet that batches sends a result's `batch` in place of the steps it replaces. */
 export const SEND_BATCH =
@@ -885,7 +894,8 @@ const AFTER_SEND: readonly SwapToolName[] = [TRACK, CANCEL, "sodax_bridge_submit
 export function errorDecision(failure: ActionError, { tool, args }: FailureContext): Decision {
   const sent = AFTER_SEND.includes(tool);
   const seconds = Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC);
-  const what = tool.startsWith("sodax_bridge_") ? "bridge" : "swap";
+  // The token tools serve both: their `for` says which.
+  const what = tool.startsWith("sodax_bridge_") || args.for === "bridge" ? "bridge" : "swap";
   const advice = sent
     ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : what, failure, seconds, what)
     : failure.nextStep;

@@ -10,6 +10,7 @@ import { prepareBridge, previewBridge } from "../services/bridge/prepare.js";
 import { trackBridge } from "../services/bridge/track.js";
 import { forBridge } from "../services/bridge/wording.js";
 import { getRequestContext } from "../services/requestContext.js";
+import { SIGN_WINDOW_TEXT } from "../services/signWindow.js";
 import { amountText } from "../services/swap/units.js";
 import { type ActionModule, registerActionTool } from "./actionTool.js";
 import { pairsDecision, prepareDecision, previewDecision, trackDecision } from "./bridgeDecisions.js";
@@ -63,7 +64,7 @@ export function registerBridgeTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_bridge_prepare",
-    "Prepare a bridge for the user's wallet to sign: the same asset moved to another chain 1:1 through its SODAX hub vault, less any partner fee. Returns the transactions in order (approve if needed, then the bridge) and the bridgeId sodax_bridge_submit_and_track needs. It refuses a pair that can't be bridged (offering what can), an amount above what the route takes now, and a build that differs from the SDK's own. This server never signs or moves funds.",
+    `Prepare a bridge for the user's wallet to sign: the same asset moved to another chain 1:1 through its SODAX hub vault, less any partner fee. Returns the transactions in order (approve if needed, then the bridge) and the bridgeId sodax_bridge_submit_and_track needs. It refuses a pair that can't be bridged (offering what can), an amount above what the route takes now, and a build that differs from the SDK's own. Its steps are to be sent within ${SIGN_WINDOW_TEXT} (expiresAt), so call it once the user is ready to sign, with a wallet tool that can sign and send on the source chain; sodax_bridge_preview builds nothing. This server never signs or moves funds.`,
     {
       ...pairArgs(),
       fromAddress: addressArg().describe("The user's wallet on the source chain, which sends the bridge. Required."),

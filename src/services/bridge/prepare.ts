@@ -15,7 +15,7 @@ import { type AddressField, EVM_BURN_ADDRESS, addressesNeeded, resolveSide } fro
 import { checkAddress } from "../swap/resolver.js";
 import { sourceChainFor } from "../swap/source.js";
 import type { SwapBatch, SwapStep } from "../swap/sources/types.js";
-import type { SwapsApiToken } from "../swap/tokens.js";
+import { type SwapsApiToken, nativeToken } from "../swap/tokens.js";
 import { formatUnits, parseUnits } from "../swap/units.js";
 import type { BridgeRequest } from "./bridgeApi.js";
 import { buildEvmBridge, buildNonEvmBridge } from "./build.js";
@@ -38,6 +38,15 @@ export interface BridgeInput extends BridgePairInput {
   toAddress?: string;
 }
 
+/**
+ * What the user pays besides any partner fee: the bridge charges nothing of its own, and the source chain's gas is
+ * the wallet's to set, in that chain's native token. Never estimated here.
+ */
+export interface NetworkFee {
+  paidIn?: string;
+  estimated: false;
+}
+
 interface Side {
   chain: ChainInfo;
   symbol: string;
@@ -57,6 +66,7 @@ export interface BridgeQuote {
   to: Side;
   /** The connection's fee, in the token sent. */
   partnerFee?: { amount: string; symbol: string };
+  networkFee: NetworkFee;
   fromAddress: string;
   toAddress: string;
   steps: SwapStep[];
@@ -71,6 +81,7 @@ export interface BridgePreview {
   /** What the recipient would get. */
   to: Side;
   partnerFee?: { amount: string; symbol: string };
+  networkFee: NetworkFee;
   /** The most this route takes now, in the token sent. */
   maxAmount: string;
   /** What sodax_bridge_prepare needs besides these arguments. */
@@ -93,6 +104,8 @@ function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
       details: { field: "amount" },
     });
   }
+  // The wallet pays the source chain's gas, in its native token; nothing here estimates it.
+  const native = nativeToken(catalog, from.chain.key);
   return {
     from,
     to,
@@ -101,6 +114,7 @@ function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
     delivered,
     // An EVM sender's address is theirs on an EVM destination too; any other pair needs the recipient given.
     defaultsToSender: from.config.type === "EVM" && to.config.type === "EVM",
+    networkFee: { ...(native && { paidIn: native.symbol }), estimated: false as const },
     fee:
       feeInSource > 0n
         ? { amount: formatUnits(feeInSource, from.token.decimals), symbol: from.token.symbol }
@@ -109,20 +123,21 @@ function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
 }
 
 export async function previewBridge(input: BridgePairInput, partnerFee?: PartnerFee): Promise<BridgePreview> {
-  const { from, to, amount, delivered, defaultsToSender, fee } = checkedPair(input, partnerFee);
+  const { from, to, amount, delivered, defaultsToSender, fee, networkFee } = checkedPair(input, partnerFee);
   const maxAmount = await checkBridgeLimit(amount, from, to);
   return {
     status: "preview",
     from: describe(from, amount),
     to: describe(to, delivered),
     ...(fee && { partnerFee: fee }),
+    networkFee,
     maxAmount,
     prepareNeeds: defaultsToSender ? ["fromAddress"] : ["fromAddress", "toAddress"],
   };
 }
 
 export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee): Promise<BridgeQuote> {
-  const { from, to, source, amount, delivered, defaultsToSender, fee } = checkedPair(input, partnerFee);
+  const { from, to, source, amount, delivered, defaultsToSender, fee, networkFee } = checkedPair(input, partnerFee);
   const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
   if (fromAddress) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
@@ -188,6 +203,7 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
     from: describe(from, amount),
     to: describe(to, delivered),
     ...(fee && { partnerFee: fee }),
+    networkFee,
     fromAddress,
     toAddress,
     steps: built.steps,

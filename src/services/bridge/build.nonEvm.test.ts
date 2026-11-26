@@ -124,7 +124,10 @@ describe("buildNonEvmBridge", () => {
     bridgeApi({ tx: {}, relayData: RELAY });
     const error = await refusal("sui");
     expect(error.code).toBe("CHAIN_UNAVAILABLE");
-    expect(error.nextStep).toContain("sodax_bridge_prepare");
+    // Bounded as the swap's: a minute apart, then the user is told, never another prepare.
+    expect(error.nextStep).toContain("If it still fails, stop: tell the user");
+    expect(error.nextStep).not.toContain("sodax_bridge_prepare");
+    expect(error.details).toMatchObject({ retryAfterSec: 60 });
   });
 
   it.each([

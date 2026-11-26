@@ -23,6 +23,8 @@ export type AlertKind =
   | "swap_error"
   | "bridge_error"
   | "unknown_bridge"
+  | "bridge_used"
+  | "bridge_submitted_differently"
   | "bridge_submit_rejected"
   | "bridge_multiple_messages"
   | "bridge_relay_failed"
@@ -44,6 +46,9 @@ const TITLES: Record<AlertKind, string> = {
   swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
   bridge_error: "Bridge tool error: a bug, or the bridge service built something other than asked",
   unknown_bridge: "Bridge deposit without its build: find it and submit it by hand",
+  bridge_used: "Second deposit for one bridge build: submit it by hand",
+  bridge_submitted_differently:
+    "Bridge deposit the bridge service holds with other bridge data: check and relay it by hand",
   bridge_submit_rejected: "Checked bridge deposit refused by submit-tx: submit or relay it by hand",
   bridge_multiple_messages: "Bridge deposit in a transaction with other relay messages: relay it by hand",
   bridge_relay_failed: "Bridge the backend gave up on and the relay hasn't delivered: relay it by hand",

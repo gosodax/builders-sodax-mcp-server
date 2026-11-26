@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BRIDGE_HELP } from "../constants.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
 import { forBridge } from "../services/bridge/wording.js";
+import type { BalanceResult } from "../services/swap/balance.js";
 import { ACTION_ERROR_CODES, ActionError } from "../services/swap/errors.js";
 import {
   ARBITRUM,
@@ -26,7 +27,7 @@ import { actionsOf, contractBreaks, unboundedAnswers, unboundedTopCall } from ".
 import type { ToolResult } from "./__fixtures__/nextActionRuntime.js";
 import { pairsDecision, trackDecision } from "./bridgeDecisions.js";
 import type { CallTool, Decision, SwapToolName } from "./nextAction.js";
-import { errorDecision } from "./swapDecisions.js";
+import { balanceDecision, errorDecision } from "./swapDecisions.js";
 
 const TRACK = "sodax_bridge_submit_and_track";
 const TOOLS: SwapToolName[] = ["sodax_bridge_tokens", "sodax_bridge_preview", "sodax_bridge_prepare", TRACK];
@@ -124,6 +125,16 @@ const SPECIAL_ERRORS: [string, ActionError][] = [
   // A code that usually passes, which its throw site says won't: handed off in the tool's own words.
   ["won't pass", new ActionError("UPSTREAM_UNAVAILABLE", "No.", { retryable: false })],
 ];
+// The token tools serve both: a lookup or a read for a bridge fails, and reads, in a bridge's words.
+const FOR_BRIDGE = (["sodax_resolve_token", "sodax_get_balance"] as const).flatMap(tool =>
+  [...SPECIAL_ERRORS, ["internal", new ActionError("INTERNAL", "No.")] as const].map(
+    ([name, error]): [string, Decision] => [
+      `${tool} for a bridge ${name}`,
+      errorDecision(forBridge(error), { tool, args: { for: "bridge" } }),
+    ],
+  ),
+);
+const NATIVE = { symbol: "ETH", address: "0x0", amount: "1", baseUnits: "1" };
 const ALL = [
   ...LOOKUPS,
   ...TRACKED,
@@ -134,6 +145,18 @@ const ALL = [
       errorDecision(forBridge(error), { tool, args: {} }),
     ]),
   ),
+  ...FOR_BRIDGE,
+  [
+    "a native balance for a bridge",
+    balanceDecision(
+      {
+        chain: { key: "0xa4b1.arbitrum", name: "Arbitrum" },
+        native: NATIVE,
+        token: NATIVE,
+      } as unknown as BalanceResult,
+      "bridge",
+    ),
+  ],
 ];
 
 describe("every bridge decision", () => {

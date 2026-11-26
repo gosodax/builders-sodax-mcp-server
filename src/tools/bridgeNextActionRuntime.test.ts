@@ -199,7 +199,8 @@ describe("the bridge nextAction runtime", () => {
   });
 
   it.each([
-    [{ status: "awaiting_source", seenOnChain: false }, "external:check_wallet"],
+    // A node that can't say whether it has the tx: the full budget, then the wallet's word.
+    [{ status: "awaiting_source", seenOnChain: null }, "external:check_wallet"],
     [{ status: "relaying" }, "external:still_in_progress"],
     [{ status: "in_transit", hubTxHash: HUB_TX }, "external:still_in_progress"],
   ] satisfies [TrackState, string][])("hands off a stuck %s after its poll budget", async (state, ask) => {
@@ -207,6 +208,20 @@ describe("the bridge nextAction runtime", () => {
     expect(await run(bridge.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
     expect(bridge.of(TRACK)).toHaveLength(31);
     expect(bridge.asked).toEqual([ask]);
+    expect(bridge.sends()).toBe(0);
+  });
+
+  it("asks for the hash again soon when the node doesn't know the tx, bounded, never sending again", async () => {
+    const bridge = harness({
+      respond: () => tracked({ status: "awaiting_source", seenOnChain: false }),
+      answers: { provide: () => ({ txHash: TX }) },
+    });
+    const ending = await run(bridge.host, { tool: TRACK, args: TRACK_ARGS });
+    expect(ending.stop).toBe("handoff");
+    // The first call and 8 polls, then one call per answer, three at most: the next answer goes to a person.
+    expect(bridge.of(TRACK)).toHaveLength(12);
+    expect(bridge.asked).toEqual(["provide", "provide", "provide", "provide", "external:help_desk"]);
+    expect(bridge.of(TRACK).every(call => call.args.bridgeId === BRIDGE_ID)).toBe(true);
     expect(bridge.sends()).toBe(0);
   });
 

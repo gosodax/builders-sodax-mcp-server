@@ -20,6 +20,7 @@ import { screenSecrets } from "../services/swap/secrets.js";
 import { markFailure } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { type Decision, OUTCOMES, type SwapToolName } from "./nextAction.js";
+import { nextActionField } from "./nextActionSchema.js";
 import { errorDecision } from "./swapDecisions.js";
 
 type ActionOutput = Record<string, unknown> & { status: string } & Decision;
@@ -34,13 +35,13 @@ const SWAP_MODULE: ActionModule = { module: "swap" };
 
 /**
  * Every result's contract, errors included, and nothing more: each object passes other fields through, so a new
- * field can't fail the SDK's output check (which replaces the whole result), and the action types' shapes stay in
- * the tests and the README instead of every client's `tools/list`.
+ * field can't fail the SDK's output check (which replaces the whole result). `nextAction` names its type here and
+ * points to its full shape (`nextActionSchema`), which the resources serve rather than every client's `tools/list`.
  */
 const ACTION_OUTPUT = z
   .object({
     status: z.string(),
-    nextAction: z.object({ type: z.string() }).passthrough(),
+    nextAction: nextActionField,
     terminal: z.boolean(),
     outcome: z.enum(OUTCOMES).optional(),
     nextStep: z.string(),

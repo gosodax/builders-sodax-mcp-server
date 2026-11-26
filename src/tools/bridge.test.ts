@@ -295,6 +295,8 @@ describe("sodax_bridge_preview", () => {
       to: { amount: "5", symbol: "USDC" },
       maxAmount: "2500",
       prepareNeeds: ["fromAddress"],
+      // No fee of the bridge's own: only the source chain's gas, which the wallet sets.
+      networkFee: { paidIn: "ETH", estimated: false },
       terminal: false,
       nextAction: {
         type: "provide",
@@ -302,6 +304,9 @@ describe("sodax_bridge_preview", () => {
         next: { type: "call_tool", tool: "sodax_bridge_prepare", sameArgs: true },
       },
     });
+    expect(out.nextStep).toContain("The bridge charges no fee of its own; the wallet pays the gas on Arbitrum in ETH");
+    // What preparing needs, said before anything is prepared: this server can't see the client's wallet tools.
+    expect(out.nextStep).toContain("Preparing needs a wallet tool that can send transactions on Arbitrum");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -325,6 +330,20 @@ describe("sodax_bridge_preview", () => {
 });
 
 describe("the token tools, for a bridge", () => {
+  it("name the bridge only on a connection with the bridge tools", async () => {
+    for (const bridge of [false, true]) {
+      const client = await mcpClient({ builder: false, swap: true, bridge });
+      const { tools } = await client.listTools();
+      await client.close();
+      const tokenTools = tools.filter(({ name }) => name === "sodax_resolve_token" || name === "sodax_get_balance");
+      expect(tokenTools).toHaveLength(2);
+      for (const { description, inputSchema } of tokenTools) {
+        expect(description?.includes("bridge")).toBe(bridge);
+        expect(inputSchema.properties?.for).toMatchObject({ enum: bridge ? ["swap", "bridge"] : ["swap"] });
+      }
+    }
+  });
+
   it("find a token the swap list doesn't have", async () => {
     const { out } = await call("sodax_resolve_token", { chain: "base", query: "USDT", for: "bridge" });
     expect(out).toMatchObject({ status: "resolved", token: { symbol: "USDT" } });

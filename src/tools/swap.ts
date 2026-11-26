@@ -9,13 +9,13 @@ import { z } from "zod";
 import { getBridgeCatalog } from "../services/bridge/catalog.js";
 import { forBridge } from "../services/bridge/wording.js";
 import { getRequestContext } from "../services/requestContext.js";
+import { SIGN_WINDOW_TEXT } from "../services/signWindow.js";
 import { readBalances } from "../services/swap/balance.js";
 import { cancelSwap } from "../services/swap/cancel.js";
 import { ActionError } from "../services/swap/errors.js";
 import { DEFAULT_DEADLINE_MINUTES, DEFAULT_SLIPPAGE_BPS, quoteSwap } from "../services/swap/quote.js";
 import { resolveToken } from "../services/swap/resolver.js";
 import { type SecretField, secretRefusalText } from "../services/swap/secrets.js";
-import { isAnyTxHash } from "../services/swap/sources/index.js";
 import { getSwapCatalog } from "../services/swap/tokens.js";
 import { trackSwapWaiting } from "../services/swap/track.js";
 import { amountText } from "../services/swap/units.js";
@@ -31,8 +31,8 @@ import {
 
 /**
  * `schema`, plus the SECRET_REJECTED refusal for a value that fails it and looks like a secret: the
- * handler's own screening never sees a value zod rejects. A tx-hash field takes every source family's
- * format, which some key shapes fit too, so it's screened even when it passes.
+ * handler's own screening never sees a value zod rejects. A tx-hash field takes any text, which a key
+ * fits too, so it's screened even when it passes.
  */
 export function screened(schema: z.ZodType<string>, field: SecretField = {}) {
   return schema.superRefine((value, ctx) => {
@@ -43,14 +43,14 @@ export function screened(schema: z.ZodType<string>, field: SecretField = {}) {
 }
 
 // Functions, so each field gets its own schema: one reused within a tool becomes a `$ref` in its JSON schema.
-export const textArg = (max: number, min = 0) => screened(z.string().trim().min(min).max(max));
+export const textArg = (max: number, min = 0, field?: SecretField) =>
+  screened(z.string().trim().min(min).max(max), field);
 export const chainArg = () => textArg(64, 1);
 export const tokenArg = () => textArg(128, 1);
 export const addressArg = () => textArg(128).optional();
-export const txHashArg = () =>
-  screened(z.string().trim().refine(isAnyTxHash, "Must be a transaction hash as the wallet shows it."), {
-    txHash: true,
-  });
+// Any text here, checked by the handler against the source chain's format: a refusal there carries its nextAction, as
+// a schema's can't (a batch id, for one, is asked again rather than failed).
+export const txHashArg = () => textArg(128, 1, { txHash: true });
 const quoteIdArg = () => screened(z.string().trim().toLowerCase().uuid(), { notHex64: "a quoteId" });
 
 // The swap both pricing and preparing take; a function, so each tool gets its own schema.
@@ -97,7 +97,7 @@ export function registerSwapTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_swap_prepare",
-    "Prepare a cross-chain swap for the user's wallet to sign: the transactions in order (approve if needed, then the swap) and the quoteId sodax_swap_submit_and_track needs. It holds the quote until its deadline, so call it once the user has seen the price and is ready to sign; to show or watch a price, use sodax_swap_price. This server never signs or moves funds.",
+    `Prepare a cross-chain swap for the user's wallet to sign: the transactions in order (approve if needed, then the swap) and the quoteId sodax_swap_submit_and_track needs. Its steps are to be sent within ${SIGN_WINDOW_TEXT} (expiresAt), so call it once the user has seen the price and is ready to sign, with a wallet tool that can sign and send on the source chain; to show or watch a price, use sodax_swap_price. This server never signs or moves funds.`,
     {
       ...pairArgs(),
       fromAddress: addressArg().describe(
@@ -121,7 +121,9 @@ export function registerSwapTools(server: McpServer): void {
         .min(5)
         .max(60)
         .default(DEFAULT_DEADLINE_MINUTES)
-        .describe("Minutes the user has to send the swap before the quote expires."),
+        .describe(
+          `The swap's on-chain deadline, in minutes: past it, a swap no solver filled is refunded. The steps are still to be sent within ${SIGN_WINDOW_TEXT} (expiresAt).`,
+        ),
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async args => {
@@ -171,13 +173,18 @@ export function registerSwapTools(server: McpServer): void {
   );
 }
 
-// Which list a token is looked up in: the bridge's differs from the swap's. Without the swap tools, it's the bridge's.
-const purposeArg = (byDefault: TokenPurpose) =>
+/** The tools a connection has, that the token tools serve: the swap's first when both are on. */
+type Purposes = readonly [TokenPurpose, ...TokenPurpose[]];
+
+// Which list a token is looked up in, among the tools this connection has: the bridge's differs from the swap's.
+const purposeArg = (purposes: Purposes) =>
   z
-    .enum(["swap", "bridge"])
-    .default(byDefault)
+    .enum(purposes)
+    .default(purposes[0])
     .describe(
-      `${byDefault === "swap" ? '"swap" (the default) or "bridge"' : '"bridge" (the default) or "swap"'}: which tool the token is for. Some tokens bridge but don't swap.`,
+      purposes.length > 1
+        ? `"${purposes[0]}" (the default) or "${purposes[1]}": which tool the token is for. Some tokens bridge but don't swap.`
+        : `"${purposes[0]}": the only tools this connection has.`,
     );
 
 const catalogFor = async (purpose: TokenPurpose) => (purpose === "bridge" ? getBridgeCatalog() : getSwapCatalog());
@@ -192,20 +199,23 @@ async function worded<T>(purpose: TokenPurpose, run: () => Promise<T>): Promise<
 }
 
 /**
- * The token lookup and balance read, for the swap and the bridge tools alike: registered once for either, counted
- * under `module`, the swap tools' when they're on.
+ * The token lookup and balance read, for the swap and the bridge tools alike: registered once for those the connection
+ * has, counted under the first, the swap tools' when they're on. Neither names a tool the connection doesn't have.
  */
-export function registerTokenTools(server: McpServer, module: "swap" | "bridge" = "swap"): void {
+export function registerTokenTools(server: McpServer, purposes: Purposes = ["swap"]): void {
+  const module = purposes[0];
+  const both = purposes.length > 1;
+  const tools = both ? "The swap and bridge tools" : `The ${module} tools`;
   registerActionTool(
     server,
     "sodax_resolve_token",
-    "Look up a token on a chain: its address, decimals and hub asset. The swap and bridge tools take symbols themselves; use this when one returns UNKNOWN_TOKEN, with for: bridge for a bridge. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).",
+    `Look up a token on a chain: its address, decimals and hub asset. ${tools} take symbols themselves; use this when one returns UNKNOWN_TOKEN${both ? ", with for: bridge for a bridge" : ""}. Returns resolved, ambiguous (ask the user to pick; never guess) or not_found (with suggestions).`,
     {
       chain: chainArg().describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
       ),
       query: tokenArg().describe('Token symbol ("USDC"), contract address, or "native" for the chain\'s gas token.'),
-      for: purposeArg(module),
+      for: purposeArg(purposes),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async args =>
@@ -219,7 +229,7 @@ export function registerTokenTools(server: McpServer, module: "swap" | "bridge" 
   registerActionTool(
     server,
     "sodax_get_balance",
-    "Read a wallet's native balance on a chain and, optionally, one token's. The swap and bridge tools don't check balances; use this when the user isn't sure they hold enough, with for: bridge for a bridge's token. Figures can be up to 5 seconds old; after sending a swap or a bridge, follow it with its submit_and_track tool rather than re-reading balances.",
+    `Read a wallet's native balance on a chain and, optionally, one token's. ${tools} don't check balances; use this when the user isn't sure they hold enough${both ? ", with for: bridge for a bridge's token" : ""}. Figures can be up to 5 seconds old; after sending ${both ? "a swap or a bridge" : `a ${module}`}, follow it with its submit_and_track tool rather than re-reading balances.`,
     {
       chain: chainArg().describe(
         'Chain name, ticker or key, e.g. "Arbitrum", "arb" or "0xa4b1.arbitrum", or EVM chain id (e.g. "42161").',
@@ -228,13 +238,13 @@ export function registerTokenTools(server: McpServer, module: "swap" | "bridge" 
       token: tokenArg()
         .optional()
         .describe('Token symbol ("USDC"), contract address, or "native". Omit for the native balance only.'),
-      for: purposeArg(module),
+      for: purposeArg(purposes),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async args =>
       worded(args.for, async () => {
         const balances = await readBalances(args, await catalogFor(args.for));
-        return { ...balances, ...balanceDecision(balances) };
+        return { ...balances, ...balanceDecision(balances, args.for) };
       }),
     { module },
   );

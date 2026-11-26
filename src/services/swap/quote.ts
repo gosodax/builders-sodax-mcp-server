@@ -93,7 +93,10 @@ export type SwapQuote =
       quoteId: string;
       /** The hub's id of the intent, for `GET /intent/:intentHash` and the logs. */
       intentHash: string;
-      /** ISO time; the swap step must be mined, and tracked, before it. */
+      /**
+       * ISO time to send the steps by: 5 minutes from preparing, or the intent's deadline if sooner. Track the swap
+       * even if sent later; a quote nobody tracked by then may give way to a new one.
+       */
       expiresAt: string;
       /** Seconds from now to `expiresAt`, for agents that can't do time arithmetic. */
       expiresInSec: number;
@@ -293,7 +296,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     throw new ActionError("DEADLINE_TOO_SHORT", "Preparing the swap left too little time to send it.");
   }
 
-  const { quoteId } = putQuote({
+  const { quoteId, signBy } = putQuote({
     ...request,
     intent: built.intent,
     relayData: built.relayData,
@@ -307,8 +310,8 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
     slippageBps,
     quoteId,
     intentHash: intentHash(built.intent),
-    expiresAt: new Date(Number(deadline) * 1000).toISOString(),
-    expiresInSec: Math.max(0, Math.floor(Number(deadline) - Date.now() / 1000)),
+    expiresAt: new Date(signBy).toISOString(),
+    expiresInSec: Math.max(0, Math.floor((signBy - Date.now()) / 1000)),
     fromAddress,
     toAddress,
     checks: { balance: "not_checked", recipient },

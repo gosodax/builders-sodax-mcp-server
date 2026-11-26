@@ -143,7 +143,9 @@ describe("sodax_bridge_submit_and_track", () => {
     expect(submits).toEqual([
       { txHash: TX, srcChainKey: "0xa4b1.arbitrum", walletAddress: USER, relayData: kept.relayData },
     ]);
-    expect(getBridge(bridgeId)?.depositTxHash).toBe(TX);
+    // Kept a day from here, and no longer one a restart strands.
+    expect(getBridge(bridgeId)).toMatchObject({ depositTxHash: TX, handedOver: true });
+    expect(getBridge(bridgeId)?.expiresAt).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
     // Again: the backend's row now answers, and nothing is resubmitted.
     row = { status: "relaying" };
     await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
@@ -248,6 +250,45 @@ describe("sodax_bridge_submit_and_track", () => {
     expect(submits).toHaveLength(2);
   });
 
+  it("retries a submit-tx 404: that route never answers one itself, so the service is missing it", async () => {
+    submitAnswer = () => Response.json({ message: "Cannot POST /v1/bridge/submit-tx" }, { status: 404 });
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    const out = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    expect(out.error?.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(out.terminal).toBe(false);
+    // Claimed, not yet submitted: a restart would strand it.
+    expect(getBridge(bridgeId)?.handedOver).toBeUndefined();
+    submitAnswer = () => Response.json({ success: true, data: { status: "inserted", message: "ok" } });
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({ status: "relaying" });
+  });
+
+  it("alerts a checked deposit's second tx and a submit with other data from the checked budget, not the public one", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    clearAlerts();
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    submitAnswer = () => Response.json({ message: "already submitted" }, { status: 409 });
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "not_submitted",
+      reason: "submitted_differently",
+    });
+    const other = `0x${"e".repeat(64)}`;
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: other })).toMatchObject({
+      status: "not_submitted",
+      reason: "bridge_used",
+    });
+    for (const [alert, txHash] of [
+      ["bridge_submitted_differently", TX],
+      ["bridge_used", other],
+    ]) {
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ alert, "tx.hash": txHash }),
+        expect.any(String),
+      );
+    }
+  });
+
   it("past the claim, retries a key refusal: a new key couldn't track the bridge", async () => {
     submitAnswer = () => Response.json({ message: "Invalid API key" }, { status: 401 });
     const { bridgeId, deposit } = await prepared();
@@ -264,11 +305,17 @@ describe("sodax_bridge_submit_and_track", () => {
 
   it("waits for a tx not mined yet, and ends a failed one", async () => {
     const { bridgeId } = await prepared();
+    // A hash no chain can have holds nothing.
+    const malformed = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: "0x1234" });
+    expect(malformed.error).toMatchObject({ code: "INVALID_TX_HASH" });
+    expect(getBridge(bridgeId)?.heldUntil).toBeUndefined();
     vi.mocked(getEvmReceipt).mockResolvedValueOnce(null);
     expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
       status: "awaiting_source",
       terminal: false,
     });
+    // Named by a track call: its deposit may be on its way, so it's held from giving way to a new build for a while.
+    expect(getBridge(bridgeId)?.heldUntil).toBeGreaterThan(Date.now());
     // With the build, the backend's row waits for the deposit check: no Bridge API call while the tx isn't mined.
     expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/submit-tx"))).toEqual([]);
     vi.mocked(getEvmReceipt).mockResolvedValueOnce({ reverted: true, blockNumber: 1n, txIndex: 0, logs: [] });
@@ -533,6 +580,11 @@ describe("sodax_bridge_submit_and_track", () => {
       relayHas(packets);
       expect(await track()).toMatchObject({ status: "relay_failed", terminal: true });
     }
+    // A relay it can't read says nothing: asked again, never taken for "not relayed".
+    vi.mocked(relayPackets).mockRejectedValueOnce(new Error("relay read failed"));
+    const unread = await track();
+    expect(unread.error?.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(unread.terminal).toBe(false);
     relayHas([toHub()]);
     expect(await track()).toMatchObject({ status: "in_transit", hubTxHash: HUB_TX, terminal: false });
     expect(relayPackets).toHaveBeenCalledWith("0xa4b1.arbitrum", TX);

@@ -216,6 +216,10 @@ function toActionError(error: unknown, route: string): ActionError {
       "Check with sodax_get_balance that the wallet holds the amount plus fees on the source chain. If it doesn't, tell the user what's missing; if it does, tell the user the bridge couldn't be built right now and to try again later.",
     );
   }
+  // submit-tx never answers 404 itself, and reads no chain: one there is the route missing, the service's problem.
+  if (status === 404 && route.endsWith("/submit-tx")) {
+    return new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX bridge service is unavailable.");
+  }
   // An invalid request, a token or chain the service doesn't know (a 404 from a build route), or a direction the
   // token doesn't allow: something about this bridge, not the service being down.
   if (status === 400 || status === 404 || status === 422) {

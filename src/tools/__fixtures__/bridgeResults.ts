@@ -48,6 +48,7 @@ export const PREVIEW: BridgePreview = {
   status: "preview",
   from: { chain: ARBITRUM, symbol: "USDC", address: FROM_TOKEN, amount: "5" },
   to: { chain: BASE, symbol: "USDC", address: TO_TOKEN, amount: "5" },
+  networkFee: { paidIn: "ETH", estimated: false },
   maxAmount: "100",
   prepareNeeds: ["fromAddress"],
 };
@@ -59,6 +60,7 @@ export const READY: BridgeQuote = {
   expiresInSec: 1200,
   from: PREVIEW.from,
   to: PREVIEW.to,
+  networkFee: PREVIEW.networkFee,
   fromAddress: USER,
   toAddress: USER,
   steps: [

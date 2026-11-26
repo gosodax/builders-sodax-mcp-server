@@ -6,7 +6,8 @@
  * store's size, the eviction order and `/health`'s count. Every change that reads before it writes is one Lua script,
  * so it's atomic. Expiry follows this server's clock, as in memory; Redis drops a quote's hash a little after it
  * expires, so the sweep can still record it if unused, and drops the indexes a day after their last write, so nothing
- * outlives a server that stopped using it.
+ * outlives a server that stopped using it. Servers sharing a Redis need their clocks in sync: the sweep and the relay
+ * claim weigh time by the caller's clock.
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
@@ -26,6 +27,7 @@ import {
   type Room,
   type UnusedQuote,
   deadlineMs,
+  logUnused,
 } from "./quoteStore.js";
 
 // A new version for a stored shape this code can't read: the old quotes are then lost, as a restart in memory loses
@@ -177,11 +179,18 @@ setRank(id, 'submitted')
 return 1
 `;
 
-// ARGV[5..7]: quoteId, how, keep until; the quote's fields after, to put it back if it was dropped.
+// ARGV[5..7]: quoteId, how, keep until; the quote's fields after, to put it back if it was dropped. A hub outcome
+// never replaces a later one (quoteStore's `outranked`): returns 0 then.
 const HAND_OVER = `${LUA_COMMON}
+local HUB_ORDER = {left_to_refund = 1, closed = 2, cancelled = 3}
 local id, how, keepUntil = ARGV[5], ARGV[6], tonumber(ARGV[7])
 local q = k('q:' .. id)
-if redis.call('EXISTS', q) == 0 then redis.call('HSET', q, unpack(ARGV, 8)) end
+if redis.call('EXISTS', q) == 0 then
+  redis.call('HSET', q, unpack(ARGV, 8))
+else
+  local current = redis.call('HGET', q, 'handedOver')
+  if current and HUB_ORDER[current] and HUB_ORDER[how] and HUB_ORDER[how] < HUB_ORDER[current] then return 0 end
+end
 local expiresAt = math.max(tonumber(redis.call('HGET', q, 'expiresAt')), keepUntil)
 redis.call('HSET', q, 'handedOver', how, 'expiresAt', string.format('%d', expiresAt))
 expireAt(id, expiresAt)
@@ -305,6 +314,9 @@ function unusedFrom(reply: string[], from: number): UnusedQuote[] {
 
 const toOpen = (open: unknown, until: unknown): OpenQuotes => ({ open: Number(open), until: Number(until) });
 
+/** A sweeping script's reply that came after its call timed out: the quotes it dropped are still logged. */
+const logLateUnused = (reply: unknown) => logUnused(unusedFrom(reply as string[], 2));
+
 const unreachable = () =>
   new ActionError("UPSTREAM_UNAVAILABLE", "This server can't reach its swap quote store right now.", {
     details: { retryAfterSec: RETRY_AFTER_SEC },
@@ -331,15 +343,20 @@ export class RedisQuoteStore implements QuoteStore {
     private readonly prefix: string,
   ) {}
 
-  /** A store call, or `unreachable`: it never waits for a Redis that's down or slow. */
-  private async call<T>(op: () => Promise<T>): Promise<T> {
+  /**
+   * A store call, or `unreachable`: it never waits for a Redis that's down or slow. Redis may still run a call that
+   * timed out; `late` gets its reply then.
+   */
+  private async call<T>(op: () => Promise<T>, late?: (reply: T) => void): Promise<T> {
     if (!this.client.isReady) throw unreachable();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`No reply within ${CALL_TIMEOUT_MS} ms`)), CALL_TIMEOUT_MS);
     });
+    let reply: Promise<T> | undefined;
     try {
-      return await Promise.race([op(), timeout]);
+      reply = op();
+      return await Promise.race([reply, timeout]);
     } catch (error) {
       // Redis answered with an error (a script bug, a full Redis, a key of another type): not an outage, and it
       // won't pass by itself, so it's logged every time and alerts. A Redis loading its data or failing over will.
@@ -347,6 +364,7 @@ export class RedisQuoteStore implements QuoteStore {
         logger.error({ err: error }, "The swap quote store refused a call");
         throw new ActionError("INTERNAL", "The swap quote store refused a call.");
       }
+      if (late) reply?.then(late, () => {});
       this.warn(error, "A swap quote store call failed");
       throw unreachable();
     } finally {
@@ -354,9 +372,14 @@ export class RedisQuoteStore implements QuoteStore {
     }
   }
 
-  private run(script: string, now: number, args: (string | number)[]): Promise<unknown> {
+  private run(
+    script: string,
+    now: number,
+    args: (string | number)[],
+    late?: (reply: unknown) => void,
+  ): Promise<unknown> {
     const argv = [this.prefix, now, EXPIRY_SLACK_MS, INDEX_TTL_MS, ...args].map(String);
-    return this.call(() => this.client.eval(script, { arguments: argv }));
+    return this.call(() => this.client.eval(script, { arguments: argv }), late);
   }
 
   /** Once a minute at most: a Redis that's down fails every call, and the client retries every few seconds. */
@@ -369,7 +392,8 @@ export class RedisQuoteStore implements QuoteStore {
 
   async reserve(keyHash: string, now: number, quote?: CachedQuote): Promise<Room> {
     const put = quote ? [quote.quoteId, ...toFields(quote)] : [];
-    const reply = (await this.run(RESERVE, now, [keyHash, MAX_QUOTES, MAX_QUOTES_PER_KEY, ...put])) as string[];
+    const args = [keyHash, MAX_QUOTES, MAX_QUOTES_PER_KEY, ...put];
+    const reply = (await this.run(RESERVE, now, args, logLateUnused)) as string[];
     if (reply[0] === "key") return { full: "key", retryAt: Number(reply[1]), unused: [] };
     const unused = unusedFrom(reply, 2);
     return reply[0] === "store" ? { full: "store", unused } : { unused };
@@ -428,7 +452,7 @@ export class RedisQuoteStore implements QuoteStore {
    */
   private async read(script: string, now: number): Promise<string[]> {
     try {
-      const reply = (await this.run(script, now, [])) as string[];
+      const reply = (await this.run(script, now, [], logLateUnused)) as string[];
       this.lastOpen = toOpen(reply[0], reply[1]);
       return reply;
     } catch (error) {

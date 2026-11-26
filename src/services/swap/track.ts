@@ -55,8 +55,10 @@ export const DEPOSIT_SAFE_UNALERTED = `tell the user the deposit is on chain and
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
-// Longer than a relay call can take (swapsApi's 15 s timeout), so a claim never lapses while its relay runs.
-const RELAY_CLAIM_MS = 30_000;
+// Longer than a relay call can take (swapsApi's 15 s timeout), so a claim never lapses while its relay runs, and than
+// the minute sweep that writes a relay the store failed to record: another server waits for that write instead of
+// relaying the deposit again.
+const RELAY_CLAIM_MS = 2 * 60 * 1000;
 // The backend takes a new row until 120 s past the deadline, so a refusal before it isn't the
 // deadline; but refused in its last minute, no fix by hand lands in time. Its clock may be off ours
 // by as much as a quote's deadline may be.

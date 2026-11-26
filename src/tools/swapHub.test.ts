@@ -1,11 +1,12 @@
 import { spokeChainConfig } from "@sodax/types";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../services/logger.js";
 import { getEvmReceipt, hubIntentClosed, initSodax, intentHash, isTxKnown, userHubWallet } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { hubReceipt } from "../services/swap/__fixtures__/deposit.js";
+import { REDIS_URLS, redisServers } from "../services/swap/__fixtures__/redis.js";
 import { clearAlerts } from "../services/swap/alerts.js";
-import { clearQuoteCache } from "../services/swap/quoteCache.js";
+import { type CachedQuote, clearQuoteCache, useQuoteStore } from "../services/swap/quoteCache.js";
 import { INTENT_CANCELLED_TOPIC, INTENT_CREATED_TOPIC } from "../services/swap/sourceTx.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
@@ -390,5 +391,27 @@ describe("a swap from Sonic, the hub", () => {
       const { out } = await cancel({ txHash: SONIC_TX, quoteId: await cancellable(), cancelTxHash: CANCEL_TX });
       expect(out.status).toBe("not_a_cancel_tx");
     });
+  });
+});
+
+describe.runIf(REDIS_URLS.length > 0)("a swap from Sonic on a Redis quote store, across servers", () => {
+  const { open, closeAll } = redisServers(REDIS_URLS[0] ?? "");
+  afterAll(closeAll);
+
+  it("stays cancelled when a refund record Redis missed is written after another server's cancel", async () => {
+    vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt(INTENT_CREATED_TOPIC, [HASH]));
+    stubBackend({ row: null });
+    const store = await open();
+    useQuoteStore(store);
+    const { quoteId } = await hubQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    vi.spyOn(store, "handOver").mockRejectedValueOnce(new Error("No reply within 2000 ms"));
+    expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("expired_awaiting_refund");
+    // The user's cancel, confirmed on another server.
+    const other = await open();
+    await other.handOver({ ...((await other.get(quoteId)) as CachedQuote), handedOver: "cancelled" }, Date.now());
+    // This server writes its refund record before it reads the quote again.
+    expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ status: "failed", outcome: "cancelled" });
+    expect(await other.get(quoteId)).toMatchObject({ handedOver: "cancelled" });
   });
 });

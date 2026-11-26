@@ -1067,6 +1067,21 @@ describe.runIf(REDIS_URLS.length > 0)("swap tools on a Redis quote store, across
     expect(submits(calls)).toEqual([]);
   });
 
+  it("has another server wait, not relay again, while a relay whose record Redis missed is still claimed", async () => {
+    const calls = stubBackend();
+    const { quoteId } = await cacheQuote();
+    vi.setSystemTime(Number(DEADLINE) * 1000 + 1000);
+    vi.spyOn(current as QuoteStore, "handOver").mockRejectedValueOnce(new Error("No reply within 2000 ms"));
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({ status: "expired_refunding" });
+    // Another server, without the record this one writes in its next sweep, a minute on at most.
+    await restart();
+    vi.setSystemTime(Date.now() + 61_000);
+    expect((await track({ txHash: TX, quoteId })).out).toMatchObject({
+      error: { code: "UPSTREAM_UNAVAILABLE", retryAfterSec: 59 },
+    });
+    expect(relays(calls)).toHaveLength(1);
+  });
+
   it("refunds through cancel a deposit never tracked, after a restart", async () => {
     const calls = stubBackend({ row: null });
     const { quoteId } = await cacheQuote();

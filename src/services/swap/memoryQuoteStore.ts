@@ -5,6 +5,7 @@
 
 import {
   type CachedQuote,
+  type HandedOver,
   MAX_QUOTES,
   MAX_QUOTES_PER_KEY,
   type OpenQuotes,
@@ -13,6 +14,7 @@ import {
   type Room,
   type UnusedQuote,
   deadlineMs,
+  outranked,
 } from "./quoteStore.js";
 
 const unused = (quote: CachedQuote, reason: UnusedQuote["reason"]): UnusedQuote => ({
@@ -124,12 +126,13 @@ export class MemoryQuoteStore implements QuoteStore {
     if (quote && !quote.handedOver) quote.handedOver = "submitted";
   }
 
-  async handOver(quote: CachedQuote): Promise<void> {
+  async handOver(quote: CachedQuote & { handedOver: HandedOver }): Promise<void> {
     const stored = this.quotes.get(quote.quoteId);
     if (!stored) {
       this.quotes.set(quote.quoteId, structuredClone(quote));
       return;
     }
+    if (outranked(quote.handedOver, stored.handedOver)) return;
     stored.handedOver = quote.handedOver;
     stored.expiresAt = Math.max(stored.expiresAt, quote.expiresAt);
   }

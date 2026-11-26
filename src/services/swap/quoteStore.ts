@@ -3,6 +3,8 @@
  * for which quote past its deadline a full store drops first; `quoteCache.ts` is what the swap tools call.
  */
 
+import { logger } from "../logger.js";
+import { runWithRequestContext, tagOf } from "../requestContext.js";
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
 
 export type CachedQuote = IntentRequest & {
@@ -33,6 +35,15 @@ export type CachedQuote = IntentRequest & {
 /** A hub swap's end, known from the hub. */
 export type HubOutcome = "left_to_refund" | "cancelled" | "closed";
 export type HandedOver = "submitted" | "relayed_for_refund" | HubOutcome;
+
+// A hub swap's outcomes in the order they can follow each other. Redis's HAND_OVER script keeps the same order.
+const HUB_ORDER: Partial<Record<HandedOver, number>> = { left_to_refund: 1, closed: 2, cancelled: 3 };
+
+/** A hub outcome that came before `current`, as a write replayed late (by another server, say) brings: it's dropped. */
+export function outranked(how: HandedOver, current: HandedOver | undefined): boolean {
+  const [next, now] = [HUB_ORDER[how], current && HUB_ORDER[current]];
+  return next !== undefined && now !== undefined && next < now;
+}
 
 export const MAX_QUOTES = 10_000;
 // One key can't fill the store and crowd out other keys' quotes; past this many unclaimed ones it waits instead.
@@ -81,7 +92,10 @@ export interface QuoteStore {
   set(quoteId: string, fields: Pick<CachedQuote, "submitRetryAt" | "submitRefused">): Promise<void>;
   /** `submitted`, unless it was handed over another way meanwhile. */
   setSubmitted(quoteId: string): Promise<void>;
-  /** Sets how it was handed over and keeps it until `quote.expiresAt`; puts it back if it was dropped meanwhile. */
+  /**
+   * Sets how it was handed over and keeps it until `quote.expiresAt`; puts it back if it was dropped meanwhile. A hub
+   * outcome never replaces a later one (`outranked`).
+   */
   handOver(quote: CachedQuote & { handedOver: HandedOver }, now: number): Promise<void>;
   /**
    * Atomic: takes the relay for refund of the quote's deposit until `until` (epoch ms), so two calls at once don't both
@@ -101,6 +115,27 @@ export interface QuoteStore {
   /** Test only. */
   clear(): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * The drop-off between quote and deposit (#110): a quote gone without one, expired, or evicted past its deadline
+ * from a full store. Outside the request that dropped it, whose record it isn't.
+ */
+export function logUnused(quotes: UnusedQuote[]): void {
+  for (const quote of quotes) {
+    runWithRequestContext({}, () =>
+      logger.info(
+        {
+          "quote.id": quote.quoteId,
+          "quote.drop_reason": quote.reason,
+          "chain.key": quote.srcChainKey,
+          "dst_chain.key": quote.dstChainKey,
+          "caller.key_hash": tagOf(quote.keyHash),
+        },
+        "Swap quote expired unused",
+      ),
+    );
+  }
 }
 
 /** The quote's deadline in epoch ms: its intent's, which quote checked against the request's. */

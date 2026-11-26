@@ -8,8 +8,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { logger } from "../logger.js";
-import { runWithRequestContext, tagOf } from "../requestContext.js";
+import { runWithRequestContext } from "../requestContext.js";
 import { ActionError } from "./errors.js";
 import { MemoryQuoteStore } from "./memoryQuoteStore.js";
 import {
@@ -20,14 +21,16 @@ import {
   type QuoteStore,
   type RelayClaim,
   type Room,
-  type UnusedQuote,
   deadlineMs,
+  logUnused,
 } from "./quoteStore.js";
 
 export { type CachedQuote, deadlineMs } from "./quoteStore.js";
 
 const GRACE_MS = 30 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
+// At shutdown, how long the writes the store failed get to go through: as long as one Redis call may take.
+const FLUSH_MS = 2_000;
 
 let store: QuoteStore = new MemoryQuoteStore();
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
@@ -49,7 +52,17 @@ export function quoteStoreKind(): QuoteStore["kind"] {
 
 export async function closeQuoteStore(): Promise<void> {
   stopSweeping();
+  await flushQuoteWrites();
   await store.close();
+}
+
+/**
+ * One last try, at shutdown, at the writes the store failed: what's still unwritten after `FLUSH_MS` is lost with this
+ * process (`quotesLostOnRestart`).
+ */
+export async function flushQuoteWrites(): Promise<void> {
+  if (unwritten.size === 0) return;
+  await Promise.race([flushAll(), sleep(FLUSH_MS, undefined, { ref: false })]);
 }
 
 /**
@@ -100,27 +113,6 @@ function refuseIfFull(room: Room): void {
 }
 
 /**
- * The drop-off between quote and deposit (#110): a quote gone without one, expired, or evicted past its deadline
- * from a full store. Outside the request that dropped it, whose record it isn't.
- */
-function logUnused(quotes: UnusedQuote[]): void {
-  for (const quote of quotes) {
-    runWithRequestContext({}, () =>
-      logger.info(
-        {
-          "quote.id": quote.quoteId,
-          "quote.drop_reason": quote.reason,
-          "chain.key": quote.srcChainKey,
-          "dst_chain.key": quote.dstChainKey,
-          "caller.key_hash": tagOf(quote.keyHash),
-        },
-        "Swap quote expired unused",
-      ),
-    );
-  }
-}
-
-/**
  * Deadlines differ, so age order isn't expiry order: expired quotes go in a sweep once a minute, which records an
  * unused one near its expiry. From the first quote, or from startup with a store set.
  */
@@ -136,7 +128,7 @@ function startSweeping(): void {
 async function sweep(): Promise<void> {
   const now = Date.now();
   // Writes the store failed, for quotes no call reads again: retried here, as before a read.
-  await Promise.all([...unwritten.keys()].map(quoteId => flush(quoteId).catch(() => {})));
+  await flushAll();
   try {
     logUnused(await store.sweep(now));
   } catch {
@@ -198,6 +190,11 @@ async function record(quoteId: string, write: (quoteId: string) => Promise<void>
   } catch (error) {
     logger.error({ err: error, "quote.id": quoteId }, "Couldn't record a swap's progress in the quote store");
   }
+}
+
+/** Every quote's writes not in the store yet; one the store still fails stays for the next try. */
+async function flushAll(): Promise<void> {
+  await Promise.all([...unwritten.keys()].map(quoteId => flush(quoteId).catch(() => {})));
 }
 
 /** Makes the quote's writes not in the store yet, in order; throws while the store still fails one. */

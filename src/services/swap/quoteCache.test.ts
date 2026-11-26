@@ -11,6 +11,7 @@ import {
   checkQuoteRoom,
   claimDeposit,
   clearQuoteCache,
+  closeQuoteStore,
   getCachedQuote,
   markHubOutcome,
   markRelayedForRefund,
@@ -219,6 +220,24 @@ describe.each(STORES)("quoteCache in $kind", ({ open }) => {
     await markHubOutcome(quote, "cancelled");
     await markSubmitted(submitting);
     expect(await getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "cancelled" });
+  });
+
+  it("keeps a hub swap's later outcome over an earlier one written late, as another server's replay is", async () => {
+    const outcome = async (quote: CachedQuote) =>
+      ((await getCachedQuote(quote.quoteId, KEY)) as CachedQuote).handedOver;
+    const late = await quoteDue(15);
+    await claimDeposit(late, "0x01");
+    await markHubOutcome({ ...late }, "cancelled");
+    await markHubOutcome({ ...late }, "closed");
+    await markHubOutcome({ ...late }, "left_to_refund");
+    expect(await outcome(late)).toBe("cancelled");
+    // In the order they happen, each one stands.
+    const inOrder = await quoteDue(15);
+    await claimDeposit(inOrder, "0x02");
+    for (const how of ["left_to_refund", "closed", "cancelled"] as const) {
+      await markHubOutcome({ ...inOrder }, how);
+      expect(await outcome(inOrder)).toBe(how);
+    }
   });
 
   it("makes each write the store failed once, in order, before the next read, even two reads at once", async () => {
@@ -446,6 +465,22 @@ describe.each(REDIS_URLS)("quoteCache in Redis, across servers", url => {
     expect(await ttl()).toBeGreaterThan(DAY + 60 * MINUTE - 5_000);
   });
 
+  it("makes the writes Redis missed before it closes, so the next server has them", async () => {
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const first = await open();
+    useQuoteStore(first);
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    vi.spyOn(first, "handOver").mockRejectedValueOnce(new Error("No reply within 2000 ms"));
+    await markRelayedForRefund(quote);
+    expect(quotesLostOnRestart()).toBeDefined();
+    await closeQuoteStore();
+    expect(quotesLostOnRestart()).toBeUndefined();
+    useQuoteStore(await open());
+    expect(await getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "relayed_for_refund" });
+    error.mockRestore();
+  });
+
   it("calls an error Redis answers with a fault, not an outage: logged each time, and alerted", async () => {
     useQuoteStore(await open());
     const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
@@ -512,6 +547,28 @@ describe("quoteCache on a Redis that answers with an error", () => {
     const store = new RedisQuoteStore(client as never, "test:");
     await expect(store.open(Date.now())).rejects.toMatchObject({ code });
     expect(store.openNow()).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  it("still logs the quotes a sweep dropped when its reply comes after the call timed out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    let answer = (_reply: string[]) => {};
+    const reply = new Promise<string[]>(resolve => {
+      answer = resolve;
+    });
+    const store = new RedisQuoteStore({ isReady: true, eval: () => reply } as never, "test:");
+    const swept = expect(store.sweep(Date.now())).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await swept;
+    answer(["0", "0", "late", "expired", KEY, "0xa4b1.arbitrum", "sonic"]);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ "quote.id": "late", "quote.drop_reason": "expired" }),
+      "Swap quote expired unused",
+    );
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 });

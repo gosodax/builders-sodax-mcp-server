@@ -69,6 +69,7 @@ import { getIntegratedNetworksCount } from "./services/sodaxApi.js";
 import { ActionError } from "./services/swap/errors.js";
 import {
   closeQuoteStore,
+  flushQuoteWrites,
   openQuoteCount,
   openQuotes,
   quoteStoreKind,
@@ -741,15 +742,16 @@ function fatalExit(context: string, error: unknown): void {
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  // In memory, a restart drops the open quotes; Redis keeps them.
-  const lost = quotesLostOnRestart();
   logger.info({ signal, "swap_quotes.open": openQuoteCount() }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal, lost);
+  // Writes Redis missed get a last try first (2 s at most), so the stop message counts only the ones lost. In memory,
+  // a restart drops the open quotes; Redis keeps them.
+  await flushQuoteWrites();
+  await notifyServerStopping(signal, quotesLostOnRestart());
   await shutdownAnalytics();
   // A failing export or a Redis that doesn't answer rejects its close; the exit must still happen.
   const closing = Promise.all([otel?.shutdown().catch(() => {}), closeQuoteStore().catch(() => {})]);

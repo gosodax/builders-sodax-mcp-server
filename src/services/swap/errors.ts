@@ -94,8 +94,23 @@ const DEFAULT_NEXT_STEP: Record<ActionErrorCode, string> = {
   INTERNAL: `${RETRY_LATER} ${SWAP_HELP}`,
 };
 
-/** Whether the throw site left the code's own advice, which says nothing about this failure in particular. */
-export const hasDefaultNextStep = (error: ActionError): boolean => error.nextStep === DEFAULT_NEXT_STEP[error.code];
+/** Shared text in a bridge's words: a bridge tool's failure is reworded where its result is built (`forBridge`). */
+export const inBridgeWords = (text: string) =>
+  text
+    .replace(/\bsodax_swap_(prepare|submit_and_track)\b/g, "sodax_bridge_$1")
+    // The bridge's tokens aren't the swap's: a lookup for one names it.
+    .replace(/\bsodax_resolve_token\b(?! with for: bridge)/g, "sodax_resolve_token with for: bridge")
+    .replace(/\bswap\b/g, "bridge")
+    .replace(/\bswaps\b/g, "bridges")
+    .replace(/\bSwap\b/g, "Bridge")
+    .replace(/\bSwaps\b/g, "Bridges");
+
+/**
+ * Whether the throw site left the code's own advice, which says nothing about this failure in particular: as it is,
+ * or as a bridge tool rewords it.
+ */
+export const hasDefaultNextStep = (error: ActionError): boolean =>
+  error.nextStep === DEFAULT_NEXT_STEP[error.code] || error.nextStep === inBridgeWords(DEFAULT_NEXT_STEP[error.code]);
 
 /** A value the user can pick to fix a failure: what it's called, and the arguments it sets. */
 export interface ErrorOption {

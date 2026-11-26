@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { BRIDGE_HELP } from "../constants.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
+import { forBridge } from "../services/bridge/wording.js";
 import { ACTION_ERROR_CODES, ActionError } from "../services/swap/errors.js";
 import {
   ARBITRUM,
@@ -119,6 +121,8 @@ const SPECIAL_ERRORS: [string, ActionError][] = [
   ["recipient", new ActionError("INVALID_ADDRESS", "No.", { details: { missing: ["fromAddress", "toAddress"] } })],
   ["amount", new ActionError("AMOUNT_TOO_LOW", "No.", { details: { suggestedAmount: "1", symbol: "USDC" } })],
   ["unreadable token", new ActionError("UNKNOWN_TOKEN", "No.", { details: { reason: "unreadable" } })],
+  // A code that usually passes, which its throw site says won't: handed off in the tool's own words.
+  ["won't pass", new ActionError("UPSTREAM_UNAVAILABLE", "No.", { retryable: false })],
 ];
 const ALL = [
   ...LOOKUPS,
@@ -127,7 +131,7 @@ const ALL = [
   ...TOOLS.flatMap(tool =>
     SPECIAL_ERRORS.map(([name, error]): [string, Decision] => [
       `${tool} ${name}`,
-      errorDecision(error, { tool, args: {} }),
+      errorDecision(forBridge(error), { tool, args: {} }),
     ]),
   ),
 ];
@@ -149,6 +153,12 @@ describe("every bridge decision", () => {
     const forward =
       name === "tokens" ? "sodax_bridge_preview" : name.startsWith("preview") ? "sodax_bridge_prepare" : undefined;
     expect(calls.every(call => call.tool === forward)).toBe(true);
+  });
+
+  // The decisions shared with the swap tools take their words from the tool: a bridge's never names a swap, but in the
+  // help desk's line, which covers both.
+  it.each(ALL)("%s never names a swap", (_, decision) => {
+    expect(decision.nextStep.replace(BRIDGE_HELP, "")).not.toMatch(/\bswaps?\b/i);
   });
 
   it.each(TRACKED)("%s keeps the canonical bridge when it calls again", (_, decision) => {

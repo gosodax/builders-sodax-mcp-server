@@ -138,15 +138,15 @@ const helpFor = (what: "swap" | "bridge") => (what === "bridge" ? BRIDGE_HELP : 
  * A failure that may pass, before anything was sent: the same call again, as often as the action makes it. A throw
  * site's own advice stays; the code's generic one is replaced, as it can't say when or how often.
  */
-const beforeSendAdvice = (tool: string, failure: ActionError, seconds: number) => {
+const beforeSendAdvice = (tool: string, failure: ActionError, seconds: number, what: "swap" | "bridge") => {
   if (!hasDefaultNextStep(failure)) {
     return `${failure.nextStep} Retry at most ${MAX_CALLS} times in a row, ${seconds} seconds apart.`;
   }
   const unavailable =
     failure.code === "CHAIN_UNAVAILABLE"
       ? "that chain can't be read right now (error.message names it) and to try again later"
-      : "the SODAX swap service is unavailable right now";
-  const help = failure.code === "INTERNAL" ? ` ${SWAP_HELP}` : "";
+      : `the SODAX ${what} service is unavailable right now`;
+  const help = failure.code === "INTERNAL" ? ` ${helpFor(what)}` : "";
   return `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times in a row. If it still fails, stop: tell the user ${unavailable}.${help}`;
 };
 
@@ -915,7 +915,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       if (!failure.retryable) return stuck(hasDefaultNextStep(failure) ? wontPass(sent, what) : advice);
       // The same call again, counted while it keeps failing in a row.
       return ongoing(
-        sent ? advice : beforeSendAdvice(tool, failure, seconds),
+        sent ? advice : beforeSendAdvice(tool, failure, seconds, what),
         callRepeated(
           callOnce(tool, "same", seconds),
           { maxAttempts: MAX_CALLS, retryKey: key, consecutive: true },
@@ -972,7 +972,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       }
       if (sent) return stuck();
       return ongoing(
-        "Preparing the swap took too long to leave time to send it: tell the user the swap service is slow right now and to try again later.",
+        `Preparing the ${what} took too long to leave time to send it: tell the user the ${what} service is slow right now and to try again later.`,
         external("service_unavailable"),
       );
     }
@@ -1001,7 +1001,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
           // The workflow ends: a try with other inputs is a new one.
           return final(
             hasDefaultNextStep(failure)
-              ? "Tell the user the swap service refused this swap, so nothing was prepared. If they want to try again, check the tokens, amount and addresses with them and start over."
+              ? `Tell the user the ${what} service refused this ${what}, so nothing was prepared. If they want to try again, check the tokens, amount and addresses with them and start over.`
               : advice,
             NONE,
           );

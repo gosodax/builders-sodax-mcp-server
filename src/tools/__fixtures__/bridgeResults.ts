@@ -3,11 +3,27 @@
 import type { BridgePairs } from "../../services/bridge/pair.js";
 import type { BridgePreview, BridgeQuote } from "../../services/bridge/prepare.js";
 import type { BridgeTrack } from "../../services/bridge/track.js";
+import { forBridge } from "../../services/bridge/wording.js";
+import { ActionError, type ActionErrorCode } from "../../services/swap/errors.js";
 import { pairsDecision, prepareDecision, previewDecision, trackDecision } from "../bridgeDecisions.js";
+import type { SwapToolName } from "../nextAction.js";
+import { errorDecision } from "../swapDecisions.js";
 import type { ToolResult } from "./nextActionRuntime.js";
 import { ARBITRUM, LATER, SONIC, TX } from "./swapResults.js";
 
-export { ARBITRUM, LATER, NOW, SONIC, TX, failure } from "./swapResults.js";
+export { ARBITRUM, LATER, NOW, SONIC, TX } from "./swapResults.js";
+
+/** A bridge tool's failure as it returns it: reworded for a bridge before its decision, as `registerActionTool` does. */
+export const failure = (
+  code: ActionErrorCode,
+  tool: SwapToolName,
+  args: Record<string, unknown>,
+  details?: Record<string, unknown>,
+  retryable?: boolean,
+): ToolResult => {
+  const error = forBridge(new ActionError(code, "No.", { details, retryable }));
+  return { status: "error", error: { ...details, code }, ...errorDecision(error, { tool, args }) };
+};
 export const BASE = { key: "0x2105.base", name: "Base" };
 export const BRIDGE_ID = "3e1a8620-798c-4dfa-8149-b803fad31f3a";
 export const HUB_TX = `0x${"b".repeat(64)}`;

@@ -10,6 +10,7 @@ import { runWithRequestContext } from "../services/requestContext.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { ActionError } from "../services/swap/errors.js";
 import { registerActionTool } from "./actionTool.js";
+import { type Decision, NONE, final } from "./nextAction.js";
 
 /**
  * A tool that takes one string, `value`, and runs `run` with it, wrapped as every served tool is; without
@@ -17,26 +18,36 @@ import { registerActionTool } from "./actionTool.js";
  */
 async function callTool(
   value: string,
-  run: () => Promise<never | { status: string; nextStep: string }>,
+  run: () => Promise<never | ({ status: string } & Decision)>,
   { analytics = true } = {},
 ) {
   const server = new McpServer({ name: "test", version: "0.0.0" });
   if (analytics) withAnalytics(server);
   // Non-empty annotations: the SDK reads an empty object here as a second input schema.
   registerActionTool(server, "test_action_tool", "A test tool.", { value: z.string() }, { readOnlyHint: true }, run);
+  const client = await connect(server);
+  // Listing first makes the client check each result against the tool's output schema, as an SDK client does.
+  await client.listTools();
+  const result = await client.callTool({ name: "test_action_tool", arguments: { value } });
+  await client.close();
+  return result;
+}
+
+async function connect(server: McpServer): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "test", version: "0.0.0" });
   await client.connect(clientTransport);
-  const result = await client.callTool({ name: "test_action_tool", arguments: { value } });
-  await client.close();
-  return result;
+  return client;
 }
 
 const callFailingTool = (error: unknown) =>
   callTool("x", async () => {
     throw error;
   });
+
+/** A result that keeps the contract. */
+const DONE = { status: "ok", ...final("Done.", NONE) };
 
 let errors: ReturnType<typeof vi.spyOn>;
 
@@ -65,19 +76,25 @@ describe("registerActionTool", () => {
       status: "error",
       error: { code: "UNSUPPORTED_CHAIN", message: "No.", hint: 1 },
       nextStep: "Ask the user.",
+      // It names no field to ask for again: a person takes it from here.
+      nextAction: { type: "external", reason: "service_unavailable" },
+      terminal: false,
       requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
   });
 
   it("carries the request's id on a result and a failure, with the text the same output as compact JSON", async () => {
     const results = await runWithRequestContext({ requestId: "req-1" }, () =>
-      Promise.all([
-        callTool("x", async () => ({ status: "ok", nextStep: "Done." })),
-        callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down.")),
-      ]),
+      Promise.all([callTool("x", async () => DONE), callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."))]),
     );
     const [ok, failed] = results;
-    expect(ok.structuredContent).toEqual({ status: "ok", nextStep: "Done.", requestId: "req-1" });
+    expect(ok.structuredContent).toEqual({
+      status: "ok",
+      nextStep: "Done.",
+      nextAction: { type: "none" },
+      terminal: true,
+      requestId: "req-1",
+    });
     expect(failed.structuredContent).toMatchObject({ status: "error", requestId: "req-1" });
     for (const result of results) {
       expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.structuredContent) }]);
@@ -85,14 +102,63 @@ describe("registerActionTool", () => {
   });
 
   it("carries no requestId when the call has none", async () => {
-    const result = await callTool("x", async () => ({ status: "ok", nextStep: "Done." }), { analytics: false });
-    expect(result.structuredContent).toEqual({ status: "ok", nextStep: "Done." });
+    const result = await callTool("x", async () => DONE, { analytics: false });
+    expect(result.structuredContent).toEqual({
+      status: "ok",
+      nextStep: "Done.",
+      nextAction: { type: "none" },
+      terminal: true,
+    });
+  });
+
+  // The SDK checks every result against the declared contract and replaces one that breaks it.
+  // Caught before the SDK would swap it for text: a bug, logged and alerted as one, never retried.
+  it("returns an output that breaks the contract as an INTERNAL failure a runtime hands off", async () => {
+    const result = await callTool("x", async () => ({ status: "ok", nextStep: "Done." }) as never);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      status: "error",
+      error: { code: "INTERNAL", reason: "output_contract" },
+      nextAction: { type: "external", reason: "service_unavailable" },
+      terminal: false,
+    });
+    expect(alertFields()).toEqual([expect.objectContaining({ "error.type": "INTERNAL" })]);
+    // Its "Tool call" record is the bug: error level, with its class and stack.
+    const records = errors.mock.calls.filter(([, msg]) => msg === "Tool call").map(([fields]) => fields);
+    expect(records).toEqual([
+      expect.objectContaining({
+        "error.type": "INTERNAL",
+        err: expect.objectContaining({ stack: expect.stringMatching(/^ {4}at /) }),
+      }),
+    ]);
+  });
+
+  it("returns a result JSON can't carry as the same INTERNAL failure, not the SDK's text", async () => {
+    const result = await callTool("x", async () => ({ ...DONE, quoted: { amount: 1n } }) as never);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: "INTERNAL", reason: "output_contract" },
+      nextAction: { type: "external", reason: "service_unavailable" },
+    });
+  });
+
+  it("declares the contract, loose beyond it, as the tool's output schema", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    registerActionTool(server, "test_action_tool", "A test tool.", {}, { readOnlyHint: true }, async () => DONE);
+    const client = await connect(server);
+    const { tools } = await client.listTools();
+    await client.close();
+    expect(tools[0].outputSchema).toMatchObject({
+      type: "object",
+      required: ["status", "nextAction", "terminal", "nextStep"],
+      additionalProperties: true,
+    });
   });
 
   it("points the user to the SODAX team on Discord on an INTERNAL failure only", async () => {
     for (const error of [new Error("bug"), new ActionError("INTERNAL", "Built something unrecognized.")]) {
       const { nextStep } = (await callFailingTool(error)).structuredContent as { nextStep: string };
-      expect(nextStep).toMatch(/^Retry in a minute/);
+      expect(nextStep).toMatch(/^Call test_action_tool again in 30 seconds/);
       expect(nextStep.endsWith(SWAP_HELP)).toBe(true);
       expect(nextStep).toContain("https://www.sodax.com/discord");
     }
@@ -106,9 +172,17 @@ describe("registerActionTool", () => {
     expect(result.structuredContent).toMatchObject({ error: { code: "UNSUPPORTED_CHAIN", message: "No." } });
   });
 
-  it("gives each code a default next step", async () => {
-    const result = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
-    expect(result.structuredContent).toMatchObject({ nextStep: expect.stringContaining("Retry in a minute") });
+  it("gives each code a default next step, and a retry its bound", async () => {
+    // Named as its throw sites name it: with no field to ask for, a failure is handed off.
+    const amount = await callFailingTool(new ActionError("INVALID_AMOUNT", "No.", { details: { field: "amount" } }));
+    expect(amount.structuredContent).toMatchObject({
+      nextStep: expect.stringContaining("Ask the user for the amount"),
+    });
+    const down = await callFailingTool(new ActionError("UPSTREAM_UNAVAILABLE", "Down."));
+    expect(down.structuredContent).toMatchObject({
+      nextStep:
+        "Call test_action_tool again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user the SODAX swap service is unavailable right now.",
+    });
   });
 
   it("turns anything else into INTERNAL without leaking its message", async () => {

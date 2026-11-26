@@ -131,6 +131,10 @@ describe("sodax_swap_cancel", () => {
     stubBackend({ row: null });
     const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+    // A cancel already sent stays with the call the right hash completes.
+    // Awaited: cacheQuote is async once quotes can live in Redis (#137).
+    const named = await cancel({ txHash: TX, quoteId: (await cacheQuote()).quoteId, cancelTxHash: CANCEL_TX });
+    expect(named.out).toMatchObject({ reason: "not_this_swap", cancelTxHash: CANCEL_TX });
   });
 
   it("builds no cancel once the hub no longer holds the intent, though the backend row still says it can", async () => {
@@ -314,7 +318,7 @@ describe("sodax_swap_cancel", () => {
       expect(out).toMatchObject({ reason: "not_submitted" });
       // Track only reports here (queued while the backend's row lags), so the agent calls it without asking.
       expect(out.nextStep).toBe(
-        "The swap service has no record of this swap yet, so there's nothing to cancel. Call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; once it reports the swap on the hub, call sodax_swap_cancel again.",
+        "The swap service has no record of this swap yet, so there's nothing to cancel yet: call sodax_swap_cancel again with the same arguments in about 15 seconds, at most 10 times. If it still has none, call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; the user must not send it again.",
       );
       clearQuoteCache();
       vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT);
@@ -334,15 +338,20 @@ describe("sodax_swap_cancel", () => {
     expect(calls.some(call => call.path === "/intents/cancel")).toBe(false);
   });
 
-  it("calls a quote whose deposit is another tx a mismatch, before reading anything, without an error log", async () => {
+  it("calls a quote whose deposit is another tx a mismatch, offering that tx, before reading anything", async () => {
     const calls = stubBackend({ row: OPEN, cancelTx: CANCEL_TX_BUILT });
     const { quoteId } = cacheQuote();
     claimDeposit(quoteId, `0x${"e".repeat(64)}`);
+    const deposit = `0x${"e".repeat(64)}`;
     const { out } = await cancel({ txHash: TX, quoteId });
     expect(out.error.code).toBe("QUOTE_MISMATCH");
     expect(out.nextStep).toBe(
-      `Call again with the quoteId this transaction was made from, or with chain instead of quoteId.${NEVER}`,
+      `That quote's swap is another transaction (error.depositTxHash): ask the user whether it's the swap to cancel, and call again with it as txHash.${NEVER}`,
     );
+    expect(out).toMatchObject({
+      error: { depositTxHash: deposit },
+      nextAction: { type: "choose", field: "txHash", options: [{ args: { txHash: deposit } }] },
+    });
     expect(calls).toEqual([]);
     expect(logger.error).not.toHaveBeenCalled();
   });

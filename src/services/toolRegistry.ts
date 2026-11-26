@@ -1,7 +1,7 @@
 /**
  * Tool Registry — single source of truth for the tools this server exposes.
  *
- * Every static `server.tool()` registration in `src/tools/*.ts` is routed
+ * Every static tool registration in `src/tools/*.ts` (`server.tool()`, or `registerTool()` with an output schema) is routed
  * through `registerAppTool()`, which records `{ name, module, description }`
  * exactly once. Everything that displays tool counts or lists — `/health`,
  * `/api`, the landing-page placeholder injection, and PostHog analytics
@@ -15,7 +15,7 @@
  */
 
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
 /** Landing-page / `/api` module a tool belongs to. */
@@ -44,6 +44,9 @@ const registry: RegisteredToolInfo[] = [];
  *
  * Safe to call on every per-request McpServer instance — the registry
  * dedupes by tool name, the MCP registration happens each time.
+ *
+ * A tool with an `outputSchema` registers through `registerTool()`, the only overload that takes one: the SDK then
+ * checks every result that isn't an error against it, and a client that listed the tools checks errors too.
  */
 export function registerAppTool<Args extends ZodRawShapeCompat>(
   server: McpServer,
@@ -53,11 +56,16 @@ export function registerAppTool<Args extends ZodRawShapeCompat>(
   paramsSchema: Args,
   annotations: ToolAnnotations,
   cb: ToolCallback<Args>,
+  outputSchema?: AnySchema,
 ): void {
   if (!registry.some(t => t.name === name)) {
     registry.push({ name, module, description });
   }
-  server.tool(name, description, paramsSchema, annotations, cb);
+  if (outputSchema) {
+    server.registerTool(name, { description, inputSchema: paramsSchema, outputSchema, annotations }, cb);
+  } else {
+    server.tool(name, description, paramsSchema, annotations, cb);
+  }
 }
 
 /** Snapshot of every statically registered tool — entries are cloned, so

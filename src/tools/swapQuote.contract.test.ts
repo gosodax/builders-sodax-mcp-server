@@ -82,7 +82,11 @@ describe("sodax_swap_price and sodax_swap_prepare against the live Swaps API", (
 
   it("says when no route takes the amount", async () => {
     const { out } = await callQuote({ ...ARB_USDC, ...TO_BASE_USDC, amount: "5000000000000000" });
-    expect(out.error).toEqual({ code: "SWAP_REJECTED", message: "No route was found for this pair at this amount." });
+    expect(out.error).toEqual({
+      code: "SWAP_REJECTED",
+      message: "No route was found for this pair at this amount.",
+      reason: "no_route",
+    });
   });
 
   it.each([

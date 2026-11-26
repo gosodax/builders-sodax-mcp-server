@@ -130,13 +130,16 @@ every transaction; the server never signs.
    objects, a cancel against the packaged connection. A Sui tx carries its sender. Before building anything, a quote
    refuses (`SWAP_MISMATCH`) a live chain config whose asset manager or connection isn't the SDK's packaged one.
 4. Right after the swap is sent, `sodax_swap_submit_and_track` with the swap transaction's `txHash` (from a batch, the
-   hash `wallet_getCallsStatus` reports, not the batch id) and the `quoteId` (the quote's `afterSend` says so). Nothing
+   hash `wallet_getCallsStatus` reports, not the batch id), the `quoteId` and the chain (the quote's `nextAction`
+   says so, in `execute.afterSend`). Nothing
    submits the swap to SODAX until this call, and a first call after `expiresAt` (within 30 minutes of it) relays the
    deposit for a refund instead; later than that, the server has dropped the quote and alerts its operators. From
    Sonic nothing is relayed: the swap tx itself creates the intent on the hub, and one never submitted is refunded
    there once expired, unless a solver filled it first (`expired_awaiting_refund`); one the hub no longer holds,
-   filled or cancelled, is `intent_closed`. While the result has `retryAfterSec`, call it again after that many
-   seconds. A tx no node has seen comes with `stopAfter`, 5 minutes after the deadline, when it becomes
+   filled or cancelled, is `intent_closed`. Follow each result's `nextAction` (see [Next actions](#next-actions))
+   until it's `terminal`; its `afterSec` says when to call again (`retryAfterSec` is only when the server expects news). A `failed` result's `failure`
+   says how the swap service's record ended (`cancelled`, `refunding`, `abandoned`, `cancel_to_recover` or `unknown`),
+   and its `outcome` where the funds are. A tx no node has seen comes with `stopAfter`, 5 minutes after the deadline, when it becomes
    `source_not_found`. It's polled until `pollUntil`, at most 15 minutes after the first call; after that the agent
    asks the user whether their wallet sent it instead of polling, and calls again once it did, or once after
    `stopAfter`. With its `quoteId`, such a tx is read from the chain at most once every 10 seconds per API key,
@@ -169,8 +172,9 @@ sender's public key and post-conditions the wallet must add itself, and the SDK 
 passes the address where the public key goes). On Sonic the swap calls the intents contract directly, so its approval
 goes to that contract. A Stellar source whose trustline the SDK says has too little room for the amount is refused: the
 server doesn't build a changeTrust step. Every result the tools return carries
-a `nextStep` for the agent, and a `requestId` for the user to quote when asking for help: the `request.id` of the
-call's log records. An input that fails a tool's schema gets the MCP SDK's validation error instead.
+what comes next (`nextAction`, and `nextStep` for an agent that reads text, see [Next actions](#next-actions)), and a
+`requestId` for the user to quote when asking for help: the `request.id` of the call's log records. An input that
+fails a tool's schema gets the MCP SDK's validation error instead, with no `nextAction`.
 
 The server only returns transactions, so the agent also needs a wallet tool (or your app's signer) that can:
 
@@ -179,6 +183,175 @@ The server only returns transactions, so the agent also needs a wallet tool (or 
   from a non-EVM chain, sign and send the family's raw transaction in the step (see step 2 above);
 - tell when a transaction is mined, since each step must be mined before the next;
 - optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
+
+### Next actions
+
+Every swap tool result, errors included, carries a machine-readable `nextAction`, `terminal` (no tool call can move
+the result on any more) and, once a sent swap has ended, its `outcome`: `succeeded`, `cancelled`, `refunding`,
+`failed` (nothing was swapped), `held` (the deposit is safe on chain and SODAX recovers it) or `unknown`. `nextStep`
+says the same in a sentence: both come from one decision, so they don't disagree.
+
+| `type` | Who acts | What the runtime does |
+|---|---|---|
+| `call_tool` | the agent | calls `tool` after `afterSec`, with `args` (on top of the last call's arguments when `sameArgs`); with `until` or `maxAttempts` it repeats while the result asks again, counting per `retryKey` across the workflow (only calls in a row when `consecutive`), then follows `onExhausted` |
+| `choose` | the user | picks one of `options`, whose `args` go into `next` |
+| `provide` | the user | gives `fields`, by name, for `next`; declining follows `onDecline` where there is one |
+| `confirm` | the user, or the wallet when `by: "wallet"` | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: that cancel can never land), then `next` |
+| `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash. A bounded `afterSend` is counted before anything is signed, and past its bound nothing is |
+| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it; if they don't, `onDecline` where there is one |
+| `none` | nobody | the workflow is over |
+
+What a runtime keeps to:
+
+- **Arguments.** A result that found the swap gives complete `args`; everything else reuses the arguments of the call
+  that returned it (`sameArgs`), with only the named fields replaced. The server never writes back a value it refused.
+- **Sending.** Don't start an `execute` past its `expiresAt`: prepare and confirm again. Save `afterSend`'s arguments
+  and the hash the moment the last step is broadcast, and make the call even if the quote just expired or the receipt
+  then fails (a NEAR tx can fail after its deposit ran). From a batch, save the batch id at once and track the hash
+  `wallet_getCallsStatus` reports: a resumed session reads it again and never resends the batch. Save every track
+  call's arguments before making it, so a session resumed after the user corrected a hash or a chain uses theirs, and
+  drop them again if the MCP SDK refuses them: the tool never saw them.
+- **Bounds.** A call goes unbounded only when the server's clock forces a new answer (past a deadline) or it hands
+  over to another tool's bounded actions. A call a person's answer leads back to is bounded too, under a key the
+  answers don't change, so an agent answering for the user still stops: before a send the workflow then ends, after
+  one it goes to the help desk. A workflow is one swap; keep its counts with what was sent.
+- **Cancels.** A cancel already sent is followed, never sent again. Any cancel call carrying a `cancelTxHash` (from
+  the wallet, the user or the start, even with the swap already saved) makes it pending, and so does a cancel the
+  wallet sent as a batch, by its batch id until `wallet_getCallsStatus` has the hash: a resumed session reads it with
+  that hash first, a `confirm` of a cancel re-reads it (or waits for the batch's hash), and once it's relayed
+  (`cancel_relayed`) its own bounded track takes over. A cancel's
+  retries carry its hash. A new cancel replaces a pending one only once the wallet's own record shows it can never
+  land (`confirm` of `unsent_cancel`, `by: "wallet"`): its nonce went to another transaction, or its blockhash
+  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel the swap
+  service has no record of is retried, then handed to track with the same arguments, which submits nothing in that
+  state: it says what holds the deposit and alerts on it.
+- **Handoffs.** A person declining ends the loop; the saved hash resumes it later. An unknown `type` goes to a person.
+  On a terminal `external`, show it before stopping.
+- **No contract.** A result with no `nextAction` came from the MCP SDK refusing the arguments before the tool ran (a
+  text error with no `structuredContent`), or its output after: fix the arguments only when the message says the
+  input was invalid, otherwise hand off, keeping any hash already sent.
+
+The loop of the reference runtime the tests drive whole swaps with, `src/tools/__fixtures__/nextActionRuntime.ts`:
+
+```ts
+export async function run(host: Host, start: { tool: string; args: Args }): Promise<Ending> {
+  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap with its
+  // hash. Nothing is priced, signed or sent again; a batch with no hash yet is handed back until the wallet has one.
+  // A cancel the user says they sent goes before a saved swap's track: it's pending before anything offers another.
+  const pending = host.saved.cancel;
+  let call: Next | undefined;
+  if (pending?.follow) call = await follow(host, {}, pending.follow, {});
+  else if (pending) call = await resumeCancel(host);
+  else if (start.tool === "sodax_swap_cancel" && typeof start.args.cancelTxHash === "string") call = start;
+  else call = host.saved.swap ? await resume(host) : start;
+  if (!call) return { stop: "handoff", result: {} };
+  if ("stop" in call) return call;
+  for (;;) {
+    // Saved before the call: a corrected hash or chain is what a resumed session uses.
+    const before = { swap: host.saved.swap, cancel: host.saved.cancel };
+    keepSent(host.saved, call);
+    const result = await host.call(call.tool, call.args);
+    // The SDK refused the arguments: the tool never saw them, so they aren't what was sent.
+    if (!result) {
+      Object.assign(host.saved, before);
+      return { stop: "no_contract", result: {} };
+    }
+    keepCancel(host.saved, result);
+    // No nextAction: an older server. Hand it off, keeping what was sent.
+    if (!result.nextAction) return { stop: "no_contract", result };
+    const next = await follow(host, result, result.nextAction, call.args);
+    if ("stop" in next) return next;
+    call = next;
+  }
+}
+
+async function follow(
+  host: Host,
+  result: ToolResult,
+  action: NextAction,
+  callArgs: Args,
+  answer: Args = {},
+): Promise<Next> {
+  const go = (next: NextAction, more: Args = answer) => follow(host, result, next, callArgs, more);
+  const exhaust = async ({ nextAction, terminal, outcome }: Exhausted) => {
+    const ending = await go(nextAction, {});
+    return terminal && "stop" in ending ? { ...ending, stop: "terminal" as const, outcome } : ending;
+  };
+  switch (action.type) {
+    case "none":
+      return { stop: "terminal", result, outcome: result.outcome };
+    case "call_tool": {
+      // A bound with nothing to follow once it runs out can't be kept: a person takes over, never an endless loop.
+      const bounded = action.until !== undefined || action.maxAttempts !== undefined;
+      if (bounded && (!action.onExhausted || (action.maxAttempts !== undefined && !action.retryKey))) {
+        return { stop: "handoff", result };
+      }
+      // Bounded calls stop at `until`, or count per retryKey across the whole workflow.
+      if (action.until && host.now() >= Date.parse(action.until) && action.onExhausted) {
+        return exhaust(action.onExhausted);
+      }
+      const ranOut = count(host.saved, action);
+      if (ranOut) return exhaust(ranOut);
+      host.saved.lastKey = action.retryKey;
+      await host.sleep(action.afterSec);
+      return { tool: action.tool, args: { ...(action.sameArgs ? callArgs : {}), ...action.args, ...answer } };
+    }
+    case "execute": {
+      // Never start a send past the quote's expiry: prepare and confirm again instead.
+      if (action.expiresAt && host.now() >= Date.parse(action.expiresAt)) return { stop: "handoff", result };
+      // A bounded afterSend counts sends, before the wallet signs anything: past it, nothing is sent.
+      const ranOut = count(host.saved, action.afterSend);
+      if (ranOut) return exhaust(ranOut);
+      return send(host, result, action);
+    }
+    case "confirm": {
+      // A cancel already sent is followed, never sent twice: one sent as a batch waits for its hash.
+      const pending = action.summary.kind === "cancel" ? host.saved.cancel : undefined;
+      if (pending?.follow) return go(pending.follow, {});
+      if (pending) return (await resumeCancel(host)) ?? { stop: "handoff", result };
+      // Only the wallet knows a tx it signed can't land any more: a yes from whoever answers isn't proof.
+      const agreed = action.by === "wallet" ? await host.walletShows(action) : await host.ask(action, result);
+      if (agreed !== true) return { stop: "declined", result };
+      return go(action.next);
+    }
+    case "choose":
+    case "provide": {
+      const given = await host.ask(action, result);
+      if (typeof given !== "object") {
+        return action.type === "provide" && action.onDecline ? exhaust(action.onDecline) : { stop: "declined", result };
+      }
+      return action.next ? go(action.next, { ...answer, ...given }) : { stop: "handoff", result };
+    }
+    case "external": {
+      // Shown to the user before anything else: on a terminal result, this is the handoff. `next` runs only once the
+      // person says they did what it asks.
+      const done = await host.ask(action, result);
+      if (action.next && done === true) return go(action.next);
+      if (done !== true && action.onDecline) return exhaust(action.onDecline);
+      return result.terminal ? { stop: "terminal", result, outcome: result.outcome } : { stop: "handoff", result };
+    }
+    default:
+      // A type this runtime doesn't know goes to a person.
+      return { stop: "handoff", result };
+  }
+}
+
+/** Counts a bounded call against its retryKey: its `onExhausted` once the bound has run out. */
+function count(saved: Saved, action: CallTool): Exhausted | undefined {
+  const { maxAttempts, retryKey, onExhausted } = action;
+  if (maxAttempts === undefined || !retryKey || !onExhausted) return undefined;
+  saved.attempts ??= {};
+  // A consecutive bound starts again after any other call: only failures in a row add up.
+  if (action.consecutive && saved.lastKey !== retryKey) saved.attempts[retryKey] = 0;
+  const made = saved.attempts[retryKey] ?? 0;
+  if (made >= maxAttempts) return onExhausted;
+  saved.attempts[retryKey] = made + 1;
+  return undefined;
+}
+```
+
+A prepared quote's top-level `afterSend` predates `nextAction` and will be removed in a later release: read
+`execute.afterSend` instead.
 
 ### Safety
 

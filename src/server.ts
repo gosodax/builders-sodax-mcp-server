@@ -55,9 +55,9 @@ const SWAP_INSTRUCTIONS = [
   "Show the user the amounts and get their confirmation before their wallet signs; this server never signs or moves funds.",
   "Never pass private keys, seed phrases or API keys as tool inputs.",
   "After the user's wallet sends the swap, call `sodax_swap_submit_and_track` with the quoteId and the swap's tx hash: it submits",
-  "the swap, so call it at least once, and again after retryAfterSec seconds while the result has one; after an error,",
-  "follow its nextStep. Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted",
-  "swap, use `sodax_swap_cancel`.",
+  "the swap, so call it at least once. Every swap tool result, errors included, carries nextAction: follow it until the",
+  "result is terminal (its afterSec says when the next call is due), or read its nextStep.",
+  "Never resend a swap the tracker hasn't reported as failed at the source. To cancel a submitted swap, use `sodax_swap_cancel`.",
   SWAP_HELP,
 ].join(" ");
 
@@ -101,7 +101,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
     },
   );
 
-  // Wrap server.tool() so every tool call is tracked in PostHog
+  // Wrap server.tool() and server.registerTool() so every tool call is tracked in PostHog
   // ⚠️  Must be called BEFORE registering any tools
   withAnalytics(server, clientId);
 
@@ -126,6 +126,7 @@ export async function createServer(toolsets: ToolSelection, clientId?: string): 
  * the docs MCP is unavailable and `warmDocsCache()` left the cache empty.
  */
 export function seedToolRegistry(toolsets: Toolsets): void {
-  const recordingServer = { tool: () => ({}) } as unknown as McpServer;
+  // Both overloads registerAppTool uses: one with an output schema goes through registerTool.
+  const recordingServer = { tool: () => ({}), registerTool: () => ({}) } as unknown as McpServer;
   for (const register of enabled(toolsets, STATIC_REGISTRARS).flat()) register(recordingServer);
 }

@@ -51,7 +51,12 @@ describe("sourceChainFor", () => {
   ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
     const catalog = { ...fixtureCatalog(), chains: {} };
     expect(() => sourceChainFor(catalog, toChain("0x1.icon"), sent)).toThrow(
-      expect.objectContaining({ code: "UNSUPPORTED_SOURCE", nextStep, details: undefined }),
+      expect.objectContaining({
+        code: "UNSUPPORTED_SOURCE",
+        nextStep,
+        details: { field: sent ? "chain" : "fromChain" },
+        hint: { options: [] },
+      }),
     );
   });
 
@@ -61,6 +66,7 @@ describe("sourceChainFor", () => {
         code: "UNSUPPORTED_SOURCE",
         // As the live catalog has them: the fixture's.
         details: {
+          field: "fromChain",
           sourceChains: expect.arrayContaining([
             { key: "sonic", name: "Sonic" },
             { key: "0xa4b1.arbitrum", name: "Arbitrum" },

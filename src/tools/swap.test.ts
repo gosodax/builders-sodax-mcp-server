@@ -4,7 +4,7 @@ import { catalogFetch, fixtureCatalog } from "../services/swap/__fixtures__/cata
 import { resolveToken } from "../services/swap/resolver.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { swapClient } from "./__fixtures__/swapClient.js";
-import { resolveNextStep } from "./swap.js";
+import { resolveNextStep } from "./swapDecisions.js";
 
 beforeEach(() => {
   clearSwapCatalogCache();

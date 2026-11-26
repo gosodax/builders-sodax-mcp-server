@@ -14,7 +14,12 @@ vi.mock("posthog-node", () => ({
 }));
 
 /** A fresh analytics module (it reads POSTHOG_API_KEY at load) and a tool wrapped by it. */
-async function wrapTool(key: string | undefined, handler: () => Promise<unknown>, module: "swap" | "api" = "swap") {
+async function wrapTool(
+  key: string | undefined,
+  handler: () => Promise<unknown>,
+  module: "swap" | "api" = "swap",
+  outputSchema?: unknown,
+) {
   vi.resetModules();
   vi.stubEnv("POSTHOG_API_KEY", key ?? "");
   const { logger } = await import("./logger.js");
@@ -24,10 +29,11 @@ async function wrapTool(key: string | undefined, handler: () => Promise<unknown>
   const tools: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
   const server = {
     tool: (name: string, ...rest: unknown[]) => (tools[name] = rest.at(-1) as never),
+    registerTool: (name: string, _config: unknown, cb: never) => (tools[name] = cb),
     server: { setRequestHandler: () => {} },
   };
   withAnalytics(server as never);
-  registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never);
+  registerAppTool(server as never, module, "test_tool", "A tool.", {}, {}, handler as never, outputSchema as never);
   const info = vi.spyOn(logger, "info");
   const warn = vi.spyOn(logger, "warn");
   const error = vi.spyOn(logger, "error");
@@ -146,6 +152,24 @@ describe("hashClientIp", () => {
 });
 
 describe("tool call records", () => {
+  // A swap tool declares an output schema, so it registers through the other overload: wrapped the same.
+  it("records a tool registered with an output schema, with its own request id and PostHog event", async () => {
+    let requestId: string | undefined;
+    const { call, info, getRequestContext } = await wrapTool(
+      "phc_test",
+      async () => {
+        requestId = getRequestContext().requestId;
+        return { content: [], structuredContent: { status: "queued" } };
+      },
+      "swap",
+      { type: "object" },
+    );
+    await call();
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(info).toHaveBeenCalledWith(expect.objectContaining({ "gen_ai.tool.name": "test_tool" }), "Tool call");
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ event: "tool_called" }));
+  });
+
   it("logs one record per call with the outcome, and gives each call its own request id", async () => {
     const seen: (string | undefined)[] = [];
     const { call, info, getRequestContext } = await wrapTool(

@@ -169,7 +169,11 @@ describe("a swap from Sonic, the hub", () => {
     expect((await track({ txHash: SONIC_TX, quoteId })).out.status).toBe("intent_closed");
     const { out } = await cancel({ txHash: SONIC_TX, quoteId, cancelTxHash: CANCEL_TX });
     expect(out.status).toBe("cancel_confirmed");
-    expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ status: "failed", outcome: "cancelled" });
+    expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
+      status: "failed",
+      failure: "cancelled",
+      outcome: "cancelled",
+    });
   });
 
   it("past its deadline, reports a refund only while the hub holds the intent", async () => {
@@ -317,6 +321,7 @@ describe("a swap from Sonic, the hub", () => {
       // Its quote remembers: track doesn't submit a cancelled intent, and a second cancel has nothing left to do.
       expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
         status: "failed",
+        failure: "cancelled",
         outcome: "cancelled",
       });
       expect((await cancel({ txHash: SONIC_TX, quoteId })).out).toMatchObject({ reason: "cancelled" });
@@ -343,6 +348,10 @@ describe("a swap from Sonic, the hub", () => {
       const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
       expect(out.nextStep).toContain("ask for the swap transaction's hash");
+      // A cancel already sent stays with the call the right hash completes.
+      // Awaited: cacheQuote is async once quotes can live in Redis (#137).
+      const named = await cancel({ txHash: SONIC_TX, quoteId: (await hubQuote()).quoteId, cancelTxHash: CANCEL_TX });
+      expect(named.out).toMatchObject({ reason: "not_this_swap", cancelTxHash: CANCEL_TX });
     });
 
     it("isn't built once the hub no longer holds the intent: that cancel would revert", async () => {
@@ -362,6 +371,7 @@ describe("a swap from Sonic, the hub", () => {
       );
       expect((await track({ txHash: SONIC_TX, quoteId })).out).toMatchObject({
         status: "failed",
+        failure: "cancelled",
         outcome: "cancelled",
         canCancel: false,
       });

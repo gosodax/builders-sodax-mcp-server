@@ -24,11 +24,7 @@
           "description": "Tools to serve: all (default: builder tools, plus swap tools with an API key), builder, or swap (needs x-api-key)",
           "isRequired": false,
           "isSecret": false,
-          "choices": [
-            "all",
-            "builder",
-            "swap"
-          ]
+          "choices": ["all", "builder", "swap"]
         },
         {
           "name": "x-sodax-partner-address",

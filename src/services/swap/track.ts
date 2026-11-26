@@ -450,7 +450,8 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
   const { txHash, chain } = base;
   if (isHubSource(source)) return hubExpired(base, quote);
   // Track or cancel, here or on another server, may be relaying it, or have handed it over since this call read it.
-  const claim = await claimRefundRelay(quote, RELAY_CLAIM_MS);
+  const claimedUntil = Date.now() + RELAY_CLAIM_MS;
+  const claim = await claimRefundRelay(quote, claimedUntil);
   if (claim === "relayed_for_refund") return { ...base, status: "expired_refunding" };
   if (claim !== "go") {
     const waitMs = typeof claim === "string" ? RETRY_AFTER_SEC * 1000 : claim.busyUntil - Date.now();
@@ -465,7 +466,7 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
   } catch (error) {
     // Refused is a relay failure; anything that may pass (a rate limit, an outage, a WAF) is retried.
     if (!isRefusal(error)) {
-      await releaseRefundRelay(quote);
+      await releaseRefundRelay(quote, claimedUntil);
       throw retryable(error);
     }
     relayed = false;
@@ -476,7 +477,7 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
     return { ...base, status: "expired_refunding" };
   }
   // The deposit's claim stays, so the next call tries the relay again.
-  await releaseRefundRelay(quote);
+  await releaseRefundRelay(quote, claimedUntil);
   const alerted = alertOperator("refund_relay_failed", {
     chainKey: chain.key,
     txHash,

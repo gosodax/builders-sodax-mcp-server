@@ -147,8 +147,8 @@ export class MemoryQuoteStore implements QuoteStore {
     return "go";
   }
 
-  async releaseRelay(quoteId: string): Promise<void> {
-    this.relaying.delete(quoteId);
+  async releaseRelay(quoteId: string, until: number): Promise<void> {
+    if (this.relaying.get(quoteId) === until) this.relaying.delete(quoteId);
   }
 
   async trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined> {

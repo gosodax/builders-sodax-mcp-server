@@ -257,20 +257,27 @@ async function markHandedOver(quote: CachedQuote, how: HandedOver): Promise<void
 }
 
 /**
- * Takes the relay for refund of the quote's deposit for `forMs`, so track and cancel, or two servers, don't both relay
- * it: `go`, how it was handed over since the caller read it, or when another call's relay ends.
+ * Takes the relay for refund of the quote's deposit until `until` (epoch ms), so track and cancel, or two servers,
+ * don't both relay it: `go`, how it was handed over since the caller read it, or when another call's relay ends.
  */
-export async function claimRefundRelay(quote: CachedQuote, forMs: number): Promise<RelayClaim> {
+export async function claimRefundRelay(quote: CachedQuote, until: number): Promise<RelayClaim> {
   await flush(quote.quoteId);
-  const now = Date.now();
-  const claim = await store.claimRelay(quote.quoteId, now, now + forMs);
+  const claim = await store.claimRelay(quote.quoteId, Date.now(), until).catch(error => {
+    // A claim that timed out may still be taken: taken back, it doesn't hold the refund for its whole term. Redis runs
+    // one connection's calls in order, so the release comes after it.
+    store.releaseRelay(quote.quoteId, until).catch(() => {});
+    throw error;
+  });
   if (typeof claim === "string" && claim !== "go") quote.handedOver = claim;
   return claim;
 }
 
-/** A relay that failed: the next call tries again. Best-effort, as the claim lapses by itself. */
-export async function releaseRefundRelay(quote: CachedQuote): Promise<void> {
-  await store.releaseRelay(quote.quoteId).catch(() => {});
+/**
+ * A relay that failed: the next call tries again. `until` is the claim's, so only that claim ends. Best-effort, as
+ * the claim lapses by itself.
+ */
+export async function releaseRefundRelay(quote: CachedQuote, until: number): Promise<void> {
+  await store.releaseRelay(quote.quoteId, until).catch(() => {});
 }
 
 /** Since when track has been called for this quote with `txHash`: now, the first time. */
@@ -295,7 +302,7 @@ const toOpen = ({ open, until }: { open: number; until: number }) => ({
   openUntil: open > 0 ? new Date(until).toISOString() : null,
 });
 
-/** For the heartbeat, which can't wait: in Redis, what the last sweep found, `undefined` before one. */
+/** For the heartbeat, which can't wait: in Redis, what the last read found (a sweep's or `/health`'s), `undefined` before one or after a failed one. */
 export function openQuoteCount(): number | undefined {
   return store.openNow(Date.now())?.open;
 }
@@ -307,7 +314,9 @@ export function openQuoteCount(): number | undefined {
 export function quotesLostOnRestart(): string | undefined {
   if (store.kind === "redis") {
     const n = unwritten.size;
-    return n > 0 ? `${n} swap quote update(s) Redis never received; a relay for refund may be repeated` : undefined;
+    return n > 0
+      ? `${n} swap quote(s) with updates Redis never received; a relay for refund may be repeated`
+      : undefined;
   }
   const open = openQuoteCount() ?? 0;
   return open > 0

@@ -103,12 +103,15 @@ export interface QuoteStore {
    * ends.
    */
   claimRelay(quoteId: string, now: number, until: number): Promise<RelayClaim>;
-  /** Ends a relay that failed, so the next call tries it again. */
-  releaseRelay(quoteId: string): Promise<void>;
+  /**
+   * Ends the claim taken until `until` after its relay failed, so the next call tries again. A newer claim stays: a
+   * release that lands late, after the claim lapsed and another call took it, leaves that call's claim alone.
+   */
+  releaseRelay(quoteId: string, until: number): Promise<void>;
   /** When `txHash` was first tracked for the quote: `now` the first time, `undefined` if the quote is gone. */
   trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined>;
   open(now: number): Promise<OpenQuotes>;
-  /** The open quotes without a call, for the heartbeat: memory's now, Redis's as the last sweep found them. */
+  /** The open quotes without a call, for the heartbeat: memory's now, Redis's as the last read found them. */
   openNow(now: number): OpenQuotes | undefined;
   /** Drops the expired quotes; returns the unused ones. */
   sweep(now: number): Promise<UnusedQuote[]>;

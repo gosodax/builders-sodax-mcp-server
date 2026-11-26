@@ -43,6 +43,10 @@ const CALL_TIMEOUT_MS = 2_000;
 const RETRY_AFTER_SEC = 30;
 // Replies a Redis gives while it starts (replaying its append-only file), fails over or runs a slow script.
 const TRANSIENT_REPLY = /^(LOADING|READONLY|MASTERDOWN|BUSY|TRYAGAIN)\b/;
+// Any other error Redis answers with (a script bug, a full Redis, a key of another type, a wrong password) won't pass
+// by itself: a fault, not an outage.
+const isRefusal = (error: unknown): error is ErrorReply =>
+  error instanceof ErrorReply && !TRANSIENT_REPLY.test(error.message);
 const WARN_EVERY_MS = 60 * 1000;
 
 // Shared by every script. ARGV[1..4]: prefix, now, expiry slack, index TTL. Indexes, by quoteId:
@@ -211,6 +215,14 @@ redis.call('HSET', q, 'relayingUntil', ARGV[6])
 return 'go'
 `;
 
+// ARGV[5..6]: quoteId, until. Deletes only the claim taken until then: a release Redis runs late (its call timed
+// out) can't drop a newer claim.
+const RELEASE_RELAY = `${LUA_COMMON}
+local q = k('q:' .. ARGV[5])
+if redis.call('HGET', q, 'relayingUntil') == ARGV[6] then redis.call('HDEL', q, 'relayingUntil') end
+return 1
+`;
+
 // ARGV[5..6]: quoteId, txHash. Returns when that tx was first tracked, or nil if the quote is gone.
 const TRACKED_SINCE = `${LUA_COMMON}
 local q = k('q:' .. ARGV[5])
@@ -337,6 +349,8 @@ export class RedisQuoteStore implements QuoteStore {
   readonly kind = "redis";
   private lastOpen?: OpenQuotes;
   private lastWarningAt = Number.NEGATIVE_INFINITY;
+  /** Why Redis refuses the connection (a wrong password, a db it doesn't have), until it connects. */
+  private refusal?: ErrorReply;
 
   constructor(
     private readonly client: Client,
@@ -348,7 +362,7 @@ export class RedisQuoteStore implements QuoteStore {
    * timed out; `late` gets its reply then.
    */
   private async call<T>(op: () => Promise<T>, late?: (reply: T) => void): Promise<T> {
-    if (!this.client.isReady) throw unreachable();
+    if (!this.client.isReady) throw this.refusal ? this.refused(this.refusal) : unreachable();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`No reply within ${CALL_TIMEOUT_MS} ms`)), CALL_TIMEOUT_MS);
@@ -358,18 +372,30 @@ export class RedisQuoteStore implements QuoteStore {
       reply = op();
       return await Promise.race([reply, timeout]);
     } catch (error) {
-      // Redis answered with an error (a script bug, a full Redis, a key of another type): not an outage, and it
-      // won't pass by itself, so it's logged every time and alerts. A Redis loading its data or failing over will.
-      if (error instanceof ErrorReply && !TRANSIENT_REPLY.test(error.message)) {
-        logger.error({ err: error }, "The swap quote store refused a call");
-        throw new ActionError("INTERNAL", "The swap quote store refused a call.");
-      }
+      // Not an outage, so it's logged every time and alerts. A Redis loading its data or failing over will pass.
+      if (isRefusal(error)) throw this.refused(error);
       if (late) reply?.then(late, () => {});
       this.warn(error, "A swap quote store call failed");
       throw unreachable();
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private refused(error: ErrorReply): ActionError {
+    logger.error({ err: error }, "The swap quote store refused a call");
+    return new ActionError("INTERNAL", "The swap quote store refused a call.");
+  }
+
+  /** A connection that failed: one Redis refused stays a fault for every call until it connects. */
+  connectionFailed(error: unknown): void {
+    this.refusal = isRefusal(error) ? error : undefined;
+    this.warn(error, "The swap quote store's connection failed");
+  }
+
+  connected(): void {
+    this.refusal = undefined;
+    logger.info("Connected to the swap quote store");
   }
 
   private run(
@@ -432,8 +458,8 @@ export class RedisQuoteStore implements QuoteStore {
     return Array.isArray(reply) ? { busyUntil: Number(reply[0]) } : (reply as RelayClaim);
   }
 
-  async releaseRelay(quoteId: string): Promise<void> {
-    await this.call(() => this.client.hDel(`${this.prefix}q:${quoteId}`, "relayingUntil"));
+  async releaseRelay(quoteId: string, until: number): Promise<void> {
+    await this.run(RELEASE_RELAY, Date.now(), [quoteId, until]);
   }
 
   async trackedSince(quoteId: string, txHash: string, now: number): Promise<number | undefined> {
@@ -510,8 +536,8 @@ export function connectRedisQuoteStore(url: string, prefix = KEY_PREFIX): RedisQ
   const client = newClient(url);
   const store = new RedisQuoteStore(client, prefix);
   // Without a listener, a connection error would be thrown as an uncaught exception and stop the server.
-  client.on("error", error => store.warn(error, "The swap quote store's connection failed"));
-  client.on("ready", () => logger.info("Connected to the swap quote store"));
+  client.on("error", error => store.connectionFailed(error));
+  client.on("ready", () => store.connected());
   // Settles only once connected, or when closed: until then each failure comes through the listener above.
   client.connect().catch(() => {});
   return store;

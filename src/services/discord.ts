@@ -102,8 +102,7 @@ export async function notifyServerStarted(info: {
   });
 }
 
-/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy), and the swap quotes that loses. */
-/** `lostQuotes`: what the stop loses of the swap quotes, if anything. */
+/** Notify that the server is shutting down (e.g. SIGTERM on a redeploy); `lostQuotes`: what the stop loses, if anything. */
 export async function notifyServerStopping(signal: string, lostQuotes?: string): Promise<void> {
   const lost = lostQuotes ? `\n${lostQuotes}.` : "";
   await postToDiscord({

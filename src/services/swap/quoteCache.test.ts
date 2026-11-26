@@ -10,16 +10,20 @@ import {
   type CachedQuote,
   checkQuoteRoom,
   claimDeposit,
+  claimRefundRelay,
   clearQuoteCache,
   closeQuoteStore,
   getCachedQuote,
   markHubOutcome,
   markRelayedForRefund,
+  markSubmitFailed,
+  markSubmitRefused,
   markSubmitted,
   openQuotes,
   putQuote,
   quotesLostOnRestart,
   sweepDone,
+  trackedSince,
   useQuoteStore,
 } from "./quoteCache.js";
 import type { QuoteStore } from "./quoteStore.js";
@@ -267,10 +271,11 @@ describe.each(STORES)("quoteCache in $kind", ({ open }) => {
           timeOut = reject;
         }),
     );
-    const refund = markHubOutcome({ ...quote }, "left_to_refund");
+    // A pair `outranked` doesn't order, so only the order of the writes decides which one stands.
+    const relay = markRelayedForRefund({ ...quote });
     const cancel = markHubOutcome({ ...quote }, "cancelled");
     timeOut(new Error("No reply within 2000 ms"));
-    await Promise.all([refund, cancel]);
+    await Promise.all([relay, cancel]);
     expect(await getCachedQuote(quote.quoteId, KEY)).toMatchObject({ handedOver: "cancelled" });
   });
 
@@ -302,12 +307,52 @@ describe.each(STORES)("quoteCache in $kind", ({ open }) => {
     const claim = (now: number) => store.claimRelay(quote.quoteId, now, now + 30_000);
     expect(await claim(NOW)).toBe("go");
     expect(await claim(NOW + 1_000)).toEqual({ busyUntil: NOW + 30_000 });
-    await store.releaseRelay(quote.quoteId);
+    await store.releaseRelay(quote.quoteId, NOW + 30_000);
     expect(await claim(NOW + 2_000)).toBe("go");
     expect(await claim(NOW + 32_001)).toBe("go");
     await markRelayedForRefund(quote);
     expect(await claim(NOW + 70_000)).toBe("relayed_for_refund");
     expect(await store.claimRelay(randomUUID(), NOW, NOW + 30_000)).toBe("go");
+  });
+
+  it("keeps a newer relay claim when an older call's release lands after it, as one Redis runs after a timeout does", async () => {
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    const lapsed = NOW + 30_000;
+    const newer = lapsed + 30_000;
+    expect(await store.claimRelay(quote.quoteId, NOW, lapsed)).toBe("go");
+    expect(await store.claimRelay(quote.quoteId, lapsed, newer)).toBe("go");
+    await store.releaseRelay(quote.quoteId, lapsed);
+    expect(await store.claimRelay(quote.quoteId, lapsed + 1_000, lapsed + 31_000)).toEqual({ busyUntil: newer });
+  });
+
+  it("takes back a relay claim whose call failed after the store took it, so it doesn't hold the refund", async () => {
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    const claim = store.claimRelay.bind(store);
+    vi.spyOn(store, "claimRelay").mockImplementationOnce(async (...args) => {
+      await claim(...args);
+      throw new ActionError("UPSTREAM_UNAVAILABLE", "No reply within 2000 ms");
+    });
+    await expect(claimRefundRelay(quote, NOW + 120_000)).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    await vi.waitFor(async () => expect(await claimRefundRelay(quote, NOW + 120_001)).toBe("go"));
+  });
+
+  it("keeps a submit's retry time and refusal for the next server that reads the quote", async () => {
+    const quote = await quoteDue(15);
+    await claimDeposit(quote, "0x01");
+    await markSubmitFailed({ ...quote }, 30);
+    await markSubmitRefused({ ...quote });
+    expect(await store.get(quote.quoteId)).toMatchObject({ submitRetryAt: NOW + 30_000, submitRefused: true });
+  });
+
+  it("waits for an unseen tx from the first time any call tracked it", async () => {
+    const quote = await quoteDue(15);
+    expect(await trackedSince({ ...quote }, "0x01")).toBe(NOW);
+    vi.setSystemTime(NOW + MINUTE);
+    // A fresh copy each time, as another server reads it: the store has the time.
+    expect(await trackedSince({ ...quote }, "0x01")).toBe(NOW);
+    expect(await trackedSince({ ...quote }, "0x02")).toBe(NOW + MINUTE);
   });
 
   it("counts a quote handed over without a claim (put back after a cancel) as unused once it expires", async () => {
@@ -445,6 +490,19 @@ describe.each(REDIS_URLS)("quoteCache in Redis, across servers", url => {
     expect(await getCachedQuote(quote.quoteId, KEY)).toEqual(quote);
   });
 
+  it("calls a connection Redis refuses (a db it doesn't have, a wrong password) a fault, not an outage", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const wrongDb = new URL(url);
+    wrongDb.pathname = "/99";
+    const refused = connectRedisQuoteStore(wrongDb.toString(), `test:${randomUUID()}:`);
+    await vi.waitFor(() => expect(refused.open(Date.now())).rejects.toMatchObject({ code: "INTERNAL" }), {
+      timeout: 5_000,
+    });
+    expect(error).toHaveBeenCalledWith(expect.anything(), "The swap quote store refused a call");
+    await refused.close();
+  });
+
   it("gives a quote two servers claim at once to exactly one of them", async () => {
     const [one, two] = [await open(), await open()];
     useQuoteStore(one);
@@ -522,7 +580,7 @@ describe("quoteCache with Redis unreachable", () => {
     expect(quotesLostOnRestart()).toBeUndefined();
     await markSubmitted({ quoteId: randomUUID() } as CachedQuote);
     expect(quotesLostOnRestart()).toBe(
-      "1 swap quote update(s) Redis never received; a relay for refund may be repeated",
+      "1 swap quote(s) with updates Redis never received; a relay for refund may be repeated",
     );
     await clearQuoteCache().catch(() => {});
   });
@@ -550,7 +608,10 @@ describe("quoteCache on a Redis that answers with an error", () => {
     vi.restoreAllMocks();
   });
 
-  it("still logs the quotes a sweep dropped when its reply comes after the call timed out", async () => {
+  it.each([
+    ["sweep", (store: RedisQuoteStore) => store.sweep(Date.now())],
+    ["reserve", (store: RedisQuoteStore) => store.reserve(KEY, Date.now())],
+  ])("still logs the quotes a %s dropped when its reply comes after the call timed out", async (_, call) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
@@ -559,7 +620,7 @@ describe("quoteCache on a Redis that answers with an error", () => {
       answer = resolve;
     });
     const store = new RedisQuoteStore({ isReady: true, eval: () => reply } as never, "test:");
-    const swept = expect(store.sweep(Date.now())).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    const swept = expect(call(store)).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
     await vi.advanceTimersByTimeAsync(2_000);
     await swept;
     answer(["0", "0", "late", "expired", KEY, "0xa4b1.arbitrum", "sonic"]);

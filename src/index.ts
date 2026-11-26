@@ -667,7 +667,7 @@ async function openQuoteStore(redisUrl: string | undefined): Promise<void> {
 
 /**
  * `/health`'s `swapQuotes`: where quotes are kept, and the open ones. In Redis, `reachable: false` if it doesn't answer,
- * `refused: true` if it answers with an error (out of memory, say).
+ * `refused: true` if it answers the read with an error (a wrong password, say: out of memory refuses only writes).
  */
 async function swapQuotesHealth() {
   const store = quoteStoreKind();

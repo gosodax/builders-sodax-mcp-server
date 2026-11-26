@@ -46,7 +46,7 @@ describe("sodax_swap_price and sodax_swap_prepare against the live Swaps API", (
     ]);
     const configs = (await getAllChainsConfigs()) as Record<string, { addresses: { assetManager: string } }>;
     expect(evmSteps(out)[1].tx.to.toLowerCase()).toBe(configs["0xa4b1.arbitrum"].addresses.assetManager.toLowerCase());
-    const cached = getCachedQuote(String(out.quoteId), callerKeyHash());
+    const cached = await getCachedQuote(String(out.quoteId), callerKeyHash());
     if (typeof cached !== "object") throw new Error(`quote not cached: ${cached}`);
     expect(out.to?.minimumAmount).toBe(formatUnits(BigInt(String(cached.intent.minOutputAmount)), 6));
     const minutes = (Date.parse(String(out.expiresAt)) - before) / 60_000;

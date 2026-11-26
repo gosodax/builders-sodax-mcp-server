@@ -90,7 +90,7 @@ export function configDisagrees(chainKey: string, field: string, token?: string)
  * A quote's source comes from the SDK config, not the live catalog: its deposit may already be on chain.
  */
 export async function resolveSource(input: { quoteId?: string; chain?: string }): Promise<SwapSource> {
-  const cached = input.quoteId ? getCachedQuote(input.quoteId, callerKeyHash()) : undefined;
+  const cached = input.quoteId ? await getCachedQuote(input.quoteId, callerKeyHash()) : undefined;
   if (cached === "key_mismatch") {
     throw new ActionError("QUOTE_KEY_MISMATCH", "That quote was made with another SODAX API key.");
   }

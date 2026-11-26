@@ -31,6 +31,7 @@
     "@opentelemetry/exporter-logs-otlp-proto": "0.300.0",
     "@opentelemetry/resources": "3.0.0",
     "@opentelemetry/sdk-logs": "3.0.0",
+    "@redis/client": "6.3.1",
     "@scure/bip39": "1.6.0",
     "@sodax/sdk": "2.3.0-rc.4",
     "@sodax/types": "2.3.0-rc.4",

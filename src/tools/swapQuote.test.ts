@@ -24,7 +24,7 @@ import type { EvmStep, SwapStep } from "../services/swap/sources/types.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
 import { formatUnits } from "../services/swap/units.js";
 import { clearUsdBackoff } from "../services/swap/usd.js";
-import { cacheQuote } from "./__fixtures__/swapBackend.js";
+import { cacheQuote, cachedQuote } from "./__fixtures__/swapBackend.js";
 import { type QuoteOut, callTool, callQuote as quote, swapClient } from "./__fixtures__/swapClient.js";
 
 // Unit tests don't reach an RPC: the user's hub wallet is the stub's, the source chain answers, and
@@ -213,12 +213,12 @@ function stubSwaps(stub: SwapsStub = {}) {
   return calls;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   clearUsdBackoff();
   clearSwapCatalogCache();
   clearCache();
-  clearQuoteCache();
+  await clearQuoteCache();
 });
 
 afterEach(() => {
@@ -296,15 +296,12 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       dstAddress: USER,
     });
     expect(calls.find(call => call.path.startsWith("/deadline"))?.path).toBe("/deadline?offsetSeconds=900");
-    expect(getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({
+    expect(await getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({
       minOutputAmount: 4941968n,
       relayData: { address: HUB_WALLET },
       minimumReceived: { amount: "4.941968", symbol: "USDC", chainName: "Sonic" },
     });
-    const cached = getCachedQuote(String(out.quoteId), callerKeyHash()) as Exclude<
-      ReturnType<typeof getCachedQuote>,
-      string | undefined
-    >;
+    const cached = await cachedQuote(String(out.quoteId));
     expect(out.intentHash).toBe(intentHash(cached.intent));
     expect(out).toMatchObject({ afterSend: { tool: "sodax_swap_submit_and_track", args: { quoteId: out.quoteId } } });
     expect(out.nextStep).toContain(`on Sonic (at least 4.941968) at ${USER}`);
@@ -323,7 +320,7 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
   });
 
   it("refuses a key at its cap of open quotes before calling the swap service, but still prices for it", async () => {
-    for (let i = 0; i < 1_000; i++) cacheQuote({ deadline: DEADLINE });
+    for (let i = 0; i < 1_000; i++) await cacheQuote({ deadline: DEADLINE });
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
     expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 45 * 60 });
@@ -348,7 +345,7 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       expect(out).not.toHaveProperty(field);
     }
     expect(calls.map(call => call.path)).toEqual(["/quote"]);
-    expect(openQuotes().open).toBe(0);
+    expect((await openQuotes()).open).toBe(0);
     expect(blockNumber).not.toHaveBeenCalled();
     expect(userHubWallet).not.toHaveBeenCalled();
 
@@ -374,11 +371,11 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
   });
 
   it("never reserves a quote for a price, so watching one can't reach the open-quote cap", async () => {
-    for (let i = 0; i < 999; i++) cacheQuote({ deadline: DEADLINE });
+    for (let i = 0; i < 999; i++) await cacheQuote({ deadline: DEADLINE });
     const calls = stubSwaps();
     const watch = () => quote({ ...USDC_TO_SONIC, amount: "5" });
     for (let i = 0; i < 3; i++) expect((await watch()).out.status).toBe("price");
-    expect(openQuotes().open).toBe(999);
+    expect((await openQuotes()).open).toBe(999);
     // The last place is still there for the swap the user signs, and a price is still read at the cap.
     expect((await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER })).out.status).toBe("ready");
     expect((await watch()).out.status).toBe("price");
@@ -406,7 +403,7 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       "Ask the user for toAddress (their address on Sui), then call sodax_swap_prepare again with them.",
     );
     expect(calls).toEqual([]);
-    expect(openQuotes().open).toBe(0);
+    expect((await openQuotes()).open).toBe(0);
   });
 
   it("says when the price was read, not when the call started or the swap was built", async () => {
@@ -1074,7 +1071,7 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, toToken: "native", amount: "5", fromAddress: USER });
     expect(out.status).toBe("ready");
-    expect(getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({ intent: { outputToken: ZERO } });
+    expect(await getCachedQuote(String(out.quoteId), callerKeyHash())).toMatchObject({ intent: { outputToken: ZERO } });
   });
 
   it("builds native HBAR with the value Hedera expects (scaled to 18 decimals)", async () => {
@@ -1183,12 +1180,12 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
 });
 
 describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
     clearUsdBackoff();
     clearSwapCatalogCache();
     clearCache();
-    clearQuoteCache();
+    await clearQuoteCache();
     vi.mocked(buildNonEvmDeposit).mockClear();
     vi.mocked(blockNumber).mockClear();
   });
@@ -1220,7 +1217,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
     );
     expect(JSON.stringify(out)).not.toContain("SuiIntentService");
     expect(buildNonEvmDeposit).not.toHaveBeenCalled();
-    expect(openQuotes().open).toBe(0);
+    expect((await openQuotes()).open).toBe(0);
   });
 
   it("has the SDK build the swap tx from the checked intent: one step as the SDK returns it, its sender set, no batch", async () => {
@@ -1244,7 +1241,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
     expect(out.batch).toBeUndefined();
     const relayData = (await calls.find(call => call.path === "/intents")) as { body: Record<string, unknown> };
     expect(relayData.body).toMatchObject({ srcChainKey: "sui", srcAddress: SUI_USER });
-    const cached = getCachedQuote(out.quoteId, callerKeyHash());
+    const cached = await getCachedQuote(out.quoteId, callerKeyHash());
     expect(buildNonEvmDeposit).toHaveBeenCalledWith({
       srcChainKey: "sui",
       srcAddress: SUI_USER,
@@ -1352,7 +1349,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
     expect(out).toMatchObject({ status: "price", prepareNeeds: ["fromAddress", "toAddress"] });
     expect(calls.map(call => call.path)).toEqual(["/quote"]);
     expect(probe).not.toHaveBeenCalled();
-    expect(openQuotes().open).toBe(0);
+    expect((await openQuotes()).open).toBe(0);
   });
 
   it("refuses a token the SDK says needs an approval, which only Stellar's trustline would", async () => {

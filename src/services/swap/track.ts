@@ -16,11 +16,14 @@ import { ActionError, RETRYABLE_CODES } from "./errors.js";
 import {
   type CachedQuote,
   claimDeposit,
+  claimRefundRelay,
+  deadlineMs,
   markHubOutcome,
   markRelayedForRefund,
   markSubmitFailed,
   markSubmitRefused,
   markSubmitted,
+  releaseRefundRelay,
   trackedSince,
 } from "./quoteCache.js";
 import {
@@ -52,6 +55,10 @@ export const DEPOSIT_SAFE_UNALERTED = `tell the user the deposit is on chain and
 
 // A failed refund relay is retried by the next call; sooner is unlikely to help.
 const REFUND_RETRY_SEC = 60;
+// Longer than a relay call can take (swapsApi's 15 s timeout), so a claim never lapses while its relay runs, and than
+// the minute sweep that writes a relay the store failed to record: another server waits for that write instead of
+// relaying the deposit again.
+const RELAY_CLAIM_MS = 2 * 60 * 1000;
 // The backend takes a new row until 120 s past the deadline, so a refusal before it isn't the
 // deadline; but refused in its last minute, no fix by hand lands in time. Its clock may be off ours
 // by as much as a quote's deadline may be.
@@ -162,7 +169,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
   // A row is this quote's only once the tx was checked as its deposit; until then it may be another swap's.
   const claimed = quote?.depositTxHash === txHash;
   // An unseen tx is worth waiting for only while its quote can still be sent; polled for only a while of that.
-  const unseen = quote && !claimed ? unseenWait(quote, txHash) : undefined;
+  const unseen = quote && !claimed ? await unseenWait(quote, txHash) : undefined;
   const sendable = unseen !== undefined && Date.now() < unseen.stopAfterMs;
   const memoKey = JSON.stringify([callerKeyHash(), chain.key, txHash]);
   // No node had it seconds ago: nothing new to read, and a quote's unchecked tx has no row of its own anyway.
@@ -209,7 +216,7 @@ async function track(txHash: string, source: SwapSource, quoteId?: string): Prom
     return { ...base, status: "not_submitted", reason: "multiple_deposits", alerted };
   }
   if (deposit !== "match") return notThisDeposit(base, deposit, quote);
-  const claim = claimDeposit(quote.quoteId, txHash);
+  const claim = await claimDeposit(quote, txHash);
   // Dropped from the cache during the reads above.
   if (claim === "gone") return withoutQuote(base, source, receipt);
   // Both deposits carry the same intent id, so only the first can become an intent.
@@ -253,7 +260,7 @@ async function submitDeposit(base: SwapRef, source: SwapSource, quote: CachedQuo
     if (!isRefusal(error)) {
       const failure = retryable(error);
       const told = failure instanceof ActionError ? Number(failure.details?.retryAfterSec ?? RETRY_AFTER_SEC) : 0;
-      markSubmitFailed(quote.quoteId, Math.min(told, RETRY_AFTER_SEC));
+      await markSubmitFailed(quote, Math.min(told, RETRY_AFTER_SEC));
       throw failure;
     }
     // A refusal of the swap itself, an amount one too, comes after the deposit: never the quote-time advice.
@@ -262,10 +269,10 @@ async function submitDeposit(base: SwapRef, source: SwapSource, quote: CachedQuo
     // intent is only refunded once expired, so it waits for that call.
     const nearDeadline = Date.now() >= deadlineMs(quote) - REFUND_AT_ONCE_SEC * 1000;
     if (!isHubSource(source) && nearDeadline) return refundExpired(base, quote, source);
-    markSubmitRefused(quote.quoteId);
+    await markSubmitRefused(quote);
     return { ...base, status: "submit_refused", alerted, retryAfterSec: untilRefundSec(quote) };
   }
-  markSubmitted(quote.quoteId);
+  await markSubmitted(quote);
   logger.info(
     { "chain.key": chain.key, "quote.id": quote.quoteId, "tx.hash": txHash, "intent.hash": base.intentHash },
     "Submitted a swap deposit",
@@ -302,16 +309,16 @@ const retryable = (error: unknown) =>
       })
     : error;
 
-export const deadlineMs = (quote: CachedQuote) => Number(quote.intent.deadline) * 1000;
 export const untilRefundSec = (quote: CachedQuote) =>
   Math.ceil((deadlineMs(quote) - Date.now()) / 1000) + RETRY_AFTER_SEC;
 
 type UnseenWait = { stopAfterMs: number; pollUntilMs: number };
 
 /** For a quote's tx no node has seen yet: when it's no longer sendable, and until when it's polled for. */
-function unseenWait(quote: CachedQuote, txHash: string): UnseenWait {
+async function unseenWait(quote: CachedQuote, txHash: string): Promise<UnseenWait> {
   const stopAfterMs = deadlineMs(quote) + UNSEEN_AFTER_DEADLINE_SEC * 1000;
-  return { stopAfterMs, pollUntilMs: Math.min(stopAfterMs, trackedSince(quote, txHash) + UNSEEN_POLL_SEC * 1000) };
+  const since = await trackedSince(quote, txHash);
+  return { stopAfterMs, pollUntilMs: Math.min(stopAfterMs, since + UNSEEN_POLL_SEC * 1000) };
 }
 
 /** A tx with no receipt yet; one no node has seen, with its quote, is tracked until its `stopAfter`. */
@@ -442,21 +449,35 @@ type ExpiredState = SwapRef &
 export async function refundExpired(base: SwapRef, quote: CachedQuote, source: SwapSource): Promise<ExpiredState> {
   const { txHash, chain } = base;
   if (isHubSource(source)) return hubExpired(base, quote);
+  // Track or cancel, here or on another server, may be relaying it, or have handed it over since this call read it.
+  const claimedUntil = Date.now() + RELAY_CLAIM_MS;
+  const claim = await claimRefundRelay(quote, claimedUntil);
+  if (claim === "relayed_for_refund") return { ...base, status: "expired_refunding" };
+  if (claim !== "go") {
+    const waitMs = typeof claim === "string" ? RETRY_AFTER_SEC * 1000 : claim.busyUntil - Date.now();
+    throw new ActionError("UPSTREAM_UNAVAILABLE", "Another call is handing this deposit over right now.", {
+      details: { retryAfterSec: Math.max(1, Math.ceil(waitMs / 1000)) },
+    });
+  }
   let relayed: boolean;
   try {
     const data = source.adapter.commitsHash ? quote.relayData : undefined;
     relayed = await relaySpokeTx(quote.intent.srcChain, txHash, data);
   } catch (error) {
     // Refused is a relay failure; anything that may pass (a rate limit, an outage, a WAF) is retried.
-    if (!isRefusal(error)) throw retryable(error);
+    if (!isRefusal(error)) {
+      await releaseRefundRelay(quote, claimedUntil);
+      throw retryable(error);
+    }
     relayed = false;
   }
   if (relayed) {
-    markRelayedForRefund(quote);
+    await markRelayedForRefund(quote);
     logger.info({ "chain.key": chain.key, "quote.id": quote.quoteId }, "Relayed an expired swap deposit for refund");
     return { ...base, status: "expired_refunding" };
   }
-  // The claim stays, so the next call tries the relay again.
+  // The deposit's claim stays, so the next call tries the relay again.
+  await releaseRefundRelay(quote, claimedUntil);
   const alerted = alertOperator("refund_relay_failed", {
     chainKey: chain.key,
     txHash,
@@ -473,15 +494,15 @@ export async function refundExpired(base: SwapRef, quote: CachedQuote, source: S
 async function hubExpired(base: SwapRef, quote: CachedQuote): Promise<ExpiredState> {
   if (await intentClosed(intentHash(quote.intent), base.txHash)) return hubClosed(base, quote);
   if (quote.handedOver !== "left_to_refund") {
-    markHubOutcome(quote, "left_to_refund");
+    await markHubOutcome(quote, "left_to_refund");
     logger.info({ "chain.key": base.chain.key, "quote.id": quote.quoteId }, "Left an expired hub swap to its refund");
   }
   return { ...base, status: "expired_awaiting_refund" };
 }
 
 /** A hub swap never submitted whose intent is gone from the hub: filled, or cancelled or refunded. */
-function hubClosed(base: SwapRef, quote: CachedQuote): SwapRef & { status: "intent_closed" } {
-  markHubOutcome(quote, "closed");
+async function hubClosed(base: SwapRef, quote: CachedQuote): Promise<SwapRef & { status: "intent_closed" }> {
+  await markHubOutcome(quote, "closed");
   return { ...base, status: "intent_closed" };
 }
 

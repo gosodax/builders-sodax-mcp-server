@@ -192,7 +192,7 @@ describe("sodax_swap_submit_and_track against live chains and the live Swaps API
 
     // The sender's deposit, under a quote that carries another intent: never this quote's to submit.
     const deadline = String(Math.floor(Date.now() / 1000) + 15 * 60);
-    const { quoteId } = cacheQuote({ srcAddress: items?.[1], deadline });
+    const { quoteId } = await cacheQuote({ srcAddress: items?.[1], deadline });
     const { out } = await track({ txHash, quoteId });
     expect(out).toMatchObject({ status: "not_submitted", reason: "deposit_mismatch" });
     expect(swapsPosts()).toEqual([]);

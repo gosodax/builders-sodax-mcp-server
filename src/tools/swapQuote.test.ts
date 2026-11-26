@@ -1410,7 +1410,7 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
     const { out } = await quote({ ...SUI_TO_SONIC, amount: "5", fromAddress: SUI_USER });
     expect(out.error.code).toBe("CHAIN_UNAVAILABLE");
     expect(out.error.message).toBe("Couldn't prepare the swap on Sui right now.");
-    expect(out.nextStep).toContain("holds the amount plus fees");
+    expect(out.nextStep).toContain("must hold the amount plus fees");
   });
 });
 

@@ -44,8 +44,8 @@ const PREPARE = "sodax_swap_prepare";
 
 // Retries of a failure that may pass, and of a refund relay, so a stuck one ends with an answer for the user.
 const MAX_CALLS = 10;
-// Each track call waits for the next step itself, so an agent that can't sleep calls straight back.
-// A slow solver can hold a healthy swap for minutes: about 10 minutes of calls before giving up.
+// Each track call waits up to 20 s for the next step itself, and the next comes 15 s after it. A slow solver can hold a
+// healthy swap for minutes: up to about 17 minutes of calls before giving up.
 const MAX_POLLS = 30;
 // A relayed cancel shows on the swap once the hub has run it: about the relay's own two minutes, with room.
 const MAX_CANCEL_POLLS = 20;
@@ -60,8 +60,12 @@ type Ref = { txHash: string; chain: { key: string }; quoteId?: string };
 
 /** A found swap's arguments for track and cancel, all canonical. */
 const swapArgs = ({ txHash, chain, quoteId }: Ref) => ({ txHash, chain: chain.key, ...(quoteId && { quoteId }) });
-/** The same without the hash, for a call the user's other hash completes. */
-const withoutTxHash = ({ chain, quoteId }: Ref) => ({ chain: chain.key, ...(quoteId && { quoteId }) });
+/** The same without the hash, for a call the user's other hash completes. A cancel already sent stays. */
+const withoutTxHash = ({ chain, quoteId, cancelTxHash }: Ref & { cancelTxHash?: string }) => ({
+  chain: chain.key,
+  ...(quoteId && { quoteId }),
+  ...(cancelTxHash && { cancelTxHash }),
+});
 const retryKey = (tool: SwapToolName, ...parts: string[]) => [tool, ...parts].join(":");
 /** One workflow's failures, told apart without writing the caller's arguments back. */
 const argsDigest = (args: Record<string, unknown>) => hashTag(JSON.stringify(args));
@@ -104,7 +108,7 @@ const confirmCancel = (swap: Ref): Confirm => ({
   next: cancelAgain(swapArgs(swap)),
 });
 /** The swap transaction's hash, asked of the user, for the same call. */
-const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref) =>
+const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref & { cancelTxHash?: string }) =>
   provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK));
 
 const GIVE_UP = `tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
@@ -118,6 +122,12 @@ const afterSendAdvice = (tool: string, sent: string, failure: ActionError, secon
   failure.retryable
     ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${GIVE_UP}`
     : `${failure.nextStep} The user must not send the swap again.`;
+
+/** A failure of a code that usually passes, which its throw site says won't: handed off, never retried. */
+const wontPass = (sent: boolean) =>
+  sent
+    ? `Calling again won't help: ${GIVE_UP}`
+    : `Calling again won't help: tell the user the SODAX swap service can't do this right now, and not to retry it. ${SWAP_HELP}`;
 
 /**
  * A failure that may pass, before anything was sent: the same call again, as often as the action makes it. A throw
@@ -389,7 +399,10 @@ const unseen = ({ key, name }: { key: string; name: string }) => {
 const INTENT_CLOSED =
   "The swap's intent is no longer open on the hub: a solver filled it, or it was cancelled or refunded to the user. sodax_get_balance on the recipient and on the user's source address shows which; either way, the user must not send it again.";
 const again = (seconds: number) => `call sodax_swap_submit_and_track again in about ${seconds} seconds`;
-const POLL = `call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step), at most ${MAX_POLLS} times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.`;
+/** `poll`'s call in words: the same wait and the same bound. */
+const pollText = (result: { retryAfterSec?: number }) =>
+  `call sodax_swap_submit_and_track again in about ${pollAfterSec(result)} seconds (each call also waits up to 20 seconds for the next step), at most ${MAX_POLLS} times at this step. If it's still at this step after that, stop: tell the user the swap is still in progress, that they must not send it again, and that they can track it later with this transaction hash.`;
+const pollAfterSec = (result: { retryAfterSec?: number }) => result.retryAfterSec ?? RETRY_AFTER_SEC;
 
 /**
  * A deposit that waits for an operator: paged already, or the user writes to the help desk. A swap from the hub is
@@ -410,7 +423,7 @@ const poll = (result: TrackResult & { retryAfterSec?: number }, ...step: string[
     TRACK,
     result,
     [result.status, ...step],
-    { maxAttempts: MAX_POLLS, afterSec: result.retryAfterSec ?? RETRY_AFTER_SEC },
+    { maxAttempts: MAX_POLLS, afterSec: pollAfterSec(result) },
     exhausted(external("still_in_progress"), false),
   );
 
@@ -505,7 +518,7 @@ export function trackDecision(result: TrackResult): Decision {
     case "awaiting_source_confirmation": {
       if (result.seenOnChain) {
         return ongoing(
-          `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${POLL}`,
+          `The swap transaction isn't confirmed on ${chain} yet; don't resend it, and ${pollText(result)}`,
           poll(result, "seen"),
         );
       }
@@ -540,7 +553,7 @@ export function trackDecision(result: TrackResult): Decision {
           ),
         );
       }
-      return ongoing(`${head}${POLL}`, poll(result, "unseen"));
+      return ongoing(`${head}${pollText(result)}`, poll(result, "unseen"));
     }
     case "source_not_found": {
       // A sped-up or replaced tx has a new hash; its deposit still matches the quote.
@@ -629,14 +642,15 @@ export function trackDecision(result: TrackResult): Decision {
         callOnce(TRACK, args, result.retryAfterSec),
       );
     case "queued":
-      return ongoing(`The swap is queued for processing; ${POLL}`, poll(result));
+      return ongoing(`The swap is queued for processing; ${pollText(result)}`, poll(result));
     case "in_progress":
-      return ongoing(`The swap is being processed (${result.stage}); ${POLL}`, poll(result, result.stage));
+      return ongoing(`The swap is being processed (${result.stage}); ${pollText(result)}`, poll(result, result.stage));
     case "solved": {
       // Solved is the fill on the hub; another destination gets the tokens one cross-chain hop later.
       const fill = result.fillTxHash ? ` (fill tx ${result.fillTxHash})` : "";
       const promised = result.minimumReceived;
-      if (promised && result.delivery === "complete") {
+      // Only a swap in transit is still on its way.
+      if (promised && result.delivery !== "in_transit") {
         return final(
           `The swap is complete on ${promised.chainName}: the user received at least ${promised.amount} ${promised.symbol}${fill}.`,
           NONE,
@@ -864,7 +878,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
   const answer = (overrides?: Record<string, unknown>) =>
     answered(same(overrides), failure.code, sent ? HELP_DESK : ENDED);
   // After a send, a failure nothing here can fix keeps the hash and goes to whoever can recover it.
-  const stuck = () => ongoing(advice, external(sent ? "help_desk" : "service_unavailable"));
+  const stuck = (nextStep = advice) => ongoing(nextStep, external(sent ? "help_desk" : "service_unavailable"));
   const askFor = (fields: string[]) => ongoing(advice, provide(fields, answer()));
   const pick = () => (field ? ongoing(advice, choose(field, failure.hint?.options ?? [], answer())) : stuck());
   // This call's own failures, whatever their codes: a flaky upstream alternating 503 and 429 still runs out.
@@ -874,8 +888,10 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
     case "RATE_LIMITED":
     case "CHAIN_UNAVAILABLE":
     case "UPSTREAM_UNAVAILABLE":
+      // Its throw site says it won't pass (the same build fails the same way): the code's own advice, to retry, doesn't
+      // fit the hand-off.
+      if (!failure.retryable) return stuck(hasDefaultNextStep(failure) ? wontPass(sent) : advice);
       // The same call again, counted while it keeps failing in a row.
-      if (!failure.retryable) return stuck();
       return ongoing(
         sent ? advice : beforeSendAdvice(tool, failure, seconds),
         callRepeated(

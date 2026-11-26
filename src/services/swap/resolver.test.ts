@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSodax } from "../sodax.js";
 import { fixtureCatalog, fixtureText } from "./__fixtures__/catalog.js";
+import type { ActionError } from "./errors.js";
 import { type Resolution, resolutionOptions, resolveExactly, resolveToken } from "./resolver.js";
 import { canUseAs, parseCatalog } from "./tokens.js";
 
@@ -225,6 +226,17 @@ describe("resolveToken", () => {
         nextStep: `Ask the user whether they mean ${didYouMean[0].name}, or else which chain in error.supportedChains, and pass its key.`,
       }),
     );
+    // The options the user picks from: that one first, then every other chain the sentence offers.
+    const thrown = (() => {
+      try {
+        resolve(chain, "USDC");
+      } catch (error) {
+        return error as ActionError;
+      }
+    })();
+    const options = thrown?.hint?.options?.map(option => option.label) ?? [];
+    expect(options[0]).toBe(didYouMean[0].name);
+    expect(options).toHaveLength((thrown?.details?.supportedChains as unknown[]).length);
   });
 
   it("lists only the chains a swap can start from for a swap's source", () => {

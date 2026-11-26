@@ -348,6 +348,9 @@ describe("a swap from Sonic, the hub", () => {
       const { out } = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId });
       expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
       expect(out.nextStep).toContain("ask for the swap transaction's hash");
+      // A cancel already sent stays with the call the right hash completes.
+      const named = await cancel({ txHash: SONIC_TX, quoteId: hubQuote().quoteId, cancelTxHash: CANCEL_TX });
+      expect(named.out).toMatchObject({ reason: "not_this_swap", cancelTxHash: CANCEL_TX });
     });
 
     it("isn't built once the hub no longer holds the intent: that cancel would revert", async () => {

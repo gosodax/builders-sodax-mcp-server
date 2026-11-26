@@ -219,8 +219,9 @@ What a runtime keeps to:
   of a cancel re-reads it, and once it's relayed (`cancel_relayed`) its own bounded track takes over. A cancel's
   retries carry its hash. A new cancel replaces a pending one only once the wallet's own record shows it can never
   land (`confirm` of `unsent_cancel`, `by: "wallet"`): its nonce went to another transaction, or its blockhash
-  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel never
-  hands a swap with no record to track: track would submit it.
+  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel the swap
+  service has no record of is retried, then handed to track with the same arguments, which submits nothing in that
+  state: it says what holds the deposit and alerts on it.
 - **Handoffs.** A person declining ends the loop; the saved hash resumes it later. An unknown `type` goes to a person.
   On a terminal `external`, show it before stopping.
 - **No contract.** A result with no `nextAction` came from the MCP SDK refusing the arguments before the tool ran, or

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BalanceResult } from "../services/swap/balance.js";
-import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode } from "../services/swap/errors.js";
+import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode, RETRYABLE_CODES } from "../services/swap/errors.js";
 import type { SwapQuote } from "../services/swap/quote.js";
 import type { Resolution } from "../services/swap/resolver.js";
 import type { SwapsApiToken } from "../services/swap/tokens.js";
@@ -139,12 +139,17 @@ const TRACKED: [string, Decision][] = [
 
 const PRE_SEND: SwapToolName[] = ["sodax_swap_price", "sodax_swap_prepare", "sodax_get_balance", "sodax_resolve_token"];
 const AFTER_SEND: SwapToolName[] = ["sodax_swap_submit_and_track", "sodax_swap_cancel"];
-const failed = (code: ActionErrorCode, tool: SwapToolName, details?: Record<string, unknown>) =>
-  decided(failure(code, tool, { amount: "5", deadlineMinutes: 15 }, details));
-// Every code from every tool, naming a field as its throw sites do.
-const ERRORS: [string, Decision][] = [...PRE_SEND, ...AFTER_SEND].flatMap(tool =>
-  ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}`, failed(code, tool, { field: "amount" })]),
-);
+const failed = (code: ActionErrorCode, tool: SwapToolName, details?: Record<string, unknown>, retryable?: boolean) =>
+  decided(failure(code, tool, { amount: "5", deadlineMinutes: 15 }, details, retryable));
+// Every code from every tool, naming a field as its throw sites do; and each that usually passes, with the code's own
+// advice, from a throw site that says it won't.
+const ERRORS: [string, Decision][] = [...PRE_SEND, ...AFTER_SEND].flatMap(tool => [
+  ...ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}`, failed(code, tool, { field: "amount" })]),
+  ...RETRYABLE_CODES.map((code): [string, Decision] => [
+    `${tool} ${code}, won't pass`,
+    failed(code, tool, { field: "amount" }, false),
+  ]),
+]);
 
 const token = (symbol: string, address: string): SwapsApiToken => ({
   symbol,
@@ -188,6 +193,9 @@ const LOOKUPS: [string, Decision][] = [
 ];
 
 const ALL = [...TRACKED, ...ERRORS, ...LOOKUPS];
+// Help desk or an unavailable service: nothing this server answers moves it on.
+const isHandOff = (action: NextAction) =>
+  action.type === "external" && (action.reason === "help_desk" || action.reason === "service_unavailable");
 
 describe("every decision", () => {
   it.each(ALL)("%s keeps the contract", (_, decision) => {
@@ -229,6 +237,11 @@ describe("every decision", () => {
       expect(decision.nextStep).toContain((decision.nextAction as CallTool).tool);
     },
   );
+
+  // A hand-off ends the calls: its sentence can't ask for another.
+  it.each(ALL.filter(([, decision]) => isHandOff(decision.nextAction)))("%s says not to call again", (_, decision) => {
+    expect(decision.nextStep).not.toMatch(/\bRetry\b|again in (about )?\d+ seconds/);
+  });
 
   it.each(ERRORS.filter(([name]) => AFTER_SEND.some(tool => name.startsWith(tool))))(
     "%s keeps a sent swap going: never none, never says to send again",
@@ -400,6 +413,17 @@ describe("cancelDecision", () => {
   it("keeps a sent cancel's hash through a retry, so a backend catching up never builds a second", () => {
     const decision = cancel({ status: "not_cancellable", reason: "not_on_hub_yet", cancelTxHash: CANCEL_TX });
     expect(decision.nextAction).toMatchObject({ args: { ...ARGS, cancelTxHash: CANCEL_TX } });
+  });
+
+  it("keeps a sent cancel's hash when the user gives the right swap's", () => {
+    const { txHash, ...rest } = ARGS;
+    for (const reason of ["not_this_swap", "not_sent"]) {
+      const decision = cancel({ status: "not_cancellable", reason, cancelTxHash: CANCEL_TX });
+      const call = actionsOf(decision.nextAction).find((action): action is CallTool => action.type === "call_tool");
+      expect(call?.args).toEqual(
+        reason === "not_sent" ? { ...ARGS, cancelTxHash: CANCEL_TX } : { ...rest, cancelTxHash: CANCEL_TX },
+      );
+    }
   });
 
   it("follows a fill that beat the cancel on track", () => {

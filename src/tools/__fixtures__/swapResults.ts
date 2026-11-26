@@ -62,7 +62,8 @@ export const failure = (
   tool: SwapToolName,
   args: Record<string, unknown>,
   details?: Record<string, unknown>,
+  retryable?: boolean,
 ): ToolResult => {
-  const error = new ActionError(code, "No.", { details });
+  const error = new ActionError(code, "No.", { details, retryable });
   return { status: "error", error: { ...details, code }, ...errorDecision(error, { tool, args }) };
 };

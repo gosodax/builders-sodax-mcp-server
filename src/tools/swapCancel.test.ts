@@ -131,6 +131,9 @@ describe("sodax_swap_cancel", () => {
     stubBackend({ row: null });
     const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+    // A cancel already sent stays with the call the right hash completes.
+    const named = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId, cancelTxHash: CANCEL_TX });
+    expect(named.out).toMatchObject({ reason: "not_this_swap", cancelTxHash: CANCEL_TX });
   });
 
   it("builds no cancel once the hub no longer holds the intent, though the backend row still says it can", async () => {

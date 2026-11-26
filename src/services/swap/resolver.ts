@@ -61,7 +61,10 @@ export function resolveSwapChain(
   const names = near.map(chain => chain.name).join(" or ");
   throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
     details: { field, supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
-    hint: { options: chainOptions(near.length > 0 ? near : supported, field) },
+    // The close matches first, then every other chain the sentence offers.
+    hint: {
+      options: chainOptions([...near, ...supported.filter(chain => !near.some(n => n.key === chain.key))], field),
+    },
     nextStep:
       near.length > 0
         ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`

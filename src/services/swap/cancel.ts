@@ -97,7 +97,7 @@ export async function cancelSwap(input: {
     const fromQuote = await hubCancel(base, source, quote, cancelTxHash);
     if (fromQuote) return fromQuote;
   } else if (!row && quote && !quote.handedOver) {
-    const unsubmitted = await unsubmittedDeposit(base, source, quote);
+    const unsubmitted = await unsubmittedDeposit(base, source, quote, cancelTxHash);
     if (unsubmitted) return unsubmitted;
   }
   const hubTxHash = row?.result?.dstIntentTxHash;
@@ -172,11 +172,12 @@ async function unsubmittedDeposit(
   base: SwapRef,
   source: SwapSource,
   quote: CachedQuote,
+  cancelTxHash?: string,
 ): Promise<CancelResult | undefined> {
   // A checked deposit isn't read again: a node that has dropped it can't hold up its refund.
   const claimed = quote.depositTxHash === base.txHash;
   if (!claimed) {
-    const swap = await checkSwapTx(base, source, quote);
+    const swap = await checkSwapTx(base, source, quote, cancelTxHash);
     if (swap !== "match") return swap;
   }
   if (Date.now() < deadlineMs(quote)) {
@@ -201,7 +202,7 @@ async function hubCancel(
 ): Promise<CancelResult | undefined> {
   // As for a spoke's deposit: one already checked isn't read again.
   if (quote.depositTxHash !== base.txHash) {
-    const swap = await checkSwapTx(base, source, quote);
+    const swap = await checkSwapTx(base, source, quote, cancelTxHash);
     if (swap !== "match") return swap;
     if (claimDeposit(quote.quoteId, base.txHash) === "taken") {
       throw quoteMismatch("That quote was used by another transaction.");
@@ -225,14 +226,23 @@ async function checkSwapTx(
   base: SwapRef,
   source: SwapSource,
   quote: CachedQuote,
+  cancelTxHash?: string,
 ): Promise<"match" | CancelResult | undefined> {
   const receipt = await readSourceTx(source, base.txHash, quote.srcAddress);
-  const notSent: CancelResult = { ...base, status: "not_cancellable", reason: "not_sent" };
-  if (!receipt) return source.adapter.prunes && Date.now() >= deadlineMs(quote) ? undefined : notSent;
-  if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notSent;
+  // A cancel the call named is kept: the call with the right swap reads it instead of building another.
+  const notCancellable = (reason: "not_sent" | "not_this_swap"): CancelResult => ({
+    ...base,
+    ...(cancelTxHash && { cancelTxHash }),
+    status: "not_cancellable",
+    reason,
+  });
+  if (!receipt) {
+    return source.adapter.prunes && Date.now() >= deadlineMs(quote) ? undefined : notCancellable("not_sent");
+  }
+  if (receipt.failed) return swapsIn(source, receipt) > 0 ? undefined : notCancellable("not_sent");
   if (receipt.kind === "spoke" && receipt.unreadable) return undefined;
   const check = checkQuoteDeposit(source, receipt, quote);
-  if (check === "not_a_deposit") return { ...base, status: "not_cancellable", reason: "not_this_swap" };
+  if (check === "not_a_deposit") return notCancellable("not_this_swap");
   return check === "match" ? "match" : undefined;
 }
 

@@ -76,7 +76,7 @@ describe("sodax_swap_submit_and_track", () => {
       retryAfterSec: 15,
     });
     expect(out.nextStep).toContain(
-      "call sodax_swap_submit_and_track again (it waits up to 20 seconds for the next step)",
+      "call sodax_swap_submit_and_track again in about 15 seconds (each call also waits up to 20 seconds for the next step)",
     );
     expect(out.nextStep).toContain("at most 30 times at this step. If it's still at this step after that, stop:");
     expect(out).toMatchObject({
@@ -134,7 +134,7 @@ describe("sodax_swap_submit_and_track", () => {
     });
     const { out } = await track({ txHash: TX, chain: ARBITRUM });
     expect(out).toMatchObject({ status: "in_progress", stage: "relaying" });
-    expect(out.nextStep).toContain("it waits up to 20 seconds");
+    expect(out.nextStep).toContain("each call also waits up to 20 seconds");
     expect(calls.filter(call => call.path.startsWith("/submit-tx/status"))).toHaveLength(3);
   });
 

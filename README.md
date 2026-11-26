@@ -406,10 +406,10 @@ See [Swapping](#swapping) for the order they're called in.
 
 | Tool | Description |
 |------|-------------|
-| `sodax_bridge_tokens` | The tokens that bridge from one chain to another, each with the token it arrives as; reads no chain |
-| `sodax_bridge_preview` | What a bridge would deliver and the most its route takes now; builds and holds nothing |
-| `sodax_bridge_submit_and_track` | Submit and track a bridge once the user's wallet has sent it: checked against its build, submitted once, followed to the hub and on |
-| `sodax_bridge_prepare` | Prepare a bridge: the same asset on another chain, 1:1 less any partner fee; the transactions for the user's wallet to sign, checked against the SDK's own build, and its bridgeId |
+| `sodax_bridge_tokens` | The tokens that bridge from one chain to another, each with the token it arrives as, as `nextAction`'s options; without `toChain`, the chains a bridge reaches. Reads no chain |
+| `sodax_bridge_preview` | What a bridge would deliver and the most its route takes now (`maxAmount`, in the token sent); builds and holds nothing |
+| `sodax_bridge_submit_and_track` | Where a sent bridge is, safe to call again: its first call checks the deposit against its build and submits it once, then it's followed to the hub and on. A call waits up to 20 seconds for the next step, and each stage is polled until `pollUntil` on this server's clock, then handed to a person |
+| `sodax_bridge_prepare` | Prepare a bridge: the same asset on another chain, 1:1 less any partner fee (`partnerFee`, 0 when none); the transactions for the user's wallet to sign, checked against the SDK's own build (the bridge step's `bridges` names the user's hub wallet it goes through), its bridgeId, and `warnings` from the sender's balance, which never refuse it |
 
 `sodax_get_balance` and `sodax_resolve_token` serve the bridge tools too, with `for: "bridge"`: some tokens bridge but
 don't swap.
@@ -598,10 +598,10 @@ carry (see [Logging](#logging)). `nixpacks.toml` is kept for a nixpacks build, w
 
 ### Operating the swap tools
 
-Swap quotes live in the server's memory, so:
+Swap quotes and bridge builds live in the server's memory, so:
 
 - Run one replica. Another replica doesn't have the first one's quotes.
-- A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it.
+- A merge deploys (into `development` for staging, into `master` for production), so check `GET /health` before merging, and before a restart. `swapQuotes.open` counts the quotes whose deposit hasn't reached the backend yet, signed or not, and `swapQuotes.openUntil` is when the last of them expires (its deadline plus 30 minutes). New quotes keep arriving while you wait, so on a busy server the count may not reach 0: deploy at a quiet moment, or once the `openUntil` you read has passed, accepting that quotes made since then are lost. A lost quote only matters if its deposit was sent: that deposit stays on chain until someone relays it. `bridges.open` and `bridges.openUntil` say the same of bridge builds (not yet sent, or sent and not yet submitted); wait for both. A build whose deposit was checked but not submitted (its submit kept failing and the agent stopped) is kept a day, so it can hold `openUntil` a day ahead: that one needs a person to relay its deposit, not a wait.
 - Set `DISCORD_WEBHOOK_URL` in production. The stop message and a crash alert say how many quotes were lost (a kill without SIGTERM, such as running out of memory, sends nothing). When an agent then tracks such a deposit with its chain and quoteId (a call with the quoteId alone is first asked for the chain), Discord gets "Swap deposit without its quote: relay it by hand", with the chain and the tx hash. Swap alerts are capped per hour: 20 for deposits this server checked, 5 for deposits it has no quote for or can't check against one (any key can name one) and 5 for tool errors. Past its cap an alert is held and listed in one post at the end of the hour; past 12 held per cap, it is only in the logs (`alert: <kind>`), so check them after a restart that lost many quotes.
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
@@ -660,7 +660,7 @@ Export is batched and bounded: a gateway outage drops records and never slows a 
 |----------|-------------|
 | `GET /` | Landing page |
 | `GET /api` | Server info, tool list and profiles |
-| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose, and `openBridges` the bridge builds a restart would strand (not yet sent, or sent and not yet submitted); `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
+| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose, and `bridges` the bridge builds a restart would strand (not yet sent, or sent and not yet submitted), each with when the last of them goes (`openUntil`); `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |

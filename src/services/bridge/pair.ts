@@ -102,20 +102,56 @@ export interface BridgePairs {
   pairs: BridgePair[];
 }
 
+export interface BridgeDestinations {
+  status: "ok";
+  from: ChainInfo;
+  /** Each chain something on `from` bridges to, with the symbols sent that do. */
+  destinations: { chain: ChainInfo; symbols: string[] }[];
+}
+
 /** Every token a bridge can send from one chain, with each token it arrives as on another. Config only, no read. */
 export function listBridgePairs(fromChain: string, toChain: string): BridgePairs {
   const catalog = getBridgeCatalog();
-  const from = resolveSwapChain(catalog, fromChain, true, "fromChain");
+  const from = sourceChain(catalog, fromChain);
   const to = resolveSwapChain(catalog, toChain, false, "toChain");
-  sourceChainFor(catalog, from);
   if (from.key === to.key) throw sameChain(from);
-  const pairs = (catalog.tokens[from.key] ?? [])
+  return { status: "ok", from, to, pairs: pairsBetween(catalog, from.key, to.key) };
+}
+
+// Per source chain: the catalog is built once, so what a chain reaches never changes while the server runs.
+const reachedFrom = new Map<string, BridgeDestinations["destinations"]>();
+
+/** Every chain a bridge can reach from one chain, with what bridges there. Config only, no read. */
+export function listBridgeDestinations(fromChain: string): BridgeDestinations {
+  const catalog = getBridgeCatalog();
+  const from = sourceChain(catalog, fromChain);
+  let destinations = reachedFrom.get(from.key);
+  if (!destinations) {
+    destinations = Object.keys(catalog.chains)
+      .filter(key => key !== from.key)
+      .map(key => ({
+        chain: toChain(key),
+        symbols: [...new Set(pairsBetween(catalog, from.key, key).map(pair => pair.from.symbol))],
+      }))
+      .filter(({ symbols }) => symbols.length > 0);
+    reachedFrom.set(from.key, destinations);
+  }
+  return { status: "ok", from, destinations };
+}
+
+function sourceChain(catalog: SwapCatalog, query: string): ChainInfo {
+  const chain = resolveSwapChain(catalog, query, true, "fromChain");
+  sourceChainFor(catalog, chain);
+  return chain;
+}
+
+function pairsBetween(catalog: SwapCatalog, fromKey: string, toKey: string): BridgePair[] {
+  return (catalog.tokens[fromKey] ?? [])
     .filter(token => canUseAs(token, "from"))
     .flatMap(sent =>
-      bridgeTargets(catalog, { chainKey: from.key, address: sent.address }, to.key).map(received => ({
+      bridgeTargets(catalog, { chainKey: fromKey, address: sent.address }, toKey).map(received => ({
         from: { symbol: sent.symbol, address: sent.address },
         to: { symbol: received.symbol, address: received.address },
       })),
     );
-  return { status: "ok", from, to, pairs };
 }

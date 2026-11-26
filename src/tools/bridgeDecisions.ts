@@ -4,15 +4,15 @@
  * own codes.
  */
 
-import type { BridgePairs } from "../services/bridge/pair.js";
-import type { BridgePreview, BridgeQuote } from "../services/bridge/prepare.js";
+import type { BridgeDestinations, BridgePairs } from "../services/bridge/pair.js";
+import type { BridgePreview, BridgeQuote, PartnerFeeAmount } from "../services/bridge/prepare.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
 import { isHubChain } from "../services/sodax.js";
 import { addressAsk } from "../services/swap/quote.js";
+import { trackWait } from "../services/trackWait.js";
 import {
   type ConfirmSummary,
   type Decision,
-  type Exhausted,
   NONE,
   callOnce,
   callRepeated,
@@ -32,9 +32,37 @@ import {
   walletFirst,
 } from "./swapDecisions.js";
 
+const TOKENS = "sodax_bridge_tokens";
 const TRACK = "sodax_bridge_submit_and_track";
 const PREVIEW = "sodax_bridge_preview";
 const PREPARE = "sodax_bridge_prepare";
+
+type Sides = { from: { symbol: string }; to: { symbol: string } };
+
+const hasFee = (fee: PartnerFeeAmount) => fee.amount !== "0";
+const feeText = (fee: PartnerFeeAmount) =>
+  hasFee(fee) ? `, including a ${fee.amount} ${fee.symbol} partner fee,` : "";
+/** A pair whose symbols differ arrives as another token: the user hears it before choosing or signing. */
+const tokenChange = ({ from, to }: Sides) =>
+  from.symbol === to.symbol ? "" : ` (${to.symbol} is a different token from ${from.symbol})`;
+
+/** What else the user pays: no fee of the bridge's own, and the source chain's gas, which the wallet sets. */
+const costs = ({ partnerFee, networkFee, from }: BridgePreview | BridgeQuote) =>
+  `The bridge charges no fee of its own${hasFee(partnerFee) ? " beyond that partner fee" : ""}; the wallet pays the gas on ${from.chain.name}${networkFee.paidIn ? ` in ${networkFee.paidIn}` : ""}, which isn't estimated here.`;
+
+/** The chains a source bridges to; the user picks one, and its pairs come next. */
+export function destinationsDecision({ from, destinations }: BridgeDestinations): Decision {
+  if (destinations.length === 0) return final(`Nothing on ${from.name} bridges to another chain.`, NONE);
+  const listed = destinations.map(({ chain, symbols }) => `${chain.name} (${symbols.join(", ")})`);
+  const options = destinations.map(({ chain }) => ({
+    label: chain.name,
+    args: { fromChain: from.key, toChain: chain.key },
+  }));
+  return ongoing(
+    `From ${from.name}, tokens bridge to ${listed.join("; ")}. Ask the user which chain to bridge to, then call ${TOKENS} with the chosen option's args.`,
+    choose("toChain", options, callOnce(TOKENS, "same")),
+  );
+}
 
 /** What bridges between two chains answers on its own; the user picks a pair to preview or prepare. */
 export function pairsDecision({ from, to, pairs }: BridgePairs): Decision {
@@ -42,43 +70,49 @@ export function pairsDecision({ from, to, pairs }: BridgePairs): Decision {
     return final(`Nothing on ${from.name} bridges to ${to.name}: ask the user which other chain to bridge to.`, NONE);
   }
   const labels = pairs.map(pair => `${pair.from.symbol} to ${pair.to.symbol}`);
-  const options = pairs.map((pair, i) => ({
-    label:
-      labels.filter(label => label === labels[i]).length > 1
-        ? `${labels[i]} (${pair.from.address} to ${pair.to.address})`
-        : labels[i],
-    args: {
-      fromChain: from.key,
-      fromToken: pair.from.address,
-      toChain: to.key,
-      toToken: pair.to.address,
-    },
-  }));
+  const options = pairs.map((pair, i) => {
+    const twin = labels.filter(label => label === labels[i]).length > 1;
+    const label = twin ? `${labels[i]} (${pair.from.address} to ${pair.to.address})` : labels[i];
+    return {
+      label: `${label}${tokenChange(pair)}`,
+      args: { fromChain: from.key, fromToken: pair.from.address, toChain: to.key, toToken: pair.to.address },
+    };
+  });
   return ongoing(
-    `From ${from.name} to ${to.name}, these bridge: ${labels.join(", ")}. Ask the user to choose a pair and the amount to send, then call ${PREVIEW} with the pair's addresses and that amount in token units.`,
+    `From ${from.name} to ${to.name}, these bridge: ${options.map(option => option.label).join(", ")}. Ask the user to choose a pair and the amount to send, then call ${PREVIEW} with the chosen option's args and that amount in token units.`,
     choose("pair", options, provide(["amount"], callOnce(PREVIEW, "same"))),
   );
 }
 
-/** What else the user pays: no fee of the bridge's own, and the source chain's gas, which the wallet sets. */
-const costs = ({ partnerFee, networkFee, from }: BridgePreview | BridgeQuote) =>
-  `The bridge charges no fee of its own${partnerFee ? " beyond that partner fee" : ""}; the wallet pays the gas on ${from.chain.name}${networkFee.paidIn ? ` in ${networkFee.paidIn}` : ""}, which isn't estimated here.`;
-
 /** A preview asks for what preparing needs, then prepares with the same arguments. */
 export function previewDecision(preview: BridgePreview): Decision {
   const { from, to, partnerFee, maxAmount, prepareNeeds } = preview;
-  const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
   const needed = prepareNeeds.map(field => addressAsk(field, from.chain.name, to.chain.name));
   return ongoing(
-    `Show the user they would send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive ${to.amount} ${to.symbol} on ${to.chain.name}; at most ${maxAmount} ${from.symbol} can be bridged on this route now. ${costs(preview)} Once the user is ready to sign, call ${PREPARE} with the same arguments plus ${needed.join(" and ")}. ${walletFirst(from.chain.name)}`,
+    [
+      `Show the user they would send ${from.amount} ${from.symbol} on ${from.chain.name}${feeText(partnerFee)} and receive ${to.amount} ${to.symbol} on ${to.chain.name}${tokenChange(preview)}; at most ${maxAmount} ${from.symbol} can be bridged on this route now.`,
+      costs(preview),
+      `Once the user is ready to sign, call ${PREPARE} with the same arguments plus ${needed.join(" and ")}.`,
+      walletFirst(from.chain.name),
+    ].join(" "),
     provide(prepareNeeds, callOnce(PREPARE, "same")),
   );
 }
 
+/** What the wallet's balance, read when preparing, means for sending. */
+function balanceText({ balance, warnings, from, networkFee }: BridgeQuote): string {
+  if (!balance)
+    return `The wallet's balance on ${from.chain.name} couldn't be read; sodax_get_balance with for: bridge reads it.`;
+  const short = [
+    warnings.includes("balance_short") &&
+      `it holds ${balance.token} ${from.symbol} on ${from.chain.name}, less than the ${from.amount} to send, so the bridge would fail`,
+    warnings.includes("no_gas") && `it holds no ${networkFee.paidIn ?? "native token"} on ${from.chain.name} for gas`,
+  ].filter(Boolean);
+  return short.length > 0 ? `Tell the user before they sign: ${short.join(", and ")}.` : "";
+}
+
 function prepareNextStep(quote: BridgeQuote): string {
-  const { from, to, partnerFee } = quote;
-  const fee = partnerFee ? `, including a ${partnerFee.amount} ${partnerFee.symbol} partner fee,` : "";
-  const show = `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${fee} and receive ${to.amount} ${to.symbol} on ${to.chain.name} at ${quote.toAddress}`;
+  const { from, to } = quote;
   const sameAddress = sendsToOwnAddressElsewhere(quote)
     ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
     : "";
@@ -87,22 +121,29 @@ function prepareNextStep(quote: BridgeQuote): string {
   const approve = allowance
     ? ` Tell them the approve lets ${allowance.spender}, the SODAX bridge's spender, spend ${allowance.amount} ${allowance.symbol} of theirs.`
     : "";
+  const steps =
+    quote.steps.length > 1
+      ? "the steps in order, each mined before the next (a bridge sent before its approve is mined fails)"
+      : "the bridge step";
   const send =
     "chainType" in first
-      ? `Once they confirm, have their ${from.chain.name} wallet send the bridge step before it expires: ${SIGN_NON_EVM_TX[first.chainType]}.`
-      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}) to send the steps; switch it there first if it isn't.${approve} Once they confirm, have their wallet send the steps in order before they expire, each mined before the next (a bridge sent before its approve is mined fails)${quote.batch ? SEND_BATCH : ""}.`;
+      ? `Once they confirm, have their ${from.chain.name} wallet send the bridge step: ${SIGN_NON_EVM_TX[first.chainType]}.`
+      : `Their wallet must be on ${from.chain.name} (chain id ${first.chainId}); switch it there first if it isn't.${approve} Once they confirm, have their wallet send ${steps}${quote.batch ? SEND_BATCH : ""}.`;
   return [
-    `${show}${sameAddress}; the steps expire at ${quote.expiresAt}.`,
+    `Show the user they send ${from.amount} ${from.symbol} on ${from.chain.name}${feeText(quote.partnerFee)} and receive ${to.amount} ${to.symbol} on ${to.chain.name}${tokenChange(quote)} at ${quote.toAddress}${sameAddress}.`,
+    balanceText(quote),
     costs(quote),
-    "Balances aren't checked here; sodax_get_balance with for: bridge reads them.",
     send,
-    "Then call sodax_bridge_submit_and_track with the bridgeId and the bridge transaction's hash, even if the steps have expired by then: that call is what submits the bridge.",
-  ].join(" ");
+    `Send before ${quote.expiresAt}: there's no on-chain deadline, but a bridge sent later is no longer checked against the route's limit, so prepare again instead.`,
+    `Right after the bridge step is broadcast, call ${TRACK} with the bridgeId and its hash, even if expiresAt has passed by then: that call is what submits the bridge.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** A ready bridge is shown to the user, signed in order, and tracked from the moment its last step is broadcast. */
 export function prepareDecision(quote: BridgeQuote): Decision {
-  const { from, to, partnerFee } = quote;
+  const { from, to } = quote;
   const allowance = approveOf(quote);
   const summary: ConfirmSummary = {
     kind: "bridge",
@@ -111,8 +152,9 @@ export function prepareDecision(quote: BridgeQuote): Decision {
     send: { amount: from.amount, symbol: from.symbol, chain: from.chain.key },
     receive: { amount: to.amount, symbol: to.symbol, chain: to.chain.key },
     recipient: quote.toAddress,
-    ...(partnerFee && { partnerFee }),
+    partnerFee: quote.partnerFee,
     ...(allowance && { approve: { spender: allowance.spender, amount: allowance.amount, symbol: allowance.symbol } }),
+    warnings: quote.warnings,
   };
   // The chain too, so a bridge whose record this server lost is still found from its deposit.
   const afterSend = {
@@ -135,35 +177,44 @@ export function prepareDecision(quote: BridgeQuote): Decision {
   });
 }
 
-// Polls of one bridge stage, about 10 minutes at 20 seconds apart; a bridge still moving then is a person's to watch.
-const MAX_POLLS = 30;
-// A tx its node doesn't know at all after about two minutes was most likely another hash: a batch id, the approve's.
-const UNSEEN_POLLS = 8;
-
 /** What follows a tracked bridge: wait while it moves, stop where it ended, and hand a stuck one to a person. */
 export function trackDecision(result: BridgeTrack): Decision {
   const { txHash, chain } = result;
-  const again = (afterSec: number, stage: string, onExhausted: Exhausted, maxAttempts = MAX_POLLS) =>
-    callRepeated(
-      callOnce(TRACK, "same", afterSec),
-      { maxAttempts, retryKey: `${TRACK}:${chain.key}:${txHash}:${stage}` },
-      onExhausted,
-    );
   // The hash asked again keeps the bridge's other arguments; the asks are bounded, then a person.
   const askHash = askTxHash(TRACK, { chain: chain.key, ...(result.bridgeId && { bridgeId: result.bridgeId }) });
-  const stillMoving = exhausted(external("still_in_progress"), false);
   const helpDesk = `give the transaction hash ${txHash} and this result's requestId to the SODAX team`;
+  // Polled until the server's clock says the stage took too long (`pollUntil`); then, or once past it, `stalled`.
+  const pollOr = (afterSec: number, moving: string, stalled: Decision): Decision => {
+    const until = result.pollUntil;
+    if (!until) return stalled;
+    return ongoing(
+      `${moving} Call again in ${afterSec} seconds (each call also waits up to ${trackWait.maxMs / 1000} seconds for the next step) until ${until}; the user must not send the bridge again.`,
+      callRepeated(callOnce(TRACK, "same", afterSec), { until }, exhausted(stalled.nextAction, false)),
+    );
+  };
+  const stillMoving = ongoing(
+    `The bridge is taking longer than usual: tell the user it's still on its way, that they must not send it again, and that they can track it later with this transaction hash; if it doesn't arrive, ${helpDesk}.`,
+    external("still_in_progress"),
+  );
   switch (result.status) {
     case "awaiting_source":
       if (result.seenOnChain === false) {
-        return ongoing(
-          `${chain.name}'s node doesn't have this transaction. Call again in 15 seconds, at most ${UNSEEN_POLLS} times; if it still doesn't, ask the user for the bridge transaction's hash as their wallet shows it (not the approve's; from a batch, the transaction hash wallet_getCallsStatus reports, not the batch id). The user must not send the bridge again.`,
-          again(15, "unseen", exhausted(askHash, false), UNSEEN_POLLS),
+        return pollOr(
+          15,
+          `${chain.name}'s node doesn't have this transaction yet.`,
+          ongoing(
+            `${chain.name}'s node still doesn't have this transaction: ask the user for the bridge transaction's hash as their wallet shows it (not the approve's; from a batch, the transaction hash wallet_getCallsStatus reports, not the batch id), then call again with it. Only if the wallet shows it was never sent, or dropped, was nothing bridged: then they can prepare a new bridge. Otherwise they must not send it again.`,
+            askHash,
+          ),
         );
       }
-      return ongoing(
-        `The bridge transaction isn't mined on ${chain.name} yet${result.seenOnChain ? " (its node has it)" : ""}. Call again in 15 seconds; the user must not send it again meanwhile.`,
-        again(15, "source", exhausted(external("check_wallet"), false)),
+      return pollOr(
+        15,
+        `The bridge transaction isn't mined on ${chain.name} yet${result.seenOnChain ? " (its node has it)" : ""}.`,
+        ongoing(
+          `The bridge transaction still isn't mined on ${chain.name}: ask the user to check it in their wallet, where it may need a higher fee, and then for its hash (a sped-up transaction has a new one). They must not send the bridge again.`,
+          external("check_wallet", askHash),
+        ),
       );
     case "source_failed":
       return final(
@@ -184,10 +235,7 @@ export function trackDecision(result: BridgeTrack): Decision {
         "unknown",
       );
     case "relaying":
-      return ongoing(
-        "The bridge is on its way to the SODAX hub. Call again in 20 seconds; the user must not send it again.",
-        again(20, "relay", stillMoving),
-      );
+      return pollOr(20, "The bridge is on its way to the SODAX hub.", stillMoving);
     case "relay_failed":
       return final(
         `${
@@ -199,21 +247,23 @@ export function trackDecision(result: BridgeTrack): Decision {
         "held",
       );
     case "in_transit":
-      return ongoing(
-        "The SODAX hub ran the bridge and sent the tokens on to the destination chain. Call again in 20 seconds.",
-        again(20, "transit", stillMoving),
-      );
+      return pollOr(20, "The SODAX hub ran the bridge and sent the tokens on to the destination chain.", stillMoving);
     case "delivered":
+      if (result.delivery === "sent") {
+        return final(
+          `The SODAX relay sent the tokens on to the destination chain (its transaction ${result.dstTxHash}), which this server can't follow to the end: tell the user they're on their way, that the destination chain's explorer shows when they arrive, and not to send the bridge again.`,
+          NONE,
+          "sent",
+        );
+      }
       return final(
-        result.delivery === "sent"
-          ? `The bridge was sent to the recipient (destination tx ${result.dstTxHash}); that chain has yet to run it.`
-          : `The bridge arrived: the recipient has the tokens (destination tx ${result.dstTxHash}).`,
+        `The bridge arrived: the recipient has the tokens (destination tx ${result.dstTxHash}).`,
         NONE,
         "succeeded",
       );
     case "held_on_hub":
       return final(
-        `The bridge reached the SODAX hub but its calls failed there, so the tokens are in the user's hub wallet on Sonic, not lost. They can withdraw them to their wallet on ${chain.name} with the SODAX SDK's RecoveryService.withdrawHubAsset${result.recovery ? " (recovery's chain, address and token, and at most this bridge's amount, as fetchHubAssetBalances reads it)" : ""}, or ${helpDesk}.`,
+        `The bridge reached the SODAX hub but its calls failed there, so the tokens are in the user's hub wallet on Sonic, not lost. Tell the user not to send it again, and to ${helpDesk}, who can return them.${result.recovery ? ` A developer can also withdraw them to the user's wallet on ${chain.name} with the SODAX SDK's RecoveryService.withdrawHubAsset (recovery's chain, address and token, and at most this bridge's amount, as fetchHubAssetBalances reads it).` : ""}`,
         external("help_desk"),
         "held",
       );

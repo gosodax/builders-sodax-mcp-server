@@ -9,6 +9,7 @@ import { sameHex as same } from "../../constants.js";
 import type { PartnerFee } from "../partnerFee.js";
 import { bridgeAmounts, isHubChain } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
+import { type Holding, readBalances } from "../swap/balance.js";
 import { checkRecipient } from "../swap/destination.js";
 import { ActionError } from "../swap/errors.js";
 import { type AddressField, EVM_BURN_ADDRESS, addressesNeeded, resolveSide } from "../swap/quote.js";
@@ -55,21 +56,40 @@ interface Side {
   amount: string;
 }
 
+/** What a bridge's confirm summary warns of: the wallet's balance read before signing, and a token that changes. */
+export const BRIDGE_WARNINGS = ["balance_short", "no_gas", "balance_unchecked", "different_token"] as const;
+export type BridgeWarning = (typeof BRIDGE_WARNINGS)[number];
+
+/** The connection's fee, in the token sent: "0" when it charges none. */
+export interface PartnerFeeAmount {
+  amount: string;
+  symbol: string;
+}
+
+/** What the bridge step goes through, from the build checked against the SDK's own: for the user to see before signing. */
+interface BridgeStepSummary {
+  /** The user's SODAX hub wallet on Sonic, which the deposit passes through. */
+  hubWallet: string;
+  checkedAgainst: "sdk";
+}
+
 export interface BridgeQuote {
   status: "ready";
   bridgeId: string;
-  /** ISO time: the steps must be signed and sent before it. */
+  /** ISO time: send the steps before it. Not an on-chain deadline: a later send lands unchecked, so prepare again. */
   expiresAt: string;
   expiresInSec: number;
   from: Side;
   /** What the recipient gets. */
   to: Side;
-  /** The connection's fee, in the token sent. */
-  partnerFee?: { amount: string; symbol: string };
+  partnerFee: PartnerFeeAmount;
   networkFee: NetworkFee;
   fromAddress: string;
   toAddress: string;
-  steps: SwapStep[];
+  /** The sender's balances on the source chain, in token units, when they could be read. */
+  balance?: { token: string; native: string };
+  warnings: BridgeWarning[];
+  steps: (SwapStep & { bridges?: BridgeStepSummary })[];
   /** From an EVM spoke with an approve: the approve and the bridge as one EIP-5792 batch, for a wallet that batches. */
   batch?: SwapBatch;
 }
@@ -80,7 +100,7 @@ export interface BridgePreview {
   from: Side;
   /** What the recipient would get. */
   to: Side;
-  partnerFee?: { amount: string; symbol: string };
+  partnerFee: PartnerFeeAmount;
   networkFee: NetworkFee;
   /** The most this route takes now, in the token sent. */
   maxAmount: string;
@@ -115,10 +135,7 @@ function checkedPair(input: BridgePairInput, partnerFee?: PartnerFee) {
     // An EVM sender's address is theirs on an EVM destination too; any other pair needs the recipient given.
     defaultsToSender: from.config.type === "EVM" && to.config.type === "EVM",
     networkFee: { ...(native && { paidIn: native.symbol }), estimated: false as const },
-    fee:
-      feeInSource > 0n
-        ? { amount: formatUnits(feeInSource, from.token.decimals), symbol: from.token.symbol }
-        : undefined,
+    fee: { amount: formatUnits(feeInSource, from.token.decimals), symbol: from.token.symbol },
   };
 }
 
@@ -129,7 +146,7 @@ export async function previewBridge(input: BridgePairInput, partnerFee?: Partner
     status: "preview",
     from: describe(from, amount),
     to: describe(to, delivered),
-    ...(fee && { partnerFee: fee }),
+    partnerFee: fee,
     networkFee,
     maxAmount,
     prepareNeeds: defaultsToSender ? ["fromAddress"] : ["fromAddress", "toAddress"],
@@ -138,10 +155,12 @@ export async function previewBridge(input: BridgePairInput, partnerFee?: Partner
 
 export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee): Promise<BridgeQuote> {
   const { from, to, source, amount, delivered, defaultsToSender, fee, networkFee } = checkedPair(input, partnerFee);
-  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
+  const fromAddress = input.fromAddress
+    ? checkAddress(input.fromAddress, from.chain, "fromAddress", "bridge")
+    : undefined;
   if (fromAddress) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
-    ? checkAddress(input.toAddress, to.chain, "toAddress")
+    ? checkAddress(input.toAddress, to.chain, "toAddress", "bridge")
     : defaultsToSender
       ? fromAddress
       : undefined;
@@ -155,13 +174,19 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
   const missing: AddressField[] = [];
   if (!fromAddress) missing.push("fromAddress");
   if (!toAddress && !defaultsToSender) missing.push("toAddress");
-  if (!fromAddress || !toAddress) throw addressesNeeded(missing, from.chain, to.chain);
+  if (!fromAddress || !toAddress) throw addressesNeeded(missing, from.chain, to.chain, "bridge");
   // Before any upstream call, so a key at its cap of open bridges costs nothing.
   checkBridgeRoom();
 
+  // Read alongside the checks and the build: a balance that can't be read is a warning, never a refusal.
+  const reading = readBalances(
+    { chain: from.chain.key, address: fromAddress, token: from.token.address },
+    getBridgeCatalog(),
+  ).catch(() => undefined);
   await Promise.all([
     checkBridgeLimit(amount, from, to),
     checkRecipient({
+      product: "bridge",
       chainKey: to.chain.key,
       chainType: to.config.type,
       chainName: to.chain.name,
@@ -195,6 +220,9 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
         deposit: { to: built.deposit.to, data: built.deposit.data, value: built.deposit.value },
       }),
   });
+  const read = await reading;
+  // The token sent, or the native coin when that's the one.
+  const balance = read && { token: read.token ?? read.native, native: read.native };
   return {
     status: "ready",
     bridgeId: kept.bridgeId,
@@ -202,13 +230,38 @@ export async function prepareBridge(input: BridgeInput, partnerFee?: PartnerFee)
     expiresInSec: Math.round((kept.signBy - Date.now()) / 1000),
     from: describe(from, amount),
     to: describe(to, delivered),
-    ...(fee && { partnerFee: fee }),
+    partnerFee: fee,
     networkFee,
     fromAddress,
     toAddress,
-    steps: built.steps,
+    ...(balance && { balance: { token: balance.token.amount, native: balance.native.amount } }),
+    warnings: bridgeWarnings(balance, from.token, to.token, amount),
+    steps: built.steps.map(step =>
+      step.kind === "bridge"
+        ? { ...step, bridges: { hubWallet: built.relayData.address, checkedAgainst: "sdk" as const } }
+        : step,
+    ),
     ...("batch" in built && built.batch && { batch: built.batch }),
   };
+}
+
+/** What the user should hear before signing: a balance short of the amount or of gas, or a token that changes. */
+function bridgeWarnings(
+  balance: { token: Holding; native: Holding } | undefined,
+  sent: SwapsApiToken,
+  received: SwapsApiToken,
+  amount: bigint,
+): BridgeWarning[] {
+  const warnings: BridgeWarning[] = [];
+  if (!balance) {
+    warnings.push("balance_unchecked");
+  } else {
+    if (BigInt(balance.token.baseUnits) < amount) warnings.push("balance_short");
+    // Gas is never estimated here, so only an empty native balance is certain to be short.
+    if (!sent.isNative && BigInt(balance.native.baseUnits) === 0n) warnings.push("no_gas");
+  }
+  if (sent.symbol !== received.symbol) warnings.push("different_token");
+  return warnings;
 }
 
 function describe({ chain, token }: { chain: ChainInfo; token: SwapsApiToken }, baseUnits: bigint): Side {

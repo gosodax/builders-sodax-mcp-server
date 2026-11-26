@@ -10,6 +10,7 @@ import { SODAX_HELP_DESK, sameHex as same } from "../../constants.js";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
 import { intentHash, isHubChain } from "../sodax.js";
+import { readWhileWaiting } from "../trackWait.js";
 import { TtlCache } from "../ttlCache.js";
 import { alertOperator } from "./alerts.js";
 import { ActionError } from "./errors.js";
@@ -117,30 +118,15 @@ export type TrackResult = SwapRef & TrackState;
 // One check per caller, quote and tx at a time: submit-tx allows 10 a minute per IP unless the key's org has a limit.
 const inFlight = new Map<string, Promise<TrackResult>>();
 
-// Agents can't wait between calls, so a call waits briefly for the swap to move on. Mutable for tests.
-export const trackWait = {
-  stepMs: 5_000,
-  maxMs: 20_000,
-  sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
-};
 const WAITABLE: readonly string[] = ["awaiting_source_confirmation", "queued", "in_progress"];
 
-/** `trackSwap`, repeated every few seconds while the swap waits, until its state changes or `maxMs` passes. */
-export async function trackSwapWaiting(input: {
-  txHash: string;
-  quoteId?: string;
-  chain?: string;
-}): Promise<TrackResult> {
-  const started = Date.now();
-  const stateOf = (result: TrackResult) => `${result.status}:${"stage" in result ? result.stage : ""}`;
-  let result = await trackSwap(input);
-  const first = stateOf(result);
-  while (WAITABLE.includes(result.status) && Date.now() - started + trackWait.stepMs <= trackWait.maxMs) {
-    await trackWait.sleep(trackWait.stepMs);
-    result = await trackSwap(input);
-    if (stateOf(result) !== first) break;
-  }
-  return result;
+/** `trackSwap`, repeated every few seconds while the swap waits (`readWhileWaiting`). */
+export function trackSwapWaiting(input: { txHash: string; quoteId?: string; chain?: string }): Promise<TrackResult> {
+  return readWhileWaiting(
+    () => trackSwap(input),
+    result => WAITABLE.includes(result.status),
+    result => `${result.status}:${"stage" in result ? result.stage : ""}`,
+  );
 }
 
 export async function trackSwap(input: { txHash: string; quoteId?: string; chain?: string }): Promise<TrackResult> {

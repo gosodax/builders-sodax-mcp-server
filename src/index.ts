@@ -412,7 +412,7 @@ export function createHttpApp(swapToolsEnabled: boolean, bridgeToolsEnabled = fa
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
       // Bridge builds a restart would strand: not yet sent, or sent and not yet handed over (openBridges).
-      openBridges: openBridges(),
+      bridges: openBridges(),
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
@@ -697,7 +697,7 @@ function fatalExit(context: string, error: unknown): void {
   exiting = true;
   const lost = [
     [openQuotes().open, "open swap quote(s)"],
-    [openBridges(), "open bridge(s)"],
+    [openBridges().open, "open bridge(s)"],
   ].flatMap(([count, what]) => (Number(count) > 0 ? [`${count} ${what}`] : []));
   const alert = lost.length > 0 ? `${context} (${lost.join(", ")} lost)` : context;
   void notifyError(alert, error).finally(() => {
@@ -721,7 +721,7 @@ function fatalExit(context: string, error: unknown): void {
 async function gracefulShutdown(signal: string): Promise<void> {
   // The open quotes and bridges are in memory: a restart drops them.
   const open = openQuotes().open;
-  const bridges = openBridges();
+  const bridges = openBridges().open;
   logger.info({ signal, "swap_quotes.open": open, "bridges.open": bridges }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first

@@ -11,7 +11,7 @@ import { CACHE_DURATION_MS, CHAIN_KEY_PATTERN, EVM_ADDRESS_PATTERN, ZERO_ADDRESS
 import { logger } from "../logger.js";
 import { getRequestContext, runWithRequestContext, withoutCredentials } from "../requestContext.js";
 import { getAllChainsConfigs } from "../sodaxApi.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type Product } from "./errors.js";
 import { getSwapTokens } from "./swapsApi.js";
 
 const SYMBOL_PATTERN = /^[A-Za-z0-9 ._()+-]{1,32}$/;
@@ -70,6 +70,8 @@ function configAddress(type: string, value: unknown): string | null | undefined 
 
 /** Tokens by chain key, and each chain's family and id when its config gives them. */
 export interface SwapCatalog {
+  /** The toolset the catalog serves, which its lookups' failures name. */
+  product: Product;
   tokens: Record<string, SwapsApiToken[]>;
   chains: Record<string, SwapChain>;
 }
@@ -182,9 +184,9 @@ async function loadCatalog(): Promise<SwapCatalog> {
   throw new ActionError("UPSTREAM_UNAVAILABLE", "The SODAX swap token list is unavailable.");
 }
 
-export function parseCatalog(rawTokens: unknown, rawConfigs: unknown): SwapCatalog {
+export function parseCatalog(rawTokens: unknown, rawConfigs: unknown, product: Product = "swap"): SwapCatalog {
   const configs = asRecord(rawConfigs);
-  const catalog: SwapCatalog = { tokens: {}, chains: {} };
+  const catalog: SwapCatalog = { product, tokens: {}, chains: {} };
   let dropped = 0;
   for (const [chainKey, list] of Object.entries(asRecord(rawTokens))) {
     const entries = Array.isArray(list) ? list : [];

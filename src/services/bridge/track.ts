@@ -37,6 +37,8 @@ import {
   decodeRlpList,
 } from "../swap/sourceTx.js";
 import type { SwapSource } from "../swap/sources/types.js";
+import { readWhileWaiting } from "../trackWait.js";
+import { TtlCache } from "../ttlCache.js";
 import { type BridgeTxStatus, getBridgeTxStatus, submitBridgeTx } from "./bridgeApi.js";
 import { getBridgeCatalog } from "./catalog.js";
 import { type PreparedBridge, claimBridge, getBridge, markHandedOver } from "./store.js";
@@ -45,6 +47,8 @@ interface BridgeRef {
   txHash: string;
   chain: ChainInfo;
   bridgeId?: string;
+  /** At a stage the bridge waits at (not mined, relaying, in transit): polled until then, absent once that passed. */
+  pollUntil?: string;
 }
 
 /** Where the user's tokens are, as far as the hub knows: what `RecoveryService.withdrawHubAsset` takes, but the amount. */
@@ -80,35 +84,102 @@ export type BridgeTrack = BridgeRef &
 
 type TrackInput = { txHash: string; bridgeId?: string; chain?: string };
 
-export async function trackBridge(input: TrackInput): Promise<BridgeTrack> {
+// How long each stage is polled, from the first call that found the bridge there; past that a person takes over. A
+// node that doesn't know the tx at all after two minutes most likely has another hash: a batch id, the approve's.
+const POLL_SEC = { unseen: 2 * 60, source: 10 * 60, relay: 10 * 60, transit: 10 * 60 } as const;
+const RESUBMIT_AFTER_MS = 60 * 1000;
+// When each caller first found each bridge at each stage: the server's clock bounds the polls, not the agent's count.
+const stageSince = new TtlCache(60 * 60 * 1000, 10_000);
+// One check per caller, bridge and tx at a time: submit-tx allows 10 a minute per IP, which every MCP user shares.
+const inFlight = new Map<string, Promise<BridgeTrack>>();
+
+/** `trackBridge`, repeated every few seconds while the bridge waits (`readWhileWaiting`). */
+export function trackBridgeWaiting(input: TrackInput): Promise<BridgeTrack> {
+  return readWhileWaiting(
+    () => trackBridge(input),
+    // Only while the stage is still polled: past its budget the answer is a hand-off, given at once.
+    result => result.pollUntil !== undefined,
+    result => `${result.status}:${"seenOnChain" in result ? result.seenOnChain : ""}`,
+  );
+}
+
+async function trackBridge(input: TrackInput): Promise<BridgeTrack> {
   const bridge = input.bridgeId ? getBridge(input.bridgeId) : undefined;
   if (bridge && bridge.keyHash !== callerKeyHash()) {
     throw new ActionError("QUOTE_KEY_MISMATCH", "That bridge was prepared with another SODAX API key.");
   }
-  try {
-    return await follow(input, bridge);
-  } catch (error) {
-    // Once a deposit is bound to the build, never "get a new key": only this key can track it, so a new one would
-    // leave it unsubmitted for a person to find. As in the swap tools' track, it's retried.
-    throw bridge?.depositTxHash && error instanceof ActionError && error.code === "API_KEY_REQUIRED"
-      ? new ActionError("UPSTREAM_UNAVAILABLE", "The bridge service refused this server's request for now.", {
-          details: { retryAfterSec: 60 },
-        })
-      : error;
+  const source = sourceOf(input, bridge);
+  const txHash = sourceTxHash(source, input.txHash, "bridge");
+  // The bridgeId too: a call without the build must never answer for one with it.
+  const key = JSON.stringify([callerKeyHash(), source.chain.key, txHash, input.bridgeId ?? null]);
+  let pending = inFlight.get(key);
+  if (!pending) {
+    const base: BridgeRef = { txHash, chain: source.chain, ...(input.bridgeId && { bridgeId: input.bridgeId }) };
+    pending = follow(base, source, bridge)
+      .then(polled)
+      .catch(error => {
+        // Once a deposit is bound to the build, never "get a new key": only this key can track it, so a new one would
+        // leave it unsubmitted for a person to find. As in the swap tools' track, it's retried.
+        throw bridge?.depositTxHash && error instanceof ActionError && error.code === "API_KEY_REQUIRED"
+          ? new ActionError("UPSTREAM_UNAVAILABLE", "The bridge service refused this server's request for now.", {
+              details: { retryAfterSec: 60 },
+            })
+          : error;
+      })
+      .finally(() => inFlight.delete(key));
+    inFlight.set(key, pending);
+  }
+  return pending;
+}
+
+function pollStage(result: BridgeTrack): keyof typeof POLL_SEC | undefined {
+  switch (result.status) {
+    case "awaiting_source":
+      return result.seenOnChain === false ? "unseen" : "source";
+    case "relaying":
+      return "relay";
+    case "in_transit":
+      return "transit";
+    default:
+      return undefined;
   }
 }
 
-async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
-  const source = sourceOf(bridge, input.chain);
-  const txHash = sourceTxHash(source, input.txHash);
+/** A waiting result with the time its stage is polled until, while that's ahead. */
+function polled(result: BridgeTrack): BridgeTrack {
+  const stage = pollStage(result);
+  if (!stage) return result;
+  const key = JSON.stringify([callerKeyHash(), result.chain.key, result.txHash, stage]);
+  const now = Date.now();
+  const since = stageSince.get<number>(key) ?? now;
+  stageSince.set(key, since);
+  const until = since + POLL_SEC[stage] * 1000;
+  return now < until ? { ...result, pollUntil: new Date(until).toISOString() } : result;
+}
+
+/** Test only. */
+export function clearPollClock(): void {
+  stageSince.clear();
+}
+
+async function follow(base: BridgeRef, source: SwapSource, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
+  const { txHash } = base;
   // Only once the hash is one the chain can have: a malformed one holds nothing.
   if (bridge) holdForTrack(bridge);
-  const base: BridgeRef = { txHash, chain: source.chain, ...(input.bridgeId && { bridgeId: input.bridgeId }) };
   // A row is this build's only once the tx was checked as its deposit; until then it may be anyone's, so it's read
   // only after that check, and a deposit not mined yet costs no Bridge API call.
   const trusted = !bridge || bridge.depositTxHash === txHash;
   const known = trusted ? await getBridgeTxStatus(txHash, source.chain.key) : null;
   if (known) return fromRow(base, known, bridge);
+  const how = bridge?.handedOver;
+  if (trusted && (how === "submitted_differently" || how === "submit_refused")) {
+    return { ...base, status: "not_submitted", reason: how, alerted: false };
+  }
+  // Submitted here, its row not readable yet: followed. A row the backend lost is submitted again, but submit-tx takes
+  // 10 a minute per IP, shared by every MCP user: at most once a minute.
+  if (trusted && bridge?.submittedAt && Date.now() - bridge.submittedAt < RESUBMIT_AFTER_MS) {
+    return { ...base, status: "relaying" };
+  }
 
   const deposit = await checkSource(base, source, bridge);
   if (deposit !== "match") return deposit;
@@ -130,18 +201,15 @@ async function follow(input: TrackInput, bridge: PreparedBridge | undefined): Pr
   } catch (error) {
     // One that may pass on a repeat is the agent's to retry: the claim stays, so the next call submits again.
     if (!isRefusal(error)) throw error;
-    // Either way it's the operator's now.
-    markHandedOver(bridge);
-    if (error.details?.reason === "submitted_differently") {
-      const alerted = alertOperator("bridge_submitted_differently", { chainKey: source.chain.key, txHash });
-      return { ...base, status: "not_submitted", reason: "submitted_differently", alerted };
-    }
-    // The deposit is checked and on chain, and no repeat gets it submitted: only an operator can, as the swap
-    // tools' `submit_rejected`.
-    const alerted = alertOperator("bridge_submit_rejected", { chainKey: source.chain.key, txHash });
-    return { ...base, status: "not_submitted", reason: "submit_refused", alerted };
+    // The deposit is checked and on chain, and no repeat gets it submitted: only an operator can, as the swap tools'
+    // `submit_rejected`. Either way it's the operator's now, and a repeat reports it without submitting again.
+    const reason = error.details?.reason === "submitted_differently" ? "submitted_differently" : "submit_refused";
+    markHandedOver(bridge, reason);
+    const kind = reason === "submitted_differently" ? "bridge_submitted_differently" : "bridge_submit_rejected";
+    const alerted = alertOperator(kind, { chainKey: source.chain.key, txHash });
+    return { ...base, status: "not_submitted", reason, alerted };
   }
-  markHandedOver(bridge);
+  markHandedOver(bridge, "submitted");
   return { ...base, status: "relaying" };
 }
 
@@ -153,12 +221,15 @@ const isRefusal = (error: unknown): error is ActionError =>
   error instanceof ActionError && !error.retryable && error.code !== "API_KEY_REQUIRED";
 
 /** The source chain: the build's, or the one the caller names, either a chain a bridge can start from. */
-function sourceOf(bridge: PreparedBridge | undefined, chain: string | undefined): SwapSource {
+function sourceOf({ bridgeId, chain }: TrackInput, bridge: PreparedBridge | undefined): SwapSource {
   const catalog = getBridgeCatalog();
   if (!bridge && !chain) {
-    throw new ActionError("QUOTE_NOT_FOUND", "That bridgeId isn't known here.", {
+    const message = bridgeId
+      ? "That bridgeId isn't known here: it expired, or this server restarted since."
+      : "A bridge's transaction hash needs its source chain, or the bridgeId from sodax_bridge_prepare.";
+    throw new ActionError("QUOTE_NOT_FOUND", message, {
       nextStep:
-        "Call again with chain set to the bridge's source chain key, or with the bridgeId from sodax_bridge_prepare.",
+        "Call again with chain set to the bridge's source chain key, or with the bridgeId from sodax_bridge_prepare. The user must not send the bridge again.",
       details: { field: "chain" },
     });
   }
@@ -235,7 +306,7 @@ function unknownBridge(base: BridgeRef): BridgeTrack {
  */
 async function fromRow(base: BridgeRef, row: BridgeTxStatus, bridge: PreparedBridge | undefined): Promise<BridgeTrack> {
   // Only a build whose deposit this is comes here: the backend has it.
-  if (bridge) markHandedOver(bridge);
+  if (bridge) markHandedOver(bridge, "row");
   // Without the build, nothing here checked the tx as a deposit: its alerts spend the budget any key can.
   const alert = (kind: "bridge_relay_failed" | "bridge_hook_failed") =>
     alertOperator(kind, { chainKey: base.chain.key, txHash: base.txHash }, { unchecked: !bridge });
@@ -378,9 +449,12 @@ function carries(packet: RelayPacket, bridge: PreparedBridge): boolean {
 }
 
 /** On Bitcoin and Injective the relay calls a packet executed once it sent the tx, before that chain ran it. */
-function proofOn(packet: RelayPacket): "delivered" | "sent" {
-  const sentOnly = Object.keys(spokeChainConfig)
+const SENT_ONLY = new Set(
+  Object.keys(spokeChainConfig)
     .filter(key => isBitcoinChainKey(key as never) || isInjectiveChainKey(key as never))
-    .map(intentChainId);
-  return sentOnly.includes(String(packet.dst_chain_id)) ? "sent" : "delivered";
+    .map(intentChainId),
+);
+
+function proofOn(packet: RelayPacket): "delivered" | "sent" {
+  return SENT_ONLY.has(String(packet.dst_chain_id)) ? "sent" : "delivered";
 }

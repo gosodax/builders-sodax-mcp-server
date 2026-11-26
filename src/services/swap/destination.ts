@@ -5,7 +5,7 @@
 
 import { logger } from "../logger.js";
 import { recipientReady } from "../sodax.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type Product } from "./errors.js";
 
 export type RecipientCheck = "not_needed" | "ok";
 
@@ -18,16 +18,18 @@ export interface Recipient {
   address: string;
   /** Base units the recipient is expected to receive. */
   amount: bigint;
+  /** What is being prepared, which the user prepares again once the recipient is ready. */
+  product: Product;
 }
 
 const NOT_READY = {
-  NEAR: (symbol: string) => ({
+  NEAR: (symbol: string, product: Product) => ({
     message: `The recipient's NEAR account has no storage registered for ${symbol}.`,
-    nextStep: `Tell the user the recipient must register storage for ${symbol} on NEAR before receiving it, then call sodax_swap_prepare again.`,
+    nextStep: `Tell the user the recipient must register storage for ${symbol} on NEAR before receiving it, then call sodax_${product}_prepare again.`,
   }),
-  STELLAR: (symbol: string) => ({
+  STELLAR: (symbol: string, product: Product) => ({
     message: `The recipient's Stellar account doesn't exist yet, or has no trustline for this much ${symbol}.`,
-    nextStep: `Tell the user the recipient's Stellar account must exist and add (or raise) a trustline for ${symbol} before receiving it, then call sodax_swap_prepare again.`,
+    nextStep: `Tell the user the recipient's Stellar account must exist and add (or raise) a trustline for ${symbol} before receiving it, then call sodax_${product}_prepare again.`,
   }),
 };
 
@@ -42,6 +44,6 @@ export async function checkRecipient(recipient: Recipient): Promise<RecipientChe
     throw new ActionError("UPSTREAM_UNAVAILABLE", `Couldn't check the recipient on ${chainName}.`);
   }
   if (ready) return "ok";
-  const { message, nextStep } = NOT_READY[chainType](token.symbol);
+  const { message, nextStep } = NOT_READY[chainType](token.symbol, recipient.product);
   throw new ActionError("DESTINATION_NOT_READY", message, { nextStep });
 }

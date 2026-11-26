@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { BRIDGE_HELP } from "../constants.js";
 import type { BridgeTrack } from "../services/bridge/track.js";
-import { forBridge } from "../services/bridge/wording.js";
 import type { BalanceResult } from "../services/swap/balance.js";
 import { ACTION_ERROR_CODES, ActionError } from "../services/swap/errors.js";
 import {
   ARBITRUM,
   BASE,
   BRIDGE_ID,
+  DESTINATIONS,
   HUB_TX,
+  LATER,
   NON_EVM_READY,
   PAIRS,
   PREVIEW,
@@ -20,12 +21,13 @@ import {
   listed,
   prepared,
   previewed,
+  reached,
   ref,
   tracked,
 } from "./__fixtures__/bridgeResults.js";
 import { actionsOf, contractBreaks, unboundedAnswers, unboundedTopCall } from "./__fixtures__/nextActionChecks.js";
 import type { ToolResult } from "./__fixtures__/nextActionRuntime.js";
-import { pairsDecision, trackDecision } from "./bridgeDecisions.js";
+import { pairsDecision, prepareDecision, trackDecision } from "./bridgeDecisions.js";
 import type { CallTool, Decision, SwapToolName } from "./nextAction.js";
 import { balanceDecision, errorDecision } from "./swapDecisions.js";
 
@@ -44,17 +46,21 @@ const REFUSALS: Record<Refusal, true> = {
 };
 // A new service status must have at least one decision case here.
 const STATES: { [Status in TrackState["status"]]: Extract<TrackState, { status: Status }>[] } = {
-  awaiting_source: [
-    { status: "awaiting_source", seenOnChain: true },
-    { status: "awaiting_source", seenOnChain: false },
-  ],
+  // Each waiting stage while polled, and once this server has polled it long enough.
+  awaiting_source: [true, false, null].flatMap(seenOnChain => [
+    { status: "awaiting_source" as const, seenOnChain, pollUntil: LATER },
+    { status: "awaiting_source" as const, seenOnChain },
+  ]),
   source_failed: [{ status: "source_failed" }],
   not_submitted: (Object.keys(REFUSALS) as Refusal[]).flatMap(reason =>
     [true, false].map(alerted => ({ status: "not_submitted" as const, reason, alerted })),
   ),
-  relaying: [{ status: "relaying" }],
+  relaying: [{ status: "relaying", pollUntil: LATER }, { status: "relaying" }],
   relay_failed: [true, false].map(alerted => ({ status: "relay_failed", alerted })),
-  in_transit: [{ status: "in_transit", hubTxHash: HUB_TX }],
+  in_transit: [
+    { status: "in_transit", hubTxHash: HUB_TX, pollUntil: LATER },
+    { status: "in_transit", hubTxHash: HUB_TX },
+  ],
   delivered: [
     { status: "delivered", dstTxHash: HUB_TX, delivery: "delivered" },
     { status: "delivered", dstTxHash: "destination-tx", delivery: "sent" },
@@ -80,6 +86,8 @@ const TRACKED: [string, Decision][] = Object.values(STATES).flatMap(states =>
 const LOOKUPS: [string, Decision][] = [
   ["tokens", decided(listed())],
   ["tokens empty", decided(listed({ ...PAIRS, pairs: [] }))],
+  ["destinations", decided(reached())],
+  ["destinations empty", decided(reached({ ...DESTINATIONS, destinations: [] }))],
   ["preview", decided(previewed())],
   ["preview non-EVM", decided(previewed({ ...PREVIEW, prepareNeeds: ["fromAddress", "toAddress"] }))],
   ["prepare", decided(prepared())],
@@ -130,7 +138,7 @@ const FOR_BRIDGE = (["sodax_resolve_token", "sodax_get_balance"] as const).flatM
   [...SPECIAL_ERRORS, ["internal", new ActionError("INTERNAL", "No.")] as const].map(
     ([name, error]): [string, Decision] => [
       `${tool} for a bridge ${name}`,
-      errorDecision(forBridge(error), { tool, args: { for: "bridge" } }),
+      errorDecision(error, { tool, args: { for: "bridge" } }),
     ],
   ),
 );
@@ -142,7 +150,7 @@ const ALL = [
   ...TOOLS.flatMap(tool =>
     SPECIAL_ERRORS.map(([name, error]): [string, Decision] => [
       `${tool} ${name}`,
-      errorDecision(forBridge(error), { tool, args: {} }),
+      errorDecision(error, { tool, args: {} }),
     ]),
   ),
   ...FOR_BRIDGE,
@@ -159,6 +167,9 @@ const ALL = [
   ],
 ];
 
+// The lookups that advance to another call: a pair to its preview, a chain to its pairs.
+const FORWARD: Record<string, SwapToolName> = { tokens: "sodax_bridge_preview", destinations: "sodax_bridge_tokens" };
+
 describe("every bridge decision", () => {
   it.each(ALL)("%s keeps the contract", (_, decision) => {
     expect(contractBreaks(decision)).toEqual([]);
@@ -170,11 +181,10 @@ describe("every bridge decision", () => {
     if (call) expect(call.tool).toBe("sodax_get_balance");
   });
 
-  it.each(ALL)("%s bounds every call an answer leads back to", (name, decision) => {
+  it.each(ALL)("%s bounds every call an answer leads back to", (name: string, decision: Decision) => {
     const calls = unboundedAnswers(decision.nextAction);
     // These advance to a different tool; neither destination returns to its caller.
-    const forward =
-      name === "tokens" ? "sodax_bridge_preview" : name.startsWith("preview") ? "sodax_bridge_prepare" : undefined;
+    const forward = FORWARD[name] ?? (name.startsWith("preview") ? "sodax_bridge_prepare" : undefined);
     expect(calls.every(call => call.tool === forward)).toBe(true);
   });
 
@@ -183,6 +193,14 @@ describe("every bridge decision", () => {
   it.each(ALL)("%s never names a swap", (_, decision) => {
     expect(decision.nextStep.replace(BRIDGE_HELP, "")).not.toMatch(/\bswaps?\b/i);
   });
+
+  // Not mined is never "send it again": the wrong hash is the likelier reason, and a resend bridges twice.
+  it.each(TRACKED.filter(([name]) => name.includes("awaiting_source")))(
+    "%s tells the user not to send the bridge again",
+    (_: string, decision: Decision) => {
+      expect(decision.nextStep).toMatch(/must not send (it|the bridge) again/);
+    },
+  );
 
   it.each(TRACKED)("%s keeps the canonical bridge when it calls again", (_, decision) => {
     for (const action of actionsOf(decision.nextAction)) {
@@ -248,5 +266,33 @@ describe("bridge choices", () => {
     });
     expect(retry(other)?.retryKey).toBe(retry(first)?.retryKey);
     expect(JSON.stringify(first.nextAction)).not.toContain(TX);
+  });
+
+  it("says a pair arrives as another token when its symbols differ", () => {
+    const vault = { ...PAIRS.pairs[0], to: { symbol: "sodaUSDC", address: "0xvault" } };
+    const action = pairsDecision({ ...PAIRS, pairs: [...PAIRS.pairs, vault] }).nextAction;
+    if (action.type !== "choose") throw new Error("expected pair choices");
+    expect(action.options.map(option => option.label)).toEqual([
+      "USDC to USDC",
+      "USDC to sodaUSDC (sodaUSDC is a different token from USDC)",
+    ]);
+  });
+
+  it("names the approve only when there is one", () => {
+    const decision = prepareDecision({ ...READY, steps: READY.steps.slice(-1), batch: undefined });
+    expect(decision.nextStep).toContain("send the bridge step");
+    expect(decision.nextStep).not.toMatch(/approve/);
+  });
+
+  it("sends a user whose tokens are held on the hub to the SODAX team first", () => {
+    const { nextStep } = trackDecision({
+      ...ref(),
+      status: "held_on_hub",
+      hubTxHash: HUB_TX,
+      alerted: true,
+      recovery: { srcChainKey: ARBITRUM.key, srcAddress: READY.fromAddress, token: READY.from.address },
+    });
+    expect(nextStep.indexOf("SODAX team")).toBeGreaterThan(-1);
+    expect(nextStep.indexOf("SODAX team")).toBeLessThan(nextStep.indexOf("RecoveryService"));
   });
 });

@@ -9,7 +9,8 @@ import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo } from "../services/swap/track.js";
+import { trackWait } from "../services/trackWait.js";
 import {
   ARBITRUM,
   CREATOR,
@@ -864,6 +865,10 @@ describe("sodax_swap_submit_and_track", () => {
     const { out } = await track({ txHash, chain: ARBITRUM });
     expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", field: "txHash" });
     expect(out.nextAction).toMatchObject({ type: "provide", fields: [{ name: "txHash" }] });
+    // The code's own advice first, then the batch hint.
+    expect(out.nextStep).toMatch(
+      /^Ask for the hash of the transaction the user's wallet sent on the swap's source chain/,
+    );
     expect(out.nextStep).toContain("not the batch id");
     expect(calls).toEqual([]);
   });

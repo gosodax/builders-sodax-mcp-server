@@ -9,6 +9,7 @@ import {
   swapContractFor,
   walletBalance,
 } from "../services/sodax.js";
+import { clearBalanceCache } from "../services/swap/balance.js";
 import { bridgeClient, mcpClient } from "./__fixtures__/swapClient.js";
 
 // The hub reads are scripted; the builds, rebuilds and checks run on the real SDK.
@@ -34,6 +35,7 @@ const ARB_TO_BASE = { fromChain: "arbitrum", fromToken: "USDC", toChain: "base",
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 
 beforeEach(() => {
+  clearBalanceCache();
   vi.spyOn(EvmHubProvider.prototype, "getUserHubWalletAddress").mockResolvedValue(HUB_WALLET);
   vi.mocked(bridgeLimit).mockResolvedValue({ amount: 10n ** 12n, decimals: 6, type: "DEPOSIT_LIMIT" });
   fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -170,6 +172,38 @@ describe("sodax_bridge_prepare", () => {
     expect(out.nextStep).toContain("wallet_sendCalls with the batch's params");
     // Kept for track: the relay data checked, and what the recipient gets.
     expect(getBridge(out.bridgeId)).toMatchObject({ delivered: 5_000_000n, relayData: { address: HUB_WALLET } });
+    // No partner fee is a fee of 0, said as such; the bridge step names the hub wallet it goes through.
+    expect(out).toMatchObject({
+      partnerFee: { amount: "0", symbol: "USDC" },
+      nextAction: { summary: { partnerFee: { amount: "0", symbol: "USDC" } } },
+      steps: [{ kind: "approve" }, { kind: "bridge", bridges: { hubWallet: HUB_WALLET, checkedAgainst: "sdk" } }],
+    });
+  });
+
+  it("reads the sender's balance and warns of a short one, never refusing", async () => {
+    bridgeApi();
+    // 1.5 USDC and no ETH for gas.
+    vi.mocked(walletBalance).mockImplementation(async (_, __, token) => (token.address === ARB_USDC ? 1_500_000n : 0n));
+    const { isError, out } = await call("sodax_bridge_prepare", { ...ARB_TO_BASE, fromAddress: USER });
+    expect(isError).toBeFalsy();
+    expect(out).toMatchObject({ status: "ready", balance: { token: "1.5", native: "0" } });
+    expect(out).toMatchObject({
+      warnings: ["balance_short", "no_gas"],
+      nextAction: { summary: { warnings: ["balance_short", "no_gas"] } },
+    });
+    expect(out.nextStep).toContain("less than the 5 to send, so the bridge would fail");
+    expect(out.nextStep).toContain("no ETH on Arbitrum for gas");
+  });
+
+  it("prepares a bridge whose balance can't be read, saying it wasn't checked", async () => {
+    bridgeApi();
+    vi.mocked(walletBalance).mockRejectedValue(new Error("rpc down"));
+    const { isError, out } = await call("sodax_bridge_prepare", { ...ARB_TO_BASE, fromAddress: USER });
+    expect(isError).toBeFalsy();
+    expect(out.status).toBe("ready");
+    expect(out).not.toHaveProperty("balance");
+    expect(out.warnings).toEqual(["balance_unchecked"]);
+    expect(out.nextStep).toContain("couldn't be read");
   });
 
   it("offers no batch without an approve, nor from Sonic, where track checks the deposit as the tx itself", async () => {
@@ -246,16 +280,14 @@ describe("sodax_bridge_prepare", () => {
 });
 
 describe("sodax_bridge_tokens", () => {
-  it("lists each token that bridges, with the token it arrives as, reading nothing", async () => {
+  it("lists each token that bridges, with the token it arrives as, once, reading nothing", async () => {
     const { out } = await call("sodax_bridge_tokens", { fromChain: "arbitrum", toChain: "base" });
     expect(out.status).toBe("ok");
-    const pairs = out.pairs as { from: { symbol: string }; to: { symbol: string; address: string } }[];
-    expect(pairs).toContainEqual({
-      from: { symbol: "USDC", address: ARB_USDC },
-      to: { symbol: "USDC", address: BASE_USDC },
-    });
+    // The pairs go out once, as the options.
+    expect(out).not.toHaveProperty("pairs");
+    const labels = (out.nextAction.options as { label: string }[]).map(option => option.label);
     // tBTC is withdraw-only on Arbitrum: it arrives there, it doesn't leave.
-    expect(pairs.map(pair => pair.from.symbol)).not.toContain("tBTC");
+    expect(labels.filter(label => label.startsWith("tBTC "))).toEqual([]);
     expect(out).toMatchObject({
       terminal: false,
       nextAction: {
@@ -279,6 +311,28 @@ describe("sodax_bridge_tokens", () => {
     expect(bridgeLimit).not.toHaveBeenCalled();
   });
 
+  it("without toChain, offers the chains a bridge reaches, whose pairs come next", async () => {
+    const { out } = await call("sodax_bridge_tokens", { fromChain: "arbitrum" });
+    const reached = out.destinations as { chain: { key: string }; symbols: string[] }[];
+    expect(reached).toContainEqual({
+      chain: { key: "0x2105.base", name: "Base" },
+      symbols: expect.arrayContaining(["USDC"]),
+    });
+    expect(reached.map(destination => destination.chain.key)).not.toContain("0xa4b1.arbitrum");
+    expect(out).toMatchObject({
+      terminal: false,
+      nextAction: {
+        type: "choose",
+        field: "toChain",
+        options: expect.arrayContaining([
+          { label: "Base", args: { fromChain: "0xa4b1.arbitrum", toChain: "0x2105.base" } },
+        ]),
+        next: { type: "call_tool", tool: "sodax_bridge_tokens", sameArgs: true },
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("names the chains a bridge can start from", async () => {
     const { out } = await call("sodax_bridge_tokens", { fromChain: "bitcoin", toChain: "sonic" });
     expect(out.error).toMatchObject({ code: "UNSUPPORTED_SOURCE", field: "fromChain" });
@@ -297,6 +351,7 @@ describe("sodax_bridge_preview", () => {
       prepareNeeds: ["fromAddress"],
       // No fee of the bridge's own: only the source chain's gas, which the wallet sets.
       networkFee: { paidIn: "ETH", estimated: false },
+      partnerFee: { amount: "0", symbol: "USDC" },
       terminal: false,
       nextAction: {
         type: "provide",

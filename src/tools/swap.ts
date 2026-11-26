@@ -7,7 +7,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getBridgeCatalog } from "../services/bridge/catalog.js";
-import { forBridge } from "../services/bridge/wording.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { SIGN_WINDOW_TEXT } from "../services/signWindow.js";
 import { readBalances } from "../services/swap/balance.js";
@@ -189,15 +188,6 @@ const purposeArg = (purposes: Purposes) =>
 
 const catalogFor = async (purpose: TokenPurpose) => (purpose === "bridge" ? getBridgeCatalog() : getSwapCatalog());
 
-/** A lookup for a bridge fails in a bridge's words: the shared resolver's name the swap. */
-async function worded<T>(purpose: TokenPurpose, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw purpose === "bridge" && error instanceof ActionError ? forBridge(error) : error;
-  }
-}
-
 /**
  * The token lookup and balance read, for the swap and the bridge tools alike: registered once for those the connection
  * has, counted under the first, the swap tools' when they're on. Neither names a tool the connection doesn't have.
@@ -218,11 +208,11 @@ export function registerTokenTools(server: McpServer, purposes: Purposes = ["swa
       for: purposeArg(purposes),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async args =>
-      worded(args.for, async () => {
-        const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
-        return { ...resolution, ...resolveDecision(resolution, args.for) };
-      }),
+    // The catalog names its toolset, so a lookup for a bridge fails in a bridge's words.
+    async args => {
+      const resolution = resolveToken(await catalogFor(args.for), args.chain, args.query);
+      return { ...resolution, ...resolveDecision(resolution, args.for) };
+    },
     { module },
   );
 
@@ -241,11 +231,10 @@ export function registerTokenTools(server: McpServer, purposes: Purposes = ["swa
       for: purposeArg(purposes),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async args =>
-      worded(args.for, async () => {
-        const balances = await readBalances(args, await catalogFor(args.for));
-        return { ...balances, ...balanceDecision(balances, args.for) };
-      }),
+    async args => {
+      const balances = await readBalances(args, await catalogFor(args.for));
+      return { ...balances, ...balanceDecision(balances, args.for) };
+    },
     { module },
   );
 }

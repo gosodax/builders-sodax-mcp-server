@@ -48,8 +48,13 @@ export interface PreparedBridge {
   deposit?: { to: string; data: string; value: string };
   /** The deposit checked as this build's: one build, one deposit. */
   depositTxHash?: string;
-  /** That deposit is the backend's, or an operator's to relay: a restart no longer strands it. */
-  handedOver?: true;
+  /**
+   * Its deposit is the backend's (`row`: read there, `submitted`: submitted here) or an operator's to relay (refused by
+   * submit-tx): a restart no longer strands it. The latest stands: a resubmit refused, or a row an operator made.
+   */
+  handedOver?: "row" | "submitted" | "submitted_differently" | "submit_refused";
+  /** Epoch ms of the last submit here: a row the backend lost is submitted again, at most once a minute. */
+  submittedAt?: number;
   /**
    * Epoch ms: a track call with a well-formed hash holds it this long, its deposit maybe on the way. Only a deposit
    * checked as its own (`depositTxHash`) keeps it for good.
@@ -176,20 +181,26 @@ function makeClaimedRoom(): void {
   }
 }
 
-/** The build's deposit is the backend's, or an operator's to relay. */
-export function markHandedOver(bridge: PreparedBridge): void {
-  bridge.handedOver = true;
+/** The build's deposit is the backend's, or an operator's to relay: see `handedOver`. */
+export function markHandedOver(bridge: PreparedBridge, how: NonNullable<PreparedBridge["handedOver"]>): void {
+  bridge.handedOver = how;
+  if (how === "submitted") bridge.submittedAt = Date.now();
 }
 
 /**
  * Builds a restart would strand, for `/health` and the stop and crash alerts: not sent yet, or sent and not yet handed
- * over. A deposit is submitted only against its build.
+ * over. A deposit is submitted only against its build, so a deploy waits until `open` is 0 or `openUntil` has passed.
  */
-export function openBridges(): number {
+export function openBridges(): { open: number; openUntil: string | null } {
   sweep();
-  let open = bridges.size;
-  for (const bridge of claimed.values()) if (!bridge.handedOver) open++;
-  return open;
+  let open = 0;
+  let until = 0;
+  for (const bridge of [...bridges.values(), ...claimed.values()]) {
+    if (bridge.handedOver) continue;
+    open++;
+    until = Math.max(until, bridge.expiresAt);
+  }
+  return { open, openUntil: open > 0 ? new Date(until).toISOString() : null };
 }
 
 function sweep(): void {

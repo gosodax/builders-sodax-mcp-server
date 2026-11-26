@@ -1418,7 +1418,15 @@ describe("sodax_swap_price and sodax_swap_prepare from a non-EVM chain", () => {
 
 describe("checkRecipient", () => {
   const token = { address: "usdc.near", symbol: "USDC" };
-  const near = { chainKey: "near", chainType: "NEAR", chainName: "NEAR", address: "alice.near", amount: 5n, token };
+  const near = {
+    chainKey: "near",
+    chainType: "NEAR",
+    chainName: "NEAR",
+    address: "alice.near",
+    amount: 5n,
+    token,
+    product: "swap" as const,
+  };
   const stellar = { ...near, chainKey: "stellar", chainType: "STELLAR", chainName: "Stellar" };
   const ready = vi.mocked(recipientReady);
 

@@ -10,7 +10,7 @@
 import { ZERO_ADDRESS_PATTERN, chainDisplayName } from "../../constants.js";
 import { encodeRecipient } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
-import { ActionError, type ErrorOption } from "./errors.js";
+import { ActionError, type ErrorOption, type Product } from "./errors.js";
 import { rejectHex64, rejectHex64Account } from "./secrets.js";
 import { pinnedSourceOf } from "./sources/index.js";
 import { type SwapCatalog, type SwapsApiToken, canUseAs, findToken, nativeToken } from "./tokens.js";
@@ -35,9 +35,9 @@ const EVM_NATIVE_PLACEHOLDER = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
  * An address valid on the chain (EIP-55 for EVM), as typed. An all-zero address in any family (EVM
  * `0x0…0`, Sui `0x0`, Solana's system program) burns what it receives, so it's refused too.
  */
-export function checkAddress(address: string, chain: ChainInfo, field = "address"): string {
+export function checkAddress(address: string, chain: ChainInfo, field: string, product: Product): string {
   const encoded = encodeRecipient(chain.key, address);
-  if (!encoded) rejectHex64(address, field, chain.name, "address");
+  if (!encoded) rejectHex64(address, field, chain.name, "address", product);
   if (!encoded || /^0x0*$/.test(encoded)) {
     throw new ActionError("INVALID_ADDRESS", `That isn't a valid address on ${chain.name}.`, { details: { field } });
   }
@@ -59,7 +59,7 @@ export function resolveSwapChain(
   const supported = swapChains(catalog, sourcesOnly);
   const near = nearestChains(supported, chainQuery);
   const names = near.map(chain => chain.name).join(" or ");
-  throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
+  throw new ActionError("UNSUPPORTED_CHAIN", `No SODAX ${catalog.product} chain matches that name, key or chain id.`, {
     details: { field, supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
     // The close matches first, then every other chain the sentence offers.
     hint: {
@@ -117,7 +117,7 @@ export function resolveExactly(
       side === "to"
         ? canUseAs(token, side)
         : token.chainKey === resolution.chain.key && (!side || canUseAs(token, side));
-    throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", {
+    throw new ActionError("UNKNOWN_TOKEN", `That token doesn't resolve to exactly one ${catalog.product} token.`, {
       details: { field, ...(side && { side }) },
       hint: { options: resolutionOptions(resolution, { token: field, chain: chainField }, usable) },
     });
@@ -184,7 +184,10 @@ export function resolveToken(
   const tokens = catalog.tokens[chain.key];
   // A listed chain with no usable token means its entries failed validation, not that it has none.
   if (tokens.length === 0) {
-    throw new ActionError("UPSTREAM_UNAVAILABLE", `The swap token list for ${chain.name} is unavailable.`);
+    throw new ActionError(
+      "UPSTREAM_UNAVAILABLE",
+      `The ${catalog.product} token list for ${chain.name} is unavailable.`,
+    );
   }
   const q = query.trim();
   const notFound = (suggestions: SwapsApiToken[]): Resolution => ({
@@ -198,8 +201,8 @@ export function resolveToken(
   if (byAddress) return { status: "resolved", chain, matchedBy: "address", token: byAddress };
   // A 64-hex value that isn't a token here may be a pasted private key; where it's also a valid account
   // (a NEAR contract account, a Sui package id), it may as well be a token this list doesn't have.
-  if (encodeRecipient(chain.key, q)) rejectHex64Account(q, field, chain.name);
-  else rejectHex64(q, field, chain.name, "token");
+  if (encodeRecipient(chain.key, q)) rejectHex64Account(q, field, chain.name, catalog.product);
+  else rejectHex64(q, field, chain.name, "token", catalog.product);
 
   const isEvm = catalog.chains[chain.key]?.type === "EVM";
   if (q.toLowerCase() === "native" || (isEvm && q.toLowerCase() === EVM_NATIVE_PLACEHOLDER)) {

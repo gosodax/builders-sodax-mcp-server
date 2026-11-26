@@ -13,7 +13,7 @@ import { hashTag } from "../services/requestContext.js";
 import { isHubChain } from "../services/sodax.js";
 import type { BalanceResult } from "../services/swap/balance.js";
 import type { CancelResult } from "../services/swap/cancel.js";
-import { type ActionError, hasDefaultNextStep } from "../services/swap/errors.js";
+import { type ActionError, hasDefaultNextStep, nextStepOf } from "../services/swap/errors.js";
 import { DEFAULT_DEADLINE_MINUTES, type SwapQuote, addressAsk } from "../services/swap/quote.js";
 import { type Resolution, resolutionOptions, tokenLabel } from "../services/swap/resolver.js";
 import { RETRY_AFTER_SEC } from "../services/swap/source.js";
@@ -124,7 +124,7 @@ const giveUp = (what: "swap" | "bridge") =>
 const afterSendAdvice = (tool: string, sent: string, failure: ActionError, seconds: number, what: "swap" | "bridge") =>
   failure.retryable
     ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${giveUp(what)}`
-    : `${failure.nextStep} The user must not send the ${what} again.`;
+    : `${nextStepOf(failure, what)} The user must not send the ${what} again.`;
 
 /** A failure of a code that usually passes, which its throw site says won't: handed off, never retried. */
 const wontPass = (sent: boolean, what: "swap" | "bridge") =>
@@ -132,7 +132,7 @@ const wontPass = (sent: boolean, what: "swap" | "bridge") =>
     ? `Calling again won't help: ${giveUp(what)}`
     : `Calling again won't help: tell the user the SODAX ${what} service can't do this right now, and not to retry it. ${helpFor(what)}`;
 
-const helpFor = (what: "swap" | "bridge") => (what === "bridge" ? BRIDGE_HELP : SWAP_HELP);
+export const helpFor = (what: "swap" | "bridge") => (what === "bridge" ? BRIDGE_HELP : SWAP_HELP);
 
 /**
  * A failure that may pass, before anything was sent: the same call again, as often as the action makes it. A throw
@@ -140,7 +140,7 @@ const helpFor = (what: "swap" | "bridge") => (what === "bridge" ? BRIDGE_HELP : 
  */
 const beforeSendAdvice = (tool: string, failure: ActionError, seconds: number, what: "swap" | "bridge") => {
   if (!hasDefaultNextStep(failure)) {
-    return `${failure.nextStep} Retry at most ${MAX_CALLS} times in a row, ${seconds} seconds apart.`;
+    return `${nextStepOf(failure, what)} Retry at most ${MAX_CALLS} times in a row, ${seconds} seconds apart.`;
   }
   const unavailable =
     failure.code === "CHAIN_UNAVAILABLE"
@@ -898,7 +898,7 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
   const what = tool.startsWith("sodax_bridge_") || args.for === "bridge" ? "bridge" : "swap";
   const advice = sent
     ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : what, failure, seconds, what)
-    : failure.nextStep;
+    : nextStepOf(failure, what);
   // The field the throw site named, which the user is asked again; a failure that names none is handed off.
   const named = failure.details?.field;
   const field = typeof named === "string" ? named : undefined;

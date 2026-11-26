@@ -6,6 +6,7 @@
  * disagree. The continuation is `next`, never `then`: an object with a `then` reads as a promise in JavaScript.
  */
 
+import type { BridgeWarning, PartnerFeeAmount } from "../services/bridge/prepare.js";
 import type { ErrorOption } from "../services/swap/errors.js";
 
 export const SWAP_TOOL_NAMES = [
@@ -22,8 +23,11 @@ export const SWAP_TOOL_NAMES = [
 ] as const;
 export type SwapToolName = (typeof SWAP_TOOL_NAMES)[number];
 
-/** Where a sent swap's funds ended up, once nothing more can change it. */
-export const OUTCOMES = ["succeeded", "cancelled", "refunding", "failed", "held", "unknown"] as const;
+/**
+ * Where a sent swap's funds ended up, once nothing more can change it. `sent`: the relay sent a bridge on to a chain
+ * this server can't follow to its end, whose explorer shows the arrival.
+ */
+export const OUTCOMES = ["succeeded", "sent", "cancelled", "refunding", "failed", "held", "unknown"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
 /** What a swap's confirm summary warns of. */
@@ -116,8 +120,9 @@ export type ConfirmSummary =
       /** What the recipient gets: the amount sent, less the partner fee, in the token received. */
       receive: Amount;
       recipient: string;
-      partnerFee?: { amount: string; symbol: string };
+      partnerFee: PartnerFeeAmount;
       approve?: { spender: string; amount: string; symbol: string };
+      warnings: BridgeWarning[];
     }
   | { kind: "cancel"; chain: string; txHash: string }
   /** The wallet shows this cancel can never land, before a new one replaces it. */

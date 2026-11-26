@@ -8,6 +8,7 @@
 
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { z } from "zod";
+import { BRIDGE_WARNINGS } from "../services/bridge/prepare.js";
 import {
   type ConfirmSummary,
   EXTERNAL_REASONS,
@@ -51,8 +52,9 @@ const summaryUnion = z.discriminatedUnion("kind", [
       send: amount,
       receive: amount.describe("What the recipient gets: the amount sent, less the partner fee."),
       recipient: z.string(),
-      partnerFee: fee.optional(),
+      partnerFee: fee.describe("In the token sent: 0 when the connection charges none."),
       approve: approve.optional(),
+      warnings: z.array(z.enum(BRIDGE_WARNINGS)),
     })
     .passthrough(),
   z.object({ kind: z.literal("cancel"), chain: z.string(), txHash: z.string() }).passthrough(),

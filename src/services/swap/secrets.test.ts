@@ -5,6 +5,7 @@ import { wordlist as italian } from "@scure/bip39/wordlists/italian";
 import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
 import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
 import { describe, expect, it } from "vitest";
+import { type ActionError, nextStepOf } from "./errors.js";
 import { findSecret, screenSecrets, secretRefusalText } from "./secrets.js";
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -130,16 +131,15 @@ describe("screenSecrets", () => {
   it("names the field and never the value, and tells the agent to rotate a SODAX key", () => {
     const refusal = (args: Record<string, unknown>) => {
       try {
-        screenSecrets(args);
+        screenSecrets(args, "swap");
       } catch (error) {
         return error;
       }
     };
-    expect(refusal({ chain: "arb", query: ABANDON })).toMatchObject({
-      code: "SECRET_REJECTED",
-      details: { field: "query" },
-      nextStep: expect.stringContaining("treat it as exposed"),
-    });
+    const phrase = refusal({ chain: "arb", query: ABANDON }) as ActionError;
+    expect(phrase).toMatchObject({ code: "SECRET_REJECTED", details: { field: "query" } });
+    // The code's own advice covers a key or a phrase.
+    expect(nextStepOf(phrase, "swap")).toContain("treat it as exposed");
     expect(refusal({ address: `sodax_${"Ab3-".repeat(11)}` })).toMatchObject({
       code: "SECRET_REJECTED",
       nextStep: expect.stringContaining("rotate that SODAX API key"),
@@ -149,21 +149,23 @@ describe("screenSecrets", () => {
 
   it("refuses a 64-hex amount, but not a 64-digit decimal or a 64-hex value in a field that takes one", () => {
     const hex64 = "ab".repeat(32);
-    expect(() => screenSecrets({ amount: hex64 })).toThrow(
+    expect(() => screenSecrets({ amount: hex64 }, "swap")).toThrow(
       expect.objectContaining({ code: "SECRET_REJECTED", details: { field: "amount" } }),
     );
-    expect(() => screenSecrets({ amount: "1".repeat(64) })).not.toThrow();
-    expect(() => screenSecrets({ address: hex64 })).not.toThrow();
+    expect(() => screenSecrets({ amount: "1".repeat(64) }, "swap")).not.toThrow();
+    expect(() => screenSecrets({ address: hex64 }, "swap")).not.toThrow();
   });
 
   it("skips tx-hash fields: a value that passed their check is a tx hash", () => {
-    expect(() => screenSecrets({ txHash: base58(88), cancelTxHash: base58(87) })).not.toThrow();
-    expect(() => screenSecrets({ chain: base58(88) })).toThrow(expect.objectContaining({ code: "SECRET_REJECTED" }));
+    expect(() => screenSecrets({ txHash: base58(88), cancelTxHash: base58(87) }, "swap")).not.toThrow();
+    expect(() => screenSecrets({ chain: base58(88) }, "swap")).toThrow(
+      expect.objectContaining({ code: "SECRET_REJECTED" }),
+    );
   });
 
   // A Solana tx signature has a Solana secret key's shape: refused elsewhere, without saying it's a key.
   it.each(["query", "address", "quoteId"])("hedges a Solana signature's shape in %s", field => {
-    expect(() => screenSecrets({ [field]: base58(88) })).toThrow(
+    expect(() => screenSecrets({ [field]: base58(88) }, "swap")).toThrow(
       expect.objectContaining({
         code: "SECRET_REJECTED",
         details: { field },

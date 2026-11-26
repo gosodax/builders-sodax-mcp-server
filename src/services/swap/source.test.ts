@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
 import { initSodax } from "../sodax.js";
 import { fixtureCatalog } from "./__fixtures__/catalog.js";
+import { type ActionError, nextStepOf } from "./errors.js";
 import { toChain } from "./resolver.js";
 import { sourceChainFor } from "./source.js";
 import { EVM_SPOKE, HUB } from "./sources/evm.js";
@@ -50,14 +51,19 @@ describe("sourceChainFor", () => {
     [true, "No swap can start from ICON: ask the user which chain they sent the swap from and pass its key."],
   ])("refuses with no source to name (sent: %s)", (sent, nextStep) => {
     const catalog = { ...fixtureCatalog(), chains: {} };
-    expect(() => sourceChainFor(catalog, toChain("0x1.icon"), sent)).toThrow(
-      expect.objectContaining({
-        code: "UNSUPPORTED_SOURCE",
-        nextStep,
-        details: { field: sent ? "chain" : "fromChain" },
-        hint: { options: [] },
-      }),
-    );
+    let refusal: unknown;
+    try {
+      sourceChainFor(catalog, toChain("0x1.icon"), sent);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({
+      code: "UNSUPPORTED_SOURCE",
+      details: { field: sent ? "chain" : "fromChain" },
+      hint: { options: [] },
+    });
+    // With no source to name, the code's own advice.
+    expect(nextStepOf(refusal as ActionError, "swap")).toBe(nextStep);
   });
 
   it("refuses ICON, which isn't a source here", () => {

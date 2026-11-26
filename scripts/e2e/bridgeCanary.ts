@@ -23,9 +23,8 @@ class Failure extends Error {}
 interface Result {
   status?: string;
   error?: { code?: string };
-  nextAction?: { type?: string; next?: { afterSend?: { tool?: string } } };
+  nextAction?: { type?: string; options?: { label?: string }[]; next?: { afterSend?: { tool?: string } } };
   steps?: { kind?: string; chainId?: number; chainType?: string; tx?: { to?: string } }[];
-  pairs?: { from?: { symbol?: string }; to?: { symbol?: string } }[];
   maxAmount?: string;
 }
 
@@ -60,11 +59,13 @@ async function run(): Promise<void> {
   const env = readEnv();
 
   const listed = await callTool(env, "sodax_bridge_tokens", { fromChain: "arbitrum", toChain: "base" });
+  const pairs = listed.nextAction?.options ?? [];
   expect(
-    listed.pairs?.some(pair => pair.from?.symbol === "USDC" && pair.to?.symbol === "USDC") === true,
+    // A label grows a note when another pair shares its symbols.
+    pairs.some(pair => pair.label?.startsWith("USDC to USDC") === true),
     "no USDC pair Arbitrum -> Base",
   );
-  console.log(`tokens: ${listed.pairs?.length} pairs Arbitrum -> Base`);
+  console.log(`tokens: ${pairs.length} pairs Arbitrum -> Base`);
 
   const route = { fromChain: "arbitrum", fromToken: "USDC", toChain: "base", toToken: "USDC", amount: "1" };
   const preview = await callTool(env, "sodax_bridge_preview", route);

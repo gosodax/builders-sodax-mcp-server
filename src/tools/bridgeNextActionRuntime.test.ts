@@ -3,6 +3,7 @@ import {
   ARBITRUM,
   BRIDGE_ID,
   HUB_TX,
+  LATER,
   NON_EVM_READY,
   NOW,
   PAIR_ARGS,
@@ -29,13 +30,20 @@ const TRACK_ARGS = { bridgeId: BRIDGE_ID, chain: ARBITRUM.key, txHash: TX };
 const DELIVERED: TrackState = { status: "delivered", delivery: "delivered", dstTxHash: HUB_TX };
 const WRONG_HASH: TrackState = { status: "not_submitted", reason: "not_this_bridge", alerted: false };
 const harness = (script: Script) => sharedHarness(script, NOW, TX);
+/** As the server answers a bridge stuck at one stage: polled until its budget runs out, then handed over. */
+const stuckAt =
+  (state: TrackState, budgetSec: number): Script["respond"] =>
+  (_tool, _args, _nth, now) => {
+    const until = NOW + budgetSec * 1000;
+    return tracked(now < until ? { ...state, pollUntil: new Date(until).toISOString() } : state);
+  };
 
 describe("the bridge nextAction runtime", () => {
   it("chooses a pair and amount, previews, prepares, confirms, sends and tracks without reading nextStep", async () => {
     const stages: TrackState[] = [
-      { status: "awaiting_source", seenOnChain: true },
-      { status: "relaying" },
-      { status: "in_transit", hubTxHash: HUB_TX },
+      { status: "awaiting_source", seenOnChain: true, pollUntil: LATER },
+      { status: "relaying", pollUntil: LATER },
+      { status: "in_transit", hubTxHash: HUB_TX, pollUntil: LATER },
       DELIVERED,
     ];
     const bridge = harness({
@@ -199,26 +207,29 @@ describe("the bridge nextAction runtime", () => {
   });
 
   it.each([
-    // A node that can't say whether it has the tx: the full budget, then the wallet's word.
-    [{ status: "awaiting_source", seenOnChain: null }, "external:check_wallet"],
-    [{ status: "relaying" }, "external:still_in_progress"],
-    [{ status: "in_transit", hubTxHash: HUB_TX }, "external:still_in_progress"],
-  ] satisfies [TrackState, string][])("hands off a stuck %s after its poll budget", async (state, ask) => {
-    const bridge = harness({ respond: () => tracked(state) });
-    expect(await run(bridge.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({ stop: "handoff" });
-    expect(bridge.of(TRACK)).toHaveLength(31);
-    expect(bridge.asked).toEqual([ask]);
-    expect(bridge.sends()).toBe(0);
-  });
+    // A node that can't say whether it has the tx: polled ten minutes, then the wallet and the hash it shows.
+    [{ status: "awaiting_source", seenOnChain: null }, 600, 41, ["external:check_wallet", "provide"], "declined"],
+    [{ status: "relaying" }, 600, 31, ["external:still_in_progress"], "handoff"],
+    [{ status: "in_transit", hubTxHash: HUB_TX }, 600, 31, ["external:still_in_progress"], "handoff"],
+  ] satisfies [TrackState, number, number, string[], string][])(
+    "hands off a stuck %s once the server's poll budget runs out",
+    async (state, budgetSec, calls, asked, stop) => {
+      const bridge = harness({ respond: stuckAt(state, budgetSec) });
+      expect((await run(bridge.host, { tool: TRACK, args: TRACK_ARGS })).stop).toBe(stop);
+      expect(bridge.of(TRACK)).toHaveLength(calls);
+      expect(bridge.asked).toEqual(asked);
+      expect(bridge.sends()).toBe(0);
+    },
+  );
 
   it("asks for the hash again soon when the node doesn't know the tx, bounded, never sending again", async () => {
     const bridge = harness({
-      respond: () => tracked({ status: "awaiting_source", seenOnChain: false }),
+      respond: stuckAt({ status: "awaiting_source", seenOnChain: false }, 120),
       answers: { provide: () => ({ txHash: TX }) },
     });
     const ending = await run(bridge.host, { tool: TRACK, args: TRACK_ARGS });
     expect(ending.stop).toBe("handoff");
-    // The first call and 8 polls, then one call per answer, three at most: the next answer goes to a person.
+    // Two minutes of polls, then one call per answer, three at most: the next answer goes to a person.
     expect(bridge.of(TRACK)).toHaveLength(12);
     expect(bridge.asked).toEqual(["provide", "provide", "provide", "provide", "external:help_desk"]);
     expect(bridge.of(TRACK).every(call => call.args.bridgeId === BRIDGE_ID)).toBe(true);
@@ -241,7 +252,8 @@ describe("the bridge nextAction runtime", () => {
     [{ status: "relay_failed", alerted: true }, "held"],
     [{ status: "held_on_hub", hubTxHash: HUB_TX, alerted: true }, "held"],
     [{ status: "not_submitted", reason: "multiple_messages", alerted: true }, "unknown"],
-    [{ status: "delivered", dstTxHash: "destination-tx", delivery: "sent" }, "succeeded"],
+    // Sent on to a chain this server can't follow to its end: never reported as arrived.
+    [{ status: "delivered", dstTxHash: "destination-tx", delivery: "sent" }, "sent"],
   ] satisfies [TrackState, string][])("ends a %s without sending another bridge", async (state, outcome) => {
     const bridge = harness({ respond: () => tracked(state) });
     expect(await run(bridge.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({ stop: "terminal", outcome });

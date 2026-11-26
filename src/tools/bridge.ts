@@ -5,15 +5,20 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listBridgePairs } from "../services/bridge/pair.js";
+import { listBridgeDestinations, listBridgePairs } from "../services/bridge/pair.js";
 import { prepareBridge, previewBridge } from "../services/bridge/prepare.js";
-import { trackBridge } from "../services/bridge/track.js";
-import { forBridge } from "../services/bridge/wording.js";
+import { trackBridgeWaiting } from "../services/bridge/track.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { SIGN_WINDOW_TEXT } from "../services/signWindow.js";
 import { amountText } from "../services/swap/units.js";
 import { type ActionModule, registerActionTool } from "./actionTool.js";
-import { pairsDecision, prepareDecision, previewDecision, trackDecision } from "./bridgeDecisions.js";
+import {
+  destinationsDecision,
+  pairsDecision,
+  prepareDecision,
+  previewDecision,
+  trackDecision,
+} from "./bridgeDecisions.js";
 import { addressArg, chainArg, screened, textArg, tokenArg, txHashArg } from "./swap.js";
 
 // What is sent and received; a function, so each tool gets its own schema.
@@ -29,21 +34,28 @@ const pairArgs = () => ({
     .describe('Amount the user sends, in token units, as a plain decimal string: "0.5", not "1,000" or "1e6".'),
 });
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
-const BRIDGE_MODULE: ActionModule = { module: "bridge", reword: forBridge };
+const BRIDGE_MODULE: ActionModule = { module: "bridge" };
 
 export function registerBridgeTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_bridge_tokens",
-    "List the tokens that bridge from one chain to another, each with the token it arrives as. Reads no chain and builds nothing: use it to find what to bridge before sodax_bridge_preview or sodax_bridge_prepare.",
+    "List the tokens that bridge from one chain to another, as nextAction's options, each with the token it arrives as; without toChain, the chains a bridge reaches from fromChain. Reads no chain and builds nothing: use it to find what to bridge before sodax_bridge_preview or sodax_bridge_prepare.",
     {
       fromChain: chainArg().describe("Source chain name, ticker, key or EVM chain id."),
-      toChain: chainArg().describe("Destination chain name, ticker, key or EVM chain id."),
+      toChain: chainArg()
+        .optional()
+        .describe("Destination chain name, ticker, key or EVM chain id. Omit it to list the chains a bridge reaches."),
     },
     readOnly,
     async ({ fromChain, toChain }) => {
-      const pairs = listBridgePairs(fromChain, toChain);
-      return { ...pairs, ...pairsDecision(pairs) };
+      if (!toChain) {
+        const reached = listBridgeDestinations(fromChain);
+        return { ...reached, ...destinationsDecision(reached) };
+      }
+      const listed = listBridgePairs(fromChain, toChain);
+      // The pairs go out once, as the decision's options.
+      return { status: listed.status, from: listed.from, to: listed.to, ...pairsDecision(listed) };
     },
     BRIDGE_MODULE,
   );
@@ -51,7 +63,7 @@ export function registerBridgeTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_bridge_preview",
-    "Preview a bridge: what the user would receive (1:1 less any partner fee), and the most the route takes now. It builds and holds nothing, so use it to show a bridge; call sodax_bridge_prepare once the user is ready to sign.",
+    "Preview a bridge: what the user would receive (1:1 less any partner fee), and the most the route takes now (maxAmount, in the token sent). It builds and holds nothing, so use it to show a bridge; call sodax_bridge_prepare once the user is ready to sign.",
     pairArgs(),
     readOnly,
     async args => {
@@ -83,10 +95,10 @@ export function registerBridgeTools(server: McpServer): void {
   registerActionTool(
     server,
     "sodax_bridge_submit_and_track",
-    "Submit and track a bridge once the user's wallet has sent its bridge transaction. Call it right after sending, then follow each result's nextAction until terminal is true, or its nextStep. Repeated calls never resubmit. It checks the transaction on chain against the bridge's build before submitting. This server never signs or moves funds.",
+    "Where a sent bridge is, and safe to call again at any time: repeated calls never resubmit. Call it right after the user's wallet sends the bridge transaction, since its first call is what submits the bridge, after checking the transaction on chain against the bridge's build; then follow each result's nextAction until terminal is true, or its nextStep. This server never signs or moves funds.",
     {
       txHash: txHashArg().describe(
-        "Hash of the bridge step's transaction on the source chain, as the wallet shows it, not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
+        "Hash of the bridge step's transaction on the source chain, as the wallet shows it (EVM: 0x and 64 hex characters), not the approve's. From a batch, the transaction hash wallet_getCallsStatus reports, not the batch id.",
       ),
       bridgeId: screened(z.string().trim().toLowerCase().uuid(), {
         notHex64: "a bridgeId",
@@ -98,7 +110,7 @@ export function registerBridgeTools(server: McpServer): void {
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async args => {
-      const result = await trackBridge(args);
+      const result = await trackBridgeWaiting(args);
       return { ...result, ...trackDecision(result) };
     },
     BRIDGE_MODULE,

@@ -12,23 +12,21 @@ import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/m
 import type { ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { SWAP_HELP } from "../constants.js";
 import { getRequestContext } from "../services/requestContext.js";
 import { alertOperator } from "../services/swap/alerts.js";
-import { ALERTED_CODES, ActionError } from "../services/swap/errors.js";
+import { ALERTED_CODES, ActionError, type Product } from "../services/swap/errors.js";
 import { screenSecrets } from "../services/swap/secrets.js";
 import { markFailure } from "../services/toolFailure.js";
 import { registerAppTool } from "../services/toolRegistry.js";
 import { type Decision, OUTCOMES, type SwapToolName } from "./nextAction.js";
 import { nextActionField } from "./nextActionSchema.js";
-import { errorDecision } from "./swapDecisions.js";
+import { errorDecision, helpFor } from "./swapDecisions.js";
 
 type ActionOutput = Record<string, unknown> & { status: string } & Decision;
 
-/** The toolset an action tool belongs to: where it's counted and alerted from, and its failures' wording. */
+/** The toolset an action tool belongs to: where it's counted and alerted from. */
 export interface ActionModule {
-  module: "swap" | "bridge";
-  reword?: (failure: ActionError) => ActionError;
+  module: Product;
 }
 
 const SWAP_MODULE: ActionModule = { module: "swap" };
@@ -56,11 +54,10 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   annotations: ToolAnnotations,
   run: (args: ShapeOutput<Args>) => Promise<ActionOutput>,
   /** Where the tool is counted and alerted from, and how its failures are worded. */
-  { module, reword }: ActionModule = SWAP_MODULE,
+  { module }: ActionModule = SWAP_MODULE,
 ): void {
   /** A failure as the tool returns it; `bug` (what was thrown) also makes its "Tool call" record the error. */
-  const failed = (thrown: ActionError, args: ShapeOutput<Args>, bug?: unknown): CallToolResult => {
-    const failure = reword ? reword(thrown) : thrown;
+  const failed = (failure: ActionError, args: ShapeOutput<Args>, bug?: unknown): CallToolResult => {
     if (ALERTED_CODES.includes(failure.code)) {
       // ActionError messages here are fixed text; an unexpected error is named by its class only.
       const reason =
@@ -87,10 +84,12 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
   };
 
   const handler = async (args: ShapeOutput<Args>): Promise<CallToolResult> => {
+    // The token tools serve both toolsets: their `for` says which.
+    const product: Product = module === "bridge" || (args as { for?: unknown }).for === "bridge" ? "bridge" : "swap";
     let output: ActionOutput;
     try {
       // After the SDK's zod check, before the handler's own validation, an upstream call or a log.
-      screenSecrets(args);
+      screenSecrets(args, product);
       output = await run(args);
     } catch (error) {
       if (error instanceof ActionError) return failed(error, args);
@@ -102,7 +101,7 @@ export function registerActionTool<Args extends ZodRawShapeCompat>(
       const bug = new ActionError("INTERNAL", "This server built a result outside its contract.", {
         // The same call builds it the same way, and a prepare holds a quote each time.
         retryable: false,
-        nextStep: `Tell the user this server can't answer that call right now, and not to repeat it. ${SWAP_HELP}`,
+        nextStep: `Tell the user this server can't answer that call right now, and not to repeat it. ${helpFor(product)}`,
         details: { reason: "output_contract" },
       });
       return failed(bug, args, thrown ?? bug);

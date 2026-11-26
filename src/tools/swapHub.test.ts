@@ -8,7 +8,8 @@ import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { INTENT_CANCELLED_TOPIC, INTENT_CREATED_TOPIC } from "../services/swap/sourceTx.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo } from "../services/swap/track.js";
+import { trackWait } from "../services/trackWait.js";
 import {
   CREATOR,
   DEADLINE,

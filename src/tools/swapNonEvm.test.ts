@@ -26,7 +26,8 @@ import { STELLAR, stellarEvidence } from "../services/swap/sources/stellar.js";
 import { SUI, suiEvidence } from "../services/swap/sources/sui.js";
 import type { ConnectionMessage, SpokeEvidence } from "../services/swap/sources/types.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
-import { clearUnseenMemo, trackWait } from "../services/swap/track.js";
+import { clearUnseenMemo } from "../services/swap/track.js";
+import { trackWait } from "../services/trackWait.js";
 import { CREATOR, NOW, cacheQuote, callTool, stubBackend } from "./__fixtures__/swapBackend.js";
 
 // Unit tests don't reach a chain: each source tx is a real one's response, or one changed from it, read by its

@@ -10,7 +10,7 @@ import { callerKeyHash } from "../requestContext.js";
 import { holdForTrack } from "../signWindow.js";
 import { hubIntentClosed } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type Product, nextStepOf } from "./errors.js";
 import { getCachedQuote } from "./quoteCache.js";
 import { chainOptions, isSwapSource, resolveSwapChain, swapChains, toChain } from "./resolver.js";
 import { depositMessages } from "./sourceTx.js";
@@ -29,7 +29,7 @@ export type SwapRef = { txHash: string; chain: ChainInfo; quoteId?: string; inte
 export const isHubSource = (source: SourceChain) => source.kind === "hub";
 
 /** A tx hash as the source chain spells it; one that can't be its chain's is refused before anything is read. */
-export function sourceTxHash(source: SwapSource, value: string, field = "txHash"): string {
+export function sourceTxHash(source: SwapSource, value: string, product: Product, field = "txHash"): string {
   const { format, spell } = source.adapter.txHash;
   const txHash = spell(value.trim());
   if (txHash === undefined) {
@@ -39,9 +39,10 @@ export function sourceTxHash(source: SwapSource, value: string, field = "txHash"
         details: { field, format },
       });
     // A batch id is EVM's: a wallet that sent a batch reports both.
-    const { nextStep } = refusal();
     throw source.adapter.family === "EVM"
-      ? refusal(`${nextStep} From a batch, it's the transaction hash wallet_getCallsStatus reports, not the batch id.`)
+      ? refusal(
+          `${nextStepOf(refusal(), product)} From a batch, it's the transaction hash wallet_getCallsStatus reports, not the batch id.`,
+        )
       : refusal();
   }
   return txHash;
@@ -54,7 +55,8 @@ export function sourceTxHash(source: SwapSource, value: string, field = "txHash"
  */
 export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo, sent = false): SourceChain {
   const source = pinnedSourceOf(chain.key);
-  if (!source || !isSwapSource(catalog, chain.key)) throw unsupportedSource(chain, swapChains(catalog, true), sent);
+  if (!source || !isSwapSource(catalog, chain.key))
+    throw unsupportedSource(chain, catalog.product, swapChains(catalog, true), sent);
   return source;
 }
 
@@ -64,15 +66,17 @@ export function sourceChainFor(catalog: SwapCatalog, chain: ChainInfo, sent = fa
  */
 function unsupportedSource(
   chain: ChainInfo,
+  product: Product,
   sources: ChainInfo[] = sourceChainKeys().map(toChain),
   sent = false,
 ): ActionError {
   const names = sources.map(({ name }) => name).join(", ");
   const nextStep = sent
-    ? `No swap can start from ${chain.name}: ask the user which chain they sent the swap from${names && ` (one of ${names})`} and pass its key.`
-    : names && `A swap can start only from ${names}: ask the user to swap from one of them.`;
+    ? `No ${product} can start from ${chain.name}: ask the user which chain they sent the ${product} from${names && ` (one of ${names})`} and pass its key.`
+    : names && `A ${product} can start only from ${names}: ask the user to ${product} from one of them.`;
   const field = sent ? "chain" : "fromChain";
-  return new ActionError("UNSUPPORTED_SOURCE", `Swaps from ${chain.name} aren't supported here.`, {
+  const plural = product === "bridge" ? "Bridges" : "Swaps";
+  return new ActionError("UNSUPPORTED_SOURCE", `${plural} from ${chain.name} aren't supported here.`, {
     nextStep: nextStep || undefined,
     details: { field, ...(sources.length > 0 && { sourceChains: sources }) },
     hint: { options: chainOptions(sources, field) },
@@ -82,7 +86,7 @@ function unsupportedSource(
 /** The source from the SDK config alone: a quoted chain stays trackable after the live catalog drops it. */
 function pinnedSource(chain: ChainInfo): SourceChain {
   const source = pinnedSourceOf(chain.key);
-  if (!source) throw unsupportedSource(chain, undefined, true);
+  if (!source) throw unsupportedSource(chain, "swap", undefined, true);
   return source;
 }
 
@@ -105,7 +109,7 @@ export async function resolveSentTx(input: {
   chain?: string;
 }): Promise<{ source: SwapSource; txHash: string }> {
   const source = await resolveSource(input);
-  const txHash = sourceTxHash(source, input.txHash);
+  const txHash = sourceTxHash(source, input.txHash, "swap");
   if (source.quote) holdForTrack(source.quote);
   return { source, txHash };
 }

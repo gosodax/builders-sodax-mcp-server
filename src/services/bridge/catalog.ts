@@ -20,7 +20,7 @@ const chains = spokeChainConfig as Record<string, { supportedTokens?: Record<str
 let catalog: SwapCatalog | undefined;
 
 export function getBridgeCatalog(): SwapCatalog {
-  catalog ??= parseCatalog(bridgeTokens(), spokeChainConfig);
+  catalog ??= parseCatalog(bridgeTokens(), spokeChainConfig, "bridge");
   return catalog;
 }
 

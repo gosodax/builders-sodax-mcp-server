@@ -39,11 +39,21 @@ const refusal = (fn: () => unknown) => {
 afterEach(() => {
   // The store is the module's: leave it empty for the next test, claimed builds too.
   vi.advanceTimersByTime(25 * 60 * 60 * 1000);
-  expect(openBridges()).toBe(0);
+  expect(openBridges().open).toBe(0);
   vi.useRealTimers();
 });
 
 describe("prepared bridges", () => {
+  it("tells a deploy how many builds a restart would strand, and until when", () => {
+    vi.useFakeTimers();
+    const kept = asKey("deploy", () => putBridge(entry));
+    expect(openBridges()).toEqual({ open: 1, openUntil: new Date(kept.expiresAt).toISOString() });
+    claimBridge(kept.bridgeId, `0x${"a".repeat(64)}`);
+    // Submitted: the backend has it, and a restart no longer strands it.
+    markHandedOver(kept, "submitted");
+    expect(openBridges()).toEqual({ open: 0, openUntil: null });
+  });
+
   it("refuses a key at its cap of builds not yet sent, before anything is built, and frees one once sent", () => {
     vi.useFakeTimers();
     const kept = asKey("full", () => Array.from({ length: 1_000 }, () => putBridge(entry)));
@@ -63,9 +73,9 @@ describe("prepared bridges", () => {
     expect(claimBridge(kept[0]?.bridgeId as string, `0x${"a".repeat(64)}`)).toBe("claimed");
     expect(() => asKey("full", () => checkBridgeRoom())).not.toThrow();
     // Sent but not yet handed over, it still counts as one a restart would strand.
-    expect(openBridges()).toBe(1_000);
-    markHandedOver(kept[0] as PreparedBridge);
-    expect(openBridges()).toBe(999);
+    expect(openBridges().open).toBe(1_000);
+    markHandedOver(kept[0] as PreparedBridge, "row");
+    expect(openBridges().open).toBe(999);
   });
 
   it("refuses a client at its cap of open builds whatever keys it sends, and no other client", () => {
@@ -119,15 +129,15 @@ describe("prepared bridges", () => {
 
   it("keeps a build a day once its deposit is checked, counting it open until the deposit is handed over", () => {
     vi.useFakeTimers();
-    const before = openBridges();
+    const before = openBridges().open;
     const build = asKey("claiming", () => putBridge(entry));
     expect(claimBridge(build.bridgeId, `0x${"a".repeat(64)}`)).toBe("claimed");
     // Sent, not yet submitted: a restart would strand it.
-    expect(openBridges()).toBe(before + 1);
+    expect(openBridges().open).toBe(before + 1);
     vi.advanceTimersByTime(23 * 60 * 60 * 1000);
     expect(getBridge(build.bridgeId)?.depositTxHash).toBe(`0x${"a".repeat(64)}`);
-    markHandedOver(build);
-    expect(openBridges()).toBe(before);
+    markHandedOver(build, "row");
+    expect(openBridges().open).toBe(before);
     vi.advanceTimersByTime(2 * 60 * 60 * 1000);
     expect(getBridge(build.bridgeId)).toBeUndefined();
   });
@@ -144,8 +154,8 @@ describe("prepared bridges", () => {
     if (!first || !second || !third) throw new Error("none kept");
     // None handed over: only its build submits a deposit, so each stays, past the cap.
     const over = claimedOne();
-    expect(openBridges()).toBe(10_001);
-    markHandedOver(second);
+    expect(openBridges().open).toBe(10_001);
+    markHandedOver(second, "row");
     const last = claimedOne();
     expect(getBridge(second.bridgeId)).toBeUndefined();
     for (const kept of [first, third, over, last]) expect(getBridge(kept.bridgeId)).toBeDefined();
@@ -153,11 +163,11 @@ describe("prepared bridges", () => {
 
   it("drops a build once it expires, and its room with it", () => {
     vi.useFakeTimers();
-    const before = openBridges();
+    const before = openBridges().open;
     const { bridgeId } = asKey("expiring", () => putBridge(entry));
-    expect(openBridges()).toBe(before + 1);
+    expect(openBridges().open).toBe(before + 1);
     vi.advanceTimersByTime(40 * 60 * 1000);
     expect(getBridge(bridgeId)).toBeUndefined();
-    expect(openBridges()).toBe(0);
+    expect(openBridges().open).toBe(0);
   });
 });

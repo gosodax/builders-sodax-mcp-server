@@ -81,7 +81,7 @@ export async function cancelSwap(input: {
   // Its cancel was confirmed here already. One found closed is read again: it may be the user's own cancel.
   if (quote?.handedOver === "cancelled") return { ...base, status: "not_cancellable", reason: "cancelled" };
 
-  const cancelTxHash = input.cancelTxHash && sourceTxHash(source, input.cancelTxHash, "cancelTxHash");
+  const cancelTxHash = input.cancelTxHash && sourceTxHash(source, input.cancelTxHash, "swap", "cancelTxHash");
 
   // The swap first: a sent cancel is only worth waiting for if there's something to cancel.
   const row = await getSubmitTxStatus(txHash, source.chain.key);

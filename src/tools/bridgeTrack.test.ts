@@ -2,6 +2,7 @@ import { EvmHubProvider } from "@sodax/sdk";
 import { hubConfig } from "@sodax/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getBridge } from "../services/bridge/store.js";
+import { clearPollClock } from "../services/bridge/track.js";
 import { logger } from "../services/logger.js";
 import {
   type EvmReceipt,
@@ -17,6 +18,7 @@ import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { rlpList } from "../services/swap/__fixtures__/encode.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { HOOK_FAILED_TOPIC, TRANSFER_TOPIC } from "../services/swap/sourceTx.js";
+import { trackWait } from "../services/trackWait.js";
 import { bridgeClient } from "./__fixtures__/swapClient.js";
 
 // The chain reads are scripted; the builds and checks run on the real SDK.
@@ -62,6 +64,7 @@ const hookFailedLog = (wallet = HUB_WALLET, address: string = hubConfig.addresse
   data: `${word(wallet)}${"40".padStart(64, "0")}${"0".repeat(64)}`,
 });
 
+const DEFAULT_WAIT = { ...trackWait };
 let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
 /** The backend's row for TX, or none; the submits it took, and how it answers one. */
 let row: Record<string, unknown> | undefined;
@@ -69,6 +72,9 @@ let submits: Record<string, unknown>[];
 let submitAnswer: () => Response;
 
 beforeEach(() => {
+  // One read per call: the waits between reads are the runtime tests'.
+  Object.assign(trackWait, { stepMs: 1, maxMs: 0 });
+  clearPollClock();
   vi.spyOn(EvmHubProvider.prototype, "getUserHubWalletAddress").mockResolvedValue(HUB_WALLET);
   vi.mocked(bridgeLimit).mockResolvedValue({ amount: 10n ** 12n, decimals: 6, type: "DEPOSIT_LIMIT" });
   vi.mocked(isTxKnown).mockResolvedValue(false);
@@ -105,6 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Object.assign(trackWait, DEFAULT_WAIT);
   vi.restoreAllMocks();
 });
 
@@ -119,8 +126,15 @@ async function call(name: string, args: Record<string, unknown>) {
     terminal: boolean;
     outcome?: string;
     nextAction: Record<string, unknown>;
-    error?: { code: string };
+    error?: { code: string; message?: string };
   };
+}
+
+/** A receipt the chain serves only once `mined` is called: calls made meanwhile are in flight together. */
+function pendingReceipt() {
+  let mined!: (receipt: EvmReceipt) => void;
+  vi.mocked(getEvmReceipt).mockReturnValue(new Promise(resolve => (mined = resolve)));
+  return (receipt: EvmReceipt) => mined(receipt);
 }
 
 /** A prepared bridge, and the receipt its deposit would have on Arbitrum. */
@@ -144,12 +158,144 @@ describe("sodax_bridge_submit_and_track", () => {
       { txHash: TX, srcChainKey: "0xa4b1.arbitrum", walletAddress: USER, relayData: kept.relayData },
     ]);
     // Kept a day from here, and no longer one a restart strands.
-    expect(getBridge(bridgeId)).toMatchObject({ depositTxHash: TX, handedOver: true });
+    expect(getBridge(bridgeId)).toMatchObject({ depositTxHash: TX, handedOver: "submitted" });
     expect(getBridge(bridgeId)?.expiresAt).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
     // Again: the backend's row now answers, and nothing is resubmitted.
     row = { status: "relaying" };
     await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
     expect(submits).toHaveLength(1);
+  });
+
+  it("never submits again while the backend's row isn't readable yet", async () => {
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    // The row lags the submit: still followed, never submitted twice.
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "relaying",
+    });
+    expect(submits).toHaveLength(1);
+  });
+
+  it("submits a deposit whose row the backend lost again, once a minute at most", async () => {
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "relaying",
+    });
+    expect(submits).toHaveLength(2);
+  });
+
+  it("keeps what an earlier read in the call found when a later one fails", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 1_000 });
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    const answer = fetchSpy.getMockImplementation();
+    // The status route fails once the deposit is submitted: the call still says it's on its way.
+    fetchSpy.mockImplementation(async (input, init) =>
+      submits.length > 0 && String(input).includes("/submit-tx/status")
+        ? new Response("down", { status: 503 })
+        : (answer as typeof fetch)(input, init),
+    );
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "relaying",
+    });
+    expect(submits).toHaveLength(1);
+  });
+
+  it("answers concurrent calls for one bridge with one check and one submit", async () => {
+    const { bridgeId, deposit } = await prepared();
+    const mined = pendingReceipt();
+    const calls = [
+      call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX }),
+      call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX }),
+    ];
+    // Released whatever the wait finds, so a failure here leaves no call in flight for the next test.
+    await vi.waitFor(() => expect(getEvmReceipt).toHaveBeenCalled()).finally(() => mined(deposit));
+    for (const out of await Promise.all(calls)) expect(out).toMatchObject({ status: "relaying" });
+    expect(getEvmReceipt).toHaveBeenCalledTimes(1);
+    expect(submits).toHaveLength(1);
+  });
+
+  it("never answers a call naming the build with one made without it", async () => {
+    const { bridgeId, deposit } = await prepared();
+    const mined = pendingReceipt();
+    const withoutBuild = call("sodax_bridge_submit_and_track", { chain: "arbitrum", txHash: TX });
+    const withBuild = call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    await vi.waitFor(() => expect(getEvmReceipt).toHaveBeenCalledTimes(2)).finally(() => mined(deposit));
+    expect(await withoutBuild).toMatchObject({ status: "not_submitted", reason: "unknown_bridge" });
+    expect(await withBuild).toMatchObject({ status: "relaying" });
+    expect(submits).toHaveLength(1);
+  });
+
+  it("waits within one call for the deposit to be mined, as agents can't wait between calls", async () => {
+    Object.assign(trackWait, { stepMs: 1, maxMs: 1_000 });
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValueOnce(null).mockResolvedValue(deposit);
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "relaying",
+    });
+    expect(submits).toHaveLength(1);
+  });
+
+  it("hands a bridge stuck at one stage to a person once this server has polled it long enough", async () => {
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    const first = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    expect(first.pollUntil).toEqual(expect.any(String));
+    expect(first.nextAction).toMatchObject({ type: "call_tool", until: first.pollUntil });
+    // Past the budget on the server's clock, whatever the agent counted, and at once: no wait for a hand-off.
+    row = { status: "relaying" };
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(first.pollUntil as string) + 1);
+    Object.assign(trackWait, { stepMs: 1, maxMs: 1_000 });
+    const reads = () => fetchSpy.mock.calls.filter(([url]) => String(url).includes("/submit-tx/status")).length;
+    const before = reads();
+    const late = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    expect(reads() - before).toBe(1);
+    expect(late).toMatchObject({ status: "relaying", terminal: false });
+    expect(late).not.toHaveProperty("pollUntil");
+    expect(late.nextAction).toMatchObject({ type: "external", reason: "still_in_progress" });
+  });
+
+  it("refuses a malformed hash, asking for the bridge's, before any read", async () => {
+    const { bridgeId } = await prepared();
+    const out = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: "0x1234" });
+    expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", field: "txHash" });
+    expect(out.nextStep).toMatch(
+      /^Ask for the hash of the transaction the user's wallet sent on the bridge's source chain/,
+    );
+    expect(out.nextStep).toContain("not the batch id");
+    expect(getEvmReceipt).not.toHaveBeenCalled();
+  });
+
+  it("records a resubmit submit-tx refuses, never submitting it again", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const { bridgeId, deposit } = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(deposit);
+    await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    // A minute on, the row still missing: submitted again, and refused this time.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    submitAnswer = () => Response.json({ message: "walletAddress must be shorter" }, { status: 400 });
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "not_submitted",
+      reason: "submit_refused",
+    });
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "not_submitted",
+      reason: "submit_refused",
+    });
+    expect(submits).toHaveLength(2);
+  });
+
+  it("asks for the source chain when a hash comes without it or a bridgeId", async () => {
+    const out = await call("sodax_bridge_submit_and_track", { txHash: TX });
+    expect(out.error).toMatchObject({ code: "QUOTE_NOT_FOUND", field: "chain" });
+    expect(out.error?.message).toBe(
+      "A bridge's transaction hash needs its source chain, or the bridgeId from sodax_bridge_prepare.",
+    );
+    expect(out.nextAction).toMatchObject({ type: "provide", fields: [{ name: "chain" }] });
   });
 
   it.each([
@@ -244,8 +390,17 @@ describe("sodax_bridge_submit_and_track", () => {
       expect.objectContaining({ alert: "bridge_submit_rejected", "tx.hash": TX }),
       expect.any(String),
     );
+    // A repeat reports it, never submitting it again: only an operator can relay it now.
+    expect(await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX })).toMatchObject({
+      status: "not_submitted",
+      reason: "submit_refused",
+    });
+    expect(submits).toHaveLength(1);
+    // One that may pass is retried.
     submitAnswer = () => new Response("down", { status: 503 });
-    const retried = await call("sodax_bridge_submit_and_track", { bridgeId, txHash: TX });
+    const other = await prepared();
+    vi.mocked(getEvmReceipt).mockResolvedValue(other.deposit);
+    const retried = await call("sodax_bridge_submit_and_track", { bridgeId: other.bridgeId, txHash: TX });
     expect(retried.error?.code).toBe("UPSTREAM_UNAVAILABLE");
     expect(submits).toHaveLength(2);
   });
@@ -458,7 +613,7 @@ describe("sodax_bridge_submit_and_track", () => {
       vi.mocked(relayPackets).mockResolvedValue([packet({ dst, dstTx })]);
       const out = await call("sodax_bridge_submit_and_track", { chain: "arbitrum", txHash: TX });
       expect(out).toMatchObject({ status: "delivered", dstTxHash: dstTx });
-      expect(out.nextStep).toContain(`destination tx ${dstTx})`);
+      expect(out.nextStep).toContain(dstTx);
     });
 
     it("from Sonic, holds a bridge the backend gave up on until the relay delivers it", async () => {
@@ -478,13 +633,15 @@ describe("sodax_bridge_submit_and_track", () => {
       expect(await track()).toMatchObject({ status: "delivered", dstTxHash: DST_TX });
     });
 
-    it("without the build, calls a packet to Bitcoin sent, not delivered", async () => {
+    it("without the build, calls a packet to Bitcoin sent, never succeeded: Bitcoin hasn't run it yet", async () => {
       row = { status: "executed", result: { dstIntentTxHash: HUB_TX } };
       vi.mocked(getEvmReceipt).mockResolvedValue(hubReceipt([]));
       vi.mocked(relayPackets).mockResolvedValue([packet({ dst: "bitcoin" })]);
       expect(await call("sodax_bridge_submit_and_track", { chain: "arbitrum", txHash: TX })).toMatchObject({
         status: "delivered",
         delivery: "sent",
+        terminal: true,
+        outcome: "sent",
       });
     });
   });

@@ -1,7 +1,8 @@
 # The nextAction contract
 
 Every swap and bridge tool result, errors included, carries a machine-readable `nextAction`, `terminal` (no tool call
-can move the result on any more) and, once a sent swap or bridge has ended, its `outcome`: `succeeded`, `cancelled`,
+can move the result on any more) and, once a sent swap or bridge has ended, its `outcome`: `succeeded`, `sent` (the relay
+sent a bridge on to a chain this server can't follow to its end, whose explorer shows the arrival), `cancelled`,
 `refunding`, `failed` (nothing was swapped or bridged), `held` (the deposit is safe on chain and SODAX recovers it) or
 `unknown`. `nextStep` says the same in a sentence: both come from one decision, so they don't disagree. Each type's
 fields are in the JSON Schema the server serves as the MCP resource `sodax://next-action/schema`.

@@ -13,7 +13,7 @@ import { wordlist as italian } from "@scure/bip39/wordlists/italian";
 import { wordlist as portuguese } from "@scure/bip39/wordlists/portuguese";
 import { wordlist as spanish } from "@scure/bip39/wordlists/spanish";
 import { BASE58, BASE58_64_BYTES, HEX_64, SODAX_KEY_PATTERN, base58Bytes, isSodaxKey } from "../../constants.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type Product, nextStepOf } from "./errors.js";
 import { AMOUNT_PATTERN } from "./units.js";
 
 // A 64-byte base58 value is a Solana secret key or, as often, a Solana tx signature: refused, but hedged.
@@ -111,10 +111,12 @@ function secretRefusal(kind: SecretKind, field?: string): ActionError {
   );
 }
 
-function hex64Refusal(notA: string, field?: string, trackTool = "sodax_swap_submit_and_track"): ActionError {
+const trackTool = (product: Product) => `sodax_${product}_submit_and_track`;
+
+function hex64Refusal(notA: string, field?: string, track = trackTool("swap")): ActionError {
   return new ActionError("SECRET_REJECTED", `That's a 64-hex value, not ${notA}.`, {
     details: { field },
-    nextStep: ifKeyElse(`a transaction hash, pass it to ${trackTool}`),
+    nextStep: ifKeyElse(`a transaction hash, pass it to ${track}`),
   });
 }
 
@@ -124,14 +126,14 @@ const TX_HASH_FIELDS = new Set(["txHash", "cancelTxHash"]);
 const NOT_HEX64_FIELDS = new Map([["amount", "an amount"]]);
 
 /** Refuses the first string argument that looks like a secret, naming the field, never the value. */
-export function screenSecrets(args: Record<string, unknown>): void {
+export function screenSecrets(args: Record<string, unknown>, product: Product): void {
   for (const [field, value] of Object.entries(args)) {
     if (typeof value !== "string" || TX_HASH_FIELDS.has(field)) continue;
     const kind = findSecret(value);
     if (kind) throw secretRefusal(kind, field);
     const notA = NOT_HEX64_FIELDS.get(field);
     // 64 decimal digits are an amount, if a huge one.
-    if (notA && HEX_64.test(value) && !AMOUNT_PATTERN.test(value)) throw hex64Refusal(notA, field);
+    if (notA && HEX_64.test(value) && !AMOUNT_PATTERN.test(value)) throw hex64Refusal(notA, field, trackTool(product));
   }
 }
 
@@ -139,23 +141,31 @@ export function screenSecrets(args: Record<string, unknown>): void {
  * Refuses a bare 64-hex value that isn't valid on the chain: an EVM private key, or as often a tx hash
  * in the wrong field. Called where the chain is known, after the value failed to be an address or token.
  */
-export function rejectHex64(value: string, field: string, chainName: string, expected: "address" | "token"): void {
+export function rejectHex64(
+  value: string,
+  field: string,
+  chainName: string,
+  expected: "address" | "token",
+  product: Product,
+): void {
   if (!HEX_64.test(value)) return;
-  throw hex64Refusal(`${expected === "address" ? "an address" : "a token"} on ${chainName}`, field);
+  throw hex64Refusal(`${expected === "address" ? "an address" : "a token"} on ${chainName}`, field, trackTool(product));
 }
 
 /**
  * The same for a 64-hex token query that is a valid account on the chain (a NEAR contract account, a Sui
  * package id): a token this list doesn't have, or a private key; the refusal says it may be either.
  */
-export function rejectHex64Account(value: string, field: string, chainName: string): void {
+export function rejectHex64Account(value: string, field: string, chainName: string, product: Product): void {
   if (!HEX_64.test(value)) return;
   throw new ActionError(
     "SECRET_REJECTED",
-    `That's a 64-hex value: no token SODAX swaps on ${chainName} has that address, and it may be a private key.`,
+    `That's a 64-hex value: no token SODAX ${product}s on ${chainName} has that address, and it may be a private key.`,
     {
       details: { field },
-      nextStep: ifKeyElse(`a token's address, SODAX doesn't swap that token on ${chainName}: ask the user for another`),
+      nextStep: ifKeyElse(
+        `a token's address, SODAX doesn't ${product} that token on ${chainName}: ask the user for another`,
+      ),
     },
   );
 }
@@ -181,5 +191,6 @@ export function secretRefusalText(value: string, field: SecretField): string | u
     : field.notHex64 && HEX_64.test(value.trim())
       ? hex64Refusal(field.notHex64, undefined, field.trackTool)
       : undefined;
-  return refusal && `${refusal.code}: ${refusal.message} ${refusal.nextStep}`;
+  // SECRET_REJECTED's own advice names neither toolset.
+  return refusal && `${refusal.code}: ${refusal.message} ${nextStepOf(refusal, "swap")}`;
 }

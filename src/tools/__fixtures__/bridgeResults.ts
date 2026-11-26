@@ -1,11 +1,16 @@
 /** Bridge service results, wrapped in their real decisions for contract and runtime tests. */
 
-import type { BridgePairs } from "../../services/bridge/pair.js";
+import type { BridgeDestinations, BridgePairs } from "../../services/bridge/pair.js";
 import type { BridgePreview, BridgeQuote } from "../../services/bridge/prepare.js";
 import type { BridgeTrack } from "../../services/bridge/track.js";
-import { forBridge } from "../../services/bridge/wording.js";
 import { ActionError, type ActionErrorCode } from "../../services/swap/errors.js";
-import { pairsDecision, prepareDecision, previewDecision, trackDecision } from "../bridgeDecisions.js";
+import {
+  destinationsDecision,
+  pairsDecision,
+  prepareDecision,
+  previewDecision,
+  trackDecision,
+} from "../bridgeDecisions.js";
 import type { SwapToolName } from "../nextAction.js";
 import { errorDecision } from "../swapDecisions.js";
 import type { ToolResult } from "./nextActionRuntime.js";
@@ -13,7 +18,7 @@ import { ARBITRUM, LATER, SONIC, TX } from "./swapResults.js";
 
 export { ARBITRUM, LATER, NOW, SONIC, TX } from "./swapResults.js";
 
-/** A bridge tool's failure as it returns it: reworded for a bridge before its decision, as `registerActionTool` does. */
+/** A bridge tool's failure as it returns it, with its decision. */
 export const failure = (
   code: ActionErrorCode,
   tool: SwapToolName,
@@ -21,7 +26,7 @@ export const failure = (
   details?: Record<string, unknown>,
   retryable?: boolean,
 ): ToolResult => {
-  const error = forBridge(new ActionError(code, "No.", { details, retryable }));
+  const error = new ActionError(code, "No.", { details, retryable });
   return { status: "error", error: { ...details, code }, ...errorDecision(error, { tool, args }) };
 };
 export const BASE = { key: "0x2105.base", name: "Base" };
@@ -38,6 +43,11 @@ export const PAIRS: BridgePairs = {
   to: BASE,
   pairs: [{ from: { symbol: "USDC", address: FROM_TOKEN }, to: { symbol: "USDC", address: TO_TOKEN } }],
 };
+export const DESTINATIONS: BridgeDestinations = {
+  status: "ok",
+  from: ARBITRUM,
+  destinations: [{ chain: BASE, symbols: ["USDC"] }],
+};
 export const PAIR_ARGS = {
   fromChain: ARBITRUM.key,
   fromToken: FROM_TOKEN,
@@ -48,6 +58,7 @@ export const PREVIEW: BridgePreview = {
   status: "preview",
   from: { chain: ARBITRUM, symbol: "USDC", address: FROM_TOKEN, amount: "5" },
   to: { chain: BASE, symbol: "USDC", address: TO_TOKEN, amount: "5" },
+  partnerFee: { amount: "0", symbol: "USDC" },
   networkFee: { paidIn: "ETH", estimated: false },
   maxAmount: "100",
   prepareNeeds: ["fromAddress"],
@@ -60,9 +71,12 @@ export const READY: BridgeQuote = {
   expiresInSec: 1200,
   from: PREVIEW.from,
   to: PREVIEW.to,
+  partnerFee: PREVIEW.partnerFee,
   networkFee: PREVIEW.networkFee,
   fromAddress: USER,
   toAddress: USER,
+  balance: { token: "10", native: "1" },
+  warnings: [],
   steps: [
     {
       kind: "approve",
@@ -96,7 +110,17 @@ export const ref = (chain = ARBITRUM, txHash = TX, bridgeId: string | undefined 
   txHash,
   ...(bridgeId && { bridgeId }),
 });
-export const listed = (pairs = PAIRS): ToolResult => ({ ...pairs, ...pairsDecision(pairs) });
+/** As the tool returns them: the pairs only as the decision's options. */
+export const listed = (pairs = PAIRS): ToolResult => ({
+  status: pairs.status,
+  from: pairs.from,
+  to: pairs.to,
+  ...pairsDecision(pairs),
+});
+export const reached = (destinations = DESTINATIONS): ToolResult => ({
+  ...destinations,
+  ...destinationsDecision(destinations),
+});
 export const previewed = (preview = PREVIEW): ToolResult => ({ ...preview, ...previewDecision(preview) });
 export const prepared = (quote = READY): ToolResult => ({ ...quote, ...prepareDecision(quote) });
 export const tracked = (state: TrackState, bridge = ref()): ToolResult => {

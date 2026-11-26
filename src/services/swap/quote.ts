@@ -22,7 +22,7 @@ import {
 } from "../sodax.js";
 import type { ChainInfo } from "../sodaxApi.js";
 import { type RecipientCheck, checkRecipient } from "./destination.js";
-import { ActionError } from "./errors.js";
+import { ActionError, type Product } from "./errors.js";
 import { checkQuoteRoom, putQuote } from "./quoteCache.js";
 import { checkAddress, resolveExactly } from "./resolver.js";
 import { chainRead, configDisagrees, isHubSource, sourceChainFor } from "./source.js";
@@ -140,10 +140,15 @@ export const addressAsk = (field: AddressField, fromChain: string, toChain: stri
   field === "fromAddress" ? `fromAddress (their wallet on ${fromChain})` : `toAddress (their address on ${toChain})`;
 
 /** A `prepare` call without an address it needs, named in `field` (the first) like any other bad address. */
-export function addressesNeeded(missing: AddressField[], from: ChainInfo, to: ChainInfo): ActionError {
+export function addressesNeeded(
+  missing: AddressField[],
+  from: ChainInfo,
+  to: ChainInfo,
+  product: Product,
+): ActionError {
   const asks = missing.map(field => addressAsk(field, from.name, to.name));
-  return new ActionError("INVALID_ADDRESS", `Preparing a swap needs ${missing.join(" and ")}.`, {
-    nextStep: `Ask the user for ${asks.join(" and ")}, then call sodax_swap_prepare again with them.`,
+  return new ActionError("INVALID_ADDRESS", `Preparing a ${product} needs ${missing.join(" and ")}.`, {
+    nextStep: `Ask the user for ${asks.join(" and ")}, then call sodax_${product}_prepare again with them.`,
     details: { field: missing[0], missing },
   });
 }
@@ -164,10 +169,12 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const defaultsToSender = to.config.type === "EVM" && source.adapter.family === "EVM";
 
   const amount = parseUnits(input.amount, from.token.decimals);
-  const fromAddress = input.fromAddress ? checkAddress(input.fromAddress, from.chain, "fromAddress") : undefined;
+  const fromAddress = input.fromAddress
+    ? checkAddress(input.fromAddress, from.chain, "fromAddress", "swap")
+    : undefined;
   if (fromAddress !== undefined) source.adapter.checkSender?.(fromAddress);
   const toAddress = input.toAddress
-    ? checkAddress(input.toAddress, to.chain, "toAddress")
+    ? checkAddress(input.toAddress, to.chain, "toAddress", "swap")
     : defaultsToSender
       ? fromAddress
       : undefined;
@@ -180,7 +187,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   const missing: AddressField[] = [];
   if (!fromAddress) missing.push("fromAddress");
   if (!toAddress && !defaultsToSender) missing.push("toAddress");
-  if (input.mode === "prepare" && missing.length > 0) throw addressesNeeded(missing, from.chain, to.chain);
+  if (input.mode === "prepare" && missing.length > 0) throw addressesNeeded(missing, from.chain, to.chain, "swap");
   // Only a prepare reserves room, so watching a price can't use up the key's open quotes.
   const ready = input.mode === "prepare" && fromAddress !== undefined && toAddress !== undefined;
   const { probe } = source.adapter;
@@ -257,6 +264,7 @@ export async function quoteSwap(input: QuoteInput, partnerFee?: PartnerFee): Pro
   }
 
   const recipient = await checkRecipient({
+    product: "swap",
     chainKey: to.chain.key,
     chainType: to.config.type,
     chainName: to.chain.name,
@@ -353,7 +361,7 @@ export function resolveSide(
   if (side === "to" && config.type === "STELLAR" && !stellarRecipientCheckable(resolution.token.address)) {
     const { symbol } = resolution.token;
     throw new ActionError("RESTRICTED_TOKEN", `This server can't check that a Stellar account can receive ${symbol}.`, {
-      nextStep: `Tell the user a swap to ${symbol} on Stellar isn't available here for now, and ask whether they want another token.`,
+      nextStep: `Tell the user a ${catalog.product} to ${symbol} on Stellar isn't available here for now, and ask whether they want another token.`,
       details: { side, field: `${side}Token` },
     });
   }

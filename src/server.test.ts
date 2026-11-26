@@ -115,6 +115,41 @@ describe("builder tools", () => {
   });
 });
 
+describe("the nextAction contract", () => {
+  it("is a resource on a connection with swap or bridge tools, one copy with the README's", async () => {
+    for (const toolsets of [
+      { builder: false, swap: true },
+      { builder: false, swap: false, bridge: true },
+    ]) {
+      const client = await connect(toolsets);
+      const { resources } = await client.listResources();
+      expect(resources.map(resource => resource.uri)).toEqual(["sodax://next-action/schema", "sodax://next-action"]);
+      const { contents } = await client.readResource({ uri: "sodax://next-action" });
+      const schema = await client.readResource({ uri: "sodax://next-action/schema" });
+      await client.close();
+      const [served] = schema.contents;
+      expect(served).toMatchObject({ mimeType: "application/schema+json" });
+      // The schema of a result's nextAction: every action type's shape, from the schema the decisions are tested on.
+      const json = JSON.parse(String(served && "text" in served ? served.text : ""));
+      expect(json.properties.nextAction.anyOf).toHaveLength(7);
+      expect(contents).toEqual([
+        {
+          uri: "sodax://next-action",
+          mimeType: "text/markdown",
+          text: readFileSync("src/public/next-action.md", "utf8"),
+        },
+      ]);
+    }
+    expect(readFileSync("README.md", "utf8")).toContain("(src/public/next-action.md)");
+  });
+
+  it("isn't served without the swap or bridge tools", async () => {
+    const client = await connect({ builder: true, swap: false });
+    expect(client.getServerCapabilities()?.resources).toBeUndefined();
+    await client.close();
+  });
+});
+
 describe("instructions", () => {
   async function instructions(toolsets: ToolSelection): Promise<string> {
     const client = await connect(toolsets);
@@ -133,6 +168,10 @@ describe("instructions", () => {
     expect(swap).toContain("sodax_swap_cancel");
     expect(swap).toContain("To show or watch a price, call `sodax_swap_price`");
     expect(swap).toContain("carries nextAction: follow it until the result is terminal");
+    expect(swap).toContain("before preparing, make sure a wallet tool can sign and send them");
+    // Said once, with both swap and bridge on.
+    const both = await instructions({ builder: false, swap: true, bridge: true });
+    expect(both.split("make sure a wallet tool").length).toBe(2);
     expect(swap).not.toContain("sodax_check_chain_support");
     expect(swap).not.toContain("sodax_relay_submit_tx");
     expect(await instructions({ builder: true, swap: true })).toBe(

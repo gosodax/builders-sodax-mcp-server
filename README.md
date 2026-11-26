@@ -92,6 +92,7 @@ A connection picks which tools it gets with `?profile=<name>` on the URL or the 
 | `all` (default) | The builder tools, plus the swap tools when you send an API key |
 | `builder` | The data, relay and SDK docs tools |
 | `swap` | The swap tools only. Needs an API key |
+| `bridge` | The bridge tools only. Needs an API key; off unless `SODAX_BRIDGE_TOOLS_ENABLED=true` |
 
 An unknown profile is refused with HTTP 400; `swap` without a key with HTTP 403.
 
@@ -184,56 +185,26 @@ The server only returns transactions, so the agent also needs a wallet tool (or 
 - tell when a transaction is mined, since each step must be mined before the next;
 - optionally, send an EIP-5792 `wallet_sendCalls`, to use the quote's `batch`.
 
+An EVM step's `tx` is what `eth_sendTransaction` takes (`value` and `chainId` in hex) and carries no nonce, gas or
+fees: the wallet fills those and broadcasts. A wallet tool that takes a chain and `{to, value, data}` sends it as is.
+A signer that only signs needs its own RPC to fill those fields and broadcast the signed transaction: the server
+neither signs nor broadcasts. The bridge tools' steps and `batch` (`sodax_bridge_prepare`) are the same and need the
+same.
+
 ### Next actions
 
-Every swap tool result, errors included, carries a machine-readable `nextAction`, `terminal` (no tool call can move
-the result on any more) and, once a sent swap has ended, its `outcome`: `succeeded`, `cancelled`, `refunding`,
-`failed` (nothing was swapped), `held` (the deposit is safe on chain and SODAX recovers it) or `unknown`. `nextStep`
-says the same in a sentence: both come from one decision, so they don't disagree.
+Every swap and bridge tool result, errors included, carries a machine-readable `nextAction`, `terminal` and `outcome`.
+The contract, the action types and what a runtime keeps to, is in
+[`src/public/next-action.md`](src/public/next-action.md); the server serves it to every connection with swap or
+bridge tools as the MCP resource `sodax://next-action`, and the JSON Schema of every action type as
+`sodax://next-action/schema`.
 
-| `type` | Who acts | What the runtime does |
-|---|---|---|
-| `call_tool` | the agent | calls `tool` after `afterSec`, with `args` (on top of the last call's arguments when `sameArgs`); with `until` or `maxAttempts` it repeats while the result asks again, counting per `retryKey` across the workflow (only calls in a row when `consecutive`), then follows `onExhausted` |
-| `choose` | the user | picks one of `options`, whose `args` go into `next` |
-| `provide` | the user | gives `fields`, by name, for `next`; declining follows `onDecline` where there is one |
-| `confirm` | the user, or the wallet when `by: "wallet"` | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: that cancel can never land), then `next` |
-| `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash. A bounded `afterSend` is counted before anything is signed, and past its bound nothing is |
-| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it; if they don't, `onDecline` where there is one |
-| `none` | nobody | the workflow is over |
-
-What a runtime keeps to:
-
-- **Arguments.** A result that found the swap gives complete `args`; everything else reuses the arguments of the call
-  that returned it (`sameArgs`), with only the named fields replaced. The server never writes back a value it refused.
-- **Sending.** Don't start an `execute` past its `expiresAt`: prepare and confirm again. Save `afterSend`'s arguments
-  and the hash the moment the last step is broadcast, and make the call even if the quote just expired or the receipt
-  then fails (a NEAR tx can fail after its deposit ran). From a batch, save the batch id at once and track the hash
-  `wallet_getCallsStatus` reports: a resumed session reads it again and never resends the batch. Save every track
-  call's arguments before making it, so a session resumed after the user corrected a hash or a chain uses theirs.
-- **Bounds.** A call goes unbounded only when the server's clock forces a new answer (past a deadline) or it hands
-  over to another tool's bounded actions. A call a person's answer leads back to is bounded too, under a key the
-  answers don't change, so an agent answering for the user still stops: before a send the workflow then ends, after
-  one it goes to the help desk. A workflow is one swap; keep its counts with what was sent.
-- **Cancels.** A cancel already sent is followed, never sent again. Any cancel call carrying a `cancelTxHash` (from
-  the wallet, the user or the start) makes it pending: a resumed session reads it with that hash first, a `confirm`
-  of a cancel re-reads it, and once it's relayed (`cancel_relayed`) its own bounded track takes over. A cancel's
-  retries carry its hash. A new cancel replaces a pending one only once the wallet's own record shows it can never
-  land (`confirm` of `unsent_cancel`, `by: "wallet"`): its nonce went to another transaction, or its blockhash
-  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel the swap
-  service has no record of is retried, then handed to track with the same arguments, which submits nothing in that
-  state: it says what holds the deposit and alerts on it.
-- **Handoffs.** A person declining ends the loop; the saved hash resumes it later. An unknown `type` goes to a person.
-  On a terminal `external`, show it before stopping.
-- **No contract.** A result with no `nextAction` came from the MCP SDK refusing the arguments before the tool ran, or
-  its output after: fix the arguments only when the message says the input was invalid, otherwise hand off, keeping
-  any hash already sent.
-
-The loop of the reference runtime the tests drive whole swaps with, `src/tools/__fixtures__/nextActionRuntime.ts`:
+The loop of the reference runtime the tests drive whole swaps and bridges with, `src/tools/__fixtures__/nextActionRuntime.ts`:
 
 ```ts
 export async function run(host: Host, start: { tool: string; args: Args }): Promise<Ending> {
-  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap with its
-  // hash. Nothing is priced, signed or sent again; a batch with no hash yet is handed back until the wallet has one.
+  // What was sent resumes from what was saved: a cancel with its hash (or its track, once relayed), a swap or bridge
+  // with its hash. Nothing is prepared, signed or sent again; a batch with no hash yet waits for the wallet's hash.
   const pending = host.saved.cancel;
   let call: Next | undefined;
   if (pending?.follow) call = await follow(host, {}, pending.follow, {});
@@ -431,6 +402,18 @@ The swap tools never sign or move funds. They also:
 
 See [Swapping](#swapping) for the order they're called in.
 
+### Bridges (need an API key; off unless `SODAX_BRIDGE_TOOLS_ENABLED=true`)
+
+| Tool | Description |
+|------|-------------|
+| `sodax_bridge_tokens` | The tokens that bridge from one chain to another, each with the token it arrives as; reads no chain |
+| `sodax_bridge_preview` | What a bridge would deliver and the most its route takes now; builds and holds nothing |
+| `sodax_bridge_submit_and_track` | Submit and track a bridge once the user's wallet has sent it: checked against its build, submitted once, followed to the hub and on |
+| `sodax_bridge_prepare` | Prepare a bridge: the same asset on another chain, 1:1 less any partner fee; the transactions for the user's wallet to sign, checked against the SDK's own build, and its bridgeId |
+
+`sodax_get_balance` and `sodax_resolve_token` serve the bridge tools too, with `for: "bridge"`: some tokens bridge but
+don't swap.
+
 ### Cross-Chain SDK Documentation (dynamic)
 
 Tools prefixed with `docs_` are automatically proxied from the SODAX docs MCP at docs.sodax.com. They update automatically when documentation changes — no manual sync needed.
@@ -522,6 +505,7 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 | `pnpm test` | Runs the Vitest unit suite (`src/**` and `scripts/**`); the live contract tests are `pnpm test:contract`. |
 | `pnpm test:contract` | Runs the swap contract tests against the live Swaps API (production; `SODAX_ENV=canary` for canary). Quotes only: nothing is signed or sent. The Drift Check runs them against production; its scheduled and push runs go red when they fail. |
 | `pnpm e2e:canary` | Makes one real 5 USDC swap between Arbitrum and Base through a running server's swap tools, signed by a funded test wallet (see below). |
+| `pnpm e2e:bridge` | A bridge dry run through a running server's bridge tools: tokens, preview, and prepare from Arbitrum and from Solana. Signs nothing, needs no wallet. |
 
 ### Canary swap E2E
 
@@ -530,6 +514,8 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`, which the workflow passes to the server and the script as their `RPC_CONFIG`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
 To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
+
+The workflow then runs `pnpm e2e:bridge` against the same server, started with `SODAX_BRIDGE_TOOLS_ENABLED=true`, whatever the swap did: it checks the bridge tools up to the transactions a wallet would sign, and that the Bridge API's builds still match the server's SDK. A failure there posts the stage `bridge dry run`. Locally: `SODAX_BRIDGE_TOOLS_ENABLED=true SODAX_ENV=canary node dist/index.js`, then `MCP_URL=http://127.0.0.1:3000/mcp?profile=bridge SODAX_API_KEY=… pnpm e2e:bridge`.
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -559,7 +545,8 @@ Coolify injects these directly into the process environment.
 | `TRANSPORT` | `http` | Transport mode (`http` or `stdio`) |
 | `SODAX_ENV` | `production` | SODAX API host: `production` (`api.sodax.com`) or `canary` (`canary-api.sodax.com`). The relay stays on `api.sodax.com` in both: canary's relay is the testnet one. Anything else stops the server at startup. |
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API, solver and Swaps API calls; the swap tools need it. Ignored over HTTP, where each client sends its own `x-api-key`. |
-| `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
+| `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap`, `bridge` or `all`); `--profile` wins. `bridge` stops the server at startup unless `SODAX_BRIDGE_TOOLS_ENABLED=true`. |
+| `SODAX_BRIDGE_TOOLS_ENABLED` | `false` | Kill switch for the bridge tools, off until they're released: `true` serves the `bridge` profile (and the bridge tools in `all`). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, the quote's NEAR storage and Stellar trustline checks, and the swap tx it builds on a non-EVM chain), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Public nodes keep only recent txs, so a swap from a non-EVM chain tracked late may read as not found; an archival endpoint avoids that. Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |
@@ -673,7 +660,7 @@ Export is batched and bounded: a gateway outage drops records and never slows a 
 |----------|-------------|
 | `GET /` | Landing page |
 | `GET /api` | Server info, tool list and profiles |
-| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose; `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
+| `GET /health` | Health check; `swapQuotes` counts the open swap quotes a restart would lose, and `openBridges` the bridge builds a restart would strand (not yet sent, or sent and not yet submitted); `unifiedLogging` says whether log shipping is on and how many records were written, arrived or failed |
 | `POST /mcp` | MCP endpoint (streamable HTTP); `?profile=` picks the tools |
 | `GET /sse` | SSE endpoint (legacy transport) |
 | `POST /messages` | SSE message endpoint |

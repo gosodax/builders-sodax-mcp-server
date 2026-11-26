@@ -8,7 +8,7 @@
  */
 
 import { ChainKeys } from "@sodax/types";
-import { SODAX_HELP_DESK, SWAP_HELP, SWAP_USD_WARN } from "../constants.js";
+import { BRIDGE_HELP, SODAX_HELP_DESK, SWAP_HELP, SWAP_USD_WARN } from "../constants.js";
 import { hashTag } from "../services/requestContext.js";
 import { isHubChain } from "../services/sodax.js";
 import type { BalanceResult } from "../services/swap/balance.js";
@@ -107,41 +107,46 @@ const confirmCancel = (swap: Ref): Confirm => ({
   summary: { kind: "cancel", chain: swap.chain.key, txHash: swap.txHash },
   next: cancelAgain(swapArgs(swap)),
 });
-/** The swap transaction's hash, asked of the user, for the same call. */
-const askTxHash = (tool: typeof TRACK | typeof CANCEL, swap: Ref & { cancelTxHash?: string }) =>
-  provide(["txHash"], answered(callOnce(tool, withoutTxHash(swap)), "txHash", HELP_DESK));
+/** Retries a corrected transaction hash at most three times, keeping the other canonical arguments. */
+export const askTxHash = (
+  tool: typeof TRACK | typeof CANCEL | "sodax_bridge_submit_and_track",
+  args: Record<string, unknown>,
+) => provide(["txHash"], answered(callOnce(tool, args), "txHash", HELP_DESK));
 
-const GIVE_UP = `tell the user this server can't follow the swap right now, that they must not send it again, and to give the swap's transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
+const giveUp = (what: "swap" | "bridge") =>
+  `tell the user this server can't follow the ${what} right now, that they must not send it again, and to give the ${what}'s transaction hash and this result's requestId to ${SODAX_HELP_DESK}.`;
 
 /**
  * Any failure after the user's wallet sent something: one that may pass is the same call again, a few
  * times at most, and none is a reason to send the swap again. Nothing is claimed about the tx: the
  * failure may have come before it was checked.
  */
-const afterSendAdvice = (tool: string, sent: string, failure: ActionError, seconds: number) =>
+const afterSendAdvice = (tool: string, sent: string, failure: ActionError, seconds: number, what: "swap" | "bridge") =>
   failure.retryable
-    ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${GIVE_UP}`
-    : `${failure.nextStep} The user must not send the swap again.`;
+    ? `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times, and don't send the ${sent} again meanwhile. If it still fails, stop: ${giveUp(what)}`
+    : `${failure.nextStep} The user must not send the ${what} again.`;
 
 /** A failure of a code that usually passes, which its throw site says won't: handed off, never retried. */
-const wontPass = (sent: boolean) =>
+const wontPass = (sent: boolean, what: "swap" | "bridge") =>
   sent
-    ? `Calling again won't help: ${GIVE_UP}`
-    : `Calling again won't help: tell the user the SODAX swap service can't do this right now, and not to retry it. ${SWAP_HELP}`;
+    ? `Calling again won't help: ${giveUp(what)}`
+    : `Calling again won't help: tell the user the SODAX ${what} service can't do this right now, and not to retry it. ${helpFor(what)}`;
+
+const helpFor = (what: "swap" | "bridge") => (what === "bridge" ? BRIDGE_HELP : SWAP_HELP);
 
 /**
  * A failure that may pass, before anything was sent: the same call again, as often as the action makes it. A throw
  * site's own advice stays; the code's generic one is replaced, as it can't say when or how often.
  */
-const beforeSendAdvice = (tool: string, failure: ActionError, seconds: number) => {
+const beforeSendAdvice = (tool: string, failure: ActionError, seconds: number, what: "swap" | "bridge") => {
   if (!hasDefaultNextStep(failure)) {
     return `${failure.nextStep} Retry at most ${MAX_CALLS} times in a row, ${seconds} seconds apart.`;
   }
   const unavailable =
     failure.code === "CHAIN_UNAVAILABLE"
       ? "that chain can't be read right now (error.message names it) and to try again later"
-      : "the SODAX swap service is unavailable right now";
-  const help = failure.code === "INTERNAL" ? ` ${SWAP_HELP}` : "";
+      : `the SODAX ${what} service is unavailable right now`;
+  const help = failure.code === "INTERNAL" ? ` ${helpFor(what)}` : "";
   return `Call ${tool} again in ${seconds} seconds with the same arguments, at most ${MAX_CALLS} times in a row. If it still fails, stop: tell the user ${unavailable}.${help}`;
 };
 
@@ -151,14 +156,22 @@ const RESTRICTED = {
   depositOnly: "is deposit-only: use it only as the token the user sends",
 } as const;
 
-// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote.
-const UNKNOWN_TOKEN_CALL = "the call that returned UNKNOWN_TOKEN (sodax_swap_price if there was none)";
-const USE_RESOLVED = `Pass chain.key and token.address to ${UNKNOWN_TOKEN_CALL}; a quote's amount stays in token units.`;
+/** Which tokens a lookup is for: the swap tools' list, or the bridge tools', which differs. */
+export type TokenPurpose = "swap" | "bridge";
+
+// The agent knows which call returned UNKNOWN_TOKEN; a lookup of its own is most often for a quote, or a bridge.
+const unknownTokenCall = (purpose: TokenPurpose) =>
+  `the call that returned UNKNOWN_TOKEN (${purpose === "bridge" ? "sodax_bridge_prepare" : "sodax_swap_price"} if there was none)`;
+const useResolved = (purpose: TokenPurpose) =>
+  `Pass chain.key and token.address to ${unknownTokenCall(purpose)}; ${purpose === "bridge" ? "an" : "a quote's"} amount stays in token units.`;
 
 // ── Balance and token lookups ───────────────────────────────────────────
 
 /** Built from catalog symbols, chain names and formatted amounts only. */
-function balanceNextStep({ chain, native, token, accountExists, trustline }: BalanceResult): string {
+function balanceNextStep(
+  { chain, native, token, accountExists, trustline }: BalanceResult,
+  purpose: TokenPurpose,
+): string {
   if (accountExists === false) {
     if (token && token.baseUnits !== "0") {
       return `The wallet has no account on ${chain.name} yet (0 ${native.symbol}) but holds ${token.amount} ${token.symbol}; it needs ${native.symbol} sent to it to pay gas there.`;
@@ -179,20 +192,23 @@ function balanceNextStep({ chain, native, token, accountExists, trustline }: Bal
   if (native.baseUnits === "0") {
     sentences.push(`With no ${native.symbol} it likely can't pay gas there.`);
   } else if (isNative) {
-    sentences.push(`Swapping ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
+    const sending = purpose === "bridge" ? "Bridging" : "Swapping";
+    sentences.push(`${sending} ${native.symbol} also takes ${native.symbol} for gas on top of the amount.`);
   }
   return sentences.join(" ");
 }
 
 /** A balance read answers on its own: nothing follows from it. */
-export const balanceDecision = (balances: BalanceResult): Decision => final(balanceNextStep(balances), NONE);
+export const balanceDecision = (balances: BalanceResult, purpose: TokenPurpose = "swap"): Decision =>
+  final(balanceNextStep(balances, purpose), NONE);
 
 /**
  * Built from catalog symbols, addresses and chain names only, never from the caller's
  * query or a token's free-text name.
  */
-export function resolveNextStep(resolution: Resolution): string {
+export function resolveNextStep(resolution: Resolution, purpose: TokenPurpose = "swap"): string {
   const chain = resolution.chain.name;
+  const listed = `${purpose} token`;
   switch (resolution.status) {
     case "resolved": {
       const { token } = resolution;
@@ -200,7 +216,7 @@ export function resolveNextStep(resolution: Resolution): string {
       // The same address can be a different token on each chain.
       const found = resolution.matchedBy === "address" ? `That address is ${named}. ` : "";
       const restricted = token.access ? `${named} ${RESTRICTED[token.access]}. ` : "";
-      return `${found}${restricted}${USE_RESOLVED}`;
+      return `${found}${restricted}${useResolved(purpose)}`;
     }
     case "ambiguous": {
       // Two candidates can share a symbol in any case (bridged and native USDC); the address tells them apart.
@@ -210,7 +226,7 @@ export function resolveNextStep(resolution: Resolution): string {
         labels.length === 1
           ? `whether they mean ${labels[0]} on ${chain}`
           : `which of ${labels.join(", ")} on ${chain} they mean`;
-      return `Ask the user ${ask}, then pass its address to ${UNKNOWN_TOKEN_CALL}.`;
+      return `Ask the user ${ask}, then pass its address to ${unknownTokenCall(purpose)}.`;
     }
     case "not_found": {
       const [first] = resolution.suggestions;
@@ -219,18 +235,18 @@ export function resolveNextStep(resolution: Resolution): string {
         const found = resolution.otherChains.map(other => `${other.token.symbol} on ${other.chain.name}`).join(", ");
         // A symbol listed elsewhere may still be a near miss here: WETH on Arbitrum is most likely its ETH.
         if (nearest) {
-          return `No swap token on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
+          return `No ${listed} on ${chain} matches that; it is listed as ${found}, and the nearest on ${chain} is ${nearest}. Ask the user which they mean, then call sodax_resolve_token again with that chain.`;
         }
-        return `No swap token on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
+        return `No ${listed} on ${chain} matches that; it is ${found}. Confirm the chain with the user, then call sodax_resolve_token again with the chain the user confirms.`;
       }
-      if (!nearest) return `No swap token matches on ${chain}; confirm the chain and token with the user.`;
-      return `No swap token matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
+      if (!nearest) return `No ${listed} matches on ${chain}; confirm the chain and token with the user.`;
+      return `No ${listed} matches on ${chain}; ask the user whether they mean ${nearest} or another suggestion.`;
     }
   }
 }
 
-export function resolveDecision(resolution: Resolution): Decision {
-  const nextStep = resolveNextStep(resolution);
+export function resolveDecision(resolution: Resolution, purpose: TokenPurpose = "swap"): Decision {
+  const nextStep = resolveNextStep(resolution, purpose);
   if (resolution.status === "resolved") return final(nextStep, NONE);
   // A pick is looked up again and resolves; a value the user names may not, so that loop is bounded.
   const again = answered(callOnce("sodax_resolve_token", "same"), resolution.status, ENDED);
@@ -271,7 +287,12 @@ function usdWarning(quote: SwapQuote): string {
 }
 
 // A smart-contract wallet may not exist, or have the same owner, at its address on another chain.
-const sendsToOwnAddressElsewhere = ({ from, to, toAddress, fromAddress }: Extract<SwapQuote, { status: "ready" }>) =>
+export const sendsToOwnAddressElsewhere = ({
+  from,
+  to,
+  toAddress,
+  fromAddress,
+}: { from: { chain: { key: string } }; to: { chain: { key: string } }; toAddress: string; fromAddress: string }) =>
   from.chain.key !== to.chain.key && toAddress.toLowerCase() === fromAddress.toLowerCase();
 
 function quoteNextStep(quote: SwapQuote): string {
@@ -281,15 +302,13 @@ function quoteNextStep(quote: SwapQuote): string {
   const warning = usdWarning(quote);
   if (quote.status === "price") {
     const needed = quote.prepareNeeds.map(field => addressAsk(field, from.chain.name, to.chain.name));
-    return `Show the user they would send ${sendAndReceive}.${warning} Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus ${needed.join(" and ")}.`;
+    return `Show the user they would send ${sendAndReceive}.${warning} Once the user is ready to sign, call sodax_swap_prepare with the same arguments plus ${needed.join(" and ")}. ${walletFirst(from.chain.name)}`;
   }
   const show = `Show the user they send ${sendAndReceive} (at least ${quote.to.minimumAmount})`;
   const sameAddress = sendsToOwnAddressElsewhere(quote)
     ? ` (the sender's own address: make sure they control it on ${to.chain.name})`
     : "";
-  const batch = quote.batch
-    ? " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)"
-    : "";
+  const batch = quote.batch ? SEND_BATCH : "";
   const [first] = quote.steps;
   const allowance = approveOf(quote);
   const approve = allowance
@@ -307,11 +326,20 @@ function quoteNextStep(quote: SwapQuote): string {
   ].join(" ");
 }
 
-const approveOf = (quote: Extract<SwapQuote, { status: "ready" }>) =>
-  quote.steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
+/** Before preparing: what has to send the prepared steps, which this server can't see or check. */
+export const walletFirst = (chain: string) =>
+  `Preparing needs a wallet tool that can send transactions on ${chain} and report each one mined; if there's none, ask the user to connect their wallet first.`;
+
+/** How a wallet that batches sends a result's `batch` in place of the steps it replaces. */
+export const SEND_BATCH =
+  " (or, if the wallet batches, wallet_sendCalls with the batch's params plus calls: the {to, value, data} of each step it replaces, in order, once any step it doesn't replace is mined)";
+
+/** What the approve step, if any, lets its spender take. */
+export const approveOf = ({ steps }: { steps: readonly { kind: string }[] }) =>
+  steps.find((step): step is EvmStep => step.kind === "approve")?.approves;
 
 // How a family's wallet sends the SDK's raw tx (`steps[].tx`; bigints are decimal strings, bytes base64).
-const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
+export const SIGN_NON_EVM_TX: Record<NonEvmSourceType, string> = {
   NEAR: "one transaction from signerId to params.contractId calling params.method with params.args, attaching params.deposit (yoctoNEAR) and params.gas",
   SOLANA:
     "data is an unsigned v0 transaction (base64) with the user as fee payer, which the wallet signs and sends at once: its blockhash expires in about a minute, and if it expires unsent, call this tool again with the same arguments for a new one",
@@ -447,7 +475,7 @@ function notSubmittedDecision(result: Extract<TrackResult, { status: "not_submit
   if (result.reason === "not_a_deposit") {
     return ongoing(
       "That transaction isn't this quote's swap (on an EVM chain it may be the approve, or a swap call that failed inside a batch); ask for the swap transaction's hash.",
-      askTxHash(TRACK, result),
+      askTxHash(TRACK, withoutTxHash(result)),
     );
   }
   const deposit = safe(result);
@@ -484,7 +512,7 @@ function notSubmittedDecision(result: Extract<TrackResult, { status: "not_submit
       );
     case "multiple_deposits":
       return held(
-        `That transaction holds other SODAX deposits besides this swap, so this server can't submit it: ${deposit}. Next time, send each swap as its own transaction.`,
+        `That transaction carries other SODAX messages besides this swap (another deposit or a cancel), so this server can't submit it: ${deposit}. Next time, send each swap as its own transaction.`,
         result.alerted,
         result.chain,
       );
@@ -513,7 +541,7 @@ function failedNextStep({ canCancel, failure, chain }: Extract<TrackResult, { st
 export function trackDecision(result: TrackResult): Decision {
   const chain = result.chain.name;
   const args = swapArgs(result);
-  const askHash = askTxHash(TRACK, result);
+  const askHash = askTxHash(TRACK, withoutTxHash(result));
   switch (result.status) {
     case "awaiting_source_confirmation": {
       if (result.seenOnChain) {
@@ -738,7 +766,7 @@ function notCancellableDecision(result: Extract<CancelResult, { status: "not_can
     case "not_sent":
       return ongoing(nextStep, retryCancel(exhausted(external("check_wallet"), false)));
     case "not_this_swap":
-      return ongoing(nextStep, askTxHash(CANCEL, result));
+      return ongoing(nextStep, askTxHash(CANCEL, withoutTxHash(result)));
     case "unverified":
       return final(nextStep, external("help_desk"), "unknown");
   }
@@ -861,12 +889,16 @@ export interface FailureContext {
 }
 
 /** Track and cancel are called once the user's wallet sent something. */
-const AFTER_SEND: readonly SwapToolName[] = [TRACK, CANCEL];
+const AFTER_SEND: readonly SwapToolName[] = [TRACK, CANCEL, "sodax_bridge_submit_and_track"];
 
 export function errorDecision(failure: ActionError, { tool, args }: FailureContext): Decision {
   const sent = AFTER_SEND.includes(tool);
   const seconds = Number(failure.details?.retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC);
-  const advice = sent ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : "swap", failure, seconds) : failure.nextStep;
+  // The token tools serve both: their `for` says which.
+  const what = tool.startsWith("sodax_bridge_") || args.for === "bridge" ? "bridge" : "swap";
+  const advice = sent
+    ? afterSendAdvice(tool, tool === CANCEL ? "cancel" : what, failure, seconds, what)
+    : failure.nextStep;
   // The field the throw site named, which the user is asked again; a failure that names none is handed off.
   const named = failure.details?.field;
   const field = typeof named === "string" ? named : undefined;
@@ -890,10 +922,10 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
     case "UPSTREAM_UNAVAILABLE":
       // Its throw site says it won't pass (the same build fails the same way): the code's own advice, to retry, doesn't
       // fit the hand-off.
-      if (!failure.retryable) return stuck(hasDefaultNextStep(failure) ? wontPass(sent) : advice);
+      if (!failure.retryable) return stuck(hasDefaultNextStep(failure) ? wontPass(sent, what) : advice);
       // The same call again, counted while it keeps failing in a row.
       return ongoing(
-        sent ? advice : beforeSendAdvice(tool, failure, seconds),
+        sent ? advice : beforeSendAdvice(tool, failure, seconds, what),
         callRepeated(
           callOnce(tool, "same", seconds),
           { maxAttempts: MAX_CALLS, retryKey: key, consecutive: true },
@@ -950,17 +982,23 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
       }
       if (sent) return stuck();
       return ongoing(
-        "Preparing the swap took too long to leave time to send it: tell the user the swap service is slow right now and to try again later.",
+        `Preparing the ${what} took too long to leave time to send it: tell the user the ${what} service is slow right now and to try again later.`,
         external("service_unavailable"),
       );
     }
     case "SWAP_REJECTED":
+    case "BRIDGE_REJECTED":
       switch (failure.details?.reason) {
         case "no_route":
         case "no_liquidity":
         case "amount_too_large":
           // Track and cancel take no amount: after a send there's nothing to ask for.
           return sent ? stuck() : ongoing(advice, provide(["amount", { name: "toToken", optional: true }], answer()));
+        case "not_bridgeable":
+          return pick();
+        case "same_chain":
+        case "above_limit":
+          return field && !sent ? askFor([field]) : stuck();
         case "wallet_cannot_build":
           return ongoing(
             advice,
@@ -973,12 +1011,13 @@ export function errorDecision(failure: ActionError, { tool, args }: FailureConte
           // The workflow ends: a try with other inputs is a new one.
           return final(
             hasDefaultNextStep(failure)
-              ? "Tell the user the swap service refused this swap, so nothing was prepared. If they want to try again, check the tokens, amount and addresses with them and start over."
+              ? `Tell the user the ${what} service refused this ${what}, so nothing was prepared. If they want to try again, check the tokens, amount and addresses with them and start over.`
               : advice,
             NONE,
           );
       }
     case "SWAP_MISMATCH":
+    case "BRIDGE_MISMATCH":
       // Built wrong: never signed. After a send (a cancel built wrong), the swap itself still stands.
       return sent ? stuck() : final(advice, NONE);
     case "DESTINATION_NOT_READY":

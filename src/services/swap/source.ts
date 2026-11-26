@@ -7,6 +7,7 @@
 import { keccak_256 } from "@noble/hashes/sha3";
 import { logger } from "../logger.js";
 import { callerKeyHash } from "../requestContext.js";
+import { holdForTrack } from "../signWindow.js";
 import { hubIntentClosed } from "../sodax.js";
 import { type ChainInfo, resolveChainKey } from "../sodaxApi.js";
 import { ActionError } from "./errors.js";
@@ -32,9 +33,16 @@ export function sourceTxHash(source: SwapSource, value: string, field = "txHash"
   const { format, spell } = source.adapter.txHash;
   const txHash = spell(value.trim());
   if (txHash === undefined) {
-    throw new ActionError("INVALID_TX_HASH", `That isn't a transaction hash on ${source.chain.name}.`, {
-      details: { field, format },
-    });
+    const refusal = (nextStep?: string) =>
+      new ActionError("INVALID_TX_HASH", `That isn't a transaction hash on ${source.chain.name}.`, {
+        nextStep,
+        details: { field, format },
+      });
+    // A batch id is EVM's: a wallet that sent a batch reports both.
+    const { nextStep } = refusal();
+    throw source.adapter.family === "EVM"
+      ? refusal(`${nextStep} From a batch, it's the transaction hash wallet_getCallsStatus reports, not the batch id.`)
+      : refusal();
   }
   return txHash;
 }
@@ -88,10 +96,25 @@ export function configDisagrees(chainKey: string, field: string, token?: string)
 }
 
 /**
+ * The swap a track or cancel call names: its source and its tx hash, spelled once as the chain does (the backend keys
+ * rows on the exact string). A hash the chain can have holds the quote (`holdForTrack`); a malformed one holds nothing.
+ */
+export async function resolveSentTx(input: {
+  txHash: string;
+  quoteId?: string;
+  chain?: string;
+}): Promise<{ source: SwapSource; txHash: string }> {
+  const source = await resolveSource(input);
+  const txHash = sourceTxHash(source, input.txHash);
+  if (source.quote) holdForTrack(source.quote);
+  return { source, txHash };
+}
+
+/**
  * The source from the caller's quote, or from `chain` without one. Quotes are bound to their creator's key.
  * A quote's source comes from the SDK config, not the live catalog: its deposit may already be on chain.
  */
-export async function resolveSource(input: { quoteId?: string; chain?: string }): Promise<SwapSource> {
+async function resolveSource(input: { quoteId?: string; chain?: string }): Promise<SwapSource> {
   const cached = input.quoteId ? getCachedQuote(input.quoteId, callerKeyHash()) : undefined;
   if (cached === "key_mismatch") {
     throw new ActionError("QUOTE_KEY_MISMATCH", "That quote was made with another SODAX API key.");

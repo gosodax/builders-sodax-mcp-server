@@ -8,7 +8,7 @@ import builds from "../__fixtures__/non-evm-builds.json" with { type: "json" };
 import fixtures from "../__fixtures__/non-evm-txs.json" with { type: "json" };
 import { toChain } from "../resolver.js";
 import { EVM_SPOKE } from "./evm.js";
-import { isAnyTxHash, pinnedSourceOf } from "./index.js";
+import { pinnedSourceOf } from "./index.js";
 import { INJECTIVE } from "./injective.js";
 import { NEAR } from "./near.js";
 import { jsonSafe, toNonEvmStep } from "./nonEvm.js";
@@ -63,14 +63,6 @@ describe("each source's tx hash", () => {
     [NEAR, "1".repeat(44), undefined],
   ])("spells %# as its chain does", (adapter, value, expected) => {
     expect(adapter.txHash.spell(value)).toBe(expected);
-  });
-
-  it("lets every source's hash through the tool argument, and nothing with spaces or too short", () => {
-    for (const { txHash } of Object.values(fixtures)) expect(isAnyTxHash(txHash)).toBe(true);
-    expect(isAnyTxHash(`0x${"a".repeat(64)}`)).toBe(true);
-    for (const value of ["0x1234", "abandon ability able", "a".repeat(63), "", " "]) {
-      expect(isAnyTxHash(value)).toBe(false);
-    }
   });
 });
 

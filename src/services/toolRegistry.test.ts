@@ -26,7 +26,7 @@ const README_PATH = join(__dirname, "..", "..", "README.md");
 
 beforeAll(() => {
   // Every static toolset, the way the HTTP server seeds the registry.
-  seedToolRegistry({ builder: true, swap: true });
+  seedToolRegistry({ builder: true, swap: true, bridge: true });
 });
 
 describe("tool registry", () => {
@@ -101,6 +101,8 @@ describe("landing page template", () => {
       "PARTNERS_TOOLS",
       "SWAP_TOOLS",
       "SWAP_CARD_HIDDEN",
+      "BRIDGE_TOOLS",
+      "BRIDGE_CARD_HIDDEN",
       "SDK_DOCS_TOOLS",
     ]) {
       expect(template, `missing {{${key}}} in index.html`).toContain(`{{${key}}}`);
@@ -120,8 +122,8 @@ describe("landing page template", () => {
   });
 
   it("derives the total tool count from the registry plus the live docs count", () => {
-    const { api, relay, swap, total } = getStaticToolCounts();
-    expect(total).toBe(api + relay + swap);
+    const { api, relay, swap, bridge, total } = getStaticToolCounts();
+    expect(total).toBe(api + relay + swap + bridge);
     const html = renderLandingPage("{{TOTAL_TOOLS}}", { networks: null, sdkDocsToolCount: 5 });
     expect(html).toBe(String(total + 5));
   });

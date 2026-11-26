@@ -1,6 +1,7 @@
-/** The contract every swap tool decision keeps, as a list of what breaks it, for tests to assert empty. */
+/** The contract every swap and bridge tool decision keeps, as violations for tests to assert empty. */
 
 import type { CallTool, Decision, NextAction } from "../nextAction.js";
+import { nextActionSchema } from "../nextActionSchema.js";
 
 /** Every way `decision` breaks the contract; empty when it keeps it. */
 export function contractBreaks(decision: Decision): string[] {
@@ -12,6 +13,9 @@ export function contractBreaks(decision: Decision): string[] {
   }
   if (outcome && !terminal) breaks.push("an outcome on a result that isn't terminal");
   if (!decision.nextStep) breaks.push("no nextStep");
+  for (const issue of nextActionSchema.safeParse(nextAction).error?.issues ?? []) {
+    breaks.push(`schema: ${issue.path.join(".")} ${issue.message}`);
+  }
   for (const action of actionsOf(nextAction)) breaks.push(...actionBreaks(action));
   return breaks;
 }

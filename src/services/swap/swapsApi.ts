@@ -335,7 +335,7 @@ const REFUSALS = new Map<number | string, Refusal>([
 ]);
 
 /** Hex values, and long runs of letters and digits (base58, bech32, NEAR implicit), as in a masked `url.template`. */
-const withoutIds = (text: string) => text.replace(/0x[0-9a-f]{6,}|\b[a-z0-9]{24,}\b/gi, "*");
+export const withoutIds = (text: string) => text.replace(/0x[0-9a-f]{6,}|\b[a-z0-9]{24,}\b/gi, "*");
 
 // The route as the "Upstream call" record names it, so one query finds both.
 const urlTemplate = (path: string) => routeOf(new URL(`${SODAX_SWAPS_BASE_URL}${path}`).pathname);

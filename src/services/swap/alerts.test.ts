@@ -86,6 +86,16 @@ describe("alertOperator", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
   });
 
+  it("puts an alert about a tx no check tied to a deposit on the public budget", () => {
+    vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    for (let i = 0; i < 6; i++)
+      alertOperator("bridge_relay_failed", { ...FIELDS, txHash: `0x${i}` }, { unchecked: true });
+    expect(fetch).toHaveBeenCalledTimes(5);
+    alertOperator("bridge_relay_failed", { ...FIELDS, txHash: "0xc" });
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
   it("lists the alerts the cap held back, tx hashes included, in the post that ends the hour", async () => {
     vi.stubEnv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook");
     vi.useFakeTimers({ now: Date.parse("2026-10-26T12:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });

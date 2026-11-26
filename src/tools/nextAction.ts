@@ -1,5 +1,5 @@
 /**
- * The machine-readable half of every swap tool result: `nextAction` says what happens next and who does it,
+ * The machine-readable half of every swap and bridge tool result: `nextAction` says what happens next and who does it,
  * `terminal` whether any tool call can still move the result on, and `outcome` where a sent swap ended up. A
  * runtime needs three branches: run a `call_tool`, stop on `none`, hand anything else to a person (or the wallet,
  * for `execute`), then follow its `next`. Each result's `nextStep` comes from the same decision, so the two can't
@@ -8,28 +8,44 @@
 
 import type { ErrorOption } from "../services/swap/errors.js";
 
-export type SwapToolName =
-  | "sodax_resolve_token"
-  | "sodax_get_balance"
-  | "sodax_swap_price"
-  | "sodax_swap_prepare"
-  | "sodax_swap_submit_and_track"
-  | "sodax_swap_cancel";
+export const SWAP_TOOL_NAMES = [
+  "sodax_resolve_token",
+  "sodax_get_balance",
+  "sodax_swap_price",
+  "sodax_swap_prepare",
+  "sodax_swap_submit_and_track",
+  "sodax_swap_cancel",
+  "sodax_bridge_tokens",
+  "sodax_bridge_preview",
+  "sodax_bridge_prepare",
+  "sodax_bridge_submit_and_track",
+] as const;
+export type SwapToolName = (typeof SWAP_TOOL_NAMES)[number];
 
 /** Where a sent swap's funds ended up, once nothing more can change it. */
 export const OUTCOMES = ["succeeded", "cancelled", "refunding", "failed", "held", "unknown"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
+/** What a swap's confirm summary warns of. */
+export const QUOTE_WARNINGS = [
+  "usd_unchecked",
+  "above_warn_level",
+  "rate_unchecked",
+  "own_address_other_chain",
+] as const;
+
 /** Why a person has to act outside these tools. */
-export type ExternalReason =
-  | "help_desk"
-  | "check_wallet"
-  | "still_in_progress"
-  | "destination_not_ready"
-  | "wallet_setup"
-  | "api_key"
-  | "secret_exposed"
-  | "service_unavailable";
+export const EXTERNAL_REASONS = [
+  "help_desk",
+  "check_wallet",
+  "still_in_progress",
+  "destination_not_ready",
+  "wallet_setup",
+  "api_key",
+  "secret_exposed",
+  "service_unavailable",
+] as const;
+export type ExternalReason = (typeof EXTERNAL_REASONS)[number];
 
 /**
  * Call a tool, `afterSec` from now. `args` are complete when the result found the swap; `sameArgs` means the
@@ -90,7 +106,18 @@ export type ConfirmSummary =
       usdValue: string | null;
       usdOut: string | null;
       approve?: { spender: string; amount: string; symbol: string };
-      warnings: ("usd_unchecked" | "above_warn_level" | "rate_unchecked" | "own_address_other_chain")[];
+      warnings: (typeof QUOTE_WARNINGS)[number][];
+    }
+  | {
+      kind: "bridge";
+      bridgeId: string;
+      expiresAt: string;
+      send: Amount;
+      /** What the recipient gets: the amount sent, less the partner fee, in the token received. */
+      receive: Amount;
+      recipient: string;
+      partnerFee?: { amount: string; symbol: string };
+      approve?: { spender: string; amount: string; symbol: string };
     }
   | { kind: "cancel"; chain: string; txHash: string }
   /** The wallet shows this cancel can never land, before a new one replaces it. */

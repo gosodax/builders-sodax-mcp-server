@@ -184,6 +184,10 @@ describe("secretRefusalText", () => {
       /^SECRET_REJECTED: That's a 64-hex value, not an amount\. If it was a private key/,
     );
     expect(secretRefusalText(hex64, {})).toBeUndefined();
+    // A tx hash in a bridge's field belongs to the bridge's track tool.
+    expect(secretRefusalText(hex64, { notHex64: "a bridgeId", trackTool: "sodax_bridge_submit_and_track" })).toContain(
+      "pass it to sodax_bridge_submit_and_track",
+    );
     expect(secretRefusalText("1,000", { notHex64: "an amount" })).toBeUndefined();
   });
 });

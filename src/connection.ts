@@ -38,11 +38,16 @@ export function resolveConnection(
   req: Request,
   res: Response,
   swapToolsEnabled: boolean,
+  bridgeToolsEnabled = false,
 ): { context: RequestContext; toolsets: ToolSelection } | undefined {
   const rawKey = req.get("x-api-key");
   const keyStatus = apiKeyStatus(rawKey);
   try {
-    const toolsets = selectToolsets(profileFromRequest(req), { apiKey: keyStatus, swapToolsEnabled });
+    const toolsets = selectToolsets(profileFromRequest(req), {
+      apiKey: keyStatus,
+      swapToolsEnabled,
+      bridgeToolsEnabled,
+    });
     const partnerFee = partnerFeeFromRequest(req);
     // Debug: it repeats on every request and the client's instructions say it. Never the value: it may be a secret.
     if (keyStatus === "malformed") logger.debug("x-api-key is not a SODAX API key (sodax_…); calls go out keyless");

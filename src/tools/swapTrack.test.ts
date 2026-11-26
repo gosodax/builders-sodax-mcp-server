@@ -5,6 +5,7 @@ import { setFallbackRequestContext } from "../services/requestContext.js";
 import { getEvmReceipt, intentHash, isTxKnown } from "../services/sodax.js";
 import { clearCache } from "../services/sodaxApi.js";
 import { fixtureText } from "../services/swap/__fixtures__/catalog.js";
+import { messageReceipt } from "../services/swap/__fixtures__/deposit.js";
 import { clearAlerts } from "../services/swap/alerts.js";
 import { claimDeposit, clearQuoteCache } from "../services/swap/quoteCache.js";
 import { clearSwapCatalogCache } from "../services/swap/tokens.js";
@@ -190,8 +191,15 @@ describe("sodax_swap_submit_and_track", () => {
     const calls = stubBackend();
     vi.mocked(getEvmReceipt).mockResolvedValue(null);
     vi.mocked(isTxKnown).mockResolvedValue(seen);
-    const { out } = await track({ txHash: TX, quoteId: cacheQuote().quoteId });
+    const quote = cacheQuote();
+    // A hash no chain can have holds nothing.
+    const malformed = await track({ txHash: "0x1234", quoteId: quote.quoteId });
+    expect(malformed.out.error).toMatchObject({ code: "INVALID_TX_HASH" });
+    expect(quote.heldUntil).toBeUndefined();
+    const { out } = await track({ txHash: TX, quoteId: quote.quoteId });
     expect(out).toMatchObject({ status: "awaiting_source_confirmation", seenOnChain: seen, retryAfterSec: 15 });
+    // Named by a track call: its deposit may be on its way, so it's held from giving way to a new quote for a while.
+    expect(quote.heldUntil).toBeGreaterThan(Date.now());
     expect(out.nextStep).toContain("don't resend it");
     expect(out.nextStep).toContain(hint);
     expect(out.nextStep.includes("if it was never sent, stop tracking it")).toBe(!seen);
@@ -284,6 +292,17 @@ describe("sodax_swap_submit_and_track", () => {
     expect(out).toMatchObject({ status: "not_submitted", reason: "not_a_deposit" });
     expect(out.nextStep).toContain("isn't this quote's swap");
     expect(logger.error).not.toHaveBeenCalled();
+    expect(submits(calls)).toEqual([]);
+  });
+
+  it("won't submit a tx with a cancel or direct message besides this swap's, as the backend follows its first packet", async () => {
+    const calls = stubBackend();
+    const other = messageReceipt({ srcAddress: `0x${"9".repeat(40)}`, payload: "0xc0" });
+    vi.mocked(getEvmReceipt).mockResolvedValue({ ...DEPOSIT_RECEIPT, logs: [...other.logs, ...DEPOSIT_RECEIPT.logs] });
+    const { quoteId } = cacheQuote();
+    const { out } = await track({ txHash: TX, quoteId });
+    expect(out).toMatchObject({ status: "not_submitted", reason: "multiple_deposits" });
+    expect(out.nextStep).toContain("another deposit or a cancel");
     expect(submits(calls)).toEqual([]);
   });
 
@@ -633,7 +652,7 @@ describe("sodax_swap_submit_and_track", () => {
   // The MCP SDK refuses an argument its schema rejects before the tool runs: a result outside the contract.
   it("leaves a malformed argument to the SDK, with no nextAction", async () => {
     const client = await swapClient();
-    const result = await client.callTool({ name: "sodax_swap_submit_and_track", arguments: { txHash: "nope" } });
+    const result = await client.callTool({ name: "sodax_swap_submit_and_track", arguments: { txHash: 42 } });
     await client.close();
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toBeUndefined();
@@ -837,16 +856,15 @@ describe("sodax_swap_submit_and_track", () => {
     for (const tool of tools) expect(tool.description).not.toContain("same API key");
   });
 
-  it("refuses a hash that isn't a tx hash, saying what one looks like", async () => {
+  it.each([
+    ["a short hex value", "0x1234"],
+    ["a batch id", "batch-123"],
+  ])("refuses %s as a hash with a nextAction asking for one, before any read", async (_, txHash) => {
     const calls = stubBackend();
-    const client = await swapClient();
-    const result = await client.callTool({
-      name: "sodax_swap_submit_and_track",
-      arguments: { txHash: "0x1234", chain: ARBITRUM },
-    });
-    await client.close();
-    expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Must be a transaction hash as the wallet shows it.");
+    const { out } = await track({ txHash, chain: ARBITRUM });
+    expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", field: "txHash" });
+    expect(out.nextAction).toMatchObject({ type: "provide", fields: [{ name: "txHash" }] });
+    expect(out.nextStep).toContain("not the batch id");
     expect(calls).toEqual([]);
   });
 

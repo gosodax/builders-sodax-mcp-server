@@ -20,19 +20,39 @@ export type AlertKind =
   | "unverified_tx"
   | "refund_relay_failed"
   | "submit_rejected"
-  | "swap_error";
+  | "swap_error"
+  | "bridge_error"
+  | "unknown_bridge"
+  | "bridge_used"
+  | "bridge_submitted_differently"
+  | "bridge_submit_rejected"
+  | "bridge_multiple_messages"
+  | "bridge_relay_failed"
+  | "bridge_hook_failed";
+
+/** A tool's own failure, alerted per tool, code, reason and chain from the tools' budget. */
+const isToolError = (kind: AlertKind) => kind === "swap_error" || kind === "bridge_error";
 
 const TITLES: Record<AlertKind, string> = {
   unknown_quote: "Swap deposit without its quote: relay it by hand",
   other_quote_deposit: "Swap deposit tracked under another quote: relay it by hand if its own isn't tracked",
   other_sender_deposit: "Swap deposit sent from another address than its quote's: relay it by hand",
   quote_used: "Second deposit for one quote: it can't become a swap",
-  multiple_deposits: "Swap deposit in a transaction with other deposits: relay it by hand",
+  multiple_deposits: "Swap deposit in a transaction with other relay messages: relay it by hand",
   failed_tx_deposit: "Swap deposit in a transaction that failed after it ran: not submitted, recover it by hand",
   unverified_tx: "Swap transaction whose events this server can't read: not submitted, check it by hand",
   refund_relay_failed: "Expired swap deposit not relayed for refund",
   submit_rejected: "Checked swap deposit refused by submit-tx before its deadline: relay it by hand",
   swap_error: "Swap tool error: a bug, or the swap service built or priced something other than asked",
+  bridge_error: "Bridge tool error: a bug, or the bridge service built something other than asked",
+  unknown_bridge: "Bridge deposit without its build: find it and submit it by hand",
+  bridge_used: "Second deposit for one bridge build: submit it by hand",
+  bridge_submitted_differently:
+    "Bridge deposit the bridge service holds with other bridge data: check and relay it by hand",
+  bridge_submit_rejected: "Checked bridge deposit refused by submit-tx: submit or relay it by hand",
+  bridge_multiple_messages: "Bridge deposit in a transaction with other relay messages: relay it by hand",
+  bridge_relay_failed: "Bridge the backend gave up on and the relay hasn't delivered: relay it by hand",
+  bridge_hook_failed: "Bridge deposit held in a user's hub wallet: its calls failed there",
 };
 
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +71,7 @@ const HELD_TEXT_MAX = 4096;
 // A failed tx's held deposit, or a tx whose events can't be read, may not be the quote named with it.
 const PUBLIC_KINDS: readonly AlertKind[] = [
   "unknown_quote",
+  "unknown_bridge",
   "other_quote_deposit",
   "failed_tx_deposit",
   "unverified_tx",
@@ -91,12 +112,13 @@ const LOG_NAMES: Record<keyof AlertFields, string> = {
 
 /**
  * Logs the alert and posts it, or holds it for the hourly post when its budget is spent. False when
- * it was neither posted nor held (that post is full): only the log has it.
+ * it was neither posted nor held (that post is full): only the log has it. `unchecked`: about a tx this
+ * server didn't check as a deposit, which any key can name, so it spends the public budget.
  */
-export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
+export function alertOperator(kind: AlertKind, fields: AlertFields, { unchecked = false } = {}): boolean {
   // A deposit is the same alert whatever quoteId the agent passes; a tool error, per tool, code, reason and chain.
   const key = JSON.stringify(
-    kind === "swap_error"
+    isToolError(kind)
       ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
       : [kind, fields.chainKey, fields.txHash],
   );
@@ -109,17 +131,16 @@ export function alertOperator(kind: AlertKind, fields: AlertFields): boolean {
   const tagged = { ...fields, keyHash: callerKeyHash().slice(0, 12) };
   const named = Object.entries(fields).map(([name, value]) => [LOG_NAMES[name as keyof AlertFields], value]);
   logger.error({ alert: kind, ...Object.fromEntries(named), "caller.key_hash": callerKeyTag() }, TITLES[kind]);
-  const budget: Budget = kind === "swap_error" ? "tools" : PUBLIC_KINDS.includes(kind) ? "public" : "checked";
+  const budget: Budget = isToolError(kind) ? "tools" : unchecked || PUBLIC_KINDS.includes(kind) ? "public" : "checked";
   const verdict = spend(budget, now);
   sent.delete(key);
   if (sent.size >= MAX_ENTRIES) sent.delete(sent.keys().next().value ?? "");
   sent.set(key, { at: now, reached: verdict !== "drop" });
   if (verdict === "drop") return false;
   if (verdict === "hold") {
-    const parts =
-      kind === "swap_error"
-        ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
-        : [kind, fields.chainKey, fields.txHash, fields.quoteId, fields.deadline && `deadline ${fields.deadline}`];
+    const parts = isToolError(kind)
+      ? [kind, fields.tool, fields.code, fields.reason, fields.chainKey]
+      : [kind, fields.chainKey, fields.txHash, fields.quoteId, fields.deadline && `deadline ${fields.deadline}`];
     // As the embed fields: a slip can't put a URL or a wall of text in the post.
     held[budget].push(truncate(redact(parts.filter(Boolean).join(" · ")), FIELD_VALUE_MAX));
     return true;

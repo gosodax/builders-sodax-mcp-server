@@ -110,14 +110,14 @@ describe("notifyServerStarted", () => {
 });
 
 describe("notifyServerStopping", () => {
-  it("says how many open swap quotes the stop loses, and nothing about quotes when there are none", async () => {
+  it("says how many open swap quotes and bridges the stop loses, and nothing about them when there are none", async () => {
     process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
     const fetchSpy = stubFetch();
-    await notifyServerStopping("SIGTERM", 2);
+    await notifyServerStopping("SIGTERM", 2, 1);
     await notifyServerStopping("SIGTERM");
     const [lost, clean] = fetchSpy.mock.calls.map(call => JSON.parse(call[1].body as string).embeds[0].description);
     expect(lost).toBe(
-      'Received `SIGTERM`\n2 open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".',
+      'Received `SIGTERM`\n2 open swap quote(s) lost. A deposit made from one alerts as "Swap deposit without its quote".\n1 open bridge(s) lost. A deposit made from one alerts as "Bridge deposit without its build".',
     );
     expect(clean).toBe("Received `SIGTERM`");
   });

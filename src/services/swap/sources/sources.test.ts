@@ -85,6 +85,8 @@ describe("each family's evidence, on a real swap deposit", () => {
     const evidence = swap.read() as SpokeEvidence;
     expect(evidence.failed).toBe(false);
     expect(depositMessages(evidence.messages, terms(swap).assetManager)).toHaveLength(1);
+    // And no other message: track refuses a deposit sharing its tx with one, which a lone deposit must never trip.
+    expect(evidence.messages).toHaveLength(1);
     expect(checkDeposit(evidence.messages, terms(swap))).toBe("match");
     const another = String(BigInt(swap.intent.intentId) + 1n);
     expect(checkDeposit(evidence.messages, terms(swap, { intentId: another }))).toBe("mismatch");

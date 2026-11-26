@@ -24,7 +24,7 @@ import {
   intentClosed,
   isHubSource,
   readSourceTx,
-  resolveSource,
+  resolveSentTx,
   sourceTxHash,
   swapsIn,
   whyNotCancellable,
@@ -66,8 +66,7 @@ export async function cancelSwap(input: {
   chain?: string;
   cancelTxHash?: string;
 }): Promise<CancelResult> {
-  const source = await resolveSource(input);
-  const txHash = sourceTxHash(source, input.txHash);
+  const { source, txHash } = await resolveSentTx(input);
   const { quote } = source;
   const base: SwapRef = {
     txHash,

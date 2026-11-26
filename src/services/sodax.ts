@@ -21,7 +21,9 @@ import {
   solverConfig,
   spokeChainConfig,
 } from "@sodax/types";
+import { z } from "zod";
 import {
+  ANY_TX_HASH_PATTERN,
   CHAIN_KEY_PATTERN,
   EVM_ADDRESS_PATTERN,
   SODAX_API_ORIGIN,
@@ -282,6 +284,141 @@ export function userHubWallet(chainKey: string, address: string): Promise<string
   );
 }
 
+/** A token on a chain, by its address there. */
+export interface ChainToken {
+  chainKey: string;
+  address: string;
+}
+
+/** The SDK's own entry for a token, as its bridge reads it; throws for one its config doesn't list. */
+function bridgeToken({ chainKey, address }: ChainToken) {
+  const token = sdk().sodax.config.getSpokeTokenFromOriginalAssetAddress(chainKey as SpokeChainKey, address);
+  if (!token) throw new Error("token not in the SDK config");
+  return token;
+}
+
+/** The hub asset a token is held as on the hub: on Sonic, the token a bridge there delivers. Config only, no read. */
+export const bridgeHubAsset = (token: ChainToken): string => bridgeToken(token).hubAsset;
+
+/** The addresses of the tokens on `toChainKey` that `from` bridges to (same hub vault). Config only, no read. */
+export function bridgeableTokensTo(from: ChainToken, toChainKey: string): string[] {
+  const result = sdk().sodax.bridge.getBridgeableTokens(
+    from.chainKey as SpokeChainKey,
+    toChainKey as SpokeChainKey,
+    from.address,
+  );
+  return result.ok ? result.value.map(token => token.address) : [];
+}
+
+/**
+ * How much a bridge can move now, in base units of `decimals`: from a spoke, what the source vault still accepts
+ * (`DEPOSIT_LIMIT`); to a spoke, what the destination's asset manager holds (`WITHDRAWAL_LIMIT`); spoke to spoke, the
+ * smaller. `decimals` are the binding side's vault token's, not necessarily either token's. Reads the hub.
+ */
+export function bridgeLimit(
+  from: ChainToken,
+  to: ChainToken,
+): Promise<{ amount: bigint; decimals: number; type: "DEPOSIT_LIMIT" | "WITHDRAWAL_LIMIT" }> {
+  return bounded({ label: "bridge limit", chainKey: HUB_CHAIN_KEY }, async () => {
+    const result = await sdk().sodax.bridge.getBridgeableAmount(bridgeToken(from), bridgeToken(to));
+    if (!result.ok) throw new Error("bridge limit read failed");
+    return result.value;
+  });
+}
+
+/** The connection's partner fee as the SDK and the Bridge API take it: the same basis points as `percentage`. */
+const sdkPartnerFee = (fee?: { address: string; bps: number }) =>
+  fee && { address: fee.address as `0x${string}`, percentage: fee.bps };
+
+/**
+ * What a bridge of `amount` (source base units) delivers, in destination base units, and the partner fee it takes, in
+ * the hub's 18-decimal vault units and in the source token's base units (what the user sees it cost): the SDK's own pipeline (`BridgeService.computeBridgeAmounts`, private), from its
+ * public parts. Into the vault's units unless the source is a vault token, the fee off there, then out into the
+ * destination's units unless that is one. Config only, no read.
+ */
+export function bridgeAmounts(
+  amount: bigint,
+  from: ChainToken,
+  to: ChainToken,
+  partnerFee?: { address: string; bps: number },
+): { delivered: bigint; fee: bigint; feeInSource: bigint } {
+  const { sdk: lib, sodax } = sdk();
+  const src = bridgeToken(from);
+  const dst = bridgeToken(to);
+  const inVault = sodax.config.isSodaVaultHubAsset(src.hubAsset)
+    ? amount
+    : lib.EvmVaultTokenService.translateIncomingDecimals(src.decimals, amount);
+  const fee = lib.calculateFeeAmount(inVault, sdkPartnerFee(partnerFee));
+  const out = inVault - fee;
+  const delivered = sodax.config.isSodaVaultHubAsset(dst.hubAsset)
+    ? out
+    : lib.EvmVaultTokenService.translateOutgoingDecimals(dst.decimals, out);
+  const feeInSource = sodax.config.isSodaVaultHubAsset(src.hubAsset)
+    ? fee
+    : lib.EvmVaultTokenService.translateOutgoingDecimals(src.decimals, fee);
+  return { delivered, fee, feeInSource };
+}
+
+/**
+ * A bridge in the SDK's own terms (`CreateBridgeIntentParams`), plus the connection's partner fee: the one shape the
+ * server asks the Bridge API for and rebuilds with the SDK.
+ */
+export interface SdkBridgeRequest {
+  srcChainKey: string;
+  srcAddress: string;
+  srcToken: string;
+  amount: bigint;
+  dstChainKey: string;
+  dstToken: string;
+  recipient: string;
+  partnerFee?: { address: string; bps: number };
+}
+
+/** The Bridge API's request body for a bridge, as the SDK's own client maps it (`toCreateBridgeIntentParamsV2`). */
+export function bridgeWireParams({ partnerFee, ...params }: SdkBridgeRequest) {
+  const fee = sdkPartnerFee(partnerFee);
+  return sdk().sdk.toCreateBridgeIntentParamsV2(params, fee && { partnerFee: fee });
+}
+
+/**
+ * A bridge as the SDK builds its own (`BridgeService.createBridgeIntent`, raw): the deposit tx the user's wallet sends,
+ * and the relay data it carries, the hub calls for the user's hub wallet. Reads the hub wallet and, for a non-EVM
+ * source, that chain (account, blockhash, fees); no simulation, which the Bridge API's build already ran.
+ */
+export async function sdkBridge({
+  partnerFee,
+  ...params
+}: SdkBridgeRequest): Promise<{ tx: unknown; relayData: { address: string; payload: string } }> {
+  const fee = sdkPartnerFee(partnerFee);
+  const result = await bounded({ label: "bridge build", chainKey: params.srcChainKey }, async () => {
+    // Only the values are cast: a parameter the SDK renames fails the type check, not the build.
+    const built = await sdk().sodax.bridge.createBridgeIntent({
+      params: {
+        ...params,
+        srcChainKey: params.srcChainKey as SpokeChainKey,
+        dstChainKey: params.dstChainKey as SpokeChainKey,
+      },
+      raw: true,
+      skipSimulation: true,
+      ...(fee && { extras: { partnerFee: fee } }),
+    });
+    // A refusal of the bridge's own params, before any read, isn't a failed read.
+    if (!built.ok && built.error.code !== "VALIDATION_FAILED") throw new Error("bridge build failed");
+    return built;
+  });
+  if (result.ok) return result.value;
+  const field = (result.error as { context?: { field?: unknown } }).context?.field;
+  throw new SdkRefusal(typeof field === "string" ? field : undefined);
+}
+
+/** The SDK refused a bridge's params (a Bitcoin amount below dust, say), naming the one at fault: it never builds. */
+export class SdkRefusal extends Error {
+  constructor(readonly field: string | undefined) {
+    super("The SDK refused the bridge's params");
+    this.name = "SdkRefusal";
+  }
+}
+
 export interface EvmReceipt {
   reverted: boolean;
   /** Where it was mined: what orders two txs on one chain. */
@@ -312,6 +449,67 @@ export function getEvmReceipt(chainKey: string, txHash: string): Promise<EvmRece
       if (isNotFound(error)) return null;
       throw error;
     }
+  });
+}
+
+/** A tx on the hub as a wallet sent it (sender, target, calldata, value), or `null` while no node has it. */
+export function getHubTx(
+  txHash: string,
+): Promise<{ from: string; to: string | null; input: string; value: bigint } | null> {
+  return bounded({ label: "hub tx", chainKey: HUB_CHAIN_KEY, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    try {
+      const { from, to, input, value } = await sdk().sodax.hubProvider.publicClient.getTransaction({
+        hash: txHash as `0x${string}`,
+      });
+      return { from, to, input, value };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  });
+}
+
+/**
+ * A relay packet as the relay reports it (`PacketData`): addresses and payload in hex without `0x`, the relay's chain
+ * ids, and each tx hash in its own chain's format (an EVM one with `0x`, a Solana signature in base58).
+ */
+const relayPacketSchema = z.object({
+  src_chain_id: z.union([z.number().int(), z.string().regex(/^\d+$/)]),
+  src_tx_hash: z.string(),
+  src_address: z.string(),
+  status: z.string(),
+  dst_chain_id: z.union([z.number().int(), z.string().regex(/^\d+$/)]),
+  // Passed on to the agent: upstream text that doesn't look like a hash isn't.
+  dst_tx_hash: z.string().regex(ANY_TX_HASH_PATTERN).optional().catch(undefined),
+  payload: z.string(),
+});
+export type RelayPacket = z.infer<typeof relayPacketSchema>;
+
+/**
+ * The relay's packets for a tx on a chain, through the SDK's own relay client (no SODAX key goes to the relay): what
+ * the tx sent, where, and whether it ran there. None known yet is `[]`; a packet the relay sends malformed is left out,
+ * so it can never pass for a delivery. Fails as a bare error.
+ */
+export function relayPackets(chainKey: string, txHash: string): Promise<RelayPacket[]> {
+  return bounded({ label: "relay packets", chainKey, timeoutMs: RPC_CALL_TIMEOUT_MS }, async () => {
+    const { sdk: lib, sodax } = sdk();
+    const result = await lib.getTransactionPackets(
+      { action: "get_transaction_packets", params: { chain_id: intentChainId(chainKey) ?? "", tx_hash: txHash } },
+      sodax.config.relay.relayerApiEndpoint,
+      RPC_CALL_TIMEOUT_MS,
+    );
+    if (result.ok) {
+      const data: unknown = result.value.data;
+      return Array.isArray(data)
+        ? data.flatMap(packet => {
+            const parsed = relayPacketSchema.safeParse(packet);
+            return parsed.success ? [parsed.data] : [];
+          })
+        : [];
+    }
+    // The relay answers 404 for a tx it holds no packet of yet, as the SDK's own polling reads it.
+    if (result.error instanceof lib.HttpRelayError && result.error.status === 404) return [];
+    throw new Error("relay read failed");
   });
 }
 

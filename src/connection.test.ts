@@ -28,8 +28,8 @@ afterEach(() => {
 
 describe("resolveConnection", () => {
   it.each([
-    [{ profile: "swap" }, { builder: false, swap: true }],
-    [{}, { builder: true, swap: true }],
+    [{ profile: "swap" }, { builder: false, swap: true, bridge: false }],
+    [{}, { builder: true, swap: true, bridge: false }],
   ])("forwards a SODAX key and serves its profile (%j)", (query, toolsets) => {
     const { connection, res } = resolve(fakeReq(query, { "x-api-key": KEY }));
     expect(connection).toEqual({ context: { apiKey: KEY }, toolsets });
@@ -122,7 +122,7 @@ describe("resolveConnection", () => {
 
     it("serves a keyed default connection the builder tools only, forwarding its key", () => {
       const { connection, res } = resolve(fakeReq({}, { "x-api-key": KEY }), false);
-      expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: true, swap: false } });
+      expect(connection).toEqual({ context: { apiKey: KEY }, toolsets: { builder: true, swap: false, bridge: false } });
       expect(res.status).not.toHaveBeenCalled();
     });
   });

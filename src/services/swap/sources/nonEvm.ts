@@ -134,6 +134,7 @@ export function nonEvmAdapter(family: NonEvmFamily): SourceAdapter {
       });
       return stepOf(family, source, "cancel", finish(raw));
     },
+    depositStep: (source, raw, expected) => stepOf(family, source, "bridge", finish(raw), expected),
   };
 }
 
@@ -148,7 +149,8 @@ function stepOf(
   const chainKey = source.chain.key;
   if (family.callsPinned && !family.callsPinned(kind, raw, expected)) {
     logger.error({ "chain.key": chainKey }, `The SDK built a ${kind} to another program than expected`);
-    throw new ActionError("SWAP_MISMATCH", `The ${kind} built here calls another program than expected.`, {
+    const code = kind === "bridge" ? "BRIDGE_MISMATCH" : "SWAP_MISMATCH";
+    throw new ActionError(code, `The ${kind} built here calls another program than expected.`, {
       details: { chainKey },
     });
   }

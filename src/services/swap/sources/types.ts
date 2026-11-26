@@ -89,7 +89,7 @@ export interface Allowance {
 
 /** A step an EVM wallet sends. */
 export interface EvmStep {
-  kind: "reset_approve" | "approve" | "swap";
+  kind: "reset_approve" | "approve" | "swap" | "bridge";
   chainId: number;
   tx: StepTx;
   /** On an approve or a reset. */
@@ -98,7 +98,7 @@ export interface EvmStep {
 
 /** A non-EVM step: the SDK's unsigned raw tx for the family's wallets, as JSON (`jsonSafe`). */
 export interface NonEvmStep {
-  kind: "swap" | "cancel";
+  kind: "swap" | "cancel" | "bridge";
   chainKey: string;
   chainType: NonEvmSourceType;
   tx: unknown;
@@ -157,4 +157,9 @@ export interface SourceAdapter {
   prepareSwap(source: SwapSource, swap: SwapToBuild): Promise<{ steps: SwapStep[]; batch?: SwapBatch }>;
   /** The cancel step for the hub's intent, checked before anyone signs it. */
   cancelStep(source: SwapSource, intent: Intent): Promise<CancelStep>;
+  /**
+   * A non-EVM family's bridge deposit as its wallet signs it, from the raw tx the SDK built: checked as a swap's
+   * (`callsPinned`, against `expected`, the Bridge API's own build's target), then readied (`finish`).
+   */
+  depositStep?(source: SwapSource, raw: unknown, expected?: unknown): NonEvmStep;
 }

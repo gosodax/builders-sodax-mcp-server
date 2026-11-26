@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:contract": "vitest run --config vitest.contract.config.ts",
     "e2e:canary": "tsx scripts/e2e/swapCanary.ts",
+    "e2e:bridge": "tsx scripts/e2e/bridgeCanary.ts",
     "prepare": "husky",
     "clean": "rm -rf dist"
   },

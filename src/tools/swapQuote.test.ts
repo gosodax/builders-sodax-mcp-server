@@ -269,8 +269,9 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
       intentHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       fromAddress: USER,
       toAddress: USER,
-      expiresAt: new Date(Number(DEADLINE) * 1000).toISOString(),
-      expiresInSec: 900,
+      // Sent within 5 minutes, well before the intent's own 15-minute deadline.
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      expiresInSec: 300,
       checks: { balance: "not_checked", recipient: "not_needed" },
       steps: [
         { kind: "approve", chainId: 42161, tx: { to: ARB_USDC } },
@@ -341,7 +342,8 @@ describe("sodax_swap_price and sodax_swap_prepare", () => {
     for (let i = 0; i < 1_000; i++) cacheQuote({ deadline: DEADLINE });
     const calls = stubSwaps();
     const { out } = await quote({ ...USDC_TO_SONIC, amount: "5", fromAddress: USER });
-    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 45 * 60 });
+    // Until the oldest, never sent nor tracked, passes its 5-minute sign-by and gives way.
+    expect(out.error).toMatchObject({ code: "RATE_LIMITED", retryAfterSec: 5 * 60 });
     expect(out.nextStep).toContain("To watch a price meanwhile, use sodax_swap_price");
     expect(calls).toEqual([]);
     expect((await quote({ ...USDC_TO_SONIC, amount: "5" })).out.status).toBe("price");

@@ -3,6 +3,7 @@ import {
   ConnectionError,
   apiKeyStatus,
   describeProfiles,
+  parseBridgeToolsEnabled,
   parseSwapToolsEnabled,
   profileFromArgs,
   profileFromRequest,
@@ -30,12 +31,12 @@ function refusal(requested: unknown, opts: Parameters<typeof selectToolsets>[1])
 
 describe("selectToolsets", () => {
   it.each([undefined, "all", " ALL "])("serves both to a keyed default connection (%j)", profile => {
-    expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true });
+    expect(selectToolsets(profile, { ...keyed, ...on })).toEqual({ builder: true, swap: true, bridge: false });
   });
 
   it("gives a keyless default connection the builder tools only, and says the swap tools need a key", () => {
     const selection = selectToolsets(undefined, { ...keyless, ...on });
-    expect(selection).toEqual({ builder: true, swap: false, keyHint: expect.any(String) });
+    expect(selection).toEqual({ builder: true, swap: false, bridge: false, keyHint: expect.any(String) });
     expect(selection.keyHint).toContain("x-api-key header");
     expect(selection.keyHint).toContain(GET_A_KEY);
   });
@@ -67,16 +68,16 @@ describe("selectToolsets", () => {
   });
 
   it("keeps the swap tools out of every profile while the switch is off", () => {
-    expect(selectToolsets("all", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
-    expect(selectToolsets("builder", { ...keyed, ...off })).toEqual({ builder: true, swap: false });
+    expect(selectToolsets("all", { ...keyed, ...off })).toEqual({ builder: true, swap: false, bridge: false });
+    expect(selectToolsets("builder", { ...keyed, ...off })).toEqual({ builder: true, swap: false, bridge: false });
   });
 
   it("never gives a builder connection the swap tools", () => {
-    expect(selectToolsets("builder", { ...keyed, ...on })).toEqual({ builder: true, swap: false });
+    expect(selectToolsets("builder", { ...keyed, ...on })).toEqual({ builder: true, swap: false, bridge: false });
   });
 
   it("serves only the swap tools to a keyed swap connection", () => {
-    expect(selectToolsets(" Swap ", { ...keyed, ...on })).toEqual({ builder: false, swap: true });
+    expect(selectToolsets(" Swap ", { ...keyed, ...on })).toEqual({ builder: false, swap: true, bridge: false });
   });
 
   it.each(["bogus", ["swap", "all"], { swap: "1" }])("refuses an unknown profile (%j) without echoing it", profile => {
@@ -182,5 +183,58 @@ describe("parseSwapToolsEnabled", () => {
 
   it("stops on anything else, so a typo can't flip the gate", () => {
     expect(() => parseSwapToolsEnabled("yes")).toThrow("SODAX_SWAP_TOOLS_ENABLED");
+  });
+});
+
+describe("the bridge profile", () => {
+  const both = { swapToolsEnabled: true, bridgeToolsEnabled: true };
+
+  it("is off unless its switch is on, whatever the swap switch says", () => {
+    const error = refusal("bridge", { ...keyed, ...on });
+    expect(error).toMatchObject({ httpStatus: 400, code: "BRIDGE_PROFILE_OFF" });
+    expect(selectToolsets("all", { ...keyed, ...on })).toEqual({ builder: true, swap: true, bridge: false });
+    expect(refusal("nope", { ...keyed, ...on }).message).toBe("Unknown profile. Use builder, swap, all.");
+  });
+
+  it("serves only the bridge tools to a keyed bridge connection, and every toolset to a keyed default one", () => {
+    expect(selectToolsets("bridge", { ...keyed, ...both })).toEqual({ builder: false, swap: false, bridge: true });
+    expect(selectToolsets(undefined, { ...keyed, ...both })).toEqual({ builder: true, swap: true, bridge: true });
+    expect(selectToolsets("swap", { ...keyed, ...both })).toEqual({ builder: false, swap: true, bridge: false });
+    expect(refusal("nope", { ...keyed, ...both }).message).toBe("Unknown profile. Use builder, swap, bridge, all.");
+  });
+
+  it("needs a SODAX key, and says the default connection's keyed tools need one", () => {
+    expect(refusal("bridge", { ...keyless, ...both })).toMatchObject({ httpStatus: 403, code: "API_KEY_REQUIRED" });
+    expect(refusal("bridge", { ...malformed, ...both })).toMatchObject({ code: "API_KEY_MALFORMED" });
+    const selection = selectToolsets(undefined, { ...keyless, ...both });
+    expect(selection).toMatchObject({ builder: true, swap: false, bridge: false });
+    expect(selection.keyHint).toMatch(/^This connection has no swap or bridge tools: they need a SODAX API key\./);
+  });
+
+  it("is described as off or on", () => {
+    expect(describeProfiles(true).bridge).toBe("Turned off on this server");
+    expect(describeProfiles(true, true)).toMatchObject({
+      bridge: "Bridge tools; needs an x-api-key header",
+      all: "The builder, swap and bridge tools; the swap and bridge tools only with an x-api-key header",
+    });
+    expect(describeProfiles(false, true).all).toBe(
+      "The builder and bridge tools; the bridge tools only with an x-api-key header",
+    );
+  });
+});
+
+describe("parseBridgeToolsEnabled", () => {
+  it.each([
+    [undefined, false],
+    ["", false],
+    ["true", true],
+    [" TRUE ", true],
+    ["false", false],
+  ])("reads %j as %s", (value, expected) => {
+    expect(parseBridgeToolsEnabled(value)).toBe(expected);
+  });
+
+  it("stops the server on anything else", () => {
+    expect(() => parseBridgeToolsEnabled("yes")).toThrow('SODAX_BRIDGE_TOOLS_ENABLED must be "true" or "false"');
   });
 });

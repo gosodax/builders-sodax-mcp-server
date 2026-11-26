@@ -17,7 +17,7 @@ vi.mock("posthog-node", () => ({
 async function wrapTool(
   key: string | undefined,
   handler: () => Promise<unknown>,
-  module: "swap" | "api" = "swap",
+  module: "swap" | "bridge" | "api" = "swap",
   outputSchema?: unknown,
 ) {
   vi.resetModules();
@@ -41,7 +41,7 @@ async function wrapTool(
 }
 
 /** The wrapped tool called once: the PostHog event's properties. */
-async function wrappedTool(key: string | undefined, result: unknown, module: "swap" | "api" = "swap") {
+async function wrappedTool(key: string | undefined, result: unknown, module: "swap" | "bridge" | "api" = "swap") {
   const { call } = await wrapTool(key, async () => result, module);
   await call();
   return capture.mock.calls.at(-1)?.[0]?.properties as Record<string, unknown> | undefined;
@@ -106,6 +106,70 @@ describe("analytics", () => {
     );
     expect(builder).not.toHaveProperty("status");
     expect(builder).not.toHaveProperty("src_chain");
+  });
+
+  it("sends a bridge's status, bridge id and chains, and nothing else of it", async () => {
+    const props = await wrappedTool(
+      "phc_test",
+      {
+        structuredContent: {
+          status: "ready",
+          bridgeId: "6f9619ff-8b86-4011-b42d-00c04fc964ff",
+          from: {
+            chain: { key: "0xa4b1.arbitrum" },
+            amount: "5",
+            address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+          },
+          to: { chain: { key: "0x2105.base" }, amount: "5" },
+          fromAddress: "0x000000000000000000000000000000000000dEaD",
+        },
+      },
+      "bridge",
+    );
+    expect(props).toMatchObject({
+      status: "ready",
+      bridge_id: "6f9619ff-8b86-4011-b42d-00c04fc964ff",
+      src_chain: "0xa4b1.arbitrum",
+      dst_chain: "0x2105.base",
+    });
+    expect(props).not.toHaveProperty("quote_id");
+    expect(JSON.stringify(props)).not.toMatch(/dEaD|af88/);
+    // A pairs result names its chains directly.
+    const pairs = await wrappedTool(
+      "phc_test",
+      { structuredContent: { status: "ok", from: { key: "solana" }, to: { key: "sonic" }, pairs: [] } },
+      "bridge",
+    );
+    expect(pairs).toMatchObject({ src_chain: "solana", dst_chain: "sonic" });
+  });
+
+  it("logs the ids a bridge is followed by", async () => {
+    const { call, info } = await wrapTool(
+      undefined,
+      async () => ({
+        content: [],
+        structuredContent: {
+          status: "delivered",
+          bridgeId: "b-1",
+          txHash: "0xtx",
+          dstTxHash: "0xdst",
+          chain: { key: "0xa4b1.arbitrum" },
+          fromAddress: "0x000000000000000000000000000000000000dEaD",
+        },
+      }),
+      "bridge",
+    );
+    await call();
+    const [record] = info.mock.calls.at(-1) as [Record<string, unknown>];
+    expect(record).toMatchObject({
+      "bridge.status": "delivered",
+      "bridge.id": "b-1",
+      "tx.hash": "0xtx",
+      "dst_tx.hash": "0xdst",
+      "chain.key": "0xa4b1.arbitrum",
+    });
+    expect(record).not.toHaveProperty("swap.status");
+    expect(JSON.stringify(record)).not.toContain("dEaD");
   });
 
   it("sends nothing without POSTHOG_API_KEY", async () => {

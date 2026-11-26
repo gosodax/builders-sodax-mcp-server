@@ -9,7 +9,17 @@
 
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
-import { runWithRequestContext, tagOf } from "../requestContext.js";
+import { getRequestContext, runWithRequestContext, tagOf } from "../requestContext.js";
+import {
+  MAX_OPEN_PER_CLIENT,
+  SIGN_WINDOW_MS,
+  SIGN_WINDOW_TEXT,
+  addOpen,
+  freesAt,
+  releasable,
+  removeOpen,
+  secondsUntil,
+} from "../signWindow.js";
 import { ActionError } from "./errors.js";
 import type { BuiltIntent, IntentRequest } from "./swapsApi.js";
 
@@ -19,10 +29,23 @@ export type CachedQuote = IntentRequest & {
   relayData: BuiltIntent["relayData"];
   /** SHA-256 of the creator's API key. */
   keyHash: string;
+  /** The creator's hashed IP, over HTTP: keys cost nothing to make up, so a client's open quotes are capped too. */
+  clientId?: string;
   /** The least the recipient gets, as track reports it once the swap is solved. */
   minimumReceived: { amount: string; symbol: string; chainName: string };
   /** Epoch ms: the deadline plus a grace period, so a tx signed near expiry can still be tracked. */
   expiresAt: number;
+  /**
+   * Epoch ms: the steps are to be sent by then (`SIGN_WINDOW_MS` from preparing, or the deadline if sooner). Past it,
+   * a quote with no deposit and no track call holding it may give way to a new one when room runs out; the intent's
+   * own deadline is later.
+   */
+  signBy: number;
+  /**
+   * Epoch ms: a track or cancel call with a well-formed hash holds it this long, its deposit maybe on the way. Only a
+   * deposit claimed (`depositTxHash`) keeps it for good.
+   */
+  heldUntil?: number;
   /** The deposit checked as this quote's. One intent can only come from one deposit, so the claim stays. */
   depositTxHash?: string;
   /**
@@ -50,27 +73,22 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 
 // Insertion order is age order, which eviction relies on.
 const quotes = new Map<string, CachedQuote>();
-// Per key, its unclaimed quotes' expiry in epoch ms, by quoteId.
-const openByKey = new Map<string, Map<string, number>>();
+// Per key, and per client, its unclaimed quotes.
+const openByKey = new Map<string, Set<string>>();
+const openByClient = new Map<string, Set<string>>();
 let lastFullWarningAt = Number.NEGATIVE_INFINITY;
 let sweepTimer: NodeJS.Timeout | undefined;
 
 /**
- * Refuses a key with too many open quotes, or any key while the cache is full of quotes it can't drop;
- * checked before a quote is built, and again when it's put.
+ * Makes room for a quote, or refuses: a key or a client at its cap of unclaimed quotes first drops its oldest one that
+ * can give way (`checkOpen`), a full cache its oldest one past its deadline (`makeRoom`). Checked before a quote is
+ * built, and again when it's put.
  */
-export function checkQuoteRoom(keyHash: string): void {
+export function checkQuoteRoom(keyHash: string, clientId = getRequestContext().clientId): void {
   const now = Date.now();
-  const open = openByKey.get(keyHash);
-  if (open && open.size >= MAX_QUOTES_PER_KEY) {
-    for (const [quoteId, expiresAt] of open) if (expiresAt <= now) open.delete(quoteId);
-    if (open.size >= MAX_QUOTES_PER_KEY) {
-      throw new ActionError("RATE_LIMITED", "This API key has too many open swap quotes.", {
-        nextStep:
-          "Wait retryAfterSec seconds for a quote to expire, then try again. To watch a price meanwhile, use sodax_swap_price, which holds none.",
-        details: { retryAfterSec: Math.ceil((Math.min(...open.values()) - now) / 1000) },
-      });
-    }
+  checkOpen(openByKey.get(keyHash), MAX_QUOTES_PER_KEY, "This API key has too many open swap quotes.", now);
+  if (clientId) {
+    checkOpen(openByClient.get(clientId), MAX_OPEN_PER_CLIENT, "This client has too many open swap quotes.", now);
   }
   if (quotes.size >= MAX_QUOTES && !makeRoom(now)) {
     if (now - lastFullWarningAt >= SWEEP_INTERVAL_MS) {
@@ -85,31 +103,64 @@ export function checkQuoteRoom(keyHash: string): void {
 }
 
 /**
- * Drops expired quotes, then if still full the oldest one past its deadline, in `evictionRank` order. A full cache
- * otherwise refuses every new quote, so a swap that's safe without its quote gives way, only to be answered on less
- * precisely here.
+ * Past `max` open quotes in `open`, the oldest one past its sign-by and no longer held gives way; refused while every
+ * one is still to be sent or held, until the first of them can give way.
+ */
+function checkOpen(open: Set<string> | undefined, max: number, message: string, now: number): void {
+  if (!open || open.size < max) return;
+  // Expired ones go first: the sweep comes once a minute.
+  for (const quoteId of open) if ((quotes.get(quoteId)?.expiresAt ?? 0) <= now) open.delete(quoteId);
+  if (open.size < max) return;
+  let first = Number.POSITIVE_INFINITY;
+  for (const quoteId of open) {
+    const quote = quotes.get(quoteId);
+    if (!quote) continue;
+    if (releasable(quote, now)) {
+      drop(quote);
+      logUnused(quote, "evicted");
+      return;
+    }
+    first = Math.min(first, freesAt(quote));
+  }
+  throw new ActionError("RATE_LIMITED", message, {
+    nextStep: `Tell the user too many swaps were prepared here and not yet sent, and wait retryAfterSec seconds before preparing again: a quote no one sent gives way ${SIGN_WINDOW_TEXT} after it was made. To watch a price meanwhile, use sodax_swap_price, which holds none.`,
+    details: { retryAfterSec: secondsUntil(first, now) },
+  });
+}
+
+/**
+ * Drops expired quotes, then if still full the oldest one past its deadline, in `evictionRank` order, and last the
+ * oldest before its deadline that can give way. A full cache otherwise refuses every new quote, so a swap that's safe
+ * without its quote gives way, only to be answered on less precisely here.
  */
 function makeRoom(now: number): boolean {
   sweep(now);
   if (quotes.size < MAX_QUOTES) return true;
-  for (const rank of [0, 1, 2]) {
-    for (const cached of quotes.values()) {
-      if (Number(cached.deadline) * 1000 > now || evictionRank(cached) !== rank) continue;
-      drop(cached);
-      if (rank === 0) logUnused(cached, "evicted");
-      return true;
-    }
+  // The oldest quote of each rank, in one pass: the before-deadline one ranks last.
+  const oldest: (CachedQuote | undefined)[] = [];
+  for (const cached of quotes.values()) {
+    const rank =
+      Number(cached.deadline) * 1000 > now ? (releasable(cached, now) ? 3 : undefined) : evictionRank(cached, now);
+    if (rank === undefined || oldest[rank]) continue;
+    oldest[rank] = cached;
+    if (rank === 0) break;
   }
-  return false;
+  const evicted = oldest.find(Boolean);
+  if (!evicted) return false;
+  drop(evicted);
+  if (evicted.depositTxHash === undefined) logUnused(evicted, "evicted");
+  return true;
 }
 
 /**
  * Past its deadline: an unused quote first; then a swap that ended or that the backend has (`submitted`); then a hub
  * swap waiting for the canceller's refund, which loses only its early cancel here. Never a live quote, which may be
- * signed already, nor a deposit claimed but not handed over or relayed for refund: its quote is its only record.
+ * signed already, nor one a track call holds, whose deposit may need relaying for refund, nor a deposit claimed but not
+ * handed over or relayed for refund: its quote is its only record.
  */
-function evictionRank({ depositTxHash, handedOver }: CachedQuote): 0 | 1 | 2 | undefined {
-  if (depositTxHash === undefined) return 0;
+function evictionRank(quote: CachedQuote, now: number): 0 | 1 | 2 | undefined {
+  const { depositTxHash, handedOver } = quote;
+  if (depositTxHash === undefined) return releasable(quote, now) ? 0 : undefined;
   if (handedOver === "submitted" || handedOver === "cancelled" || handedOver === "closed") return 1;
   return handedOver === "left_to_refund" ? 2 : undefined;
 }
@@ -154,14 +205,21 @@ function stopSweeping(): void {
   sweepTimer = undefined;
 }
 
-export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt">): CachedQuote {
-  checkQuoteRoom(quote.keyHash);
-  const entry = { ...quote, quoteId: randomUUID(), expiresAt: Number(quote.deadline) * 1000 + GRACE_MS };
+export function putQuote(quote: Omit<CachedQuote, "quoteId" | "expiresAt" | "signBy" | "clientId">): CachedQuote {
+  const { clientId } = getRequestContext();
+  checkQuoteRoom(quote.keyHash, clientId);
+  const deadlineMs = Number(quote.deadline) * 1000;
+  const entry: CachedQuote = {
+    ...quote,
+    ...(clientId && { clientId }),
+    quoteId: randomUUID(),
+    expiresAt: deadlineMs + GRACE_MS,
+    signBy: Math.min(Date.now() + SIGN_WINDOW_MS, deadlineMs),
+  };
   quotes.set(entry.quoteId, entry);
   startSweeping();
-  const open = openByKey.get(entry.keyHash) ?? new Map<string, number>();
-  open.set(entry.quoteId, entry.expiresAt);
-  openByKey.set(entry.keyHash, open);
+  addOpen(openByKey, entry.keyHash, entry.quoteId);
+  if (clientId) addOpen(openByClient, clientId, entry.quoteId);
   return entry;
 }
 
@@ -170,11 +228,10 @@ function drop(quote: CachedQuote): void {
   close(quote);
 }
 
-/** No longer counts toward its key's cap: claimed, or gone. */
+/** No longer counts toward its key's or its client's cap: claimed, or gone. */
 function close(quote: CachedQuote): void {
-  const open = openByKey.get(quote.keyHash);
-  open?.delete(quote.quoteId);
-  if (open?.size === 0) openByKey.delete(quote.keyHash);
+  removeOpen(openByKey, quote.keyHash, quote.quoteId);
+  if (quote.clientId) removeOpen(openByClient, quote.clientId, quote.quoteId);
 }
 
 /** The quote, `undefined` if it's gone or expired (the sweep drops it), or `"key_mismatch"` if another key made it. */
@@ -262,5 +319,6 @@ export function clearQuoteCache(): void {
   stopSweeping();
   quotes.clear();
   openByKey.clear();
+  openByClient.clear();
   lastFullWarningAt = Number.NEGATIVE_INFINITY;
 }

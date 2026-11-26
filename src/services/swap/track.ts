@@ -30,9 +30,8 @@ import {
   intentClosed,
   isHubSource,
   readSourceTx,
-  resolveSource,
+  resolveSentTx,
   seenOnChain,
-  sourceTxHash,
   swapsIn,
   whyNotCancellable,
 } from "./source.js";
@@ -145,9 +144,7 @@ export async function trackSwapWaiting(input: {
 }
 
 export async function trackSwap(input: { txHash: string; quoteId?: string; chain?: string }): Promise<TrackResult> {
-  const source = await resolveSource(input);
-  // The backend keys rows on the exact string, so one spelling per hash.
-  const txHash = sourceTxHash(source, input.txHash);
+  const { source, txHash } = await resolveSentTx(input);
   const key = JSON.stringify([callerKeyHash(), source.chain.key, txHash, input.quoteId ?? null]);
   let pending = inFlight.get(key);
   if (!pending) {
@@ -337,8 +334,9 @@ export function clearUnseenMemo(): void {
 }
 
 /**
- * Whether the tx holds this quote's swap, and no other: the backend keys a swap on its tx and takes its first,
- * so it can't tell one from another. From the hub the intents contract must have logged the quoted intent's hash;
+ * Whether the tx holds this quote's swap, and no other: the backend keys a swap on its tx and follows the tx's first
+ * relay packet, whoever sent it, so any other message in the tx (another deposit, a cancel) may be the one it follows.
+ * From the hub the intents contract must have logged the quoted intent's hash;
  * from a spoke, of any family, a deposit message must bind the quote's sender, hub wallet and relay payload
  * (`checkDeposit`), as the relay will read it.
  */
@@ -355,7 +353,7 @@ export function checkQuoteDeposit(
   }
   const deposit = checkDeposit(sourceTx.messages, depositTerms(source, quote));
   if (deposit !== "match") return deposit;
-  return swapsIn(source, sourceTx) > 1 ? "multiple_deposits" : "match";
+  return sourceTx.messages.length > 1 ? "multiple_deposits" : "match";
 }
 
 /**

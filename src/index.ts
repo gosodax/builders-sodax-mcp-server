@@ -27,6 +27,7 @@ import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js"
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { CLIENT_ID_KEYED, POSTHOG_ENABLED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import { openBridges } from "./services/bridge/store.js";
 import { isDiscordConfigured, notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import {
@@ -49,6 +50,7 @@ import { partnerFeeFromEnv } from "./services/partnerFee.js";
 import {
   apiKeyStatus,
   describeProfiles,
+  parseBridgeToolsEnabled,
   parseProfile,
   parseSwapToolsEnabled,
   profileFromArgs,
@@ -121,7 +123,11 @@ async function warmDocsCache(retryCount = 0): Promise<boolean> {
 }
 
 /** `rpcOverrides`: the RPC overrides the swap tools read through, already checked. */
-async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
+async function runStdio(
+  rpcOverrides: Record<string, RpcOverride>,
+  swapToolsEnabled: boolean,
+  bridgeToolsEnabled: boolean,
+): Promise<void> {
   // stdout carries the JSON-RPC, and the SDK logs some failures with console.log (Solana's IDL fetch).
   console.log = console.info = console.debug = console.error;
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
@@ -131,9 +137,11 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
     apiKey: keyStatus,
     swapToolsEnabled,
+    bridgeToolsEnabled,
   });
-  // The SDK only for the swap tools, and before the partner fee: its checksum check needs it.
-  if (toolsets.swap) await initSodax(rpcOverrides);
+  const keyedTools = toolsets.swap || toolsets.bridge;
+  // The SDK only for the swap and bridge tools, and before the partner fee: its checksum check needs it.
+  if (keyedTools) await initSodax(rpcOverrides);
   const partnerFee = partnerFeeFromEnv(process.env);
 
   // Warm SDK docs cache before creating server; a swap-only server has no docs tools.
@@ -148,8 +156,8 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   await server.connect(transport);
   logger.info(
     {
-      // The SDK, and so the overrides, load only with the swap tools.
-      ...bootConfig(toolsets.swap ? rpcOverrides : {}, swapToolsEnabled),
+      // The SDK, and so the overrides, load only with the swap or bridge tools.
+      ...bootConfig(keyedTools ? rpcOverrides : {}, swapToolsEnabled, bridgeToolsEnabled),
       "mcp.transport": "stdio",
       "partner_fee.set": !!partnerFee,
     },
@@ -157,7 +165,11 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   );
 }
 
-async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean): Promise<void> {
+async function runHTTP(
+  rpcOverrides: Record<string, RpcOverride>,
+  swapToolsEnabled: boolean,
+  bridgeToolsEnabled: boolean,
+): Promise<void> {
   if (profileFromArgs(process.argv.slice(2), process.env) !== undefined) {
     logger.warn(
       "--profile and MCP_PROFILE are ignored over HTTP: each client picks its profile with ?profile= or x-sodax-profile",
@@ -169,13 +181,17 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
   if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
     logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
-  // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
+  // Warm the SDK docs cache, and load the SDK while the swap or bridge tools are on: any keyed connection can get them.
+  const keyedTools = swapToolsEnabled || bridgeToolsEnabled;
   logger.info("Initializing SODAX docs proxy...");
-  await Promise.all([swapToolsEnabled ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
+  await Promise.all([keyedTools ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
 
-  seedToolRegistry({ builder: true, swap: swapToolsEnabled });
+  seedToolRegistry({ builder: true, swap: swapToolsEnabled, bridge: bridgeToolsEnabled });
 
-  listen(createHttpApp(swapToolsEnabled), bootConfig(swapToolsEnabled ? rpcOverrides : {}, swapToolsEnabled));
+  listen(
+    createHttpApp(swapToolsEnabled, bridgeToolsEnabled),
+    bootConfig(keyedTools ? rpcOverrides : {}, swapToolsEnabled, bridgeToolsEnabled),
+  );
 }
 
 // The methods a client sends, from the SDK's own schemas: anything else is "other", so a client can't shape the record.
@@ -275,7 +291,7 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
 }
 
 /** The routes and their guards, without the docs warm-up or a listener, so a test can serve them. */
-export function createHttpApp(swapToolsEnabled: boolean): Express {
+export function createHttpApp(swapToolsEnabled: boolean, bridgeToolsEnabled = false): Express {
   const app = express();
 
   // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
@@ -386,6 +402,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         api: staticToolCounts.api,
         relay: staticToolCounts.relay,
         swap: staticToolCounts.swap,
+        bridge: staticToolCounts.bridge,
         sdkDocs: sdkDocsToolCount,
       },
       sdkDocsProxy: {
@@ -394,6 +411,8 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
+      // Bridge builds a restart would strand: not yet sent, or sent and not yet handed over (openBridges).
+      openBridges: openBridges(),
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
@@ -404,7 +423,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     "/mcp",
     mcpLimiter,
     asyncHandler(async (req: Request, res: Response) => {
-      const connection = resolveConnection(req, res, swapToolsEnabled);
+      const connection = resolveConnection(req, res, swapToolsEnabled, bridgeToolsEnabled);
       if (!connection) return;
       const requestServer = await createServer(connection.toolsets, getRequestContext().clientId);
       const transport = new StreamableHTTPServerTransport({
@@ -434,7 +453,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     mcpLimiter,
     asyncHandler(async (req: Request, res: Response) => {
       // Before taking a slot, so a refused connection never holds one.
-      const connection = resolveConnection(req, res, swapToolsEnabled);
+      const connection = resolveConnection(req, res, swapToolsEnabled, bridgeToolsEnabled);
       if (!connection) return;
       // express.static's fs.stat can yield before this handler; a disconnect in
       // that gap already fired the response's one-shot 'close', so a listener
@@ -535,12 +554,12 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     res.json({
       name: "SODAX MCP Server",
       version: SERVER_VERSION,
-      description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
+      description: `Live cross-network DeFi API data, AMM analytics, money market insights, ${swapToolsEnabled ? "swap tools, " : ""}${bridgeToolsEnabled ? "bridge tools, " : ""}and auto-updating SDK docs for ${formatNetworkCount(networks)} networks`,
       endpoints: { mcp: "/mcp", sse: "/sse", messages: "/messages", health: "/health", api: "/api" },
       profiles: {
         default: "all",
         select: "?profile=<name> or the x-sodax-profile header",
-        ...describeProfiles(swapToolsEnabled),
+        ...describeProfiles(swapToolsEnabled, bridgeToolsEnabled),
       },
       // Tool lists derived from the tool registry; sdkDocs reflects the live
       // SDK docs proxy list.
@@ -594,11 +613,16 @@ let otel: OtelLogs | undefined;
 let openSseSessions = () => 0;
 
 /** How this server was started (#110): what a record can't otherwise say. Names only, never a URL or a key. */
-export function bootConfig(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean) {
+export function bootConfig(
+  rpcOverrides: Record<string, RpcOverride>,
+  swapToolsEnabled: boolean,
+  bridgeToolsEnabled = false,
+) {
   return {
     "app.version": SERVER_VERSION,
     "sodax.env": SODAX_ENV,
     "swap_tools.enabled": swapToolsEnabled,
+    "bridge_tools.enabled": bridgeToolsEnabled,
     "rpc_overrides.chains": Object.keys(rpcOverrides).sort().join(",") || undefined,
     "posthog.enabled": POSTHOG_ENABLED,
     "discord.enabled": isDiscordConfigured(),
@@ -650,12 +674,13 @@ async function main(): Promise<void> {
   if (SODAX_ENV_ERROR) throw new Error(SODAX_ENV_ERROR);
   if (SWAP_USD_WARN_ERROR) throw new Error(SWAP_USD_WARN_ERROR);
   const swapToolsEnabled = parseSwapToolsEnabled(process.env.SODAX_SWAP_TOOLS_ENABLED);
+  const bridgeToolsEnabled = parseBridgeToolsEnabled(process.env.SODAX_BRIDGE_TOOLS_ENABLED);
   const rpcOverrides = parseRpcOverrides(process.env);
   const transport = process.env.TRANSPORT || "http";
   if (transport === "stdio") {
-    await runStdio(rpcOverrides, swapToolsEnabled);
+    await runStdio(rpcOverrides, swapToolsEnabled, bridgeToolsEnabled);
   } else {
-    await runHTTP(rpcOverrides, swapToolsEnabled);
+    await runHTTP(rpcOverrides, swapToolsEnabled, bridgeToolsEnabled);
   }
 }
 
@@ -670,8 +695,11 @@ function fatalExit(context: string, error: unknown): void {
   logger.fatal({ err: error }, context);
   if (exiting) return;
   exiting = true;
-  const open = openQuotes().open;
-  const alert = open > 0 ? `${context} (${open} open swap quote(s) lost)` : context;
+  const lost = [
+    [openQuotes().open, "open swap quote(s)"],
+    [openBridges(), "open bridge(s)"],
+  ].flatMap(([count, what]) => (Number(count) > 0 ? [`${count} ${what}`] : []));
+  const alert = lost.length > 0 ? `${context} (${lost.join(", ")} lost)` : context;
   void notifyError(alert, error).finally(() => {
     const force = setTimeout(() => process.exit(1), 1000);
     logger.flush(() => {
@@ -691,15 +719,16 @@ function fatalExit(context: string, error: unknown): void {
  * then exit 0. Awaiting the notifier is bounded by its 5s timeout.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  // The open quotes are in memory: a restart drops them.
+  // The open quotes and bridges are in memory: a restart drops them.
   const open = openQuotes().open;
-  logger.info({ signal, "swap_quotes.open": open }, "Shutting down");
+  const bridges = openBridges();
+  logger.info({ signal, "swap_quotes.open": open, "bridges.open": bridges }, "Shutting down");
   // A redeploy can deliver a second SIGTERM (or SIGINT) while the 5s Discord
   // notify is still in flight; share fatalExit's `exiting` flag so the first
   // exit path wins and we don't double-post / double-flush analytics.
   if (exiting) return;
   exiting = true;
-  await notifyServerStopping(signal, open);
+  await notifyServerStopping(signal, open, bridges);
   await shutdownAnalytics();
   // A failing export rejects the shutdown; the exit must still happen.
   await Promise.race([otel?.shutdown().catch(() => {}), sleep(2000, undefined, { ref: false })]);

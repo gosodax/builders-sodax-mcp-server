@@ -322,6 +322,8 @@ describe("a swap from a non-EVM spoke", () => {
     const calls = stubBackend();
     const { out } = await track({ txHash: `0x${"a".repeat(64)}`, quoteId: quoteOf(REAL.sui).quoteId });
     expect(out.error).toMatchObject({ code: "INVALID_TX_HASH", format: "a base58 digest" });
+    // A batch id is EVM's.
+    expect(out.nextStep).not.toContain("batch");
     expect(readSpoke).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
   });

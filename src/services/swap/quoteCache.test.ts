@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
 import { getRequestContext, runWithRequestContext } from "../requestContext.js";
+import { holdForTrack } from "../signWindow.js";
 import {
   checkQuoteRoom,
   claimDeposit,
@@ -220,19 +221,44 @@ describe("quoteCache", () => {
     ]);
   });
 
-  it("makes a key with 1,000 open quotes wait until one leaves the cache, never dropping another key's", () => {
+  it("makes a key with 1,000 open quotes wait until one passes its sign-by untracked, never dropping another's", () => {
     const other = quoteDue(15, "b".repeat(64));
-    for (let i = 0; i < 1_000; i++) quoteDue(15);
+    const [tracked, untracked] = Array.from({ length: 1_000 }, () => quoteDue(15));
     const refused = refusal(() => quoteDue(15));
-    // A quote stays in the cache 30 minutes past its deadline, so it counts until then.
-    expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 45 * 60 } });
+    // Every quote is still to be sent: the first gives way 5 minutes after it was made.
+    expect(refused).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterSec: 5 * 60 } });
     expect(() => checkQuoteRoom(KEY)).toThrow(refused as Error);
-    expect(getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
+    vi.setSystemTime(NOW + 4 * 60_000);
+    holdForTrack(tracked);
 
-    vi.setSystemTime(NOW + 15 * 60_000);
-    expect(() => checkQuoteRoom(KEY)).toThrow("too many open swap quotes");
-    vi.setSystemTime(NOW + 45 * 60_000);
+    vi.setSystemTime(NOW + 5 * 60_000);
     expect(quoteDue(15).quoteId).toEqual(expect.any(String));
+    // The oldest nobody holds went; the held one, and another key's, stay.
+    expect(getCachedQuote(untracked.quoteId, KEY)).toBeUndefined();
+    expect(getCachedQuote(tracked.quoteId, KEY)).toMatchObject({ quoteId: tracked.quoteId });
+    expect(getCachedQuote(other.quoteId, "b".repeat(64))).toMatchObject({ quoteId: other.quoteId });
+    // A track call holds it 5 minutes, not for good.
+    vi.setSystemTime(NOW + 9 * 60_000);
+    quoteDue(15);
+    expect(getCachedQuote(tracked.quoteId, KEY)).toBeUndefined();
+  });
+
+  it("keeps a quote a track call holds when the cache is full, past its deadline too, until the hold ends", () => {
+    const held = quoteDue(15);
+    const unheld = quoteDue(15);
+    for (let i = 0; i < 9_998; i++) quoteDue(60, `key-${i % 20}`);
+    vi.setSystemTime(NOW + 14 * 60_000);
+    holdForTrack(held);
+
+    // Its deposit may land after the deadline and need relaying for refund, with the quote.
+    vi.setSystemTime(NOW + 16 * 60_000);
+    quoteDue(60);
+    expect(getCachedQuote(unheld.quoteId, KEY)).toBeUndefined();
+    expect(getCachedQuote(held.quoteId, KEY)).toMatchObject({ quoteId: held.quoteId });
+
+    vi.setSystemTime(NOW + 19 * 60_000);
+    quoteDue(60);
+    expect(getCachedQuote(held.quoteId, KEY)).toBeUndefined();
   });
 
   it("counts as open, for /health, every quote not handed over and not expired, until the last one expires", () => {
@@ -246,6 +272,19 @@ describe("quoteCache", () => {
     expect(openQuotes()).toEqual({ open: 3, openUntil: new Date(late.expiresAt).toISOString() });
     vi.setSystemTime(late.expiresAt);
     expect(openQuotes()).toEqual({ open: 0, openUntil: null });
+  });
+
+  it("refuses a client at its cap of open quotes whatever keys it sends, and no other client", () => {
+    const keyed = (i: number) => `${i}`.padStart(64, "d");
+    const [first] = runWithRequestContext({ clientId: "busy" }, () =>
+      Array.from({ length: 100 }, (_, i) => quoteDue(15, keyed(i))),
+    );
+    const refused = refusal(() => runWithRequestContext({ clientId: "busy" }, () => quoteDue(15, keyed(500))));
+    expect(refused).toMatchObject({ code: "RATE_LIMITED", message: "This client has too many open swap quotes." });
+    expect(() => runWithRequestContext({ clientId: "other" }, () => quoteDue(15, keyed(500)))).not.toThrow();
+    // A claimed quote frees its client's room as it frees its key's.
+    claimDeposit(first.quoteId, "0x01");
+    expect(() => runWithRequestContext({ clientId: "busy" }, () => quoteDue(15, keyed(501)))).not.toThrow();
   });
 
   it("doesn't count a quote a deposit claimed toward its key's cap", () => {

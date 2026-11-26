@@ -82,7 +82,3 @@ export function assetManagerSender(chainKey: string, type: NonEvmSourceType): st
     return undefined;
   }
 }
-
-/** Whether the value can be some source's tx hash, for the tool argument; its chain's own rule comes later. */
-export const isAnyTxHash = (value: string) =>
-  SOURCE_ADAPTERS.some(adapter => adapter.txHash.spell(value.trim()) !== undefined);

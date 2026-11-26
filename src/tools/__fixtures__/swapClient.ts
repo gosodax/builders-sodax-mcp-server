@@ -7,11 +7,12 @@ import type { ToolSelection } from "../../services/profiles.js";
 import { initSodax } from "../../services/sodax.js";
 import type { SwapQuote } from "../../services/swap/quote.js";
 
-export const swapClient = () => mcpClient({ builder: false, swap: true });
+export const swapClient = () => mcpClient({ builder: false, swap: true, bridge: false });
+export const bridgeClient = () => mcpClient({ builder: false, swap: false, bridge: true });
 
 export async function mcpClient(toolsets: ToolSelection): Promise<Client> {
-  // The swap tools need the SDK, which the server loads at boot.
-  if (toolsets.swap) await initSodax();
+  // The swap and bridge tools need the SDK, which the server loads at boot.
+  if (toolsets.swap || toolsets.bridge) await initSodax();
   const server = await createServer(toolsets);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);

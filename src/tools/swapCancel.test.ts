@@ -131,6 +131,9 @@ describe("sodax_swap_cancel", () => {
     stubBackend({ row: null });
     const { out } = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId });
     expect(out).toMatchObject({ status: "not_cancellable", reason: "not_this_swap" });
+    // A cancel already sent stays with the call the right hash completes.
+    const named = await cancel({ txHash: TX, quoteId: cacheQuote().quoteId, cancelTxHash: CANCEL_TX });
+    expect(named.out).toMatchObject({ reason: "not_this_swap", cancelTxHash: CANCEL_TX });
   });
 
   it("builds no cancel once the hub no longer holds the intent, though the backend row still says it can", async () => {
@@ -314,7 +317,7 @@ describe("sodax_swap_cancel", () => {
       expect(out).toMatchObject({ reason: "not_submitted" });
       // Track only reports here (queued while the backend's row lags), so the agent calls it without asking.
       expect(out.nextStep).toBe(
-        "The swap service has no record of this swap yet, so there's nothing to cancel yet: call sodax_swap_cancel again with the same arguments in about 15 seconds, at most 10 times. If it still has none, stop: tell the user the swap can't be cancelled here yet, that they must not send it again, and to give its transaction hash to the SODAX team on Discord, https://www.sodax.com/discord. Don't call sodax_swap_submit_and_track for it: that would submit the swap.",
+        "The swap service has no record of this swap yet, so there's nothing to cancel yet: call sodax_swap_cancel again with the same arguments in about 15 seconds, at most 10 times. If it still has none, call sodax_swap_submit_and_track with the same arguments (it won't submit anything here) and follow its result; the user must not send it again.",
       );
       clearQuoteCache();
       vi.mocked(getEvmReceipt).mockResolvedValue(DEPOSIT);

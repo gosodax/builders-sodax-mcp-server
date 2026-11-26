@@ -212,10 +212,10 @@ describe("the bridge nextAction runtime", () => {
 
   it("hands off repeated upstream failures after a send without preparing or sending again", async () => {
     const bridge = harness({ respond: (tool, args) => failure("UPSTREAM_UNAVAILABLE", tool as typeof TRACK, args) });
-    expect(await run(bridge.host, { tool: TRACK, args: TRACK_ARGS })).toMatchObject({
-      stop: "terminal",
-      outcome: "unknown",
-    });
+    // Not terminal: the server can still answer for the sent bridge once its upstream is back.
+    const ending = await run(bridge.host, { tool: TRACK, args: TRACK_ARGS });
+    expect(ending.stop).toBe("handoff");
+    expect(ending).not.toHaveProperty("outcome");
     expect(bridge.calls).toHaveLength(11);
     expect(bridge.asked).toEqual(["external:help_desk"]);
     expect(bridge.sends()).toBe(0);

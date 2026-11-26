@@ -144,7 +144,9 @@ function withSender(raw: unknown): unknown {
   const parsed = isRecord(raw) && typeof raw.from === "string" && typeof raw.data === "string" && jsonRecord(raw.data);
   if (!parsed || !suiPtb.safeParse(parsed).success) {
     logger.error("The SDK built a Sui transaction in a shape this server doesn't read");
-    throw new ActionError("INTERNAL", "The SDK built a transaction this server doesn't recognize.");
+    throw new ActionError("INTERNAL", "The SDK built a transaction this server doesn't recognize.", {
+      retryable: false,
+    });
   }
   return { ...raw, data: JSON.stringify({ ...parsed, sender: raw.from }) };
 }

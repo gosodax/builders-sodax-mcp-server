@@ -205,7 +205,7 @@ says the same in a sentence: both come from one decision, so they don't disagree
 | `provide` | the user | gives `fields`, by name, for `next`; declining follows `onDecline` where there is one |
 | `confirm` | the user, or the wallet when `by: "wallet"` | agrees to `summary` (`kind`: `swap`, `cancel`, `amount`, or `unsent_cancel`: that cancel can never land), then `next` |
 | `execute` | the wallet | sends the result's `steps` (or its `batch`) in order, each receipt a success before the next; once the last is broadcast, makes the `afterSend` call with its hash. A bounded `afterSend` is counted before anything is signed, and past its bound nothing is |
-| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it |
+| `external` | the user, outside these tools | sees `reason`; `next`, if there is one, once they say they've done it; if they don't, `onDecline` where there is one |
 | `none` | nobody | the workflow is over |
 
 What a runtime keeps to:
@@ -226,8 +226,9 @@ What a runtime keeps to:
   of a cancel re-reads it, and once it's relayed (`cancel_relayed`) its own bounded track takes over. A cancel's
   retries carry its hash. A new cancel replaces a pending one only once the wallet's own record shows it can never
   land (`confirm` of `unsent_cancel`, `by: "wallet"`): its nonce went to another transaction, or its blockhash
-  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel never
-  hands a swap with no record to track: track would submit it.
+  expired. An agent's yes isn't that record. One swap gets at most three cancels, however they failed. A cancel the swap
+  service has no record of is retried, then handed to track with the same arguments, which submits nothing in that
+  state: it says what holds the deposit and alerts on it.
 - **Handoffs.** A person declining ends the loop; the saved hash resumes it later. An unknown `type` goes to a person.
   On a terminal `external`, show it before stopping.
 - **No contract.** A result with no `nextAction` came from the MCP SDK refusing the arguments before the tool ran, or
@@ -317,6 +318,7 @@ async function follow(
       // person says they did what it asks.
       const done = await host.ask(action, result);
       if (action.next && done === true) return go(action.next);
+      if (done !== true && action.onDecline) return exhaust(action.onDecline);
       return result.terminal ? { stop: "terminal", result, outcome: result.outcome } : { stop: "handoff", result };
     }
     default:

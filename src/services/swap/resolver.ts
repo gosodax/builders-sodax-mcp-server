@@ -61,7 +61,10 @@ export function resolveSwapChain(
   const names = near.map(chain => chain.name).join(" or ");
   throw new ActionError("UNSUPPORTED_CHAIN", "No SODAX swap chain matches that name, key or chain id.", {
     details: { field, supportedChains: supported, ...(near.length > 0 && { didYouMean: near }) },
-    hint: { options: chainOptions(near.length > 0 ? near : supported, field) },
+    // The close matches first, then every other chain the sentence offers.
+    hint: {
+      options: chainOptions([...near, ...supported.filter(chain => !near.some(n => n.key === chain.key))], field),
+    },
     nextStep:
       near.length > 0
         ? `Ask the user whether they mean ${names}, or else which chain in error.supportedChains, and pass its key.`
@@ -108,12 +111,12 @@ export function resolveExactly(
   const chainField = side ? `${side}Chain` : "chain";
   const resolution = resolveToken(catalog, chainQuery, query, field, side === "from", chainField);
   if (resolution.status !== "resolved") {
-    // Only what this side can use: a token allowed on it, on a chain a swap can start from for the sending side.
-    // Without a side (a balance read), only the chain asked about: the address given is that chain's.
+    // Only what this side can use: a token allowed on it. On the sending side, or without a side (a balance read),
+    // only the chain asked about: the address given is that chain's, and may not be the user's on another.
     const usable = (token: SwapsApiToken) =>
-      side
-        ? canUseAs(token, side) && (side !== "from" || isSwapSource(catalog, token.chainKey))
-        : token.chainKey === resolution.chain.key;
+      side === "to"
+        ? canUseAs(token, side)
+        : token.chainKey === resolution.chain.key && (!side || canUseAs(token, side));
     throw new ActionError("UNKNOWN_TOKEN", "That token doesn't resolve to exactly one swap token.", {
       details: { field, ...(side && { side }) },
       hint: { options: resolutionOptions(resolution, { token: field, chain: chainField }, usable) },

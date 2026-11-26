@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSodax } from "../sodax.js";
 import { fixtureCatalog, fixtureText } from "./__fixtures__/catalog.js";
+import type { ActionError } from "./errors.js";
 import { type Resolution, resolutionOptions, resolveExactly, resolveToken } from "./resolver.js";
 import { canUseAs, parseCatalog } from "./tokens.js";
 
@@ -161,8 +162,11 @@ describe("resolveToken", () => {
     expect(resolveToken(parseCatalog(tokens, configs), "42161", "USDC").chain.key).toBe("0xa4b1.arbitrum");
   });
 
-  // A balance read's address belongs to the chain it asked about: no option moves it to another.
-  it("offers a balance read only tokens on its own chain", () => {
+  // A balance read's address, and a quote's fromAddress, belong to the chain asked about: no option moves it to another.
+  it.each([
+    ["a balance read", "token", undefined, "chain"],
+    ["a quote's sending side", "fromToken", "from", "fromChain"],
+  ] as const)("offers %s only tokens on its own chain", (_case, field, side, chainField) => {
     const catalog = fixtureCatalog();
     const listedElsewhere = Object.values(catalog.tokens)
       .flat()
@@ -174,11 +178,11 @@ describe("resolveToken", () => {
     expect(listedElsewhere).toBeDefined();
     let options: { args: Record<string, string> }[] | undefined;
     try {
-      resolveExactly(catalog, "Arbitrum", listedElsewhere?.symbol ?? "", "token");
+      resolveExactly(catalog, "Arbitrum", listedElsewhere?.symbol ?? "", field, side);
     } catch (error) {
       options = (error as { hint?: { options?: { args: Record<string, string> }[] } }).hint?.options;
     }
-    expect(options?.every(option => option.args.chain === "0xa4b1.arbitrum")).toBe(true);
+    expect(options?.every(option => option.args[chainField] === "0xa4b1.arbitrum")).toBe(true);
   });
 
   it("offers a quote side only the tokens it can use", () => {
@@ -222,6 +226,17 @@ describe("resolveToken", () => {
         nextStep: `Ask the user whether they mean ${didYouMean[0].name}, or else which chain in error.supportedChains, and pass its key.`,
       }),
     );
+    // The options the user picks from: that one first, then every other chain the sentence offers.
+    const thrown = (() => {
+      try {
+        resolve(chain, "USDC");
+      } catch (error) {
+        return error as ActionError;
+      }
+    })();
+    const options = thrown?.hint?.options?.map(option => option.label) ?? [];
+    expect(options[0]).toBe(didYouMean[0].name);
+    expect(options).toHaveLength((thrown?.details?.supportedChains as unknown[]).length);
   });
 
   it("lists only the chains a swap can start from for a swap's source", () => {

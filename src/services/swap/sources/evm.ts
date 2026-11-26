@@ -94,7 +94,9 @@ export const HUB: SourceAdapter = {
   },
   async cancelStep(source, intent) {
     const hubTx = await hubCancelTx(intent);
-    if (!hubTx) throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.");
+    // Built and checked without a read: the same intent fails the same way, so a retry only alerts again.
+    if (!hubTx)
+      throw new ActionError("INTERNAL", "Couldn't work out the cancel this swap needs.", { retryable: false });
     return cancelOf(source, hubTx);
   },
 };

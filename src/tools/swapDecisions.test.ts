@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BalanceResult } from "../services/swap/balance.js";
-import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode } from "../services/swap/errors.js";
+import { ACTION_ERROR_CODES, ActionError, type ActionErrorCode, RETRYABLE_CODES } from "../services/swap/errors.js";
 import type { SwapQuote } from "../services/swap/quote.js";
 import type { Resolution } from "../services/swap/resolver.js";
 import type { SwapsApiToken } from "../services/swap/tokens.js";
@@ -139,12 +139,17 @@ const TRACKED: [string, Decision][] = [
 
 const PRE_SEND: SwapToolName[] = ["sodax_swap_price", "sodax_swap_prepare", "sodax_get_balance", "sodax_resolve_token"];
 const AFTER_SEND: SwapToolName[] = ["sodax_swap_submit_and_track", "sodax_swap_cancel"];
-const failed = (code: ActionErrorCode, tool: SwapToolName, details?: Record<string, unknown>) =>
-  decided(failure(code, tool, { amount: "5", deadlineMinutes: 15 }, details));
-// Every code from every tool, naming a field as its throw sites do.
-const ERRORS: [string, Decision][] = [...PRE_SEND, ...AFTER_SEND].flatMap(tool =>
-  ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}`, failed(code, tool, { field: "amount" })]),
-);
+const failed = (code: ActionErrorCode, tool: SwapToolName, details?: Record<string, unknown>, retryable?: boolean) =>
+  decided(failure(code, tool, { amount: "5", deadlineMinutes: 15 }, details, retryable));
+// Every code from every tool, naming a field as its throw sites do; and each that usually passes, with the code's own
+// advice, from a throw site that says it won't.
+const ERRORS: [string, Decision][] = [...PRE_SEND, ...AFTER_SEND].flatMap(tool => [
+  ...ACTION_ERROR_CODES.map((code): [string, Decision] => [`${tool} ${code}`, failed(code, tool, { field: "amount" })]),
+  ...RETRYABLE_CODES.map((code): [string, Decision] => [
+    `${tool} ${code}, won't pass`,
+    failed(code, tool, { field: "amount" }, false),
+  ]),
+]);
 
 const token = (symbol: string, address: string): SwapsApiToken => ({
   symbol,
@@ -188,6 +193,9 @@ const LOOKUPS: [string, Decision][] = [
 ];
 
 const ALL = [...TRACKED, ...ERRORS, ...LOOKUPS];
+// Help desk or an unavailable service: nothing this server answers moves it on.
+const isHandOff = (action: NextAction) =>
+  action.type === "external" && (action.reason === "help_desk" || action.reason === "service_unavailable");
 
 describe("every decision", () => {
   it.each(ALL)("%s keeps the contract", (_, decision) => {
@@ -230,6 +238,11 @@ describe("every decision", () => {
     },
   );
 
+  // A hand-off ends the calls: its sentence can't ask for another.
+  it.each(ALL.filter(([, decision]) => isHandOff(decision.nextAction)))("%s says not to call again", (_, decision) => {
+    expect(decision.nextStep).not.toMatch(/\bRetry\b|again in (about )?\d+ seconds/);
+  });
+
   it.each(ERRORS.filter(([name]) => AFTER_SEND.some(tool => name.startsWith(tool))))(
     "%s keeps a sent swap going: never none, never says to send again",
     (_, decision) => {
@@ -247,10 +260,9 @@ const find = (name: string) => {
 };
 
 describe("trackDecision", () => {
-  it("ends only once the tokens arrive", () => {
-    expect(find("track solved, complete")).toMatchObject({ terminal: true, outcome: "succeeded" });
-    for (const name of ["track solved, in transit", "track solved, no quote"]) {
-      expect(find(name)).toMatchObject({ terminal: false, nextAction: { type: "call_tool", maxAttempts: 30 } });
+  it("ends at the fill: track doesn't follow the last hop, so another call can't change the answer", () => {
+    for (const name of ["track solved, complete", "track solved, in transit", "track solved, no quote"]) {
+      expect(find(name)).toMatchObject({ terminal: true, outcome: "succeeded", nextAction: { type: "none" } });
     }
   });
 
@@ -292,6 +304,8 @@ describe("trackDecision", () => {
         retryKey: `sodax_swap_submit_and_track:${TX}:said_sent`,
         onExhausted: { nextAction: { type: "external", reason: "still_in_progress" } },
       },
+      // Told it wasn't sent: the one call after stopAfter, which settles it or catches a late broadcast.
+      onDecline: { nextAction: { type: "call_tool", args: ARGS, afterSec: 315 }, terminal: false },
     });
   });
 
@@ -378,16 +392,20 @@ describe("trackDecision", () => {
     expect(find("track failed, abandoned").outcome).toBe("held");
     expect(find("track source_failed").outcome).toBe("failed");
   });
+
+  it("calls a failed swap from the hub unknown, not held: the hub fills or refunds it without an operator", () => {
+    const decision = track({ status: "failed", failure: "abandoned", canCancel: false }, SONIC);
+    expect(decision).toMatchObject({ terminal: true, outcome: "unknown" });
+    expect(decision.nextStep).not.toContain("operators");
+  });
 });
 
 describe("cancelDecision", () => {
-  it("never hands a cancel to track while the swap has no record: track would submit it", () => {
+  it("retries a cancel the backend has no record of, then tracks it with the same arguments", () => {
     const decision = find("cancel not_cancellable not_submitted");
-    expect(actionsOf(decision.nextAction).map(action => (action as CallTool).tool)).not.toContain(
-      "sodax_swap_submit_and_track",
-    );
+    expect(decision.nextAction).toMatchObject({ tool: "sodax_swap_cancel", args: ARGS, maxAttempts: 10 });
     expect((decision.nextAction as CallTool).onExhausted).toEqual({
-      nextAction: { type: "external", reason: "help_desk" },
+      nextAction: { type: "call_tool", tool: "sodax_swap_submit_and_track", args: ARGS, afterSec: 0 },
       terminal: false,
     });
   });
@@ -395,6 +413,17 @@ describe("cancelDecision", () => {
   it("keeps a sent cancel's hash through a retry, so a backend catching up never builds a second", () => {
     const decision = cancel({ status: "not_cancellable", reason: "not_on_hub_yet", cancelTxHash: CANCEL_TX });
     expect(decision.nextAction).toMatchObject({ args: { ...ARGS, cancelTxHash: CANCEL_TX } });
+  });
+
+  it("keeps a sent cancel's hash when the user gives the right swap's", () => {
+    const { txHash, ...rest } = ARGS;
+    for (const reason of ["not_this_swap", "not_sent"]) {
+      const decision = cancel({ status: "not_cancellable", reason, cancelTxHash: CANCEL_TX });
+      const call = actionsOf(decision.nextAction).find((action): action is CallTool => action.type === "call_tool");
+      expect(call?.args).toEqual(
+        reason === "not_sent" ? { ...ARGS, cancelTxHash: CANCEL_TX } : { ...rest, cancelTxHash: CANCEL_TX },
+      );
+    }
   });
 
   it("follows a fill that beat the cancel on track", () => {
@@ -708,9 +737,32 @@ describe("errorDecision", () => {
       retryKey: expect.stringMatching(/^sodax_swap_price:[0-9a-f]{16}$/),
       onExhausted: { nextAction: { type: "external", reason: "service_unavailable" }, terminal: false },
     });
-    expect(after).toMatchObject({
-      onExhausted: { nextAction: { type: "external", reason: "help_desk" }, terminal: true, outcome: "unknown" },
+    // After a send, never terminal: a later track can still answer, and the deposit may be unsubmitted.
+    expect((after as CallTool).onExhausted).toEqual({
+      nextAction: { type: "external", reason: "help_desk" },
+      terminal: false,
     });
+  });
+
+  it("says when and how often a failure that may pass is retried, as the action does", () => {
+    expect(find("sodax_swap_price UPSTREAM_UNAVAILABLE").nextStep).toBe(
+      "Call sodax_swap_price again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user the SODAX swap service is unavailable right now.",
+    );
+    const custom = new ActionError("RATE_LIMITED", "Full.", {
+      nextStep: "Wait retryAfterSec seconds, then try again. sodax_swap_price still works meanwhile: it holds none.",
+      details: { retryAfterSec: 40 },
+    });
+    expect(errorDecision(custom, { tool: "sodax_swap_prepare", args: {} })).toMatchObject({
+      nextStep:
+        "Wait retryAfterSec seconds, then try again. sodax_swap_price still works meanwhile: it holds none. Retry at most 10 times in a row, 40 seconds apart.",
+      nextAction: { afterSec: 40, maxAttempts: 10 },
+    });
+  });
+
+  it("ends a generic rejection before a send with a sentence that doesn't ask to try again", () => {
+    const decision = errorDecision(new ActionError("SWAP_REJECTED", "No."), { tool: "sodax_swap_prepare", args: {} });
+    expect(decision).toMatchObject({ terminal: true, nextAction: { type: "none" } });
+    expect(decision.nextStep).toContain("start over");
   });
 
   it.each(ACTION_ERROR_CODES)("never writes back a value %s refused", code => {

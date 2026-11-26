@@ -200,7 +200,7 @@ describe("sodax_get_balance", () => {
     expect(out.error).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Couldn't read Arbitrum right now." });
     // One chain's node is down, not the swap service.
     expect(out.nextStep).toBe(
-      "Retry in a minute; if it still fails, tell the user that chain can't be read right now (error.message names it) and to try again later.",
+      "Call sodax_get_balance again in 30 seconds with the same arguments, at most 10 times in a row. If it still fails, stop: tell the user that chain can't be read right now (error.message names it) and to try again later.",
     );
     expect(recipientReady).not.toHaveBeenCalled();
   });

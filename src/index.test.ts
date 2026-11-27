@@ -5,6 +5,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { type MockInstance, afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootConfig, createHttpApp, serverGauges } from "./index.js";
 import { createServer } from "./server.js";
+import type { KeyChecker } from "./services/apiKeyVerification.js";
 import { MCP_MAX_BATCH_SIZE, MCP_REQUESTS_PER_MINUTE, SSE_MAX_SESSIONS_PER_IP } from "./services/httpGuards.js";
 import { logger } from "./services/logger.js";
 import { getRequestContext, runWithRequestContext } from "./services/requestContext.js";
@@ -34,18 +35,23 @@ vi.mock("./tools/docsProxy.js", async importOriginal => ({
 
 let server: Server;
 let base: string;
+/** The test servers' origins: requests to these reach the server, anything else gets the upstream stub. */
+const local: string[] = [];
 const streams: AbortController[] = [];
 // Fetch cancels the stream of a collected response, which would free its SSE session mid-test.
 const held: Response[] = [];
 // The data API answers /health and tool calls; this suite never reaches it (100 parallel /health below).
 const realFetch = fetch;
 const upstreamStub = (...args: Parameters<typeof fetch>) =>
-  String(args[0]).startsWith(base) ? realFetch(...args) : Promise.resolve(new Response("[]", { status: 200 }));
+  local.some(origin => String(args[0]).startsWith(origin))
+    ? realFetch(...args)
+    : Promise.resolve(new Response("[]", { status: 200 }));
 
 beforeAll(async () => {
   server = createHttpApp(true).listen(0, "127.0.0.1");
   await once(server, "listening");
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  local.push(base);
 });
 
 beforeEach(() => {
@@ -73,8 +79,14 @@ const initialize = (id: number) => ({
 });
 
 // Each test sends from its own IP (trust proxy is on), so the per-IP limits don't carry over.
-function post(path: string, body: string, ip: string, headers: Record<string, string> = {}): Promise<Response> {
-  return fetch(`${base}${path}`, {
+function post(
+  path: string,
+  body: string,
+  ip: string,
+  headers: Record<string, string> = {},
+  origin = base,
+): Promise<Response> {
+  return fetch(`${origin}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -86,17 +98,20 @@ function post(path: string, body: string, ip: string, headers: Record<string, st
   });
 }
 
-async function openSse(ip: string): Promise<Response> {
+async function openSse(ip: string, path = "/sse", headers: Record<string, string> = {}, origin = base) {
   const stream = new AbortController();
   streams.push(stream);
-  const res = await fetch(`${base}/sse`, { headers: { "X-Forwarded-For": ip }, signal: stream.signal });
+  const res = await fetch(`${origin}${path}`, {
+    headers: { "X-Forwarded-For": ip, ...headers },
+    signal: stream.signal,
+  });
   held.push(res);
   return res;
 }
 
 /** Opens an SSE session and returns its reader and message endpoint. */
-async function sseSession(ip: string) {
-  const sse = await openSse(ip);
+async function sseSession(...args: Parameters<typeof openSse>) {
+  const sse = await openSse(...args);
   const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
   const [, endpoint] = await readUntil(reader, /event: endpoint\ndata: (\S+)\n/);
   return { sse, reader, endpoint };
@@ -555,5 +570,169 @@ describe("the records about the server itself", () => {
     });
     expect(JSON.stringify(config)).not.toContain("rpc.example");
     expect(bootConfig({}, false)["rpc_overrides.chains"]).toBeUndefined();
+  });
+});
+
+describe("with a key check", () => {
+  const KEY = "sodax_route_key_checked";
+  // The keyset the fake verifier answers from; null is no keyset yet. Tests change it to revoke or suspend.
+  let keys: Map<string, { orgStatus: string; scopes: string[] }> | null;
+  let mode: "monitor" | "enforce";
+  const keyChecker: KeyChecker = {
+    get mode() {
+      return mode;
+    },
+    keyset: {
+      hasSnapshot: () => keys !== null,
+      lookup: key => {
+        const found = keys?.get(key);
+        return found && { keyHash: "h", keyId: "k", orgId: "org-1", ...found };
+      },
+    },
+    stats: () => ({
+      hasSnapshot: keys !== null,
+      version: "v9",
+      keyCount: keys?.size ?? 0,
+      snapshotAgeMs: 1_200,
+      consecutivePollFailures: 0,
+    }),
+  };
+  let keyServer: Server;
+  let keyBase: string;
+
+  beforeAll(async () => {
+    keyServer = createHttpApp(true, keyChecker).listen(0, "127.0.0.1");
+    await once(keyServer, "listening");
+    keyBase = `http://127.0.0.1:${(keyServer.address() as AddressInfo).port}`;
+    local.push(keyBase);
+  });
+
+  beforeEach(() => {
+    keys = new Map([[KEY, { orgStatus: "active", scopes: ["swaps:read", "swaps:write"] }]]);
+    mode = "enforce";
+  });
+
+  afterAll(async () => {
+    keyServer.closeAllConnections();
+    await new Promise(resolve => keyServer.close(resolve));
+  });
+
+  const postKeyed = (path: string, body: unknown, ip: string) =>
+    post(path, JSON.stringify(body), ip, { "x-api-key": KEY }, keyBase);
+
+  it.each([
+    ["an unknown key", () => keys?.delete(KEY), 403, "API_KEY_UNKNOWN", "unknown_key", undefined],
+    [
+      "a suspended org",
+      () => keys?.set(KEY, { orgStatus: "suspended", scopes: [] }),
+      403,
+      "ORG_SUSPENDED",
+      "suspended",
+      "org-1",
+    ],
+    [
+      "a missing scope",
+      () => keys?.set(KEY, { orgStatus: "active", scopes: ["swaps:read"] }),
+      403,
+      "API_KEY_SCOPE",
+      "insufficient_scope",
+      "org-1",
+    ],
+    [
+      "no keyset yet",
+      () => {
+        keys = null;
+      },
+      503,
+      "KEY_CHECK_UNAVAILABLE",
+      "snapshot_unavailable",
+      undefined,
+    ],
+  ] as const)(
+    "refuses %s on the swap profile, and the record names the verdict",
+    async (_name, change, status, code, outcome, orgId) => {
+      change();
+      const info = vi.spyOn(logger, "info");
+      const res = await postKeyed("/mcp?profile=swap", initialize(1), "198.51.100.201");
+      expect(res.status).toBe(status);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32000);
+      expect(JSON.stringify(body)).not.toContain(KEY);
+      const record = await httpRequestRecord(info, { "error.type": code });
+      expect(record).toMatchObject({ "http.response.status_code": status, "caller.key_check": outcome });
+      expect(record["caller.org_id"]).toBe(orgId);
+      expect(JSON.stringify(record)).not.toContain(KEY);
+    },
+  );
+
+  it("serves a key the keyset accepts, and the record names its org", async () => {
+    const info = vi.spyOn(logger, "info");
+    const res = await postKeyed("/mcp?profile=swap", initialize(1), "198.51.100.202");
+    expect(res.status).toBe(200);
+    await httpRequestRecord(info, { "http.route": "/mcp", "caller.key_check": "ok", "caller.org_id": "org-1" });
+  });
+
+  async function keyedSession(ip: string) {
+    const session = await sseSession(ip, "/sse?profile=swap", { "x-api-key": KEY }, keyBase);
+    expect(session.sse.status).toBe(200);
+    return session;
+  }
+
+  it("refuses an open SSE session's next message once its key is revoked, in enforce", async () => {
+    const ip = "198.51.100.203";
+    const { reader, endpoint } = await keyedSession(ip);
+    expect((await postKeyed(endpoint, initialize(1), ip)).status).toBe(202);
+    await readUntil(reader, /event: message\ndata: .*"id":1/);
+
+    keys?.delete(KEY);
+    const info = vi.spyOn(logger, "info");
+    const refused = await postKeyed(endpoint, initialize(2), ip);
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error.message).toContain("isn't an active SODAX API key");
+    await httpRequestRecord(info, {
+      "http.route": "/messages",
+      "error.type": "API_KEY_UNKNOWN",
+      "caller.key_check": "unknown_key",
+    });
+  });
+
+  it("records, but serves, an open SSE session's revoked key in monitor", async () => {
+    mode = "monitor";
+    const ip = "198.51.100.204";
+    const { reader, endpoint } = await keyedSession(ip);
+    keys?.delete(KEY);
+    const info = vi.spyOn(logger, "info");
+    expect((await postKeyed(endpoint, initialize(3), ip)).status).toBe(202);
+    await readUntil(reader, /event: message\ndata: .*"id":3/);
+    await httpRequestRecord(info, {
+      "http.route": "/messages",
+      "http.response.status_code": 202,
+      "caller.key_check": "unknown_key",
+    });
+  });
+
+  it("shows on /health whether the check works, without the key count or the keyset version", async () => {
+    const res = await fetch(`${keyBase}/health`, { headers: { "X-Forwarded-For": "198.51.100.205" } });
+    const { apiKeyVerification } = await res.json();
+    expect(apiKeyVerification).toEqual({
+      mode: "enforce",
+      hasSnapshot: true,
+      snapshotAgeMs: 1_200,
+      consecutivePollFailures: 0,
+    });
+  });
+
+  it("says the check is off on /health while it is", async () => {
+    const res = await fetch(`${base}/health`, { headers: { "X-Forwarded-For": "198.51.100.206" } });
+    expect((await res.json()).apiKeyVerification).toEqual({ mode: "off" });
+  });
+
+  it("puts the keyset's age and failures on the heartbeat", () => {
+    expect(serverGauges()()).toMatchObject({ "keyset.age_s": 1, "keyset.poll_failures": 0 });
+  });
+
+  it("names the mode on the boot record", () => {
+    expect(bootConfig({}, true, "enforce")["key_check.mode"]).toBe("enforce");
+    expect(bootConfig({}, true)["key_check.mode"]).toBeUndefined();
   });
 });

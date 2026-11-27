@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { KeyRefusal } from "./apiKeyVerification.js";
 import {
   ConnectionError,
   apiKeyStatus,
@@ -108,6 +109,38 @@ describe("selectToolsets", () => {
     expect(error.message).toBe(
       `A SODAX API key is required for the swap profile. The x-api-key value (SODAX_API_KEY on stdio) ${NOT_A_SODAX_KEY}. ${GET_A_KEY}`,
     );
+  });
+});
+
+describe("selectToolsets with a key enforce refuses", () => {
+  const FAILED = ["unknown_key", "suspended", "insufficient_scope", "snapshot_unavailable"] as const;
+  const refused = (keyRefused: KeyRefusal) => ({ ...keyed, ...on, keyRefused });
+
+  it.each([
+    ["unknown_key", 403, "API_KEY_UNKNOWN", /isn't an active SODAX API key: it may be mistyped or revoked/],
+    ["suspended", 403, "ORG_SUSPENDED", /organisation this API key belongs to is suspended/],
+    ["insufficient_scope", 403, "API_KEY_SCOPE", /lacks the swaps:read and swaps:write scopes/],
+    ["snapshot_unavailable", 503, "KEY_CHECK_UNAVAILABLE", /temporarily unavailable\. Reconnect in a minute/],
+  ] as const)("refuses a swap connection whose key is %s", (outcome, status, code, message) => {
+    const error = refusal("swap", refused(outcome));
+    expect([error.httpStatus, error.rpcCode, error.code]).toEqual([status, -32000, code]);
+    expect(error.message).toMatch(message);
+  });
+
+  it.each(FAILED)("gives a default connection whose key is %s the builder tools only, and says why", outcome => {
+    const selection = selectToolsets(undefined, refused(outcome));
+    expect([selection.builder, selection.swap]).toEqual([true, false]);
+    expect(selection.keyHint).toBe(`This connection has no swap tools. ${refusal("swap", refused(outcome)).message}`);
+  });
+
+  it("leaves a builder connection alone", () => {
+    expect(selectToolsets("builder", refused("unknown_key"))).toEqual({ builder: true, swap: false });
+  });
+
+  it("lets an existing refusal win over the keyset's", () => {
+    expect(refusal("swap", { ...refused("unknown_key"), ...off }).code).toBe("SWAP_PROFILE_OFF");
+    expect(refusal("bogus", refused("unknown_key")).code).toBe("UNKNOWN_PROFILE");
+    expect(selectToolsets("all", { ...refused("unknown_key"), ...off })).toEqual({ builder: true, swap: false });
   });
 });
 

@@ -245,6 +245,19 @@ describe("tool call records", () => {
     expect(JSON.stringify(record)).not.toMatch(/sodax_abc|api_key/);
   });
 
+  it("names the keyset's verdict on the caller's key and its org, on the record and the event", async () => {
+    const { call, info } = await wrapTool("phc_test", async () => ({ content: [] }), "api");
+    const { runWithRequestContext } = await import("./requestContext.js");
+    await runWithRequestContext(
+      { apiKey: "sodax_k", keyCheck: { outcome: "insufficient_scope", orgId: "org-1" } },
+      call,
+    );
+    const [record] = info.mock.calls.at(-1) as [Record<string, unknown>];
+    expect(record).toMatchObject({ "caller.key_check": "insufficient_scope", "caller.org_id": "org-1" });
+    expect(capture.mock.calls.at(-1)?.[0]?.properties).toMatchObject({ key_check: "insufficient_scope" });
+    expect(capture.mock.calls.at(-1)?.[0]?.properties).not.toHaveProperty("org_id");
+  });
+
   it("adds the ids a swap is followed by, from the result and nothing else of it", async () => {
     const { call, info } = await wrapTool(undefined, async () => ({
       content: [],

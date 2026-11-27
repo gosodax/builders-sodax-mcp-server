@@ -8,11 +8,14 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import type { KeyCheck } from "./apiKeyVerification.js";
 import type { PartnerFee } from "./partnerFee.js";
 
 export interface RequestContext {
   apiKey?: string;
   partnerFee?: PartnerFee;
+  /** The keyset's verdict on `apiKey` (#154); none while keys aren't checked. */
+  keyCheck?: KeyCheck;
   /** One MCP request (HTTP) or tool call (stdio); every log record of it carries `request.id`. */
   requestId?: string;
   /** `hashClientIp` of the request's IP: the PostHog id, and the log's `client.ip_hash` when keyed. */
@@ -41,7 +44,8 @@ export function callerKeyHash(): string {
   return keyHash(getRequestContext().apiKey);
 }
 
-function keyHash(apiKey: string | undefined): string {
+/** A key's SHA-256 hex: what api-auth's keyset is keyed by, and what `caller.key_hash` cuts. */
+export function keyHash(apiKey: string | undefined): string {
   return createHash("sha256")
     .update(apiKey ?? "")
     .digest("hex");

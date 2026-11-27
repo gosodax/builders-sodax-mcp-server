@@ -12,6 +12,7 @@ import rateLimit, {
   ipKeyGenerator,
 } from "express-rate-limit";
 import { CLIENT_ID_KEYED } from "./analytics.js";
+import type { KeyCheck } from "./apiKeyVerification.js";
 import { notifyError } from "./discord.js";
 import { logger } from "./logger.js";
 import { getRequestContext } from "./requestContext.js";
@@ -53,6 +54,15 @@ export function noteRefusal(res: Response, errorType: string): void {
 
 export function refusalOf(res: Response): string | undefined {
   return res.locals.refusal;
+}
+
+/** The keyset's verdict on the caller's key, for the same record; noted before a refusal it may cause. */
+export function noteKeyCheck(res: Response, check: KeyCheck): void {
+  res.locals.keyCheck = check;
+}
+
+export function keyCheckOf(res: Response): KeyCheck | undefined {
+  return res.locals.keyCheck;
 }
 
 /** The route as the handlers see it: Express ignores case and a trailing slash. */

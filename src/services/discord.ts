@@ -120,6 +120,38 @@ export async function notifyServerStopping(signal: string, openSwapQuotes = 0): 
   });
 }
 
+/** No api-auth keyset poll has succeeded for a while (#154): key checks run on a stale keyset, or none. */
+export async function notifyKeysetStale(staleMs: number, hasSnapshot: boolean, lastError: string): Promise<void> {
+  const effect = hasSnapshot
+    ? "Keys are checked against the last keyset: a key revoked or created since then is judged as it was."
+    : "There is no keyset yet: every key is snapshot_unavailable, and with API_KEY_ENFORCEMENT=enforce the swap profile gets 503.";
+  await postToDiscord({
+    embeds: [
+      {
+        title: "🚨 api-auth keyset polls are failing",
+        description: truncate(
+          `No poll has succeeded for ${Math.round(staleMs / 60_000)} min. ${effect}\nLast error: ${lastError}`,
+          1000,
+        ),
+        color: COLOR.red,
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  });
+}
+
+export async function notifyKeysetRecovered(): Promise<void> {
+  await postToDiscord({
+    embeds: [
+      {
+        title: "🟢 api-auth keyset polls recovered",
+        color: COLOR.green,
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  });
+}
+
 /** Notify a significant / unexpected error, with the stack in a fenced block. */
 export async function notifyError(context: string, error: unknown): Promise<void> {
   // Errors can carry RPC URLs, and an RPC override can embed a paid key.

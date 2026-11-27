@@ -80,6 +80,8 @@ function trackToolCall(toolName: string, durationMs: number, outcome: Outcome, c
       duration_ms: durationMs,
       ...outcome,
       transport: process.env.TRANSPORT || "http",
+      // The keyset's verdict on the caller's key (#154); none while keys aren't checked.
+      key_check: getRequestContext().keyCheck?.outcome,
     },
   });
 }
@@ -163,6 +165,8 @@ function logToolCall(
       "error.type": outcome.error_code,
       // Not `api_key.*`: the gateway's redaction masks values under any key that names an API key.
       "caller.key_hash": callerKeyTag(),
+      "caller.key_check": getRequestContext().keyCheck?.outcome,
+      "caller.org_id": getRequestContext().keyCheck?.orgId,
       ...(resolveToolGroup(toolName) === "swap" && {
         "swap.status": str(out.status),
         "quote.id": str(out.quoteId),

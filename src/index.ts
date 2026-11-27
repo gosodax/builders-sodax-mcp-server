@@ -27,6 +27,13 @@ import { SODAX_ENV, SODAX_ENV_ERROR, SWAP_USD_WARN_ERROR } from "./constants.js"
 import { SERVER_VERSION, createServer, seedToolRegistry } from "./server.js";
 import { CLIENT_ID_KEYED, POSTHOG_ENABLED, hashClientIp, shutdownAnalytics } from "./services/analytics.js";
 import { checkApiDrift } from "./services/apiDriftCheck.js";
+import {
+  type KeyCheckMode,
+  type KeyChecker,
+  type KeysetStats,
+  parseKeyCheckConfig,
+  startKeyCheck,
+} from "./services/apiKeyVerification.js";
 import { isDiscordConfigured, notifyError, notifyServerStarted, notifyServerStopping } from "./services/discord.js";
 import { fetchDocsTools, getCachedDocsHealth } from "./services/docsProxy.js";
 import {
@@ -35,6 +42,7 @@ import {
   asyncHandler,
   createMcpLimiter,
   jsonErrorHandler,
+  keyCheckOf,
   limitBody,
   mcpGetNotAllowed,
   noteRefusal,
@@ -126,6 +134,12 @@ async function runStdio(rpcOverrides: Record<string, RpcOverride>, swapToolsEnab
   console.log = console.info = console.debug = console.error;
   const apiKey = parseApiKey(process.env.SODAX_API_KEY);
   const keyStatus = apiKeyStatus(process.env.SODAX_API_KEY);
+  // Set on purpose, so say it does nothing here; unset (the HTTP default, enforce) is no setting.
+  // Not parsed: a value stdio ignores must not stop it.
+  const enforcement = process.env.API_KEY_ENFORCEMENT?.trim().toLowerCase();
+  if (enforcement && enforcement !== "off") {
+    logger.warn("API_KEY_ENFORCEMENT is ignored over stdio: the key is checked only for its shape");
+  }
   if (keyStatus === "malformed") logger.warn("SODAX_API_KEY is not a SODAX API key (sodax_…); calls go out keyless");
   // Before the docs warm-up, so a refused profile or partner fee fails fast.
   const toolsets = selectToolsets(profileFromArgs(process.argv.slice(2), process.env), {
@@ -169,13 +183,22 @@ async function runHTTP(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabl
   if (process.env.SODAX_PARTNER_FEE_ADDRESS || process.env.SODAX_PARTNER_FEE_BPS) {
     logger.warn("SODAX_PARTNER_FEE_* is ignored over HTTP: each client sets its own partner fee");
   }
+  // Before the warm-up, so a missing verifier token fails fast.
+  const keyCheckConfig = parseKeyCheckConfig(process.env);
   // Warm the SDK docs cache, and load the SDK while the swap tools are on: any keyed connection can get them.
   logger.info("Initializing SODAX docs proxy...");
-  await Promise.all([swapToolsEnabled ? initSodax(rpcOverrides) : undefined, warmDocsCache()]);
+  const [, , keyChecker] = await Promise.all([
+    swapToolsEnabled ? initSodax(rpcOverrides) : undefined,
+    warmDocsCache(),
+    keyCheckConfig && startKeyCheck(keyCheckConfig),
+  ]);
 
   seedToolRegistry({ builder: true, swap: swapToolsEnabled });
 
-  listen(createHttpApp(swapToolsEnabled), bootConfig(swapToolsEnabled ? rpcOverrides : {}, swapToolsEnabled));
+  listen(
+    createHttpApp(swapToolsEnabled, keyChecker),
+    bootConfig(swapToolsEnabled ? rpcOverrides : {}, swapToolsEnabled, keyChecker?.mode ?? "off"),
+  );
 }
 
 // The methods a client sends, from the SDK's own schemas: anything else is "other", so a client can't shape the record.
@@ -264,6 +287,8 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
         ...clientFields(req.body),
         ...connection,
         "mcp.session.id_hash": res.locals.sessionTag,
+        "caller.key_check": keyCheckOf(res)?.outcome,
+        "caller.org_id": keyCheckOf(res)?.orgId,
         "client.ip_hash": CLIENT_ID_KEYED ? clientId : undefined,
       },
       "HTTP request",
@@ -274,9 +299,13 @@ function logMcpRequests(req: Request, res: Response, next: NextFunction): void {
   runWithRequestContext({ requestId, clientId }, next);
 }
 
-/** The routes and their guards, without the docs warm-up or a listener, so a test can serve them. */
-export function createHttpApp(swapToolsEnabled: boolean): Express {
+/**
+ * The routes and their guards, without the docs warm-up or a listener, so a test can serve them.
+ * `keyChecker`: the running API key check; none while API_KEY_ENFORCEMENT is off.
+ */
+export function createHttpApp(swapToolsEnabled: boolean, keyChecker?: KeyChecker): Express {
   const app = express();
+  readKeyCheck = () => keyChecker?.stats();
 
   // Trust the reverse proxy (Coolify/Traefik) so X-Forwarded-For is used for rate limiting
   app.set("trust proxy", 1);
@@ -394,6 +423,8 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       },
       // In memory: a deploy waits for open to reach 0 (README, Operating the swap tools).
       swapQuotes: openQuotes(),
+      // Public, so no key count or keyset version: those go to the logs.
+      apiKeyVerification: keyChecker ? apiKeyVerificationHealth(keyChecker) : { mode: "off" },
       unifiedLogging: otel ? { on: true, ...otel.stats() } : { on: false },
     });
   });
@@ -404,7 +435,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     "/mcp",
     mcpLimiter,
     asyncHandler(async (req: Request, res: Response) => {
-      const connection = resolveConnection(req, res, swapToolsEnabled);
+      const connection = resolveConnection(req, res, swapToolsEnabled, keyChecker);
       if (!connection) return;
       const requestServer = await createServer(connection.toolsets, getRequestContext().clientId);
       const transport = new StreamableHTTPServerTransport({
@@ -424,9 +455,10 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
   const sseLimiter = new SseSessionLimiter();
   openSseSessions = () => sseLimiter.sessions;
   // context: from GET /sse (tool set, partner fee); each POST /messages runs with its own key only.
+  // swap: whether the session serves the swap tools, which a key the keyset fails loses mid-session.
   const sseSessions = new Map<
     string,
-    { transport: SSEServerTransport; server: McpServer; context: RequestContext; lease: SseLease }
+    { transport: SSEServerTransport; server: McpServer; context: RequestContext; lease: SseLease; swap: boolean }
   >();
 
   app.get(
@@ -434,7 +466,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
     mcpLimiter,
     asyncHandler(async (req: Request, res: Response) => {
       // Before taking a slot, so a refused connection never holds one.
-      const connection = resolveConnection(req, res, swapToolsEnabled);
+      const connection = resolveConnection(req, res, swapToolsEnabled, keyChecker);
       if (!connection) return;
       // express.static's fs.stat can yield before this handler; a disconnect in
       // that gap already fired the response's one-shot 'close', so a listener
@@ -485,7 +517,13 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
       }
       const transport = new SSEServerTransport("/messages", res);
       sessionId = transport.sessionId;
-      sseSessions.set(transport.sessionId, { transport, server: sseServer, context: connection.context, lease });
+      sseSessions.set(transport.sessionId, {
+        transport,
+        server: sseServer,
+        context: connection.context,
+        lease,
+        swap: connection.toolsets.swap,
+      });
       // The session's own record comes when it closes; this one says it opened, under the id its messages carry.
       res.locals.sessionTag = hashTag(transport.sessionId);
       logger.info({ "mcp.session.id_hash": res.locals.sessionTag }, "SSE session opened");
@@ -507,7 +545,7 @@ export function createHttpApp(swapToolsEnabled: boolean): Express {
         return;
       }
       // This POST's own x-api-key only, as on /mcp: the sessionId in the URL is no credential.
-      const context = messageContext(session.context, req, res);
+      const context = messageContext(session.context, req, res, keyChecker, session.swap);
       if (!context) return;
       session.lease.touch();
       await runWithRequestContext({ ...getRequestContext(), ...context }, () =>
@@ -593,12 +631,29 @@ let otel: OtelLogs | undefined;
 /** The open SSE sessions of the app serving, for the heartbeat; none before it serves. */
 let openSseSessions = () => 0;
 
-/** How this server was started (#110): what a record can't otherwise say. Names only, never a URL or a key. */
-export function bootConfig(rpcOverrides: Record<string, RpcOverride>, swapToolsEnabled: boolean) {
+/** The API key check of the app serving, for the heartbeat; none while it is off. */
+let readKeyCheck: () => KeysetStats | undefined = () => undefined;
+
+/** /health's view of the key check: whether it works, without the key count or the keyset version. */
+function apiKeyVerificationHealth(keyChecker: KeyChecker) {
+  const { hasSnapshot, snapshotAgeMs, consecutivePollFailures } = keyChecker.stats();
+  return { mode: keyChecker.mode, hasSnapshot, snapshotAgeMs, consecutivePollFailures };
+}
+
+/**
+ * How this server was started (#110): what a record can't otherwise say. Names only, never a URL or a key.
+ * `keyCheckMode`: HTTP only; stdio checks a key's shape alone.
+ */
+export function bootConfig(
+  rpcOverrides: Record<string, RpcOverride>,
+  swapToolsEnabled: boolean,
+  keyCheckMode?: KeyCheckMode,
+) {
   return {
     "app.version": SERVER_VERSION,
     "sodax.env": SODAX_ENV,
     "swap_tools.enabled": swapToolsEnabled,
+    "key_check.mode": keyCheckMode,
     "rpc_overrides.chains": Object.keys(rpcOverrides).sort().join(",") || undefined,
     "posthog.enabled": POSTHOG_ENABLED,
     "discord.enabled": isDiscordConfigured(),
@@ -617,6 +672,7 @@ export function serverGauges(): () => Record<string, unknown> {
     const delayP99Ms = Math.max(0, loopDelay.percentile(99) / 1e6 - LOOP_SAMPLE_MS);
     loopDelay.reset();
     const { rss, heapUsed } = process.memoryUsage();
+    const keyset = readKeyCheck();
     return {
       "swap_quotes.open": openQuotes().open,
       "sse.sessions": openSseSessions(),
@@ -625,6 +681,8 @@ export function serverGauges(): () => Record<string, unknown> {
       "event_loop.delay_p99_ms": Math.round(delayP99Ms * 10) / 10,
       "swap_catalog.age_s": swapCatalogAgeSec(),
       "docs_proxy.healthy": getCachedDocsHealth().healthy,
+      "keyset.age_s": keyset?.snapshotAgeMs === undefined ? undefined : Math.round(keyset.snapshotAgeMs / 1000),
+      "keyset.poll_failures": keyset?.consecutivePollFailures,
     };
   };
 }

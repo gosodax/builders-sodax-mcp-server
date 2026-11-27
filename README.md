@@ -64,6 +64,13 @@ tools work without one; the swap tools need it. An organisation's Owner or Admin
 the SODAX data API, solver and Swaps API, and nowhere else (not to the relay either). Over stdio, set `SODAX_API_KEY`
 instead. A value that isn't a SODAX key (`sodax_…`) is ignored, except by the `swap` profile, which refuses it.
 
+Over HTTP the server also checks the key against SODAX's active keys (`API_KEY_ENFORCEMENT`). The `swap` profile
+refuses a key that is mistyped or revoked (HTTP 403, `API_KEY_UNKNOWN`), whose organisation is suspended (403,
+`ORG_SUSPENDED`) or that lacks the `swaps:read` and `swaps:write` scopes (403, `API_KEY_SCOPE`), and answers 503
+(`KEY_CHECK_UNAVAILABLE`) while it can't check keys yet. The default profile serves such a key the builder tools only,
+with a note saying why. A revoked key stops working about 15 seconds later. An open SSE session that has the swap
+tools then gets every message refused the same way, until it reconnects.
+
 SSE clients send `x-api-key` on `GET /sse` and on every `POST /messages`: each message runs only with the key it
 carries, and a session opened with a key refuses a message without that key (HTTP 403). The MCP SDKs' SSE clients
 already send their headers on both.
@@ -336,6 +343,9 @@ Once connected, try asking your AI coding assistant:
 
 ## Local Development
 
+Copy `.env.example` to `.env` first: it sets `API_KEY_ENFORCEMENT=off`, without which a server needs an api-auth
+verifier token to start.
+
 ```bash
 # Install dependencies
 pnpm install
@@ -372,7 +382,7 @@ Every pull request, into any branch, runs `.github/workflows/ci.yml`, which exec
 
 The secrets live in the `canary-e2e` GitHub environment, limited to the default branch: `E2E_WALLET_PRIVATE_KEY` (a wallet used only here), `E2E_SODAX_API_KEY` (a canary key), `DISCORD_WEBHOOK_URL`, and optionally `SODAX_RPC_URL_42161` / `SODAX_RPC_URL_8453`, which the workflow passes to the server and the script as their `RPC_CONFIG`. `AMOUNT` is at most 20. A manual run with an amount the wallet doesn't hold makes a deliberate red run that sends nothing; a manual dry run only quotes, to check the environment and key before the wallet is funded.
 
-To run it locally, start a server with `pnpm build && SODAX_ENV=canary node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
+To run it locally, start a server with `pnpm build && SODAX_ENV=canary API_KEY_ENFORCEMENT=off node dist/index.js` (not `pnpm start`, which loads `.env`), then `MCP_URL=http://127.0.0.1:3000/mcp?profile=swap SODAX_API_KEY=… pnpm e2e:canary` with `E2E_WALLET_PRIVATE_KEY` exported from `read -rs` (not typed on the command line, where shell history keeps it). `E2E_DRY_RUN=1` stops after the quote and needs no wallet. Don't run it while the workflow runs: both use the same wallet's nonces.
 
 ### Git hooks (husky + commitlint + lint-staged)
 
@@ -404,6 +414,11 @@ Coolify injects these directly into the process environment.
 | `SODAX_API_KEY` | - | stdio only: the SODAX API key (`sodax_…`) forwarded on data API, solver and Swaps API calls; the swap tools need it. Ignored over HTTP, where each client sends its own `x-api-key`. |
 | `MCP_PROFILE` | `all` | stdio only: the tool profile (`builder`, `swap` or `all`); `--profile` wins. |
 | `SODAX_SWAP_TOOLS_ENABLED` | `true` | Kill switch for the swap tools: `false` turns them off without a redeploy of older code (`?profile=swap` then gets HTTP 400, `all` serves the builder tools). `true` or `false`; anything else stops the server at startup. |
+| `API_KEY_ENFORCEMENT` | `enforce` | HTTP only: checks each `x-api-key` against api-auth's keyset (see [API Key](#api-key)). `enforce` refuses a key that fails, `monitor` only records the verdict (`caller.key_check`), `off` checks the key's shape alone. Unless `off`, the server needs the two `API_AUTH_*` values below or it doesn't start. `off`, `monitor` or `enforce`; anything else stops the server at startup. stdio checks the shape alone. |
+| `API_AUTH_URL` | - | api-auth's base URL, `https://auth.sodax.com` in production. `https` only (`http` on localhost). |
+| `API_AUTH_TOKEN` | - | An api-auth verifier token: it can read the keyset, which holds key hashes, and nothing else. Secret: the deployment's env only. |
+| `API_AUTH_POLL_INTERVAL_MS` | `15000` | How often the keyset is polled; also how long a revoked key keeps working while polls succeed. |
+| `API_AUTH_POLL_TIMEOUT_MS` | `5000` | The timeout of one keyset poll. |
 | `SODAX_SWAP_USD_WARN` | `10000` | A quote worth more than this many USD (solver oracle price) tells the agent to confirm the amount with the user. It never blocks. A positive number; anything else stops the server at startup. |
 | `RPC_CONFIG` | SDK defaults | The RPCs the swap tools read chains through (track, cancel, balances, the quote's NEAR storage and Stellar trustline checks, and the swap tx it builds on a non-EVM chain), in the SODAX backend's format, so the backend's value works as is: a JSON object keyed by chain key, in the SDK's field names (in a `.env` file, wrap it in single quotes): `{"sonic":{"rpcUrl":"https://…"},"0x89.polygon":{"rpcUrl":"https://…"},"sui":{"grpc_url":"https://…"},"stellar":{"horizonRpcUrl":"https://…","sorobanRpcUrl":"https://…"}}`. A chain or field it leaves out keeps the SDK's public default. Sonic's entry also carries the hub reads; Bitcoin's is an Esplora-style API such as mempool.space, not a node; Injective's is taken but has no effect (the SDK uses fixed endpoints). Public nodes keep only recent txs, so a swap from a non-EVM chain tracked late may read as not found; an archival endpoint avoids that. Set Polygon, Ethereum and Hedera in production: their public defaults are unreliable. URLs are `https://` only. The server never stops over this value: it skips what it can't apply (an unknown chain or field, a URL that isn't `https://`) with one warning naming it, never its value. The old `SODAX_RPC_URL_*` variables are no longer read, and a warning names any still set. Tools never take an RPC URL as input. |
 | `SODAX_PARTNER_FEE_ADDRESS`, `SODAX_PARTNER_FEE_BPS` | - | stdio only: the partner fee on swap quotes (see [Partner fee](#partner-fee)). Ignored over HTTP. |
@@ -437,8 +452,11 @@ Hotfixes can branch off `master` and PR directly into `master`, then be merged b
 
 ```bash
 docker build -t sodax-mcp .
-docker run -p 3000:3000 sodax-mcp
+docker run -p 3000:3000 -e API_KEY_ENFORCEMENT=off sodax-mcp
 ```
+
+A server of your own checks keys by default, which needs an api-auth verifier token: set `API_KEY_ENFORCEMENT=off`
+(here, or in the `.env` Compose reads), or `API_AUTH_URL` and `API_AUTH_TOKEN`.
 
 ### Docker Compose
 
@@ -462,34 +480,54 @@ Swap quotes live in the server's memory, so:
 - To recover one, relay the deposit tx with `sodax_relay_submit_tx` (the chain's relay id is in `sodax_get_relay_chain_id_map`). That puts the intent on the hub; past its deadline the backend's canceller refunds it, as it does when track relays an expired deposit.
 - `SODAX_SWAP_TOOLS_ENABLED=false` turns the swap tools off without a rollback. It takes a restart, so the same wait applies.
 
+### Operating the API key check
+
+The server polls api-auth's keyset every 15 seconds and checks keys against the copy it holds, so api-auth is never
+on a request's path.
+
+- A failed poll keeps the last keyset: while api-auth can't be reached, a key revoked or created since then is
+  judged as it was. After 5 minutes without a successful poll, Discord gets "api-auth keyset polls are failing", and a
+  second message when polls recover. `GET /health` shows `apiKeyVerification` (`mode`, `hasSnapshot`,
+  `snapshotAgeMs`, `consecutivePollFailures`).
+- A failed first poll doesn't stop the server: until a poll succeeds, the `swap` profile gets 503 and the default
+  profile the builder tools only (in `monitor`, nothing is refused).
+- Before a release that turns the check on, put a verifier token in api-auth's `API_AUTH_VERIFIER_TOKENS` and set
+  `API_AUTH_URL` and `API_AUTH_TOKEN` here: without them the new version doesn't start.
+- After the release: `GET /health` shows `"mode": "enforce"`, `"hasSnapshot": true` and no failures; a made-up
+  `sodax_…` key on `/mcp?profile=swap` gets 403 `API_KEY_UNKNOWN`; a real key gets the swap tools.
+- `API_KEY_ENFORCEMENT=off` (or `monitor`) turns the refusals off. It takes a restart.
+
 ## Logging
 
 Logs go to stderr as JSON (one line per record, URLs and keys redacted). With `OTEL_LOGS_ENABLED=true` the same records also ship to unified logging, with `SeverityText` in lowercase (`info`, `warn`, `error`) as the backend sends it. Every record of one HTTP request (or one stdio tool call) carries `request.id`, so a call can be followed from the agent's request to the answer; a swap's quote, track and cancel calls are joined by `quote.id`, `tx.hash` and `intent.hash`. Each MCP response carries its request's id in an `X-Request-Id` header, for a builder to quote when reporting a problem (over SSE, the tool calls' ids are on the `POST /messages` responses, not on the stream), and calls to SODAX's own APIs send it in the same header. Names follow the OpenTelemetry conventions where one exists. The records to query and alert on:
 
 | Record | Level | When | Attributes |
 |---|---|---|---|
-| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`, `/messages`, `/sse`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile` (not on `/messages`, which runs with its SSE session's), `caller.key_status` (`valid`: a SODAX key's shape, the backend decides the rest; `malformed`; `missing`), `caller.key_hash` with a valid key, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
-| `Tool call` | info for the caller's failure, `warn` for one on SODAX's side, `error` for a bug | each tool call, and each call the SDK refuses before a handler runs | `gen_ai.tool.name` (`other` for a name the server doesn't have), `tool.outcome` (`ok` or `error`), `error.type`, `duration.ms`, `caller.key_hash` with a key; swap tools add `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`, `intent.hash`, `chain.key`, `dst_chain.key`, `swap.usd_bucket`; a bug adds `exception.type` and its stack frames, never its message |
+| `HTTP request` | info (`debug` for a limiter's 429, which `Rate limited` stands for) | each MCP request (`/mcp`, `/messages`, `/sse`), the ones a guard refuses included | `http.request.method`, `http.route`, `http.response.status_code`, `duration.ms`, `mcp.method.name`, `error.type` (the guard that refused it), `mcp.profile` (not on `/messages`, which runs with its SSE session's), `caller.key_status` (`valid`: a SODAX key's shape; `malformed`; `missing`), `caller.key_hash` with a valid key, `caller.key_check` with a valid key while keys are checked (`ok`, `unknown_key`, `suspended`, `insufficient_scope`, `snapshot_unavailable`), `caller.org_id` when the key matched, `user_agent.original`; on `initialize`, `mcp.client.name`, `mcp.client.version` and `mcp.protocol.version`; `client.ip_hash` only with `POSTHOG_CLIENT_ID_SECRET` set (the plain hash could be reversed to the IP) |
+| `Tool call` | info for the caller's failure, `warn` for one on SODAX's side, `error` for a bug | each tool call, and each call the SDK refuses before a handler runs | `gen_ai.tool.name` (`other` for a name the server doesn't have), `tool.outcome` (`ok` or `error`), `error.type`, `duration.ms`, `caller.key_hash` with a key, `caller.key_check` and `caller.org_id` as on `HTTP request`; swap tools add `swap.status`, `quote.id`, `tx.hash`, `hub_tx.hash`, `intent.hash`, `chain.key`, `dst_chain.key`, `swap.usd_bucket`; a bug adds `exception.type` and its stack frames, never its message |
 | `Upstream call` | info, `warn` on failure | each call to the SODAX APIs, the solver, the relay and the docs MCP | `http.request.method`, `server.address`, `url.template` (static segments kept, parameters masked), `http.response.status_code`, `duration.ms`, `error.type` |
 | `Chain read` | info, `warn` on failure | each bounded SDK or RPC read | `sdk.call`, `chain.key`, `duration.ms`, `error.type` |
 | `Submitted a swap deposit` | info | track handed a checked deposit to the backend | `chain.key`, `quote.id`, `tx.hash`, `intent.hash` |
 | `Swap quote expired unused` | info | the cache drops a quote no deposit claimed: within a minute of its expiry, 30 minutes past its deadline (`quote.drop_reason` `expired`), or earlier from a full cache once its deadline has passed (`evicted`) | `quote.id`, `quote.drop_reason`, `chain.key`, `dst_chain.key`, `caller.key_hash` |
 | `SSE session opened` | info | `GET /sse` opens a session; its `HTTP request` record comes when it closes | `mcp.session.id_hash`, also on the session's `GET /sse` and `POST /messages` records |
-| `SODAX MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `partner_fee.set` (stdio) |
+| `SODAX MCP server started` | info | boot | `mcp.transport`, `server.port` (HTTP), `app.version`, `sodax.env`, `swap_tools.enabled`, `rpc_overrides.chains` (chain keys only), `posthog.enabled`, `discord.enabled`, `log.level`, `key_check.mode` (HTTP), `partner_fee.set` (stdio) |
+| `Keyset updated` | info | a keyset poll brings a new version | `keyset.version`, `keyset.key_count` |
+| `Keyset poll failed` | warn | each failed keyset poll; the last keyset stays in use | `keyset.poll_failures` (in a row), `keyset.age_ms` (since the last successful poll), `error.message` |
+| `Started without an api-auth keyset: …` | warn | boot, when the first keyset poll fails | `key_check.mode` |
 | `RPC_CONFIG entries this server can't apply` | warn | boot, when `RPC_CONFIG` has an entry this server skips (those chains use their public RPC) | `rpc_config.skipped` (chain keys and field names only, never a value) |
 | `SODAX_RPC_URL_* is no longer read: set RPC_CONFIG` | warn | boot, when an old RPC variable is still set (it has no effect) | `rpc_config.legacy` (the variable names) |
 | `SODAX SDK warning`, `SODAX SDK error` | warn, error | the SDK's own log lines | `sdk.message` (URLs stripped) |
 | `Swaps API call failed` | warn | a Swaps API error answer | `url.template`, `http.response.status_code`, `upstream.code`, `upstream.message` (ids masked) |
 | an operator alert, titled by its kind | error | a swap needs an operator: a deposit that can't be submitted or doesn't match its quote, a refund that couldn't start, a swap the service built wrong (`SWAP_MISMATCH`) or quoted off market (`PRICE_OFF_MARKET`), a swap tool's unexpected failure. It also goes to Discord, which shows the first 12 characters of `caller.key_hash` | `alert` (the kind), `chain.key`, `tx.hash`, `quote.id`, `deadline`, `gen_ai.tool.name`, `error.type`, `reason`, `caller.key_hash` |
 | `Rate limited` | warn | a limiter's first refusal per client per window | `http.route`, `rate_limit.limit`, `rate_limit.window_ms`, `client.ip_hash` as above |
-| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `sse.sessions`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`; `unified_logging.gauges_failed` when they couldn't be read |
+| `Unified logging heartbeat` | info | every five minutes, whatever `LOG_LEVEL` says | `unified_logging.written`, `unified_logging.exported`, `unified_logging.failed`, and the gauges `swap_quotes.open`, `sse.sessions`, `process.memory.rss_bytes`, `process.memory.heap_used_bytes`, `event_loop.delay_p99_ms` (since the last beat), `swap_catalog.age_s` (the catalog refreshes when a swap tool asks, so it grows on an idle server), `docs_proxy.healthy`, `keyset.age_s` and `keyset.poll_failures` while keys are checked; `unified_logging.gauges_failed` when they couldn't be read |
 
 A record's body is a constant (`Body = 'Tool call'`); what varies is in its attributes. One failure is one record of each kind: the data services don't log what `Upstream call`, `Chain read` and `Tool call` already say.
 
 `error.type` says why:
 
 - **`HTTP request`**, the guard that refused it: `UNKNOWN_PROFILE`, `SWAP_PROFILE_OFF`, `API_KEY_REQUIRED`,
-  `API_KEY_MALFORMED`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
+  `API_KEY_MALFORMED`, `API_KEY_UNKNOWN`, `ORG_SUSPENDED`, `API_KEY_SCOPE`, `KEY_CHECK_UNAVAILABLE`, `INVALID_PARTNER_FEE`, `SSE_KEY_MISMATCH`, `SSE_SESSION_LIMIT`, `SSE_SESSION_NOT_FOUND`,
   `BATCH_TOO_LARGE`, `RATE_LIMITED`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `BODY_TOO_LARGE`, `INVALID_REQUEST`,
   `INTERNAL`. A refusal the MCP SDK's transport sends itself (406, 415) has only its status.
 - **`Tool call` the SDK refused** before a handler ran: `TOOL_NOT_FOUND`, `INVALID_ARGUMENTS`, `TOOL_DISABLED`,
@@ -537,6 +575,11 @@ reporting a problem: the server's logs find the request by it.
 | 413 | A body over 100 kB | -32600 |
 | 429 | A rate limit | -32000 |
 | 500 | A server error | -32603 |
+
+The `swap` profile's key refusals come before any MCP message, all with -32000: 403 for no key, a value that isn't a
+SODAX key, an unknown or revoked key, a suspended organisation or missing scopes, and 503 while the server can't check
+keys yet. Never 401, which MCP clients take as a cue to start OAuth. The same refusal answers a `POST /messages` of an
+SSE session with the swap tools whose key fails after it opened.
 
 On `/sse` and `/messages`, the rate limits, an unknown session and server errors answer `{"error":"…"}`; the SSE
 transport's own errors (a message it can't parse, for one) are plain text.

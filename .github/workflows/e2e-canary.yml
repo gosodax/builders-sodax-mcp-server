@@ -57,6 +57,8 @@ jobs:
           SODAX_ENV: canary
           LOG_LEVEL: info
           PORT: "3000"
+          # The run's key is a canary key, which isn't in production's keyset; the shape check is enough here.
+          API_KEY_ENFORCEMENT: "off"
           # toJSON quotes and escapes each secret; an unset one ("") leaves that chain on its public RPC.
           RPC_CONFIG: '{"0xa4b1.arbitrum":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_42161) }}},"0x2105.base":{"rpcUrl":${{ toJSON(secrets.SODAX_RPC_URL_8453) }}}}'
         run: |
